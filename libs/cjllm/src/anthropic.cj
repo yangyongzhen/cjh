@@ -29,6 +29,20 @@ public class AnthropicProvider <: LlmProvider {
         this.model = model
     }
 
+    /**
+     * 归一化端点：接受 base（https://api.anthropic.com）或完整路径，自动补全 /v1/messages
+     */
+    public func endpointUrl(): String {
+        var url = this.baseUrl
+        if (url.endsWith("/")) {
+            url = url[0..url.size - 1]
+        }
+        if (!url.contains("/messages")) {
+            url += "/v1/messages"
+        }
+        return url
+    }
+
     public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
         onDelta: (String) -> Unit): ModelResponse {
         // 请求体
@@ -106,11 +120,11 @@ public class AnthropicProvider <: LlmProvider {
             body.put("tools", JsonArray(toolList))
         }
 
-        // 请求
+        // 请求（base_url 自动补全 /v1/messages）
         let client = ClientBuilder().tlsConfig(TlsClientConfig()).build()
         let req = HttpRequestBuilder()
             .post()
-            .url(this.baseUrl)
+            .url(this.endpointUrl())
             .header("Content-Type", "application/json")
             .header("x-api-key", this.apiKey)
             .header("anthropic-version", "2023-06-01")

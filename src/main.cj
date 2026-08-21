@@ -90,7 +90,13 @@ func makeProvider(cfg: CjhConfig): LlmProvider {
     }
     let providerName = readEnv("CJH_PROVIDER") ?? "openai"
     if (providerName == "anthropic") {
-        let anthropicKey = readEnv("ANTHROPIC_API_KEY") ?? cfg.apiKey
+        let anthropicKey = readEnv("ANTHROPIC_API_KEY") ?? readEnv("ANTHROPIC_AUTH_TOKEN") ?? cfg.apiKey
+        let anthropicBase = readEnv("ANTHROPIC_BASE_URL") ?? "https://api.anthropic.com/v1/messages"
+        return AnthropicProvider(anthropicBase, anthropicKey, cfg.model)
+    }
+    // 兼容：设了 ANTHROPIC_AUTH_TOKEN 且端点可达时默认走 anthropic
+    if ((readEnv("CJH_PROVIDER") ?? "") == "" && (readEnv("ANTHROPIC_AUTH_TOKEN") ?? "").size > 0) {
+        let anthropicKey = readEnv("ANTHROPIC_API_KEY") ?? readEnv("ANTHROPIC_AUTH_TOKEN") ?? cfg.apiKey
         let anthropicBase = readEnv("ANTHROPIC_BASE_URL") ?? "https://api.anthropic.com/v1/messages"
         return AnthropicProvider(anthropicBase, anthropicKey, cfg.model)
     }
