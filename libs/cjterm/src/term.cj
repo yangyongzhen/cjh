@@ -79,6 +79,7 @@ public class KeyEvent {
     public let isPageDown: Bool
     public let isCtrlU: Bool
     public let isCtrlD: Bool
+    public let escapeSeq: String   // 完整转义序列（如 ESC[A）；普通键为空
 
     public init(ch: Int32) {
         this.ch = ch
@@ -94,6 +95,24 @@ public class KeyEvent {
         this.isPageDown = false
         this.isCtrlU = (ch == 21)
         this.isCtrlD = (ch == 4)
+        this.escapeSeq = ""
+    }
+
+    public init(ch: Int32, escapeSeq: String) {
+        this.ch = ch
+        this.isEsc = (ch == 27)
+        this.isEnter = false
+        this.isCtrlC = false
+        this.isBackspace = false
+        this.isArrowUp = (escapeSeq == TermEsc.UP)
+        this.isArrowDown = (escapeSeq == TermEsc.DOWN)
+        this.isArrowRight = (escapeSeq == TermEsc.RIGHT)
+        this.isArrowLeft = (escapeSeq == TermEsc.LEFT)
+        this.isPageUp = (escapeSeq == TermEsc.PGUP)
+        this.isPageDown = (escapeSeq == TermEsc.PGDN)
+        this.isCtrlU = false
+        this.isCtrlD = false
+        this.escapeSeq = escapeSeq
     }
 }
 
@@ -204,6 +223,27 @@ public class Term {
                     return None
                 }
                 let ch = Int32(buf.read(0))
+                // ESC 开头：尝试读完整转义序列（方向键/功能键）
+                if (ch == 27) {
+                    var seq = Rune(27).toString()
+                    // 最多读 4 个后续字节（CSI 序列通常 ESC [ <n> <char>）
+                    for (i in 0..4) {
+                        if (this.hasInput()) {
+                            if (let b2 <- LibC.malloc<UInt8>(count: 1)) {
+                                let n2 = read(STDIN, b2, 1)
+                                if (n2 > 0) {
+                                    let b = Int32(b2.read(0))
+                                    seq += Rune(b).toString()
+                                }
+                                LibC.free(b2)
+                            }
+                        } else {
+                            break
+                        }
+                    }
+                    LibC.free(buf)
+                    return Some(KeyEvent(ch, seq))
+                }
                 LibC.free(buf)
                 return Some(KeyEvent(ch))
             }
@@ -297,4 +337,17 @@ class TermEnv {
             return Some(cs.toString())
         }
     }
+}
+
+/**
+ * 转义序列常量（Rune(27) 构造 ESC，避免 \u 转义问题）
+ */
+public class TermEsc {
+    public static let ESC: String = Rune(27).toString()
+    public static let UP: String = ESC + "[A"
+    public static let DOWN: String = ESC + "[B"
+    public static let RIGHT: String = ESC + "[C"
+    public static let LEFT: String = ESC + "[D"
+    public static let PGUP: String = ESC + "[5~"
+    public static let PGDN: String = ESC + "[6~"
 }

@@ -289,61 +289,66 @@ func runTui(sessionId: String): Int64 {
         }
 
         StreamState.active = false
+        TuiBridge.app = tui
         agent.onDelta = { d =>
             if (d.size > 0) {
                 if (!StreamState.active) {
-                    // 流式行开始：加绿色前缀
-                    tui.appendDelta(Ansi.fg(Ansi.COLOR_GREEN))
+                    TuiBridge.delta(Ansi.fg(Ansi.COLOR_GREEN))
                     StreamState.active = true
                 }
-                tui.appendDelta(d)
+                TuiBridge.delta(d)
             }
         }
         agent.onToolStart = { name, args =>
             if (StreamState.active) {
-                tui.appendOutput("")
+                TuiBridge.output("")
                 StreamState.active = false
             }
-            tui.appendOutput(Ansi.fg(Ansi.COLOR_YELLOW) + "▶ 工具: ${name} ${args.toJsonString()}" + Ansi.reset())
+            TuiBridge.output(Ansi.fg(Ansi.COLOR_YELLOW) + "▶ 工具: ${name} ${args.toJsonString()}" + Ansi.reset())
         }
         agent.onToolResult = { name, result =>
             var preview = result.content
             if (preview.size > 200) {
                 preview = preview[0..200] + "…"
             }
-            tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  ↳ ${name}: ${preview}" + Ansi.reset())
+            TuiBridge.output(Ansi.fg(Ansi.COLOR_GRAY) + "  ↳ ${name}: ${preview}" + Ansi.reset())
         }
         agent.onAssistantText = { text =>
             if (StreamState.active) {
-                // 流式已实时显示，只收尾（reset + 换行），不重复输出
-                tui.appendOutput(Ansi.reset())
+                TuiBridge.output(Ansi.reset())
                 StreamState.active = false
             } else {
-                // 非流式（如旧协议全量返回）：直接输出
-                tui.appendOutput(Ansi.fg(Ansi.COLOR_GREEN) + text + Ansi.reset())
+                TuiBridge.output(Ansi.fg(Ansi.COLOR_GREEN) + text + Ansi.reset())
             }
         }
 
         SessionState.current = curSessionId
         tui.onSubmit = { input =>
-            try {
-                let answer = agent.run(input)
-                if (StreamState.active) {
-                    tui.appendOutput(Ansi.reset())
-                    StreamState.active = false
+            File.writeTo("/tmp/tui_submit.log", "submit: ${input}\n".toArray())
+            // 异步执行 agent（TUI 主循环持续渲染，避免阻塞）
+            spawn {
+                File.writeTo("/tmp/tui_spawn.log", "spawn entered\n".toArray())
+                try {
+                    eprintln("[tui-spawn] start: ${input}")
+                    let answer = agent.run(input)
+                    eprintln("[tui-spawn] done len=${answer.size}")
+                    if (StreamState.active) {
+                        tui.appendOutput(Ansi.reset())
+                        StreamState.active = false
+                    }
+                    if (answer.size > 0) {
+                        tui.appendOutput(Ansi.fg(Ansi.COLOR_GREEN) + answer + Ansi.reset())
+                    }
+                    // 保存会话（含首轮时创建 ID）
+                    if (SessionState.current.size == 0) {
+                        SessionState.current = store.save(agent.history())
+                        TuiBridge.status("[saved ${SessionState.current}, --resume ${SessionState.current}]")
+                    } else {
+                        let _ = store.save(agent.history())
+                    }
+                } catch (e: Exception) {
+                    TuiBridge.output(Ansi.fg(Ansi.COLOR_RED) + "错误: ${e}" + Ansi.reset())
                 }
-                if (answer.size > 0) {
-                    tui.appendOutput(Ansi.fg(Ansi.COLOR_GREEN) + answer + Ansi.reset())
-                }
-                // 保存会话（含首轮时创建 ID）
-                if (SessionState.current.size == 0) {
-                    SessionState.current = store.save(agent.history())
-                    tui.appendOutput(Ansi.fg(Ansi.COLOR_DARK) + "[saved ${SessionState.current}, --resume ${SessionState.current}]" + Ansi.reset())
-                } else {
-                    let _ = store.save(agent.history())
-                }
-            } catch (e: Exception) {
-                tui.appendOutput(Ansi.fg(Ansi.COLOR_RED) + "错误: ${e}" + Ansi.reset())
             }
         }
 
@@ -361,6 +366,31 @@ class SessionState {
 
 class StreamState {
     static var active: Bool = false
+}
+
+/**
+ * TUI 跨线程桥：agent 在 spawn 线程运行，经静态引用访问 TUI（避免闭包捕获跨线程问题）
+ */
+class TuiBridge {
+    static var app: Option<TuiApp> = None
+
+    public static func output(text: String): Unit {
+        if (let Some(a) <- TuiBridge.app) {
+            a.appendOutput(text)
+        }
+    }
+
+    public static func delta(text: String): Unit {
+        if (let Some(a) <- TuiBridge.app) {
+            a.appendDelta(text)
+        }
+    }
+
+    public static func status(text: String): Unit {
+        if (let Some(a) <- TuiBridge.app) {
+            a.setStatus(text)
+        }
+    }
 }
 
 /**

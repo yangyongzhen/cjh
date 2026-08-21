@@ -173,11 +173,17 @@ public class ListDirTool <: CjhTool {
                 if (fi.isDirectory()) {
                     line += "/"
                 }
-                ListDirState.result += line + "\n"
+                if (ListDirState.count < 50) {
+                    ListDirState.result += line + "\n"
+                }
                 ListDirState.count += 1
                 return true
             })
-            return ToolResult("目录 ${path}（${ListDirState.count} 项）：\n${ListDirState.result}", false)
+            var extra = ""
+            if (ListDirState.count > 50) {
+                extra = "…（共 ${ListDirState.count} 项，仅显示前 50）\n"
+            }
+            return ToolResult("目录 ${path}（${ListDirState.count} 项）：\n${extra}${ListDirState.result}", false)
         } catch (e: Exception) {
             return ToolResult("列出目录失败: ${e}", true)
         }
