@@ -93,4 +93,15 @@ public class Agent {
     public func history(): ArrayList<ChatMessage> {
         return this.messages
     }
+
+    /**
+     * 注入历史消息（恢复会话；跳过 system 由构造器管理）
+     */
+    public func loadHistory(history: ArrayList<ChatMessage>): Unit {
+        for (m in history) {
+            if (m.role != "system") {
+                this.messages.add(m)
+            }
+        }
+    }
 }

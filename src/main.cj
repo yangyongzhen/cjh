@@ -8,6 +8,8 @@ import cjh.agent.*
 import cjh.tools.*
 import cjh.model.*
 import cjh.tui.*
+import cjterm.*
+import cjh.config.*
 
 @C
 foreign func getenv(name: CString): CPointer<UInt8>
@@ -96,23 +98,6 @@ func readLineFromStdIn(): Option<String> {
     }
 }
 
-/**
- * 配置解析：从环境变量读取 LLM 配置
- */
-public class CliConfig {
-    public static func provider(): LlmProvider {
-        // 兼容常见环境变量：OPENAI_API_KEY / DEEPSEEK_API_KEY / DASHSCOPE_API_KEY
-        let apiKey = readEnv("OPENAI_API_KEY") ?? readEnv("DEEPSEEK_API_KEY") ??
-            readEnv("DASHSCOPE_API_KEY") ?? readEnv("CJH_API_KEY") ?? ""
-        if (apiKey.size == 0) {
-            throw LlmException("未设置 API Key。请设置 OPENAI_API_KEY / DEEPSEEK_API_KEY / DASHSCOPE_API_KEY / CJH_API_KEY 之一")
-        }
-        let baseUrl = readEnv("CJH_BASE_URL") ?? readEnv("OPENAI_BASE_URL") ?? "https://api.openai.com/v1/chat/completions"
-        let model = readEnv("CJH_MODEL") ?? readEnv("OPENAI_MODEL") ?? "gpt-4o-mini"
-        return OpenAiProvider(baseUrl, apiKey, model)
-    }
-}
-
 main(args: Array<String>): Int64 {
     if (args.size > 0 && args[0] == "--mock") {
         return runMockVerify()
@@ -120,7 +105,17 @@ main(args: Array<String>): Int64 {
     if (args.size > 0 && args[0] == "--cli") {
         return runCli()
     }
-    return runTui()
+    if (args.size > 1 && args[0] == "--resume") {
+        return runTui(args[1])
+    }
+    if (args.size > 0 && args[0] == "--list") {
+        return listSessions()
+    }
+    return runTui("")
+}
+
+class CliSession {
+    static var id: String = ""
 }
 
 /**
@@ -136,20 +131,24 @@ func runCli(): Int64 {
     registry.register(ReadTool())
     registry.register(WriteTool())
 
-    // Agent 装配
+    // 配置加载
+    let cjhCfg = CjhConfig()
+    cjhCfg.ensureDirs()
+
     let config = AgentConfig(
-        "你是一个运行在终端里的编码代理（cjh）。你可以使用工具完成任务：bash 执行命令、read_file 读文件、write_file 写文件。" +
-            "任务通常需要多步：先读代码理解现状，再修改，再用 bash 验证。保持简洁，用中文回答。",
-        10)
+        cjhCfg.systemPrompt,
+        cjhCfg.maxIterations)
 
     try {
         let provider: LlmProvider
         if ((readEnv("CJH_MOCK") ?? "") == "1") {
             provider = MockProvider("/tmp/cjh_verify.txt")
         } else {
-            provider = CliConfig.provider()
+            provider = cjhCfg.provider()
         }
         let agent = Agent(provider, registry, config)
+        let store = SessionStore(cjhCfg.sessionsDir)
+        CliSession.id = ""
 
         // 事件 → 终端输出
         agent.onDelta = { d => () }  // 流式增量暂不输出（避免刷屏）
@@ -190,6 +189,13 @@ func runCli(): Int64 {
                     println("")
                     println(answer)
                 }
+                // 保存会话
+                if (CliSession.id.size == 0) {
+                    CliSession.id = store.save(agent.history())
+                    eprintln("[会话已保存: ${CliSession.id}，--resume ${CliSession.id} 恢复]")
+                } else {
+                    let _ = store.save(agent.history())
+                }
             } catch (e: Exception) {
                 println("错误: ${e}")
             }
@@ -205,28 +211,45 @@ func runCli(): Int64 {
 /**
  * TUI 交互模式（默认）
  */
-func runTui(): Int64 {
+func runTui(sessionId: String): Int64 {
     let registry = ToolRegistry()
     registry.register(BashTool())
     registry.register(ReadTool())
     registry.register(WriteTool())
 
+    // 配置加载
+    let cjhCfg = CjhConfig()
+    cjhCfg.ensureDirs()
+
     let config = AgentConfig(
-        "你是一个运行在终端里的编码代理（cjh）。你可以使用工具完成任务：bash 执行命令、read_file 读文件、write_file 写文件。" +
-            "任务通常需要多步：先读代码理解现状，再修改，再用 bash 验证。保持简洁，用中文回答。",
-        10)
+        cjhCfg.systemPrompt,
+        cjhCfg.maxIterations)
 
     try {
         let provider: LlmProvider
         if ((readEnv("CJH_MOCK") ?? "") == "1") {
             provider = MockProvider("/tmp/cjh_verify.txt")
         } else {
-            provider = CliConfig.provider()
+            provider = cjhCfg.provider()
         }
         let agent = Agent(provider, registry, config)
 
         // 线程安全的输出队列（agent 在调用线程运行，输出经队列到 TUI）
         let tui = TuiApp()
+
+        // 会话：恢复历史 / 新会话
+        let store = SessionStore(cjhCfg.sessionsDir)
+        var curSessionId = sessionId
+        if (curSessionId.size > 0) {
+            let history = store.load(curSessionId)
+            if (history.size > 0) {
+                agent.loadHistory(history)
+                tui.appendOutput(Ansi.fg(Ansi.COLOR_BLUE) + "已恢复会话 ${curSessionId}（${history.size} 条消息）" + Ansi.reset())
+            } else {
+                tui.appendOutput(Ansi.fg(Ansi.COLOR_YELLOW) + "会话 ${curSessionId} 不存在，开始新会话" + Ansi.reset())
+                curSessionId = ""
+            }
+        }
 
         agent.onDelta = { d => () }
         agent.onToolStart = { name, args =>
@@ -243,11 +266,19 @@ func runTui(): Int64 {
             tui.appendOutput(Ansi.fg(Ansi.COLOR_GREEN) + text + Ansi.reset())
         }
 
+        SessionState.current = curSessionId
         tui.onSubmit = { input =>
             try {
                 let answer = agent.run(input)
                 if (answer.size > 0) {
                     tui.appendOutput(Ansi.fg(Ansi.COLOR_GREEN) + answer + Ansi.reset())
+                }
+                // 保存会话（含首轮时创建 ID）
+                if (SessionState.current.size == 0) {
+                    SessionState.current = store.save(agent.history())
+                    tui.appendOutput(Ansi.fg(Ansi.COLOR_DARK) + "会话已保存: ${SessionState.current}（--resume ${SessionState.current} 可恢复）" + Ansi.reset())
+                } else {
+                    let _ = store.save(agent.history())
                 }
             } catch (e: Exception) {
                 tui.appendOutput(Ansi.fg(Ansi.COLOR_RED) + "错误: ${e}" + Ansi.reset())
@@ -260,4 +291,30 @@ func runTui(): Int64 {
         eprintln("启动失败: ${e}")
         return 1
     }
+}
+
+class SessionState {
+    static var current: String = ""
+}
+
+/**
+ * 列出已保存的会话
+ */
+func listSessions(): Int64 {
+    let cjhCfg = CjhConfig()
+    cjhCfg.ensureDirs()
+    let store = SessionStore(cjhCfg.sessionsDir)
+    let sessions = store.list()
+    if (sessions.size == 0) {
+        println("暂无会话。运行 cjh 开始新会话，退出后自动保存。")
+        return 0
+    }
+    println("已保存的会话（${sessions.size} 个）：")
+    println("--------------------------------")
+    for ((id, summary) in sessions) {
+        println("  ${id}  |  ${summary}")
+    }
+    println("--------------------------------")
+    println("恢复: cjh --resume <会话ID>")
+    return 0
 }

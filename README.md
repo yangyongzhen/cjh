@@ -9,7 +9,9 @@
 - **Agent 核心**：消息状态机 + 工具调用协议 + 多轮迭代（LLM → 工具 → 结果回填 → 再调用）
 - **工具系统**：bash 执行 / 文件读取 / 文件写入（JSON Schema 定义，注册即用）
 - **LLM 层**：OpenAI 兼容协议（OpenAI / DeepSeek / 通义 / Moonshot 等通用）+ SSE 流式解析 + 工具调用分片累积
-- **TUI**：差分渲染终端界面、termios 原始模式（C FFI）、非阻塞按键、实时 ioctl 尺寸
+- **TUI**：差分渲染终端界面、termios 原始模式（纯 libc FFI）、非阻塞按键、实时 ioctl 尺寸
+- **配置系统**：`~/.cjh/`（settings.json + auth.json），环境变量覆盖
+- **会话持久化**：JSON 消息历史，`--list` / `--resume` 恢复
 - **离线验证**：`--mock` 模式用脚本化 LLM 跑通完整工具链，无 API Key 也能测
 - **单二进制**：仓颉 cjnative 静态编译，无运行时依赖
 
@@ -33,7 +35,8 @@ LLM 提供商层（llm/）← OpenAI 兼容 + SSE 流式 + mock
 | `cjh.llm` | LLM 提供商抽象、SSE 解析、流式累加器、mock |
 | `cjh.tools` | 工具接口、注册中心、内置工具 |
 | `cjh.agent` | agent 主循环编排 |
-| `cjh.tui` | ANSI 控制、差分渲染、termios（C FFI） |
+| `cjh.tui` | TUI 应用层（对话界面） |
+| `cjterm`（libs/） | **独立终端 UI 库**：ANSI/差分渲染/termios（纯 FFI，可复用） |
 | `cjh` | CLI/TUI 入口与配置 |
 
 ## 快速开始
@@ -48,13 +51,7 @@ LLM 提供商层（llm/）← OpenAI 兼容 + SSE 流式 + mock
 
 ```bash
 source /root/test/cj/tauri_cj/cj-env.sh   # 或你自己的 cj-env.sh
-
-# 编译 C 终端层
-mkdir -p native
-gcc -shared -fPIC -fstack-protector-all src/tui/term.c -o native/libcjterm.so
-
-# 构建
-cjpm build
+cjpm build    # 纯仓颉构建，无需编译 C 桥（cjterm 是纯 libc FFI）
 ```
 
 ### 运行

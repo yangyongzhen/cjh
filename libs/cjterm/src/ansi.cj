@@ -1,4 +1,4 @@
-package cjh.tui
+package cjterm
 
 import std.env.*
 

@@ -1,4 +1,4 @@
-package cjh.tui
+package cjterm
 
 /**
  * 差分渲染：维护"期望屏幕"状态，与上一次渲染比较，只输出差异

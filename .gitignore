@@ -3,7 +3,7 @@ target/
 *.o
 *.a
 *.so
-native/libcjterm.so
+libs/cjterm/target/
 
 # 本地环境
 cjpm.lock

@@ -1,6 +1,7 @@
 package cjh.tui
 
 import std.env.*
+import cjterm.*
 
 /**
  * TUI 应用：简单对话界面
