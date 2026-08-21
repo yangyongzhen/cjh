@@ -88,14 +88,10 @@ func makeProvider(cfg: CjhConfig): LlmProvider {
         throw LlmException(
             "未配置 API Key。请在 ${cfg.authPath} 的 api_key 字段填写，或设置 OPENAI_API_KEY / DEEPSEEK_API_KEY / DASHSCOPE_API_KEY / CJH_API_KEY 环境变量")
     }
-    let providerName = readEnv("CJH_PROVIDER") ?? "openai"
+    // provider 选择：显式 CJH_PROVIDER=anthropic 才用 Anthropic
+    // （auth.json 的 key 优先；env 变量可覆盖。绝不自动劫持到 Anthropic）
+    let providerName = readEnv("CJH_PROVIDER") ?? ""
     if (providerName == "anthropic") {
-        let anthropicKey = readEnv("ANTHROPIC_API_KEY") ?? readEnv("ANTHROPIC_AUTH_TOKEN") ?? cfg.apiKey
-        let anthropicBase = readEnv("ANTHROPIC_BASE_URL") ?? "https://api.anthropic.com/v1/messages"
-        return AnthropicProvider(anthropicBase, anthropicKey, cfg.model)
-    }
-    // 兼容：设了 ANTHROPIC_AUTH_TOKEN 且端点可达时默认走 anthropic
-    if ((readEnv("CJH_PROVIDER") ?? "") == "" && (readEnv("ANTHROPIC_AUTH_TOKEN") ?? "").size > 0) {
         let anthropicKey = readEnv("ANTHROPIC_API_KEY") ?? readEnv("ANTHROPIC_AUTH_TOKEN") ?? cfg.apiKey
         let anthropicBase = readEnv("ANTHROPIC_BASE_URL") ?? "https://api.anthropic.com/v1/messages"
         return AnthropicProvider(anthropicBase, anthropicKey, cfg.model)
@@ -190,7 +186,7 @@ func runCli(sessionId: String): Int64 {
         }
 
         // 事件 → 终端输出
-        agent.onDelta = { d => () }  // 流式增量暂不输出（避免刷屏）
+        agent.onDelta = { d => () }  // 流式增量：TUI 显示，CLI 由 onAssistantText 汇总
         agent.onToolStart = { name, args =>
             println("")
             println("▶ 调用工具: ${name} ${args.toJsonString()}")

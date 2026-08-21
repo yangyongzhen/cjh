@@ -99,12 +99,26 @@ public class StreamAccumulator {
                                         if (let Some(delta) <- c.get("delta")) {
                                             match (delta.kind()) {
                                                 case JsonKind.JsObject =>
+                                                    // 文本增量
                                                     if (let Some(content) <- delta.asObject().get("content")) {
                                                         match (content.kind()) {
                                                             case JsonKind.JsString =>
                                                                 let s = content.asString().getValue()
                                                                 if (s.size > 0) {
                                                                     this.text += s
+                                                                }
+                                                            case _ => ()
+                                                        }
+                                                    }
+                                                    // 工具调用增量（流式在 delta.tool_calls，非顶层）
+                                                    if (let Some(tcs) <- delta.asObject().get("tool_calls")) {
+                                                        match (tcs.kind()) {
+                                                            case JsonKind.JsArray =>
+                                                                let arr = tcs.asArray()
+                                                                for (i in 0..arr.size()) {
+                                                                    if (let Some(tc) <- arr.get(i)) {
+                                                                        this.feedToolCall(tc)
+                                                                    }
                                                                 }
                                                             case _ => ()
                                                         }
