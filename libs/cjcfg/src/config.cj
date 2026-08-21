@@ -49,6 +49,48 @@ public class CjhConfig {
         if (!exists(this.sessionsDir)) {
             Directory.create(this.sessionsDir, recursive: true)
         }
+        // 首次运行：自动生成配置文件模板
+        this.ensureTemplate(this.settingsPath, this.settingsTemplate())
+        this.ensureTemplate(this.authPath, this.authTemplate())
+    }
+
+    /**
+     * 文件不存在时写入模板
+     */
+    private func ensureTemplate(path: String, content: String): Unit {
+        if (!exists(path)) {
+            try {
+                File.writeTo(path, content.toArray())
+                eprintln("[cjh] 已生成配置文件: ${path}")
+            } catch (e: Exception) {
+                eprintln("[cjh] 生成配置文件失败 ${path}: ${e}")
+            }
+        }
+    }
+
+    /**
+     * settings.json 模板（未知字段被忽略，_说明 仅为提示）
+     */
+    private func settingsTemplate(): String {
+        return "{\n" +
+            "  \"_说明\": \"可选配置，默认即可运行。支持 base_url / model / max_iterations / system_prompt\",\n" +
+            "  \"base_url\": \"https://api.openai.com/v1/chat/completions\",\n" +
+            "  \"model\": \"gpt-4o-mini\",\n" +
+            "  \"max_iterations\": 10\n" +
+            "}\n"
+    }
+
+    /**
+     * auth.json 模板（api_key 任一字段填写即可）
+     */
+    private func authTemplate(): String {
+        return "{\n" +
+            "  \"_说明\": \"在此填写 API Key：api_key 或 openai_api_key / deepseek_api_key / dashscope_api_key 任一即可。如：sk-xxxx\",\n" +
+            "  \"api_key\": \"\",\n" +
+            "  \"openai_api_key\": \"\",\n" +
+            "  \"deepseek_api_key\": \"\",\n" +
+            "  \"dashscope_api_key\": \"\"\n" +
+            "}\n"
     }
 
     /**
