@@ -203,6 +203,17 @@ public class Term {
         }
     }
 
+    /**
+     * 检测终端是否支持 UTF-8（查 LANG/LC_ALL/LC_CTYPE）
+     * 非 UTF-8 终端（如 GBK/Latin-1）下 UI 应降级为 ASCII
+     */
+    public func isUtf8(): Bool {
+        let lang = TermEnv.getenv("LC_ALL") ?? TermEnv.getenv("LC_CTYPE") ??
+            TermEnv.getenv("LANG") ?? "en_US.UTF-8"
+        return lang.contains("UTF-8") || lang.contains("utf-8") ||
+            lang.contains("UTF8") || lang.contains("utf8")
+    }
+
     public func size(): (Int64, Int64) {
         unsafe {
             if (let buf <- LibC.malloc<UInt8>(count: 8)) {
@@ -257,6 +268,25 @@ public class Term {
             for (i in 0..8) {
                 p.write(offset + i, UInt8((v >> (i * 8)) & 0xFF))
             }
+        }
+    }
+}
+
+/**
+ * 环境变量读取（cjterm 零依赖，自带 getenv FFI）
+ */
+@C
+foreign func getenv(name: CString): CPointer<UInt8>
+
+class TermEnv {
+    public static func getenv(name: String): Option<String> {
+        unsafe {
+            let p = getenv(LibC.mallocCString(name))
+            if (p.isNull()) {
+                return None
+            }
+            let cs = CString(p)
+            return Some(cs.toString())
         }
     }
 }
