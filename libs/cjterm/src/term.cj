@@ -75,6 +75,10 @@ public class KeyEvent {
     public let isArrowDown: Bool
     public let isArrowLeft: Bool
     public let isArrowRight: Bool
+    public let isPageUp: Bool
+    public let isPageDown: Bool
+    public let isCtrlU: Bool
+    public let isCtrlD: Bool
 
     public init(ch: Int32) {
         this.ch = ch
@@ -86,6 +90,10 @@ public class KeyEvent {
         this.isArrowDown = false
         this.isArrowLeft = false
         this.isArrowRight = false
+        this.isPageUp = false
+        this.isPageDown = false
+        this.isCtrlU = (ch == 21)
+        this.isCtrlD = (ch == 4)
     }
 }
 

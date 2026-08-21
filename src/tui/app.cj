@@ -23,6 +23,7 @@ public class TuiApp {
     private var inputLine: String = ""
     private var running: Bool = true
     private var dirty: Bool = true
+    private var scrollOffset: Int64 = 0
 
     // 事件回调：提交输入时触发
     public var onSubmit: (String) -> Unit = { _ => }
@@ -89,6 +90,27 @@ public class TuiApp {
             this.running = false
             return
         }
+        // 滚动：PageUp/PageDown + Ctrl-U/Ctrl-D
+        if (key.isCtrlU) {
+            this.scrollUp(10)
+            this.dirty = true
+            return
+        }
+        if (key.isCtrlD) {
+            this.scrollDown(10)
+            this.dirty = true
+            return
+        }
+        if (key.isPageUp) {
+            this.scrollUp(5)
+            this.dirty = true
+            return
+        }
+        if (key.isPageDown) {
+            this.scrollDown(5)
+            this.dirty = true
+            return
+        }
         if (key.isEnter) {
             let line = this.inputLine
             this.inputLine = ""
@@ -113,6 +135,24 @@ public class TuiApp {
         }
     }
 
+    private func scrollUp(n: Int64): Unit {
+        let (rows, _) = TermSize.get()
+        let maxOut = rows - 3
+        let outLines = this.output.toString().split("\n", -1)
+        let maxOffset = if (outLines.size > maxOut) { outLines.size - maxOut } else { 0 }
+        this.scrollOffset += n
+        if (this.scrollOffset > maxOffset) {
+            this.scrollOffset = maxOffset
+        }
+    }
+
+    private func scrollDown(n: Int64): Unit {
+        this.scrollOffset -= n
+        if (this.scrollOffset < 0) {
+            this.scrollOffset = 0
+        }
+    }
+
     private func render(): Unit {
         let (rows, cols) = TermSize.get()
         // 尺寸变化时重建
@@ -121,10 +161,18 @@ public class TuiApp {
             this.prev = Screen(rows, cols)
         }
 
-        // 输出区：最后 N-2 行
+        // 输出区：滚动显示（offset=0 最新，向上翻看历史）
         let outLines = this.output.toString().split("\n", -1)
         let maxOut = rows - 3
-        var startIdx = outLines.size - maxOut
+        // 修正 offset 范围
+        let maxOffset = if (outLines.size > maxOut) { outLines.size - maxOut } else { 0 }
+        if (this.scrollOffset < 0) {
+            this.scrollOffset = 0
+        }
+        if (this.scrollOffset > maxOffset) {
+            this.scrollOffset = maxOffset
+        }
+        var startIdx = outLines.size - maxOut - this.scrollOffset
         if (startIdx < 0) {
             startIdx = 0
         }
