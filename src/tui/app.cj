@@ -131,8 +131,7 @@ public class TuiApp {
 
         var r: Int64 = 0
         // 标题
-        let title = if (this.term.isUtf8()) { "cjh — 仓颉 Coding Agent" } else { "cjh - Cangjie Coding Agent" }
-        this.screen.setLine(0, Ansi.bold() + title + Ansi.reset())
+        this.screen.setLine(0, Ansi.bold() + "cjh - Cangjie Coding Agent" + Ansi.reset())
         r = 1
         // 输出区
         for (i in startIdx..outLines.size) {

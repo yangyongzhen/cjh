@@ -2,6 +2,7 @@ package cjllm
 
 import stdx.encoding.json.*
 import stdx.net.http.*
+import stdx.net.tls.*
 import std.collection.*
 import std.io.*
 
@@ -106,7 +107,7 @@ public class AnthropicProvider <: LlmProvider {
         }
 
         // 请求
-        let client = ClientBuilder().build()
+        let client = ClientBuilder().tlsConfig(TlsClientConfig()).build()
         let req = HttpRequestBuilder()
             .post()
             .url(this.baseUrl)

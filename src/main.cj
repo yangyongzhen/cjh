@@ -142,35 +142,8 @@ class CliSession {
     static var id: String = ""
 }
 
-/**
- * UI 文案：非 UTF-8 终端降级为 ASCII，避免乱码
- */
-func uiUtf8(): Bool {
-    let term = Term()
-    return term.isUtf8()
-}
-
-func uiTitle(): String {
-    return if (uiUtf8()) { "cjh — 仓颉 Coding Agent" } else { "cjh - Cangjie Coding Agent" }
-}
-
-func uiResumed(id: String, count: Int64): String {
-    return if (uiUtf8()) { "[已恢复会话 ${id}（${count} 条消息）]" } else { "[resumed session ${id} (${count} messages)]" }
-}
-
-func uiNoSession(id: String): String {
-    return if (uiUtf8()) { "[会话 ${id} 不存在，开始新会话]" } else { "[session ${id} not found, starting new]" }
-}
-
-func uiSaved(id: String): String {
-    return if (uiUtf8()) { "[会话已保存: ${id}，--resume ${id} 恢复]" } else { "[session saved: ${id}, use --resume ${id}]" }
-}
-
-/**
- * 纯文本 CLI 模式（无 TUI）
- */
 func runCli(sessionId: String): Int64 {
-    println(uiTitle())
+    println("cjh - Cangjie Coding Agent")
     println("========================")
 
     // 注册工具
@@ -204,9 +177,9 @@ func runCli(sessionId: String): Int64 {
             if (history.size > 0) {
                 agent.loadHistory(history)
                 CliSession.id = sessionId
-                println(uiResumed(sessionId, history.size))
+                println("[resumed session ${sessionId} (${history.size} messages)]")
             } else {
-                println(uiNoSession(sessionId))
+                println("[session ${sessionId} not found, starting new]")
             }
         }
 
@@ -252,7 +225,7 @@ func runCli(sessionId: String): Int64 {
                 // 保存会话
                 if (CliSession.id.size == 0) {
                     CliSession.id = store.save(agent.history())
-                    eprintln(uiSaved(CliSession.id))
+                    eprintln("[session saved: ${CliSession.id}, use --resume ${CliSession.id}]")
                 } else {
                     let _ = store.save(agent.history())
                 }
@@ -306,9 +279,9 @@ func runTui(sessionId: String): Int64 {
             let history = store.load(curSessionId)
             if (history.size > 0) {
                 agent.loadHistory(history)
-                tui.appendOutput(Ansi.fg(Ansi.COLOR_BLUE) + uiResumed(curSessionId, history.size) + Ansi.reset())
+                tui.appendOutput(Ansi.fg(Ansi.COLOR_BLUE) + "[resumed ${curSessionId} (${history.size} msgs)]" + Ansi.reset())
             } else {
-                tui.appendOutput(Ansi.fg(Ansi.COLOR_YELLOW) + uiNoSession(curSessionId) + Ansi.reset())
+                tui.appendOutput(Ansi.fg(Ansi.COLOR_YELLOW) + "[session ${curSessionId} not found, new session]" + Ansi.reset())
                 curSessionId = ""
             }
         }
@@ -363,7 +336,7 @@ func runTui(sessionId: String): Int64 {
                 // 保存会话（含首轮时创建 ID）
                 if (SessionState.current.size == 0) {
                     SessionState.current = store.save(agent.history())
-                    tui.appendOutput(Ansi.fg(Ansi.COLOR_DARK) + uiSaved(SessionState.current) + Ansi.reset())
+                    tui.appendOutput(Ansi.fg(Ansi.COLOR_DARK) + "[saved ${SessionState.current}, --resume ${SessionState.current}]" + Ansi.reset())
                 } else {
                     let _ = store.save(agent.history())
                 }
