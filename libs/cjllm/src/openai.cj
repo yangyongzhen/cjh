@@ -68,9 +68,10 @@ public class OpenAiProvider <: LlmProvider {
         let parser = SseParser(resp.body)
         parser.onEvent = { data =>
             acc.feed(data)
-            // 实时回调文本增量（简单起见回调累积文本的增量）
-            if (acc.text.size > 0) {
-                onDelta(acc.text)
+            // 实时回调文本增量（仅新增部分）
+            let delta = acc.takeDelta()
+            if (delta.size > 0) {
+                onDelta(delta)
             }
         }
         parser.run()

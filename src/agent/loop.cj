@@ -62,9 +62,13 @@ public class Agent {
             })
 
             if (response.hasToolCalls()) {
-                // 把 assistant 文本（若有）+ 工具调用加入历史
+                // 把 assistant 文本（若有）+ 工具调用加入历史（toolCalls 随消息携带，供 Anthropic 回传）
+                var asstMsg = ChatMessage("assistant", response.text)
+                if (response.toolCalls.size > 0) {
+                    asstMsg = ChatMessage("assistant", response.text, response.toolCalls)
+                }
+                this.messages.add(asstMsg)
                 if (response.text.size > 0) {
-                    this.messages.add(ChatMessage("assistant", response.text))
                     this.onAssistantText(response.text)
                 }
                 for (tc in response.toolCalls) {

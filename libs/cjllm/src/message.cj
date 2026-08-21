@@ -12,12 +12,14 @@ public class ChatMessage {
     public let content: String
     public let toolCallId: String   // tool 结果消息关联的工具调用 ID
     public let name: String         // tool 结果消息的工具名
+    public let toolCalls: ArrayList<ToolCall>  // assistant 消息携带的请求工具调用
 
     public init(role: String, content: String) {
         this.role = role
         this.content = content
         this.toolCallId = ""
         this.name = ""
+        this.toolCalls = ArrayList<ToolCall>()
     }
 
     public init(role: String, content: String, toolCallId: String, name: String) {
@@ -25,6 +27,15 @@ public class ChatMessage {
         this.content = content
         this.toolCallId = toolCallId
         this.name = name
+        this.toolCalls = ArrayList<ToolCall>()
+    }
+
+    public init(role: String, content: String, toolCalls: ArrayList<ToolCall>) {
+        this.role = role
+        this.content = content
+        this.toolCallId = ""
+        this.name = ""
+        this.toolCalls = toolCalls
     }
 
     /**
@@ -38,6 +49,13 @@ public class ChatMessage {
             obj.put("content", JsonString(this.content))
         } else {
             obj.put("content", JsonString(this.content))
+            if (this.toolCalls.size > 0) {
+                var tcs = ArrayList<JsonValue>()
+                for (tc in this.toolCalls) {
+                    tcs.add(tc.toOpenAiToolJson())
+                }
+                obj.put("tool_calls", JsonArray(tcs))
+            }
         }
         return obj
     }
@@ -62,6 +80,32 @@ public class ToolCall {
         obj.put("id", JsonString(this.id))
         obj.put("name", JsonString(this.name))
         obj.put("arguments", this.arguments)
+        return obj
+    }
+
+    /**
+     * OpenAI 格式：{"id","type":"function","function":{"name","arguments"(string)}}
+     */
+    public func toOpenAiToolJson(): JsonValue {
+        var fn = JsonObject()
+        fn.put("name", JsonString(this.name))
+        fn.put("arguments", JsonString(this.arguments.toJsonString()))
+        var obj = JsonObject()
+        obj.put("id", JsonString(this.id))
+        obj.put("type", JsonString("function"))
+        obj.put("function", fn)
+        return obj
+    }
+
+    /**
+     * Anthropic 格式 content block：{"type":"tool_use","id","name","input"}
+     */
+    public func toAnthropicBlockJson(): JsonValue {
+        var obj = JsonObject()
+        obj.put("type", JsonString("tool_use"))
+        obj.put("id", JsonString(this.id))
+        obj.put("name", JsonString(this.name))
+        obj.put("input", this.arguments)
         return obj
     }
 }

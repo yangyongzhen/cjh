@@ -56,6 +56,8 @@ public interface LlmProvider {
 public class StreamAccumulator {
     public var text: String = ""
     public var toolCalls: ArrayList<ToolCall> = ArrayList<ToolCall>()
+    // 上次已回调的文本长度（供增量回调）
+    private var lastDeltaLen: Int64 = 0
     private var curToolId: String = ""
     private var curToolName: String = ""
     private var curToolArgs: String = ""
@@ -163,6 +165,18 @@ public class StreamAccumulator {
                 }
             case _ => ()
         }
+    }
+
+    /**
+     * 提取自上次回调以来的文本增量（并更新游标）
+     */
+    public func takeDelta(): String {
+        if (this.text.size <= this.lastDeltaLen) {
+            return ""
+        }
+        let delta = this.text[this.lastDeltaLen..this.text.size]
+        this.lastDeltaLen = this.text.size
+        return delta
     }
 
     /**

@@ -4,6 +4,7 @@ import std.collection.*
 import stdx.encoding.json.*
 import std.process.*
 import std.fs.*
+import std.regex.*
 import std.io.*
 import cjllm.ToolSpec
 
@@ -100,4 +101,90 @@ public class WriteTool <: CjhTool {
             return ToolResult("写入失败: ${e}", true)
         }
     }
+}
+
+/**
+ * grep 工具：在指定文件中按正则搜索，返回匹配行
+ */
+public class GrepTool <: CjhTool {
+    public init() {}
+
+    public func spec(): ToolSpec {
+        var props = HashMap<String, JsonValue>()
+        props.add("pattern", JsonSchema.str("正则表达式（std.regex 语法）"))
+        props.add("path", JsonSchema.str("要搜索的文件路径"))
+        let schema = JsonSchema.object(props, ArrayList<String>(["pattern", "path"]))
+        return ToolSpec("grep", "在文件中用正则搜索，返回所有匹配行（含行号）。", schema)
+    }
+
+    public func execute(args: JsonObject): ToolResult {
+        if (!args.containsKey("pattern") || !args.containsKey("path")) {
+            return ToolResult("缺少参数: pattern/path", true)
+        }
+        let pattern = args.get("pattern").getOrThrow().asString().getValue()
+        let path = args.get("path").getOrThrow().asString().getValue()
+        try {
+            let regex = Regex(pattern)
+            let content = String.fromUtf8(File.readFrom(path))
+            var result = ""
+            var count: Int64 = 0
+            var lineNo: Int64 = 1
+            let lines = content.split("\n", -1)
+            for (line in lines) {
+                if (regex.matches(line)) {
+                    result += "${lineNo}: ${line}\n"
+                    count += 1
+                }
+                lineNo += 1
+            }
+            if (count == 0) {
+                return ToolResult("未找到匹配（${pattern}）", false)
+            }
+            return ToolResult("匹配 ${count} 行：\n${result}", false)
+        } catch (e: Exception) {
+            return ToolResult("grep 失败: ${e}", true)
+        }
+    }
+}
+
+/**
+ * list_dir 工具：列出目录内容
+ */
+public class ListDirTool <: CjhTool {
+    public init() {}
+
+    public func spec(): ToolSpec {
+        var props = HashMap<String, JsonValue>()
+        props.add("path", JsonSchema.str("要列出的目录路径"))
+        let schema = JsonSchema.object(props, ArrayList<String>(["path"]))
+        return ToolSpec("list_dir", "列出目录下的文件和子目录。用于了解项目结构。", schema)
+    }
+
+    public func execute(args: JsonObject): ToolResult {
+        if (!args.containsKey("path")) {
+            return ToolResult("缺少参数: path", true)
+        }
+        let path = args.get("path").getOrThrow().asString().getValue()
+        try {
+            ListDirState.result = ""
+            ListDirState.count = 0
+            Directory.walk(path, { fi =>
+                var line = fi.name
+                if (fi.isDirectory()) {
+                    line += "/"
+                }
+                ListDirState.result += line + "\n"
+                ListDirState.count += 1
+                return true
+            })
+            return ToolResult("目录 ${path}（${ListDirState.count} 项）：\n${ListDirState.result}", false)
+        } catch (e: Exception) {
+            return ToolResult("列出目录失败: ${e}", true)
+        }
+    }
+}
+
+class ListDirState {
+    static var result: String = ""
+    static var count: Int64 = 0
 }

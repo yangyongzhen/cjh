@@ -7,8 +7,9 @@
 ## 特性
 
 - **Agent 核心**：消息状态机 + 工具调用协议 + 多轮迭代（LLM → 工具 → 结果回填 → 再调用）
-- **工具系统**：bash 执行 / 文件读取 / 文件写入（JSON Schema 定义，注册即用）
-- **LLM 层**：OpenAI 兼容协议（OpenAI / DeepSeek / 通义 / Moonshot 等通用）+ SSE 流式解析 + 工具调用分片累积
+- **工具系统**：bash / read_file / write_file / **grep** / **list_dir**（JSON Schema 定义，注册即用）
+- **LLM 层**：OpenAI 兼容 + **Anthropic** 双协议（CJH_PROVIDER 切换）+ SSE 流式解析 + 工具调用分片累积
+- **流式渲染**：LLM 增量文本实时上屏（差分渲染逐帧刷新）
 - **TUI**：差分渲染终端界面、termios 原始模式（纯 libc FFI）、非阻塞按键、实时 ioctl 尺寸
 - **配置系统**：`~/.cjh/`（settings.json + auth.json），环境变量覆盖
 - **会话持久化**：JSON 消息历史，`--list` / `--resume` 恢复

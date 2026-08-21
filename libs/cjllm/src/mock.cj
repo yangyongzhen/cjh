@@ -31,15 +31,27 @@ public class MockProvider <: LlmProvider {
                 calls.add(ToolCall("call_1", "read_file", args1))
                 return ModelResponse("我来先看看文件内容。", calls)
             case 2 =>
-                // 工具调用 2：执行命令统计行数
+                // 工具调用 2：grep 搜索
                 var args2 = JsonObject()
-                args2.put("command", JsonString("wc -l ${this.scriptedPath}"))
+                args2.put("pattern", JsonString("line"))
+                args2.put("path", JsonString(this.scriptedPath))
                 var calls = ArrayList<ToolCall>()
-                calls.add(ToolCall("call_2", "bash", args2))
-                return ModelResponse("再看一下文件行数。", calls)
+                calls.add(ToolCall("call_2", "grep", args2))
+                return ModelResponse("再用 grep 搜索。", calls)
+            case 3 =>
+                // 工具调用 3：列出目录
+                var args3 = JsonObject()
+                args3.put("path", JsonString("/tmp"))
+                var calls = ArrayList<ToolCall>()
+                calls.add(ToolCall("call_3", "list_dir", args3))
+                return ModelResponse("再看看目录。", calls)
             case _ =>
-                // 最终答复
-                return ModelResponse("验证完成：工具调用链工作正常。文件已读取，行数已统计。", ArrayList<ToolCall>())
+                // 最终答复：分帧回调模拟流式
+                let finalText = "FINAL-DONE: 验证完成，工具链正常"
+                for (i in 0..finalText.size) {
+                    onDelta(finalText[i].toString())
+                }
+                return ModelResponse(finalText, ArrayList<ToolCall>())
         }
     }
 }

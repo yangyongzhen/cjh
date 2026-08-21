@@ -73,6 +73,17 @@ public class TuiApp {
         this.dirty = true
     }
 
+    /**
+     * 流式追加：追加到当前输出行末尾（不换行），用于 LLM 增量渲染
+     */
+    public func appendDelta(text: String): Unit {
+        this.output.append(text)
+        this.dirty = true
+        // 立即渲染一次，实现流式效果
+        this.render()
+        this.dirty = false
+    }
+
     private func handleKey(key: KeyEvent): Unit {
         if (key.isCtrlC) {
             this.running = false

@@ -44,6 +44,8 @@ func runMockVerify(): Int64 {
     registry.register(BashTool())
     registry.register(ReadTool())
     registry.register(WriteTool())
+    registry.register(GrepTool())
+    registry.register(ListDirTool())
 
     let provider = MockProvider(testPath)
     let config = AgentConfig("你是测试代理。", 5)
@@ -62,16 +64,16 @@ func runMockVerify(): Int64 {
         println("  ↳ ${name} 结果: ${preview}")
     }
 
-    println("=== cjh agent 工具调用链验证 ===")
+    println("=== cjh agent 工具调用链验证（4 段）===")
     let answer = agent.run("请读取 /tmp/cjh_verify.txt 并统计行数")
     println("=== 最终答复 ===")
     println(answer)
 
-    if (VerifyState.toolCalls == 2 && answer.contains("验证完成")) {
-        println("\n✅ 验证通过：工具调用链完整（read_file → bash → 最终答复）")
+    if (VerifyState.toolCalls == 3 && answer.contains("验证完成")) {
+        println("\n✅ 验证通过：工具调用链完整（read_file → grep → list_dir → 最终答复）")
         return 0
     } else {
-        println("\n❌ 验证失败：工具调用=${VerifyState.toolCalls}（期望 2）")
+        println("\n❌ 验证失败：工具调用=${VerifyState.toolCalls}（期望 3）")
         return 1
     }
 }
@@ -79,11 +81,18 @@ func runMockVerify(): Int64 {
 
 /**
  * 由配置生成 LLM provider（业务装配，不属于 cjcfg 通用库）
+ * 提供商选择：CJH_PROVIDER=anthropic 用 Anthropic，默认 OpenAI 兼容
  */
 func makeProvider(cfg: CjhConfig): LlmProvider {
     if (cfg.apiKey.size == 0) {
         throw LlmException(
             "未配置 API Key。请在 ${cfg.authPath} 的 api_key 字段填写，或设置 OPENAI_API_KEY / DEEPSEEK_API_KEY / DASHSCOPE_API_KEY / CJH_API_KEY 环境变量")
+    }
+    let providerName = readEnv("CJH_PROVIDER") ?? "openai"
+    if (providerName == "anthropic") {
+        let anthropicKey = readEnv("ANTHROPIC_API_KEY") ?? cfg.apiKey
+        let anthropicBase = readEnv("ANTHROPIC_BASE_URL") ?? "https://api.anthropic.com/v1/messages"
+        return AnthropicProvider(anthropicBase, anthropicKey, cfg.model)
     }
     return OpenAiProvider(cfg.baseUrl, cfg.apiKey, cfg.model)
 }
@@ -115,7 +124,10 @@ main(args: Array<String>): Int64 {
         return runMockVerify()
     }
     if (args.size > 0 && args[0] == "--cli") {
-        return runCli()
+        if (args.size > 2 && args[1] == "--resume") {
+            return runCli(args[2])
+        }
+        return runCli("")
     }
     if (args.size > 1 && args[0] == "--resume") {
         return runTui(args[1])
@@ -133,7 +145,7 @@ class CliSession {
 /**
  * 纯文本 CLI 模式（无 TUI）
  */
-func runCli(): Int64 {
+func runCli(sessionId: String): Int64 {
     println("cjh — 仓颉 Coding Agent")
     println("========================")
 
@@ -142,6 +154,8 @@ func runCli(): Int64 {
     registry.register(BashTool())
     registry.register(ReadTool())
     registry.register(WriteTool())
+    registry.register(GrepTool())
+    registry.register(ListDirTool())
 
     // 配置加载
     let cjhCfg = CjhConfig()
@@ -161,6 +175,16 @@ func runCli(): Int64 {
         let agent = Agent(provider, registry, config)
         let store = SessionStore(cjhCfg.sessionsDir)
         CliSession.id = ""
+        if (sessionId.size > 0) {
+            let history = store.load(sessionId)
+            if (history.size > 0) {
+                agent.loadHistory(history)
+                CliSession.id = sessionId
+                println("[已恢复会话 ${sessionId}（${history.size} 条消息）]")
+            } else {
+                println("[会话 ${sessionId} 不存在，开始新会话]")
+            }
+        }
 
         // 事件 → 终端输出
         agent.onDelta = { d => () }  // 流式增量暂不输出（避免刷屏）
@@ -228,6 +252,8 @@ func runTui(sessionId: String): Int64 {
     registry.register(BashTool())
     registry.register(ReadTool())
     registry.register(WriteTool())
+    registry.register(GrepTool())
+    registry.register(ListDirTool())
 
     // 配置加载
     let cjhCfg = CjhConfig()
@@ -263,8 +289,22 @@ func runTui(sessionId: String): Int64 {
             }
         }
 
-        agent.onDelta = { d => () }
+        StreamState.active = false
+        agent.onDelta = { d =>
+            if (d.size > 0) {
+                if (!StreamState.active) {
+                    // 流式行开始：加绿色前缀
+                    tui.appendDelta(Ansi.fg(Ansi.COLOR_GREEN))
+                    StreamState.active = true
+                }
+                tui.appendDelta(d)
+            }
+        }
         agent.onToolStart = { name, args =>
+            if (StreamState.active) {
+                tui.appendOutput("")
+                StreamState.active = false
+            }
             tui.appendOutput(Ansi.fg(Ansi.COLOR_YELLOW) + "▶ 工具: ${name} ${args.toJsonString()}" + Ansi.reset())
         }
         agent.onToolResult = { name, result =>
@@ -275,13 +315,24 @@ func runTui(sessionId: String): Int64 {
             tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  ↳ ${name}: ${preview}" + Ansi.reset())
         }
         agent.onAssistantText = { text =>
-            tui.appendOutput(Ansi.fg(Ansi.COLOR_GREEN) + text + Ansi.reset())
+            if (StreamState.active) {
+                // 流式已实时显示，只收尾（reset + 换行），不重复输出
+                tui.appendOutput(Ansi.reset())
+                StreamState.active = false
+            } else {
+                // 非流式（如旧协议全量返回）：直接输出
+                tui.appendOutput(Ansi.fg(Ansi.COLOR_GREEN) + text + Ansi.reset())
+            }
         }
 
         SessionState.current = curSessionId
         tui.onSubmit = { input =>
             try {
                 let answer = agent.run(input)
+                if (StreamState.active) {
+                    tui.appendOutput(Ansi.reset())
+                    StreamState.active = false
+                }
                 if (answer.size > 0) {
                     tui.appendOutput(Ansi.fg(Ansi.COLOR_GREEN) + answer + Ansi.reset())
                 }
@@ -307,6 +358,10 @@ func runTui(sessionId: String): Int64 {
 
 class SessionState {
     static var current: String = ""
+}
+
+class StreamState {
+    static var active: Bool = false
 }
 
 /**
