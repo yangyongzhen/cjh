@@ -1,0 +1,16 @@
+[package]
+  cjc-version = "1.0.5"
+  name = "cjh"
+  description = "nothing here"
+  version = "1.0.0"
+  target-dir = ""
+  output-type = "executable"
+  compile-option = ""
+  override-compile-option = ""
+  link-option = "-Lnative -lcjterm"
+  package-configuration = {}
+
+[dependencies]
+
+[target.x86_64-unknown-linux-gnu.bin-dependencies]
+    path-option = ["/root/.cangjie/stdx/cangjie-stdx-linux-x64-1.0.5.1/dynamic/stdx"]

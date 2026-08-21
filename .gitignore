@@ -1,0 +1,13 @@
+# 构建产物
+target/
+*.o
+*.a
+*.so
+native/libcjterm.so
+
+# 本地环境
+cjpm.lock
+*.stdx.bak
+
+# 系统文件
+.DS_Store
