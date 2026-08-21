@@ -3,13 +3,13 @@ package cjh
 import std.collection.*
 import std.env.*
 import std.fs.*
-import cjh.llm.*
+import cjllm.*
 import cjh.agent.*
 import cjh.tools.*
-import cjh.model.*
+import cjllm.*
 import cjh.tui.*
 import cjterm.*
-import cjh.config.*
+import cjcfg.*
 
 @C
 foreign func getenv(name: CString): CPointer<UInt8>
@@ -74,6 +74,18 @@ func runMockVerify(): Int64 {
         println("\n❌ 验证失败：工具调用=${VerifyState.toolCalls}（期望 2）")
         return 1
     }
+}
+
+
+/**
+ * 由配置生成 LLM provider（业务装配，不属于 cjcfg 通用库）
+ */
+func makeProvider(cfg: CjhConfig): LlmProvider {
+    if (cfg.apiKey.size == 0) {
+        throw LlmException(
+            "未配置 API Key。请在 ${cfg.authPath} 的 api_key 字段填写，或设置 OPENAI_API_KEY / DEEPSEEK_API_KEY / DASHSCOPE_API_KEY / CJH_API_KEY 环境变量")
+    }
+    return OpenAiProvider(cfg.baseUrl, cfg.apiKey, cfg.model)
 }
 
 /**
@@ -144,7 +156,7 @@ func runCli(): Int64 {
         if ((readEnv("CJH_MOCK") ?? "") == "1") {
             provider = MockProvider("/tmp/cjh_verify.txt")
         } else {
-            provider = cjhCfg.provider()
+            provider = makeProvider(cjhCfg)
         }
         let agent = Agent(provider, registry, config)
         let store = SessionStore(cjhCfg.sessionsDir)
@@ -230,7 +242,7 @@ func runTui(sessionId: String): Int64 {
         if ((readEnv("CJH_MOCK") ?? "") == "1") {
             provider = MockProvider("/tmp/cjh_verify.txt")
         } else {
-            provider = cjhCfg.provider()
+            provider = makeProvider(cjhCfg)
         }
         let agent = Agent(provider, registry, config)
 

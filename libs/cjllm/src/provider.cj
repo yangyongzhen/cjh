@@ -1,10 +1,9 @@
-package cjh.llm
+package cjllm
 
 import stdx.encoding.json.*
 import stdx.net.http.*
 import std.io.*
 import std.collection.*
-import cjh.model.*
 
 /**
  * 工具定义（发送给模型的 tool schema，OpenAI 格式）

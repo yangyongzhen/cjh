@@ -1,9 +1,8 @@
-package cjh.config
+package cjcfg
 
 import std.fs.*
 import stdx.encoding.json.*
 import std.collection.*
-import cjh.llm.*
 
 /**
  * 配置系统（对标成熟 agent 的配置目录设计）
@@ -152,17 +151,6 @@ public class CjhConfig {
         if (model.size > 0) {
             this.model = model
         }
-    }
-
-    /**
-     * 生成 provider；无 key 抛异常
-     */
-    public func provider(): LlmProvider {
-        if (this.apiKey.size == 0) {
-            throw LlmException(
-                "未配置 API Key。请在 ${this.authPath} 的 api_key 字段填写，或设置 OPENAI_API_KEY / DEEPSEEK_API_KEY / DASHSCOPE_API_KEY / CJH_API_KEY 环境变量")
-        }
-        return OpenAiProvider(this.baseUrl, this.apiKey, this.model)
     }
 
     /**

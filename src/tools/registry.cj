@@ -2,7 +2,7 @@ package cjh.tools
 
 import std.collection.*
 import stdx.encoding.json.*
-import cjh.llm.ToolSpec
+import cjllm.ToolSpec
 
 /**
  * 工具执行结果

@@ -1,19 +1,16 @@
 [package]
   cjc-version = "1.0.5"
-  name = "cjh"
-  description = "nothing here"
-  version = "1.0.0"
+  name = "cjllm"
+  description = "cjllm：仓颉 LLM 客户端库（OpenAI 兼容协议 + SSE 流式 + 工具调用 + mock）"
+  version = "0.1.0"
   target-dir = ""
-  output-type = "executable"
+  output-type = "static"
   compile-option = ""
   override-compile-option = ""
   link-option = ""
   package-configuration = {}
 
 [dependencies]
-  cjterm = { path = "./libs/cjterm" }
-  cjllm = { path = "./libs/cjllm" }
-  cjcfg = { path = "./libs/cjcfg" }
 
 [target.x86_64-unknown-linux-gnu.bin-dependencies]
     path-option = ["/root/.cangjie/stdx/cangjie-stdx-linux-x64-1.0.5.1/dynamic/stdx"]

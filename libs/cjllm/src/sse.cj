@@ -1,4 +1,4 @@
-package cjh.llm
+package cjllm
 
 import std.io.*
 import std.collection.*

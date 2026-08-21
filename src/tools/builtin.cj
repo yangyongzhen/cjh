@@ -5,7 +5,7 @@ import stdx.encoding.json.*
 import std.process.*
 import std.fs.*
 import std.io.*
-import cjh.llm.ToolSpec
+import cjllm.ToolSpec
 
 /**
  * bash 工具：执行 shell 命令并捕获输出

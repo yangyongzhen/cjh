@@ -1,10 +1,10 @@
-package cjh.config
+package cjcfg
 
 import std.fs.*
 import stdx.encoding.json.*
 import std.collection.*
 import std.time.*
-import cjh.model.*
+import cjllm.*
 
 /**
  * 会话持久化：agent 消息历史保存/恢复

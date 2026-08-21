@@ -1,8 +1,7 @@
-package cjh.llm
+package cjllm
 
 import std.collection.*
 import stdx.encoding.json.*
-import cjh.model.*
 
 /**
  * Mock LLM Provider：用于离线验证 agent 工具调用链（无 API Key 环境）

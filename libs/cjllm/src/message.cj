@@ -1,4 +1,4 @@
-package cjh.model
+package cjllm
 
 import stdx.encoding.json.*
 import std.collection.*

@@ -2,9 +2,9 @@ package cjh.agent
 
 import std.collection.*
 import stdx.encoding.json.*
-import cjh.llm.*
+import cjllm.*
 import cjh.tools.*
-import cjh.model.*
+import cjllm.*
 
 /**
  * Agent 配置

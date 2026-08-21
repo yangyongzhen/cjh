@@ -1,19 +1,17 @@
 [package]
   cjc-version = "1.0.5"
-  name = "cjh"
-  description = "nothing here"
-  version = "1.0.0"
+  name = "cjcfg"
+  description = "cjcfg：仓颉配置系统库（settings.json + auth.json + 会话持久化，环境变量覆盖）"
+  version = "0.1.0"
   target-dir = ""
-  output-type = "executable"
+  output-type = "static"
   compile-option = ""
   override-compile-option = ""
   link-option = ""
   package-configuration = {}
 
 [dependencies]
-  cjterm = { path = "./libs/cjterm" }
-  cjllm = { path = "./libs/cjllm" }
-  cjcfg = { path = "./libs/cjcfg" }
+  cjllm = { path = "../cjllm" }
 
 [target.x86_64-unknown-linux-gnu.bin-dependencies]
     path-option = ["/root/.cangjie/stdx/cangjie-stdx-linux-x64-1.0.5.1/dynamic/stdx"]

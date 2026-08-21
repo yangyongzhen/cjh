@@ -1,10 +1,9 @@
-package cjh.llm
+package cjllm
 
 import stdx.encoding.json.*
 import stdx.net.http.*
 import std.collection.*
 import std.io.*
-import cjh.model.*
 
 /**
  * OpenAI 兼容协议实现（OpenAI / DeepSeek / 通义 / Moonshot 等均兼容）
