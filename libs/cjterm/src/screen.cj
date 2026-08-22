@@ -26,13 +26,14 @@ public class Screen {
             return
         }
         var newRow = Array<String>(this.cols, repeat: " ")
-        // String 迭代得到 UInt32 码点，超宽自然截断（不按字节切，避免 UTF-8 断码）
+        // 迭代码点（toRuneArray）而非 for-in 迭代 String——后者得 Byte，
+        // Rune(byte) 重建会把中文拆成 Latin-1 形态乱码
         var col: Int64 = 0
-        for (cp in text) {
+        for (r in text.toRuneArray()) {
             if (col >= this.cols) {
                 break
             }
-            newRow[col] = Rune(cp).toString()
+            newRow[col] = r.toString()
             col += 1
         }
         this.grid[row] = newRow

@@ -25,12 +25,15 @@ public class MarkdownRender {
 
     /**
      * 处理一个增量片段，返回带 ANSI 高亮的字符串
+     *
+     * 注意：必须用 toRuneArray() 迭代码点而非 for-in 迭代 String——
+     * 仓颉 for-in 迭代 String 得 Byte，Rune(byte) 重建会把中文拆成
+     * Latin-1 形态乱码（"你好"→"ä½\xa0å¥½"）
      */
     public func process(delta: String): String {
         var sb = StringBuilder()
-        for (cp in delta) {
-            let ch = Rune(cp)
-            let s = ch.toString()
+        for (r in delta.toRuneArray()) {
+            let s = r.toString()
             if (s == "*") {
                 if (this.pendingStar) {
                     // ** 成对 → 切换粗体
