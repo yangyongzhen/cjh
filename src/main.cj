@@ -219,11 +219,7 @@ func runCli(sessionId: String): Int64 {
                 continue
             }
             try {
-                let answer = agent.run(input)
-                if (answer.size > 0) {
-                    println("")
-                    println(answer)
-                }
+                let _ = agent.run(input)
                 // 保存会话
                 if (CliSession.id.size == 0) {
                     CliSession.id = store.save(agent.history())
@@ -296,7 +292,7 @@ func runTui(sessionId: String): Int64 {
         agent.onDelta = { d =>
             if (d.size > 0) {
                 if (!StreamState.active) {
-                    TuiBridge.delta(Ansi.fg(Ansi.COLOR_GREEN))
+                    TuiBridge.delta("")  // 流式开始（默认白色）
                     StreamState.active = true
                 }
                 TuiBridge.delta(d)
@@ -307,7 +303,7 @@ func runTui(sessionId: String): Int64 {
                 TuiBridge.output("")
                 StreamState.active = false
             }
-            TuiBridge.output(Ansi.fg(Ansi.COLOR_YELLOW) + "▶ 工具: ${name} ${args.toJsonString()}" + Ansi.reset())
+            TuiBridge.output(Ansi.fg(Ansi.COLOR_GREEN) + "▶ ${name} " + Ansi.reset() + Ansi.fg(Ansi.COLOR_GRAY) + "${args.toJsonString()}" + Ansi.reset())
         }
         agent.onToolResult = { name, result =>
             var preview = result.content
@@ -321,7 +317,8 @@ func runTui(sessionId: String): Int64 {
                 TuiBridge.output(Ansi.reset())
                 StreamState.active = false
             } else {
-                TuiBridge.output(Ansi.fg(Ansi.COLOR_GREEN) + text + Ansi.reset())
+                // 非流式（旧协议全量返回）：默认白色
+                TuiBridge.output(text)
             }
         }
 
@@ -330,13 +327,10 @@ func runTui(sessionId: String): Int64 {
             // 异步执行 agent（TUI 主循环持续渲染，避免阻塞）
             spawn {
                 try {
-                    let answer = agent.run(input)
+                    let _ = agent.run(input)
                     if (StreamState.active) {
                         tui.appendOutput(Ansi.reset())
                         StreamState.active = false
-                    }
-                    if (answer.size > 0) {
-                        tui.appendOutput(Ansi.fg(Ansi.COLOR_GREEN) + answer + Ansi.reset())
                     }
                     // 保存会话（含首轮时创建 ID）
                     if (SessionState.current.size == 0) {
