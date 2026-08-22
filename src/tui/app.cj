@@ -31,6 +31,8 @@ public class TuiApp {
     private var scrollOffset: Int64 = 0
     private var statusLine: String = ""
     private var modelName: String = ""
+    // 流式段起点（output 中的字节偏移；-1 表示无活动流式段）
+    private var streamStartPos: Int64 = -1
 
     // 事件回调：提交输入时触发
     public var onSubmit: (String) -> Unit = { _ => }
@@ -84,12 +86,42 @@ public class TuiApp {
     public func appendDelta(text: String): Unit {
         this.outputLock.lock()
         try {
+            if (this.streamStartPos < 0) {
+                // 记录流式段起点（append 起点必为合法字符边界，可安全切片）
+                this.streamStartPos = this.output.toString().size
+            }
             this.output.append(text)
         } finally {
             this.outputLock.unlock()
         }
         this.markDirty()
         // 由主循环统一渲染（跨线程直接 render 会导致并发写 stdout、光标错乱）
+    }
+
+    /**
+     * 流式结束：用最终完整文本替换整个流式段。
+     * 用于 mojibake 整体修复 / markdown 状态收尾（agent 在 spawn 线程调用，线程安全）
+     */
+    public func endStream(text: String): Unit {
+        this.outputLock.lock()
+        try {
+            if (this.streamStartPos >= 0) {
+                let full = this.output.toString()
+                var head = ""
+                if (this.streamStartPos > 0) {
+                    head = full[0..this.streamStartPos]
+                }
+                // 重建 StringBuilder：截断回流式段起点，再追加最终文本
+                let nb = StringBuilder()
+                nb.append(head)
+                this.output = nb
+                this.streamStartPos = -1
+            }
+            this.output.append(text)
+        } finally {
+            this.outputLock.unlock()
+        }
+        this.markDirty()
     }
 
     /**

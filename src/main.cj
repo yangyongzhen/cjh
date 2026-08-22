@@ -315,7 +315,9 @@ func runTui(sessionId: String): Int64 {
         }
         agent.onAssistantText = { text =>
             if (StreamState.active) {
-                TuiBridge.output(StreamState.md.finish())
+                // 流式结束：用最终完整文本（已整体修复 mojibake）整体渲染并重绘替换流式段
+                let md = MarkdownRender()
+                TuiBridge.endStream(md.process(text) + md.finish())
                 StreamState.active = false
             } else {
                 // 非流式（旧协议全量返回）：整体渲染 markdown
@@ -384,6 +386,15 @@ class TuiBridge {
     public static func delta(text: String): Unit {
         if (let Some(a) <- TuiBridge.app) {
             a.appendDelta(text)
+        }
+    }
+
+    /**
+     * 流式结束：用最终完整文本替换流式段（整体修复 mojibake 后重绘）
+     */
+    public static func endStream(text: String): Unit {
+        if (let Some(a) <- TuiBridge.app) {
+            a.endStream(text)
         }
     }
 

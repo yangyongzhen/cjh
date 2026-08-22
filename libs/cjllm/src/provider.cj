@@ -105,7 +105,9 @@ public class StreamAccumulator {
                                                             case JsonKind.JsString =>
                                                                 let s = content.asString().getValue()
                                                                 if (s.size > 0) {
-                                                                    this.text += MojibakeFix.fix(s)
+                                                                    // 只累积原始文本：mojibake 修复必须在完整串上做，
+                                                                    // 逐 chunk 修复在分片切碎 mojibake 串时会失败（finish 时整体修复）
+                                                                    this.text += s
                                                                 }
                                                             case _ => ()
                                                         }
@@ -226,6 +228,7 @@ public class StreamAccumulator {
             }
             this.toolCalls.add(ToolCall(this.curToolId, this.curToolName, args))
         }
-        return ModelResponse(this.text, this.toolCalls)
+        // 整体修复：流式累积的原始文本可能含 DeepSeek Latin-1 误解码 mojibake
+        return ModelResponse(MojibakeFix.fix(this.text), this.toolCalls)
     }
 }

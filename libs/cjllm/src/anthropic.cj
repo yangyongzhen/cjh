@@ -238,7 +238,8 @@ public class AnthropicAccumulator {
                                                             case JsonKind.JsString =>
                                                                 let s = txt.asString().getValue()
                                                                 if (s.size > 0) {
-                                                                    this.text += MojibakeFix.fix(s)
+                                                                    // 只累积原始文本：mojibake 修复在 finish 时对完整串整体做
+                                                                    this.text += s
                                                                 }
                                                             case _ => ()
                                                         }
@@ -312,6 +313,7 @@ public class AnthropicAccumulator {
             }
             this.toolCalls.add(ToolCall(this.curToolId, this.curToolName, args))
         }
-        return ModelResponse(this.text, this.toolCalls)
+        // 整体修复：流式累积的原始文本可能含 mojibake（finish 时整体修复才能跨分片还原）
+        return ModelResponse(MojibakeFix.fix(this.text), this.toolCalls)
     }
 }
