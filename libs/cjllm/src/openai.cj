@@ -3,6 +3,7 @@ package cjllm
 import stdx.encoding.json.*
 import stdx.net.http.*
 import stdx.net.tls.*
+import stdx.crypto.x509.X509Certificate
 import std.collection.*
 import std.io.*
 
@@ -13,11 +14,21 @@ public class OpenAiProvider <: LlmProvider {
     public let baseUrl: String
     public let apiKey: String
     public let model: String
+    public var temperature: Float64 = 0.7
+    public var maxTokens: Int64 = 4096
 
     public init(baseUrl: String, apiKey: String, model: String) {
         this.baseUrl = baseUrl
         this.apiKey = apiKey
         this.model = model
+    }
+
+    /**
+     * 设置采样参数（对齐 pi：temperature / max_tokens）
+     */
+    public func setSampling(temperature: Float64, maxTokens: Int64): Unit {
+        this.temperature = temperature
+        this.maxTokens = maxTokens
     }
 
     /**
@@ -28,10 +39,36 @@ public class OpenAiProvider <: LlmProvider {
         if (url.endsWith("/")) {
             url = url[0..url.size - 1]
         }
-        if (!url.contains("/chat/completions") && !url.endsWith("/v1") && !url.endsWith("/v1/chat")) {
-            url += "/v1/chat/completions"
+        // base 已含 /v1 或 /v1/chat 时只补 /chat/completions；否则补 /v1/chat/completions
+        if (!url.contains("/chat/completions")) {
+            if (url.endsWith("/v1") || url.endsWith("/v1/chat")) {
+                url += "/chat/completions"
+            } else {
+                url += "/v1/chat/completions"
+            }
         }
         return url
+    }
+
+    /**
+     * 提取 SNI 主机名：baseUrl → host（去协议/路径，如 https://taotoken.net/api/v1 → taotoken.net）
+     */
+    public func sniHost(): String {
+        var url = this.baseUrl
+        if (url.startsWith("https://")) {
+            url = url[8..url.size]
+        } else if (url.startsWith("http://")) {
+            url = url[7..url.size]
+        }
+        var host = url
+        if (let Some(slash) <- url.indexOf("/")) {
+            host = url[0..slash]
+        }
+        // 去端口（host:port → host），SNI 只含主机名
+        if (let Some(colon) <- host.indexOf(":")) {
+            host = host[0..colon]
+        }
+        return host
     }
 
     public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
@@ -40,6 +77,8 @@ public class OpenAiProvider <: LlmProvider {
         var body = JsonObject()
         body.put("model", JsonString(this.model))
         body.put("stream", JsonBool(true))
+        body.put("temperature", JsonFloat(this.temperature))
+        body.put("max_tokens", JsonInt(this.maxTokens))
 
         var msgList = ArrayList<JsonValue>()
         for (m in messages) {
@@ -56,7 +95,12 @@ public class OpenAiProvider <: LlmProvider {
         }
 
         // 请求（base_url 自动补全 /v1/chat/completions 路径）
-        let client = ClientBuilder().tlsConfig(TlsClientConfig()).build()
+        // 显式加载系统根证书 + 设置 SNI：TlsClientConfig 默认不自动发 SNI，
+        // 部分服务端（如 taotoken.net）在无 SNI 时返回不可信证书导致 unknown CA
+        var tlsConfig = TlsClientConfig()
+        tlsConfig.verifyMode = CertificateVerifyMode.CustomCA(X509Certificate.systemRootCerts())
+        tlsConfig.domain = Some(this.sniHost())
+        let client = ClientBuilder().tlsConfig(tlsConfig).build()
         let req = HttpRequestBuilder()
             .post()
             .url(this.endpointUrl())

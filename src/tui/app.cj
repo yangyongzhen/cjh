@@ -65,6 +65,14 @@ public class TuiApp {
     }
 
     /**
+     * 退出 TUI（供 slash 命令 /quit 调用；线程安全）
+     */
+    public func quit(): Unit {
+        this.running = false
+        this.markDirty()
+    }
+
+    /**
      * 追加一行到输出区（线程安全）
      */
     public func appendOutput(text: String): Unit {

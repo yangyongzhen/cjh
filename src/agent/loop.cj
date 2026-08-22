@@ -28,7 +28,7 @@ public class AgentConfig {
  * 3. 若响应为纯文本：作为最终答复返回
  */
 public class Agent {
-    private let provider: LlmProvider
+    private var provider: LlmProvider
     private let tools: ToolRegistry
     private let config: AgentConfig
     private var messages: ArrayList<ChatMessage>
@@ -45,6 +45,13 @@ public class Agent {
         this.config = config
         this.messages = ArrayList<ChatMessage>()
         this.messages.add(ChatMessage("system", config.systemPrompt))
+    }
+
+    /**
+     * 运行时切换 provider（/model 命令；历史保留）
+     */
+    public func setProvider(p: LlmProvider): Unit {
+        this.provider = p
     }
 
     /**

@@ -5,6 +5,18 @@ import stdx.encoding.json.*
 import std.collection.*
 
 /**
+ * 模型条目（settings.json models 数组项；对齐 pi models.json 的轻量版）
+ */
+public class ModelEntry {
+    public var id: String = ""          // 模型 ID（传给 API）
+    public var name: String = ""        // 显示名（可空，默认用 id）
+    public var baseUrl: String = ""     // 端点（可空，用全局 base_url）
+    public var apiKey: String = ""      // 该模型的 key（可空，用全局 api_key）
+    public var temperature: Float64 = 0.7
+    public var maxTokens: Int64 = 4096
+}
+
+/**
  * 配置系统（对标成熟 agent 的配置目录设计）
  *
  * 目录结构（~/.cjh/，可用 CJH_CONFIG_DIR 覆盖）：
@@ -28,6 +40,11 @@ public class CjhConfig {
     public var apiKey: String = ""
     public var maxIterations: Int64 = 10
     public var systemPrompt: String = ""
+    // 采样参数（对齐 pi：/settings 可调）
+    public var temperature: Float64 = 0.7
+    public var maxTokens: Int64 = 4096
+    // 可选模型列表（settings.json "models": [...]；/model 可切换）
+    public var models: ArrayList<ModelEntry> = ArrayList<ModelEntry>()
 
     public init() {
         // 配置目录：环境变量覆盖，默认 ~/.cjh
@@ -73,10 +90,16 @@ public class CjhConfig {
      */
     private func settingsTemplate(): String {
         return "{\n" +
-            "  \"_说明\": \"可选配置，默认即可运行。支持 base_url / model / max_iterations / system_prompt\",\n" +
+            "  \"_说明\": \"可选配置，默认即可运行。支持 base_url / model / max_iterations / system_prompt / temperature / max_tokens / models\",\n" +
             "  \"base_url\": \"https://api.openai.com/v1/chat/completions\",\n" +
             "  \"model\": \"gpt-4o-mini\",\n" +
-            "  \"max_iterations\": 10\n" +
+            "  \"max_iterations\": 10,\n" +
+            "  \"temperature\": 0.7,\n" +
+            "  \"max_tokens\": 4096,\n" +
+            "  \"models\": [\n" +
+            "    { \"id\": \"gpt-4o-mini\", \"name\": \"GPT-4o mini\" },\n" +
+            "    { \"id\": \"deepseek-chat\", \"name\": \"DeepSeek V3\", \"base_url\": \"https://api.deepseek.com/v1/chat/completions\", \"temperature\": 1.0 }\n" +
+            "  ]\n" +
             "}\n"
     }
 
@@ -137,6 +160,77 @@ public class CjhConfig {
                     if (let Some(v) <- obj.get("system_prompt")) {
                         match (v.kind()) {
                             case JsonKind.JsString => this.systemPrompt = v.asString().getValue()
+                            case _ => ()
+                        }
+                    }
+                    if (let Some(v) <- obj.get("temperature")) {
+                        match (v.kind()) {
+                            case JsonKind.JsFloat => this.temperature = v.asFloat().getValue()
+                            case JsonKind.JsInt => this.temperature = Float64(v.asInt().getValue())
+                            case _ => ()
+                        }
+                    }
+                    if (let Some(v) <- obj.get("max_tokens")) {
+                        match (v.kind()) {
+                            case JsonKind.JsInt => this.maxTokens = v.asInt().getValue()
+                            case _ => ()
+                        }
+                    }
+                    // models 列表：每项可覆盖 id/name/base_url/api_key/temperature/max_tokens
+                    if (let Some(v) <- obj.get("models")) {
+                        match (v.kind()) {
+                            case JsonKind.JsArray =>
+                                let arr = v.asArray()
+                                for (i in 0..arr.size()) {
+                                    if (let Some(item) <- arr.get(i)) {
+                                        match (item.kind()) {
+                                            case JsonKind.JsObject =>
+                                                let mo = item.asObject()
+                                                let entry = ModelEntry()
+                                                if (let Some(f) <- mo.get("id")) {
+                                                    match (f.kind()) {
+                                                        case JsonKind.JsString => entry.id = f.asString().getValue()
+                                                        case _ => ()
+                                                    }
+                                                }
+                                                if (let Some(f) <- mo.get("name")) {
+                                                    match (f.kind()) {
+                                                        case JsonKind.JsString => entry.name = f.asString().getValue()
+                                                        case _ => ()
+                                                    }
+                                                }
+                                                if (let Some(f) <- mo.get("base_url")) {
+                                                    match (f.kind()) {
+                                                        case JsonKind.JsString => entry.baseUrl = f.asString().getValue()
+                                                        case _ => ()
+                                                    }
+                                                }
+                                                if (let Some(f) <- mo.get("api_key")) {
+                                                    match (f.kind()) {
+                                                        case JsonKind.JsString => entry.apiKey = f.asString().getValue()
+                                                        case _ => ()
+                                                    }
+                                                }
+                                                if (let Some(f) <- mo.get("temperature")) {
+                                                    match (f.kind()) {
+                                                        case JsonKind.JsFloat => entry.temperature = f.asFloat().getValue()
+                                                        case JsonKind.JsInt => entry.temperature = Float64(f.asInt().getValue())
+                                                        case _ => ()
+                                                    }
+                                                }
+                                                if (let Some(f) <- mo.get("max_tokens")) {
+                                                    match (f.kind()) {
+                                                        case JsonKind.JsInt => entry.maxTokens = f.asInt().getValue()
+                                                        case _ => ()
+                                                    }
+                                                }
+                                                if (entry.id.size > 0) {
+                                                    this.models.add(entry)
+                                                }
+                                            case _ => ()
+                                        }
+                                    }
+                                }
                             case _ => ()
                         }
                     }

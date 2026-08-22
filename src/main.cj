@@ -3,6 +3,7 @@ package cjh
 import std.collection.*
 import std.env.*
 import std.fs.*
+import std.convert.Parsable
 import cjllm.*
 import cjh.agent.*
 import cjh.tools.*
@@ -91,12 +92,21 @@ func makeProvider(cfg: CjhConfig): LlmProvider {
     // provider 选择：显式 CJH_PROVIDER=anthropic 才用 Anthropic
     // （auth.json 的 key 优先；env 变量可覆盖。绝不自动劫持到 Anthropic）
     let providerName = readEnv("CJH_PROVIDER") ?? ""
+    var p: LlmProvider
     if (providerName == "anthropic") {
         let anthropicKey = readEnv("ANTHROPIC_API_KEY") ?? readEnv("ANTHROPIC_AUTH_TOKEN") ?? cfg.apiKey
         let anthropicBase = readEnv("ANTHROPIC_BASE_URL") ?? "https://api.anthropic.com/v1/messages"
-        return AnthropicProvider(anthropicBase, anthropicKey, cfg.model)
+        p = AnthropicProvider(anthropicBase, anthropicKey, cfg.model)
+    } else {
+        p = OpenAiProvider(cfg.baseUrl, cfg.apiKey, cfg.model)
     }
-    return OpenAiProvider(cfg.baseUrl, cfg.apiKey, cfg.model)
+    // 应用采样参数（/settings 调整后重建 provider 时生效）
+    match (p) {
+        case oa: OpenAiProvider => oa.setSampling(cfg.temperature, cfg.maxTokens)
+        case ap: AnthropicProvider => ap.setSampling(cfg.temperature, cfg.maxTokens)
+        case _ => ()
+    }
+    return p
 }
 
 /**
@@ -328,6 +338,11 @@ func runTui(sessionId: String): Int64 {
 
         SessionState.current = curSessionId
         tui.onSubmit = { input =>
+            // slash 命令（对齐 pi：/help /new /resume /quit /model /settings）
+            if (input.startsWith("/")) {
+                handleSlashCommand(input, agent, store, tui, cjhCfg)
+                return
+            }
             // 异步执行 agent（TUI 主循环持续渲染，避免阻塞）
             spawn {
                 try {
@@ -364,6 +379,166 @@ func runTui(sessionId: String): Int64 {
 
 class SessionState {
     static var current: String = ""
+}
+
+/**
+ * TUI slash 命令分发（对齐 pi 基础命令：/help /new /resume /quit /model /settings）
+ */
+func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: TuiApp, cfg: CjhConfig): Unit {
+    let cmd = input.trimAscii().split(" ", -1)[0]
+    let args = input.trimAscii()
+    match (cmd) {
+        case "/help" =>
+            tui.appendOutput(Ansi.fg(Ansi.COLOR_CYAN) + "可用命令：" + Ansi.reset())
+            tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  /help          显示本帮助" + Ansi.reset())
+            tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  /new           开始新会话" + Ansi.reset())
+            tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  /resume [id]   恢复历史会话（无 id 时列出）" + Ansi.reset())
+            tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  /model [id|#]  列出/切换模型" + Ansi.reset())
+            tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  /settings      查看采样参数（temp/max_tokens）" + Ansi.reset())
+            tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  /quit          退出" + Ansi.reset())
+        case "/model" =>
+            let parts = args.split(" ", -1)
+            if (parts.size > 1 && parts[1].size > 0) {
+                // /model <id|#n>：切换模型
+                var target = parts[1]
+                var idx: Int64 = -1
+                // 支持 "#序号" 形式
+                if (target.startsWith("#") && target.size > 1) {
+                    try {
+                        idx = Int64.parse(target[1..target.size])
+                    } catch (e: Exception) {
+                        idx = -1
+                    }
+                } else if (cfg.models.size > 0) {
+                    // 按 id 匹配
+                    for (i in 0..cfg.models.size) {
+                        if (cfg.models[i].id == target) {
+                            idx = i
+                            break
+                        }
+                    }
+                }
+                if (idx >= 0 && idx < cfg.models.size) {
+                    let entry = cfg.models[idx]
+                    cfg.model = entry.id
+                    if (entry.baseUrl.size > 0) {
+                        cfg.baseUrl = entry.baseUrl
+                    }
+                    if (entry.apiKey.size > 0) {
+                        cfg.apiKey = entry.apiKey
+                    }
+                    cfg.temperature = entry.temperature
+                    cfg.maxTokens = entry.maxTokens
+                    let mname = if (entry.name.size > 0) { entry.name } else { entry.id }
+                    tui.setModel(mname)
+                    // 重建 provider 并热切换（历史保留）
+                    try {
+                        let np = makeProvider(cfg)
+                        agent.setProvider(np)
+                        tui.appendOutput(Ansi.fg(Ansi.COLOR_GREEN) + "[已切换模型: ${cfg.model} (temp=${cfg.temperature})]" + Ansi.reset())
+                    } catch (e: Exception) {
+                        tui.appendOutput(Ansi.fg(Ansi.COLOR_RED) + "[切换模型失败: ${e}]" + Ansi.reset())
+                    }
+                } else {
+                    tui.appendOutput(Ansi.fg(Ansi.COLOR_RED) + "[未知模型: ${target}；/model 查看列表]" + Ansi.reset())
+                }
+            } else {
+                // 列出模型
+                if (cfg.models.size == 0) {
+                    tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "[未配置 models 列表；当前: ${cfg.model} (temp=${cfg.temperature})]" + Ansi.reset())
+                } else {
+                    tui.appendOutput(Ansi.fg(Ansi.COLOR_CYAN) + "可用模型（/model <id|#序号> 切换）：" + Ansi.reset())
+                    for (i in 0..cfg.models.size) {
+                        let m = cfg.models[i]
+                        let label = if (m.name.size > 0) { m.name } else { m.id }
+                        let cur = if (m.id == cfg.model) { " ◀" } else { "" }
+                        tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  #${i} ${label} (${m.id})${cur}" + Ansi.reset())
+                    }
+                    tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "当前: ${cfg.model} (temp=${cfg.temperature}, max_tokens=${cfg.maxTokens})" + Ansi.reset())
+                }
+            }
+        case "/settings" =>
+            // 查看/调整采样参数：/settings 或 /settings temp 0.9 /settings max_tokens 8192
+            let parts = args.split(" ", -1)
+            if (parts.size == 3 && parts[1] == "temp") {
+                try {
+                    cfg.temperature = Float64.parse(parts[2])
+                    // 重建 provider 应用新参数
+                    try {
+                        let np = makeProvider(cfg)
+                        agent.setProvider(np)
+                        tui.appendOutput(Ansi.fg(Ansi.COLOR_GREEN) + "[temperature = ${cfg.temperature}]" + Ansi.reset())
+                    } catch (e: Exception) {
+                        tui.appendOutput(Ansi.fg(Ansi.COLOR_RED) + "[应用失败: ${e}]" + Ansi.reset())
+                    }
+                } catch (e: Exception) {
+                    tui.appendOutput(Ansi.fg(Ansi.COLOR_RED) + "[无效数值: ${parts[2]}]" + Ansi.reset())
+                }
+            } else if (parts.size == 3 && parts[1] == "max_tokens") {
+                try {
+                    cfg.maxTokens = Int64.parse(parts[2])
+                    try {
+                        let np = makeProvider(cfg)
+                        agent.setProvider(np)
+                        tui.appendOutput(Ansi.fg(Ansi.COLOR_GREEN) + "[max_tokens = ${cfg.maxTokens}]" + Ansi.reset())
+                    } catch (e: Exception) {
+                        tui.appendOutput(Ansi.fg(Ansi.COLOR_RED) + "[应用失败: ${e}]" + Ansi.reset())
+                    }
+                } catch (e: Exception) {
+                    tui.appendOutput(Ansi.fg(Ansi.COLOR_RED) + "[无效数值: ${parts[2]}]" + Ansi.reset())
+                }
+            } else {
+                tui.appendOutput(Ansi.fg(Ansi.COLOR_CYAN) + "采样参数（/settings temp 0.9 或 /settings max_tokens 8192 调整）：" + Ansi.reset())
+                tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  model       ${cfg.model}" + Ansi.reset())
+                tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  temperature ${cfg.temperature}" + Ansi.reset())
+                tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  max_tokens  ${cfg.maxTokens}" + Ansi.reset())
+                tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  base_url    ${cfg.baseUrl}" + Ansi.reset())
+            }
+        case "/new" =>
+            // 清空会话：重开 agent 历史（保留 system）
+            let history = agent.history()
+            while (history.size > 1) {
+                history.remove(history.size - 1..history.size)
+            }
+            SessionState.current = ""
+            tui.appendOutput(Ansi.fg(Ansi.COLOR_YELLOW) + "[新会话]" + Ansi.reset())
+        case "/resume" =>
+            let parts = args.split(" ", -1)
+            if (parts.size > 1 && parts[1].size > 0) {
+                // /resume <id>：恢复指定会话
+                let id = parts[1]
+                let history = store.load(id)
+                if (history.size > 0) {
+                    // 清空当前历史后载入（保留 system）
+                    let cur = agent.history()
+                    while (cur.size > 1) {
+                        cur.remove(cur.size - 1..cur.size)
+                    }
+                    agent.loadHistory(history)
+                    SessionState.current = id
+                    tui.appendOutput(Ansi.fg(Ansi.COLOR_BLUE) + "[resumed ${id} (${history.size} msgs)]" + Ansi.reset())
+                } else {
+                    tui.appendOutput(Ansi.fg(Ansi.COLOR_RED) + "[会话 ${id} 不存在]" + Ansi.reset())
+                }
+            } else {
+                // 列出会话
+                let sessions = store.list()
+                if (sessions.size == 0) {
+                    tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "[暂无会话]" + Ansi.reset())
+                } else {
+                    tui.appendOutput(Ansi.fg(Ansi.COLOR_CYAN) + "已保存的会话（/resume <id> 恢复）：" + Ansi.reset())
+                    for ((id, summary) in sessions) {
+                        tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  ${id}  |  ${summary}" + Ansi.reset())
+                    }
+                }
+            }
+        case "/quit" =>
+            tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "[再见]" + Ansi.reset())
+            // 退出由主循环处理；先短暂刷新再退出
+            spawn { tui.quit() }
+        case _ =>
+            tui.appendOutput(Ansi.fg(Ansi.COLOR_RED) + "未知命令: ${cmd}（输入 /help 查看）" + Ansi.reset())
+    }
 }
 
 class StreamState {
