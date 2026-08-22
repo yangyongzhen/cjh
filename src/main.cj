@@ -288,14 +288,15 @@ func runTui(sessionId: String): Int64 {
         }
 
         StreamState.active = false
+        StreamState.md = MarkdownRender()
         TuiBridge.app = tui
         agent.onDelta = { d =>
             if (d.size > 0) {
                 if (!StreamState.active) {
-                    TuiBridge.delta("")  // 流式开始（默认白色）
+                    TuiBridge.delta("")
                     StreamState.active = true
                 }
-                TuiBridge.delta(d)
+                TuiBridge.delta(StreamState.md.process(d))
             }
         }
         agent.onToolStart = { name, args =>
@@ -314,11 +315,12 @@ func runTui(sessionId: String): Int64 {
         }
         agent.onAssistantText = { text =>
             if (StreamState.active) {
-                TuiBridge.output(Ansi.reset())
+                TuiBridge.output(StreamState.md.finish())
                 StreamState.active = false
             } else {
-                // 非流式（旧协议全量返回）：默认白色
-                TuiBridge.output(text)
+                // 非流式（旧协议全量返回）：整体渲染 markdown
+                let md = MarkdownRender()
+                TuiBridge.output(md.process(text) + md.finish())
             }
         }
 
@@ -364,6 +366,7 @@ class SessionState {
 
 class StreamState {
     static var active: Bool = false
+    static var md: MarkdownRender = MarkdownRender()
 }
 
 /**

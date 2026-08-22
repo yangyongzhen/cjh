@@ -14,39 +14,30 @@ package cjterm
  *   ╚═════╝   ╚═╝
  */
 public class Logo {
-    // box-drawing 字符（UTF-8），C 与 J 各 8 列对齐
+    // 普通 ASCII art "CJ"（任何终端渲染一致，避免 box-drawing 字体差异）
+    // C 用主题蓝，J 用亮青，双色拼接
     private static let C_LINES: Array<String> = [
-        " ██████╗ ",
-        "██╔════╝ ",
-        "██║      ",
-        "██║      ",
-        "╚██████╗ ",
-        " ╚═════╝ ",
+        "  ____  ",
+        " / ___| ",
+        "| |     ",
+        "| |___  ",
+        " \\____| ",
     ]
     private static let J_LINES: Array<String> = [
-        " ██╗",
-        " ██║",
-        " ██║",
-        " ██║",
-        " ██║",
-        " ╚═╝",
+        " _     ",
+        "| |    ",
+        "| |    ",
+        "| |___ ",
+        "|_____|",
     ]
 
     /**
      * 渲染 logo 行数组（每行已着色），返回 Array<String>
-     * @param utf8 终端是否支持 UTF-8（否则 ASCII 降级）
+     * @param utf8 终端是否支持 UTF-8（彩色 ANSI 恒可用，此处保留参数以兼容）
      */
     public static func renderLines(utf8: Bool): Array<String> {
-        if (!utf8) {
-            var ascii = Array<String>(4, repeat: "")
-            ascii[0] = "  __ _   _   _ "
-            ascii[1] = " / _| | | | | |"
-            ascii[2] = "| |_| |_| |_| |"
-            ascii[3] = " \\__|\\__,_\\__,_|"
-            return ascii
-        }
-        var lines = Array<String>(6, repeat: "")
-        for (i in 0..6) {
+        var lines = Array<String>(5, repeat: "")
+        for (i in 0..5) {
             let cPart = C_LINES[i]
             let jPart = J_LINES[i]
             lines[i] = Ansi.fg(Ansi.THEME_PRIMARY) + cPart + Ansi.fg(Ansi.THEME_ACCENT) + jPart + Ansi.reset()
