@@ -206,7 +206,7 @@ func runCli(sessionId: String): Int64 {
 
         // 交互循环
         while (true) {
-            print("\ncjh> ")
+            print("\n❯ ")
             let line = readLineFromStdIn()
             if (line.isNone()) {
                 break
@@ -332,6 +332,9 @@ func runTui(sessionId: String): Int64 {
                         tui.appendOutput(Ansi.reset())
                         StreamState.active = false
                     }
+                    // 会话分隔线
+                    let (rows, cols) = TermSize.get()
+                    tui.appendDivider(cols)
                     // 保存会话（含首轮时创建 ID）
                     if (SessionState.current.size == 0) {
                         SessionState.current = store.save(agent.history())

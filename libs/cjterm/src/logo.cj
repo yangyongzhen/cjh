@@ -3,30 +3,33 @@ package cjterm
 /**
  * CJ 徽标生成器：box-drawing 字符的艺术字 "CJ"（仓颉 Cangjie）
  *
- * 设计：4 行 × 12 列，C 用主题蓝，J 用亮青，双色拼接。
+ * 设计：5 行，C 和 J 各 8 列对齐（避免错位），C 用主题蓝，J 用亮青。
  * 非 UTF-8 终端自动降级为纯 ASCII "CJ"。
  *
- *   ██████╗     ██╗
- *  ██╔════╝     ██║
- *  ██║     ████████║
- *  ╚██████╗     ╚═╝
- *   ╚═════╝
+ *   ██████╗   ██╗
+ *  ██╔════╝   ██║
+ *  ██║        ██║
+ *  ██║        ██║
+ *  ╚██████╗   ██║
+ *   ╚═════╝   ╚═╝
  */
 public class Logo {
-    // box-drawing 字符（UTF-8）
+    // box-drawing 字符（UTF-8），C 与 J 各 8 列对齐
     private static let C_LINES: Array<String> = [
-        "██████╗ ",
-        "██╔════╝",
-        "██║     ",
-        "╚██████╗",
-        " ╚═════╝",
+        " ██████╗ ",
+        "██╔════╝ ",
+        "██║      ",
+        "██║      ",
+        "╚██████╗ ",
+        " ╚═════╝ ",
     ]
     private static let J_LINES: Array<String> = [
         " ██╗",
         " ██║",
-        " ████████║",
+        " ██║",
+        " ██║",
+        " ██║",
         " ╚═╝",
-        "    ",
     ]
 
     /**
@@ -35,7 +38,6 @@ public class Logo {
      */
     public static func renderLines(utf8: Bool): Array<String> {
         if (!utf8) {
-            // ASCII 降级
             var ascii = Array<String>(4, repeat: "")
             ascii[0] = "  __ _   _   _ "
             ascii[1] = " / _| | | | | |"
@@ -43,10 +45,10 @@ public class Logo {
             ascii[3] = " \\__|\\__,_\\__,_|"
             return ascii
         }
-        var lines = Array<String>(5, repeat: "")
-        for (i in 0..5) {
+        var lines = Array<String>(6, repeat: "")
+        for (i in 0..6) {
             let cPart = C_LINES[i]
-            let jPart = if (i < J_LINES.size) { J_LINES[i] } else { "" }
+            let jPart = J_LINES[i]
             lines[i] = Ansi.fg(Ansi.THEME_PRIMARY) + cPart + Ansi.fg(Ansi.THEME_ACCENT) + jPart + Ansi.reset()
         }
         return lines

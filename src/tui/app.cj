@@ -101,6 +101,18 @@ public class TuiApp {
     }
 
     /**
+     * 会话分隔线（每轮对话结束后调用，增强层次感）
+     */
+    public func appendDivider(cols: Int64): Unit {
+        let ch = if (this.term.isUtf8()) { "─" } else { "-" }
+        var sb = StringBuilder()
+        for (i in 0..cols) {
+            sb.append(ch)
+        }
+        this.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + sb.toString() + Ansi.reset())
+    }
+
+    /**
      * 设置模型名（状态徽章显示）
      */
     public func setModel(name: String): Unit {
@@ -153,7 +165,7 @@ public class TuiApp {
             let line = this.inputLine
             this.inputLine = ""
             if (line.size > 0) {
-                this.appendOutput("cjh> ${line}")
+                this.appendOutput(Ansi.fg(Ansi.THEME_ACCENT) + "❯ " + Ansi.reset() + line)
                 this.onSubmit(line)
             }
             this.markDirty()
