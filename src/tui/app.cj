@@ -173,7 +173,16 @@ public class TuiApp {
         }
         if (key.isBackspace) {
             if (this.inputLine.size > 0) {
-                this.inputLine = this.inputLine[0..this.inputLine.size - 1]
+                // 按 UTF-8 字符删除（非字节）：从末尾递减试切片，直到合法字符边界
+                var cut = this.inputLine.size - 1
+                while (cut >= 0) {
+                    try {
+                        this.inputLine = this.inputLine[0..cut]
+                        break
+                    } catch (e: Exception) {
+                        cut -= 1
+                    }
+                }
                 this.markDirty()
             }
             return

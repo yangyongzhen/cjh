@@ -24,21 +24,21 @@ public class Logo {
         " \\____| ",
     ]
     private static let J_LINES: Array<String> = [
-        " _     ",
-        "| |    ",
-        "| |    ",
-        "| |___ ",
-        "|_____|",
+        "  __ ",
+        " |  |",
+        " |  |",
+        " |  |",
+        " |__|",
     ]
 
     /**
      * 渲染 logo 行数组（每行已着色），返回 Array<String>
-     * @param utf8 终端是否支持 UTF-8（彩色 ANSI 恒可用，此处保留参数以兼容）
+     * 两字母间留 2 空格分隔，避免粘连误读
      */
     public static func renderLines(utf8: Bool): Array<String> {
         var lines = Array<String>(5, repeat: "")
         for (i in 0..5) {
-            let cPart = C_LINES[i]
+            let cPart = C_LINES[i] + "  "   // 2 空格分隔
             let jPart = J_LINES[i]
             lines[i] = Ansi.fg(Ansi.THEME_PRIMARY) + cPart + Ansi.fg(Ansi.THEME_ACCENT) + jPart + Ansi.reset()
         }
