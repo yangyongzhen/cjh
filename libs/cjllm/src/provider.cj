@@ -105,7 +105,7 @@ public class StreamAccumulator {
                                                             case JsonKind.JsString =>
                                                                 let s = content.asString().getValue()
                                                                 if (s.size > 0) {
-                                                                    this.text += s
+                                                                    this.text += MojibakeFix.fix(s)
                                                                 }
                                                             case _ => ()
                                                         }
@@ -201,10 +201,8 @@ public class StreamAccumulator {
                 cut -= 1
             }
         }
-        // 记录已发送到 cut（含回退的半个字符，下次补齐）
-        if (cut > 0) {
-            this.lastSentText = cur[0..cut]
-        }
+        // 已发出 delta（cur[cut..size]），记录已发送 = 整个 cur
+        this.lastSentText = cur
         return delta
     }
 
