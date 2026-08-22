@@ -57,7 +57,7 @@ public class StreamAccumulator {
     public var text: String = ""
     public var toolCalls: ArrayList<ToolCall> = ArrayList<ToolCall>()
     // 上次已回调的文本长度（供增量回调）
-    private var lastDeltaLen: Int64 = 0
+    private var lastSentText: String = ""
     private var curToolId: String = ""
     private var curToolName: String = ""
     private var curToolArgs: String = ""
@@ -185,22 +185,26 @@ public class StreamAccumulator {
      * 提取自上次回调以来的文本增量（并更新游标）
      */
     public func takeDelta(): String {
-        if (this.text.size <= this.lastDeltaLen) {
+        // 增量 = 全文 - 已发送文本（字符安全，避免 UTF-8 切片错位）
+        let cur = this.text
+        if (cur.size <= this.lastSentText.size) {
             return ""
         }
-        // 字节安全切片：若 lastDeltaLen 落在 UTF-8 字符中间（流式帧边界），
-        // 回退到上一个合法字符边界，避免抛 Invalid utf8
-        var start = this.lastDeltaLen
+        // 从已发送长度开始，找到合法字符边界作为增量起点
+        var cut = this.lastSentText.size
         var delta = ""
-        while (start < this.text.size) {
+        while (cut <= cur.size) {
             try {
-                delta = this.text[start..this.text.size]
+                delta = cur[cut..cur.size]
                 break
             } catch (e: Exception) {
-                start -= 1
+                cut -= 1
             }
         }
-        this.lastDeltaLen = this.text.size
+        // 记录已发送到 cut（含回退的半个字符，下次补齐）
+        if (cut > 0) {
+            this.lastSentText = cur[0..cut]
+        }
         return delta
     }
 
