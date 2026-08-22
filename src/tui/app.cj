@@ -5,21 +5,22 @@ import std.sync.*
 import cjterm.*
 
 /**
- * TUI 应用：简单对话界面
+ * TUI 应用：对话界面
  *
- * 布局：
- *   ┌──────────────────────────┐
- *   │ 输出区（滚动，历史消息）   │
- *   ├──────────────────────────┤
- *   │ 输入行: cjh> …            │
- *   └──────────────────────────┘
+ * 布局（全量重绘，每行 moveTo 精确定位）：
+ *   行 1    标题
+ *   行 2..N 输出区（滚动）
+ *   行 N-1  状态行（保存提示等）
+ *   行 N    输入行 cjh>
  *
- * 差分渲染：维护 screen 期望状态，仅输出变化行。
+ * 关键设计（吸取教训）：
+ * - 全量重绘 + 每行 moveTo + clearLine：避免 \n 链式换行的 wrap 漂移
+ * - 行宽按码点截断：防终端自动换行破坏对齐
+ * - output/dirty 用 Mutex：agent 在 spawn 线程写入，主循环渲染
+ * - 所有 print 带 flush: true：即时上屏
  */
 public class TuiApp {
     private let term: Term
-    private var screen: Screen
-    private var prev: Screen
     private var output: StringBuilder
     private var outputLock: Mutex
     private var inputLine: String = ""
@@ -31,14 +32,9 @@ public class TuiApp {
 
     // 事件回调：提交输入时触发
     public var onSubmit: (String) -> Unit = { _ => }
-    // 追加输出后刷新
-    public var onOutputAppend: (String) -> Unit = { _ => }
 
     public init() {
         this.term = Term()
-        let (rows, cols) = TermSize.get()
-        this.screen = Screen(rows, cols)
-        this.prev = Screen(rows, cols)
         this.output = StringBuilder()
         this.outputLock = Mutex()
     }
@@ -50,15 +46,12 @@ public class TuiApp {
         this.render()
 
         while (this.running) {
-            // 按键处理
             if (let Some(key) <- this.term.readKey()) {
                 this.handleKey(key)
             }
-            // 输出刷新（由 onOutputAppend 或提交触发）
             if (this.takeDirty()) {
                 this.render()
             }
-            // 让出 CPU
             sleep(Duration.millisecond * 5)
         }
 
@@ -68,7 +61,7 @@ public class TuiApp {
     }
 
     /**
-     * 追加一行到输出区
+     * 追加一行到输出区（线程安全）
      */
     public func appendOutput(text: String): Unit {
         this.outputLock.lock()
@@ -98,54 +91,12 @@ public class TuiApp {
         this.render()
     }
 
-    private func handleKey(key: KeyEvent): Unit {
-        if (key.isCtrlC) {
-            this.running = false
-            return
-        }
-        // 滚动：PageUp/PageDown + Ctrl-U/Ctrl-D
-        if (key.isCtrlU) {
-            this.scrollUp(10)
-            this.markDirty()
-            return
-        }
-        if (key.isCtrlD) {
-            this.scrollDown(10)
-            this.markDirty()
-            return
-        }
-        if (key.isPageUp) {
-            this.scrollUp(5)
-            this.markDirty()
-            return
-        }
-        if (key.isPageDown) {
-            this.scrollDown(5)
-            this.markDirty()
-            return
-        }
-        if (key.isEnter) {
-            let line = this.inputLine
-            this.inputLine = ""
-            if (line.size > 0) {
-                this.appendOutput("cjh> ${line}")
-                this.onSubmit(line)
-            }
-            this.markDirty()
-            return
-        }
-        if (key.isBackspace) {
-            if (this.inputLine.size > 0) {
-                this.inputLine = this.inputLine[0..this.inputLine.size - 1]
-                this.markDirty()
-            }
-            return
-        }
-        // 可打印字符
-        if (key.ch >= 32 && key.ch < 127) {
-            this.inputLine += Rune(key.ch).toString()
-            this.markDirty()
-        }
+    /**
+     * 设置底部状态行（线程安全）
+     */
+    public func setStatus(text: String): Unit {
+        this.statusLine = text
+        this.markDirty()
     }
 
     /**
@@ -174,26 +125,47 @@ public class TuiApp {
         }
     }
 
-    /**
-     * 设置底部状态行（保存提示等，不污染输出区）
-     */
-    public func setStatus(text: String): Unit {
-        this.statusLine = text
-        this.markDirty()
+    private func handleKey(key: KeyEvent): Unit {
+        if (key.isCtrlC) {
+            this.running = false
+            return
+        }
+        if (key.isCtrlU || key.isPageUp) {
+            this.scrollUp(8)
+            this.markDirty()
+            return
+        }
+        if (key.isCtrlD || key.isPageDown) {
+            this.scrollDown(8)
+            this.markDirty()
+            return
+        }
+        if (key.isEnter) {
+            let line = this.inputLine
+            this.inputLine = ""
+            if (line.size > 0) {
+                this.appendOutput("cjh> ${line}")
+                this.onSubmit(line)
+            }
+            this.markDirty()
+            return
+        }
+        if (key.isBackspace) {
+            if (this.inputLine.size > 0) {
+                this.inputLine = this.inputLine[0..this.inputLine.size - 1]
+                this.markDirty()
+            }
+            return
+        }
+        if (key.ch >= 32 && key.ch < 127) {
+            this.inputLine += Rune(key.ch).toString()
+            this.markDirty()
+        }
     }
 
     private func scrollUp(n: Int64): Unit {
-        let (rows, _) = TermSize.get()
-        let maxOut = rows - 3
-        this.outputLock.lock()
-        let outStr = this.output.toString()
-        this.outputLock.unlock()
-        let outLines = outStr.split("\n", -1)
-        let maxOffset = if (outLines.size > maxOut) { outLines.size - maxOut } else { 0 }
         this.scrollOffset += n
-        if (this.scrollOffset > maxOffset) {
-            this.scrollOffset = maxOffset
-        }
+        // 上限由 render 修正
     }
 
     private func scrollDown(n: Int64): Unit {
@@ -205,47 +177,77 @@ public class TuiApp {
 
     private func render(): Unit {
         let (rows, cols) = TermSize.get()
-        // 尺寸变化时重建
-        if (rows != this.screen.rows || cols != this.screen.cols) {
-            this.screen = Screen(rows, cols)
-            this.prev = Screen(rows, cols)
+        if (rows < 4) {
+            return
         }
 
-        // 输出区：滚动显示（offset=0 最新，向上翻看历史）
         this.outputLock.lock()
         let outStr = this.output.toString()
         this.outputLock.unlock()
         let outLines = outStr.split("\n", -1)
+
+        // 布局：行1 标题；行2..rows-2 输出区；行 rows-1 状态；行 rows 输入
         let maxOut = rows - 3
         let maxOffset = if (outLines.size > maxOut) { outLines.size - maxOut } else { 0 }
-        if (this.scrollOffset < 0) {
-            this.scrollOffset = 0
-        }
         if (this.scrollOffset > maxOffset) {
             this.scrollOffset = maxOffset
+        }
+        if (this.scrollOffset < 0) {
+            this.scrollOffset = 0
         }
         var startIdx = outLines.size - maxOut - this.scrollOffset
         if (startIdx < 0) {
             startIdx = 0
         }
 
-        // 全量重绘（可靠优先）：标题 + 输出区 + 状态行 + 输入行
         var sb = StringBuilder()
         sb.append(Ansi.clearScreen())
+
+        // 标题
         sb.append(Ansi.moveTo(1, 1))
-        sb.append(Ansi.bold() + "cjh - Cangjie Coding Agent" + Ansi.reset() + "\n")
+        sb.append(Ansi.clearLine())
+        sb.append(Ansi.bold() + "cjh - Cangjie Coding Agent" + Ansi.reset())
+
+        // 输出区
         var r: Int64 = 0
         for (i in startIdx..outLines.size) {
             if (r >= maxOut) {
                 break
             }
-            sb.append(outLines[i] + "\n")
+            sb.append(Ansi.moveTo(r + 2, 1))
+            sb.append(Ansi.clearLine())
+            sb.append(this.truncateLine(outLines[i], cols))
             r += 1
         }
+
         // 状态行
-        sb.append(Ansi.fg(Ansi.COLOR_DARK) + this.statusLine + Ansi.reset() + "\n")
+        sb.append(Ansi.moveTo(rows - 1, 1))
+        sb.append(Ansi.clearLine())
+        sb.append(Ansi.fg(Ansi.COLOR_DARK) + this.truncateLine(this.statusLine, cols) + Ansi.reset())
+
         // 输入行
+        sb.append(Ansi.moveTo(rows, 1))
+        sb.append(Ansi.clearLine())
         sb.append(Ansi.fg(Ansi.COLOR_CYAN) + "cjh> " + Ansi.reset() + this.inputLine)
+
+        // 光标定位到输入末尾
+        sb.append(Ansi.moveTo(rows, 6 + this.inputLine.size))
         print(sb.toString(), flush: true)
+    }
+
+    /**
+     * 截断行到列宽（按码点，防终端自动换行破坏对齐）
+     */
+    private func truncateLine(text: String, cols: Int64): String {
+        var sb = StringBuilder()
+        var w: Int64 = 0
+        for (cp in text) {
+            if (w >= cols - 1) {
+                break
+            }
+            sb.append(Rune(cp).toString())
+            w += 1
+        }
+        return sb.toString()
     }
 }

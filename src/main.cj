@@ -247,6 +247,8 @@ func runCli(sessionId: String): Int64 {
  * TUI 交互模式（默认）
  */
 func runTui(sessionId: String): Int64 {
+    // TUI 全屏模式：立即屏蔽 stderr（配置生成等提示不污染屏幕）
+    Stderr.suppress()
     let registry = ToolRegistry()
     registry.register(BashTool())
     registry.register(ReadTool())
@@ -324,14 +326,10 @@ func runTui(sessionId: String): Int64 {
 
         SessionState.current = curSessionId
         tui.onSubmit = { input =>
-            File.writeTo("/tmp/tui_submit.log", "submit: ${input}\n".toArray())
             // 异步执行 agent（TUI 主循环持续渲染，避免阻塞）
             spawn {
-                File.writeTo("/tmp/tui_spawn.log", "spawn entered\n".toArray())
                 try {
-                    eprintln("[tui-spawn] start: ${input}")
                     let answer = agent.run(input)
-                    eprintln("[tui-spawn] done len=${answer.size}")
                     if (StreamState.active) {
                         tui.appendOutput(Ansi.reset())
                         StreamState.active = false
@@ -353,8 +351,10 @@ func runTui(sessionId: String): Int64 {
         }
 
         tui.run()
+        Stderr.restore()
         return 0
     } catch (e: Exception) {
+        Stderr.restore()
         eprintln("启动失败: ${e}")
         return 1
     }

@@ -351,3 +351,61 @@ public class TermEsc {
     public static let PGUP: String = ESC + "[5~"
     public static let PGDN: String = ESC + "[6~"
 }
+
+/**
+ * stderr 重定向（TUI 全屏模式屏蔽 stderr 污染屏幕）
+ */
+@C
+foreign func open(path: CString, flags: Int32): Int32
+
+@C
+foreign func dup2(oldfd: Int32, newfd: Int32): Int32
+
+@C
+foreign func close(fd: Int32): Int32
+
+@C
+foreign func dup(fd: Int32): Int32
+
+public class Stderr {
+    private static var savedFd: Int32 = -1
+
+    /**
+     * 屏蔽 stderr（重定向到 /dev/null），返回是否成功
+     */
+    public static func suppress(): Bool {
+        unsafe {
+            if (Stderr.savedFd >= 0) {
+                return true  // 已屏蔽
+            }
+            // 保存当前 stderr fd
+            let saved = dup(2)
+            if (saved < 0) {
+                return false
+            }
+            // 打开 /dev/null
+            let devnull = open(LibC.mallocCString("/dev/null"), 1 /* O_WRONLY */)
+            if (devnull < 0) {
+                close(saved)
+                return false
+            }
+            dup2(devnull, 2)
+            close(devnull)
+            Stderr.savedFd = saved
+            return true
+        }
+    }
+
+    /**
+     * 恢复 stderr
+     */
+    public static func restore(): Unit {
+        unsafe {
+            if (Stderr.savedFd >= 0) {
+                dup2(Stderr.savedFd, 2)
+                close(Stderr.savedFd)
+                Stderr.savedFd = -1
+            }
+        }
+    }
+}
