@@ -251,13 +251,25 @@ public class TuiApp {
     }
 
     private func handleKey(key: KeyEvent): Unit {
-        // 审批模式优先：等待用户 y/n 决策（危险操作审批链）
+        // Ctrl+C 最高优先级：任何模式（含审批等待中）下都退出
+        if (key.isCtrlC) {
+            // 若有等待中的审批：写回 false 让其解除阻塞（避免 agent 线程悬挂）
+            this.approvalLock.lock()
+            if (this.pendingApproval.isSome()) {
+                this.approvalResult = Some(false)
+                this.pendingApproval = None
+            }
+            this.approvalLock.unlock()
+            this.running = false
+            return
+        }
+        // 审批模式：等待用户 y/n 决策（危险操作审批链）
         this.approvalLock.lock()
         let hasPending = this.pendingApproval.isSome()
         this.approvalLock.unlock()
         if (hasPending) {
             var approve: Option<Bool> = None
-            if (key.isCtrlC || key.isEsc) {
+            if (key.isEsc) {
                 approve = Some(false)
             } else if (key.ch == 121 || key.ch == 89) {  // y / Y
                 approve = Some(true)
@@ -270,6 +282,8 @@ public class TuiApp {
             if (let Some(a) <- approve) {
                 this.approvalLock.lock()
                 this.approvalResult = Some(a)
+                // 审批完成：清除待审批状态，后续按键恢复正常分发
+                this.pendingApproval = None
                 this.approvalLock.unlock()
                 this.markDirty()
             }
@@ -281,10 +295,6 @@ public class TuiApp {
             "up=${key.isArrowUp} down=${key.isArrowDown} tab=${key.isTab} " +
             "enter=${key.isEnter} back=${key.isBackspace} mouse=${key.isMouse} " +
             "picker=${this.picker.isVisible()}")
-        if (key.isCtrlC) {
-            this.running = false
-            return
-        }
         if (key.escapeSeq == TermEsc.ESC) {
             // 裸 Esc（仅单个 ESC；方向键/功能键序列 ESC[A 等 ch 也是 27，但 escapeSeq 更长）
             // 关闭下拉框（不退出）
