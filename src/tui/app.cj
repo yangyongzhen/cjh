@@ -9,38 +9,40 @@ import stdx.logger.*
 import cjterm.*
 
 /**
- * TUI 应用：对话界面
+ * TUI 应用：对话界面（组件化编排）
  *
- * 布局（全量重绘，每行 moveTo 精确定位）：
- *   行 1    标题
- *   行 2..N 输出区（滚动）
- *   行 N-1  状态行（保存提示等）
- *   行 N    输入行 cjh>
+ * 布局（0-based 行，TuiCanvas 差分渲染）：
+ *   0..4  logo 区
+ *   5     标题栏（含模型徽章）
+ *   6     分隔线
+ *   7..   输出区（OutputView，可滚动）
+ *   rows-2 状态行（StatusBar）
+ *   rows-1 输入行（InputBox）
+ *   （可选）picker 下拉补全框覆盖在输入行上方
  *
- * 关键设计（吸取教训）：
- * - 全量重绘 + 每行 moveTo + clearLine：避免 \n 链式换行的 wrap 漂移
- * - 行宽按码点截断：防终端自动换行破坏对齐
- * - output/dirty 用 Mutex：agent 在 spawn 线程写入，主循环渲染
- * - 所有 print 带 flush: true：即时上屏
+ * 组件：OutputView / InputBox / StatusBar / ListPicker 由 cjterm 提供，
+ * TuiApp 只做编排（布局 + 输入分发 + 线程安全包装），不再持有渲染细节。
+ *
+ * 线程模型（保持原语义）：
+ * - agent 在 spawn 线程写入：appendOutput/appendDelta/endStream/setStatus
+ * - 主循环读键 + 渲染；outputLock 保护 OutputView 的读写
  */
 public class TuiApp {
     private let term: Term
-    private var output: StringBuilder
-    private var outputLock: Mutex
-    private var inputLine: String = ""
+    // 组件（cjterm 可复用件）
+    private var outputView: OutputView = OutputView()
+    private var inputBox: InputBox = InputBox()
+    private var statusBar: StatusBar = StatusBar()
+    private var canvas: TuiCanvas = TuiCanvas()
+    // / 命令下拉补全框（ListPicker 组件）
+    private var picker: ListPicker = ListPicker()
+    // 输出锁（agent 线程写、主循环读）
+    private var outputLock: Mutex = Mutex()
     private var running: Bool = true
     private var dirty: Bool = true
     private var dirtyLock: Mutex = Mutex()
     private var renderLock: Mutex = Mutex()
-    private var scrollOffset: Int64 = 0
-    private var statusLine: String = ""
     private var modelName: String = ""
-    // 流式段起点（output 中的字节偏移；-1 表示无活动流式段）
-    private var streamStartPos: Int64 = -1
-    // 差分渲染：上次每行已渲染内容（尺寸变化/首帧时清空强制全量重绘）
-    private var prevLines: ArrayList<String> = ArrayList<String>()
-    // / 命令下拉补全框（ListPicker 组件）
-    private var picker: ListPicker = ListPicker()
     // 文件日志（TUI stderr 被屏蔽，写文件排查按键/下拉框问题）
     private var logger: Logger = NoopLogger()
 
@@ -49,13 +51,11 @@ public class TuiApp {
         "/help", "/new", "/resume", "/model", "/settings", "/quit",
     ]
 
-    // 事件回调：提交输入时触发
+    // 事件回调：提交输入时触发（外部接线）
     public var onSubmit: (String) -> Unit = { _ => }
 
     public init() {
         this.term = Term()
-        this.output = StringBuilder()
-        this.outputLock = Mutex()
         // 初始化文件日志（CJH_TUI_LOG 可覆盖路径；失败则降级 NoopLogger）
         try {
             let logPath = TermEnv.getenv("CJH_TUI_LOG") ?? "/tmp/cjh_tui.log"
@@ -65,6 +65,31 @@ public class TuiApp {
             this.logger = tl
         } catch (e: Exception) {
             this.logger = NoopLogger()
+        }
+        // 输入框回调接线
+        // 变更 → 刷新 / 命令候选
+        this.inputBox.onChange = { _ =>
+            this.refreshCandidates()
+        }
+        // 提交（Enter）→ 下拉确认 + 输出回显 + 外部 onSubmit
+        this.inputBox.onSubmit = { line =>
+            // 下拉框可见时：Enter 确认当前选中项（否则提交原始输入）
+            var finalLine = line
+            if (this.picker.isVisible()) {
+                let cur = this.picker.current()
+                if (cur.size > 0) {
+                    finalLine = cur
+                }
+                this.logger.debug("enter+pick: 选中项='${cur}' -> inputLine='${finalLine}'")
+            }
+            this.inputBox.clear()
+            this.picker.hide()
+            if (finalLine.size > 0) {
+                this.logger.info("submit: '${finalLine}'")
+                this.appendOutput(Ansi.fg(Ansi.THEME_ACCENT) + "❯ " + Ansi.reset() + finalLine)
+                this.onSubmit(finalLine)
+            }
+            this.markDirty()
         }
     }
 
@@ -107,10 +132,7 @@ public class TuiApp {
     public func appendOutput(text: String): Unit {
         this.outputLock.lock()
         try {
-            this.output.append(text)
-            if (text.size == 0 || text[text.size - 1] != 10u8) {
-                this.output.append("\n")
-            }
+            this.outputView.append(text)
         } finally {
             this.outputLock.unlock()
         }
@@ -123,11 +145,7 @@ public class TuiApp {
     public func appendDelta(text: String): Unit {
         this.outputLock.lock()
         try {
-            if (this.streamStartPos < 0) {
-                // 记录流式段起点（append 起点必为合法字符边界，可安全切片）
-                this.streamStartPos = this.output.toString().size
-            }
-            this.output.append(text)
+            this.outputView.appendDelta(text)
         } finally {
             this.outputLock.unlock()
         }
@@ -142,19 +160,7 @@ public class TuiApp {
     public func endStream(text: String): Unit {
         this.outputLock.lock()
         try {
-            if (this.streamStartPos >= 0) {
-                let full = this.output.toString()
-                var head = ""
-                if (this.streamStartPos > 0) {
-                    head = full[0..this.streamStartPos]
-                }
-                // 重建 StringBuilder：截断回流式段起点，再追加最终文本
-                let nb = StringBuilder()
-                nb.append(head)
-                this.output = nb
-                this.streamStartPos = -1
-            }
-            this.output.append(text)
+            this.outputView.endStream(text)
         } finally {
             this.outputLock.unlock()
         }
@@ -165,7 +171,7 @@ public class TuiApp {
      * 设置底部状态行（线程安全）
      */
     public func setStatus(text: String): Unit {
-        this.statusLine = text
+        this.statusBar.setStatus(text)
         this.markDirty()
     }
 
@@ -250,7 +256,7 @@ public class TuiApp {
             if (key.isTab) {
                 let cur = this.picker.current()
                 if (cur.size > 0) {
-                    this.inputLine = cur
+                    this.inputBox.setTextSilent(cur)
                 }
                 this.picker.hide()
                 this.refreshCandidates()
@@ -258,58 +264,14 @@ public class TuiApp {
                 return
             }
         }
-        if (key.isCtrlU || key.isPageUp) {
-            this.scrollUp(8)
+        // 组件分发：滚动键（OutputView）→ 输入键（InputBox 消费字符/退格/回车）
+        if (this.outputView.handleKey(key)) {
             this.markDirty()
             return
         }
-        if (key.isCtrlD || key.isPageDown) {
-            this.scrollDown(8)
+        if (this.inputBox.handleKey(key)) {
             this.markDirty()
             return
-        }
-        if (key.isEnter) {
-            // 下拉框可见时：Enter 确认当前选中项（否则提交原始输入）
-            if (this.picker.isVisible()) {
-                let cur = this.picker.current()
-                if (cur.size > 0) {
-                    this.inputLine = cur
-                }
-                this.logger.debug("enter+pick: 选中项='${cur}' -> inputLine='${this.inputLine}'")
-            }
-            let line = this.inputLine
-            this.inputLine = ""
-            this.picker.hide()
-            if (line.size > 0) {
-                this.logger.info("submit: '${line}'")
-                this.appendOutput(Ansi.fg(Ansi.THEME_ACCENT) + "❯ " + Ansi.reset() + line)
-                this.onSubmit(line)
-            }
-            this.markDirty()
-            return
-        }
-        if (key.isBackspace) {
-            if (this.inputLine.size > 0) {
-                // 按 UTF-8 字符删除（非字节）：从末尾递减试切片，直到合法字符边界
-                var cut = this.inputLine.size - 1
-                while (cut >= 0) {
-                    try {
-                        this.inputLine = this.inputLine[0..cut]
-                        break
-                    } catch (e: Exception) {
-                        cut -= 1
-                    }
-                }
-                this.refreshCandidates()
-                this.markDirty()
-            }
-            return
-        }
-        // 可打印字符（含中文等多字节 UTF-8）
-        if (key.text.size > 0 && !key.isEsc && !key.isEnter && !key.isBackspace) {
-            this.inputLine += key.text
-            this.refreshCandidates()
-            this.markDirty()
         }
     }
 
@@ -317,7 +279,7 @@ public class TuiApp {
      * 根据当前输入刷新 / 命令下拉候选（输入以 "/" 开头且无空格时弹出）
      */
     private func refreshCandidates(): Unit {
-        let line = this.inputLine
+        let line = this.inputBox.text()
         if (line.startsWith("/") && !line.contains(" ")) {
             var list = ArrayList<String>()
             for (cmd in TuiApp.SLASH_COMMANDS) {
@@ -337,18 +299,6 @@ public class TuiApp {
         }
     }
 
-    private func scrollUp(n: Int64): Unit {
-        this.scrollOffset += n
-        // 上限由 render 修正
-    }
-
-    private func scrollDown(n: Int64): Unit {
-        this.scrollOffset -= n
-        if (this.scrollOffset < 0) {
-            this.scrollOffset = 0
-        }
-    }
-
     private func render(): Unit {
         this.renderLock.lock()
         try {
@@ -364,68 +314,36 @@ public class TuiApp {
             return
         }
 
-        this.outputLock.lock()
-        let outStr = this.output.toString()
-        this.outputLock.unlock()
-        let outLines = outStr.split("\n", -1)
-
-        // 布局：行1-5 logo；行6 标题；行7 分隔；行8..输出区；rows-1 状态；rows 输入
-        let maxOut = rows - 7
-        let maxOffset = if (outLines.size > maxOut) { outLines.size - maxOut } else { 0 }
-        if (this.scrollOffset > maxOffset) {
-            this.scrollOffset = maxOffset
-        }
-        if (this.scrollOffset < 0) {
-            this.scrollOffset = 0
-        }
-        var startIdx = outLines.size - maxOut - this.scrollOffset
-        if (startIdx < 0) {
-            startIdx = 0
-        }
-
-        // 尺寸变化探测：首帧或 resize 时清空行缓存，强制全量重绘
-        if (this.term.sizeChanged()) {
-            this.prevLines = ArrayList<String>()
-        }
-
-        // 本次渲染各行内容（与 prevLines 对比，只输出变化行）
-        var lines = ArrayList<String>()
-        for (i in 0..rows) {
-            lines.add("")
-        }
-
+        // 开始新帧（尺寸变化时清缓存强制全量重绘）
+        this.canvas.begin(rows, cols, this.term.sizeChanged())
         let utf8 = this.term.isUtf8()
+
         // logo 区（5 行，box-drawing CJ 徽标）
         let logoLines = Logo.renderLines(utf8)
         var li: Int64 = 0
         for (l in logoLines) {
-            lines[li] = this.truncateLine(l, cols)
+            this.canvas.setLine(li, l)
             li += 1
         }
         // 标题栏（logo 下方独立行）
-        lines[5] = this.truncateLine(Logo.titleBar(utf8, this.modelName), cols)
+        this.canvas.setLine(5, Logo.titleBar(utf8, this.modelName))
         // 分隔线
-        lines[6] = this.truncateLine(Logo.separator(cols, utf8), cols)
+        this.canvas.setLine(6, Logo.separator(cols, utf8))
 
-        // 输出区（从行 8 开始）
-        var r: Int64 = 0
-        for (i in startIdx..outLines.size) {
-            if (r >= maxOut - 2) {
-                break
-            }
-            lines[r + 7] = this.truncateLine(outLines[i], cols)
-            r += 1
+        // 输出区（行 7 起，高度 = rows - 9：留给状态行 + 输入行）
+        let outHeight = if (rows - 9 > 0) { rows - 9 } else { 0 }
+        this.outputLock.lock()
+        try {
+            this.outputView.render(this.canvas, 7, cols, outHeight)
+        } finally {
+            this.outputLock.unlock()
         }
 
-        // 状态行（徽章：模型 + 会话 + 滚动提示）
-        var status = this.statusLine
-        if (status.size == 0) {
-            status = Logo.badge("ready", Ansi.THEME_OK)
-        }
-        lines[rows - 2] = this.truncateLine(status, cols)
+        // 状态行
+        this.statusBar.render(this.canvas, rows - 2, cols, 1)
 
-        // 输入行
-        lines[rows - 1] = Ansi.fg(Ansi.THEME_ACCENT) + "❯ " + Ansi.reset() + this.inputLine
+        // 输入行（InputBox 内部会设置光标）
+        this.inputBox.render(this.canvas, rows - 1, cols, 1)
 
         // / 命令下拉补全框：紧贴输入行上方渲染（覆盖状态行区域，最多 6 行）
         if (this.picker.isVisible() && this.picker.size() > 0) {
@@ -434,52 +352,12 @@ public class TuiApp {
             for (pi in 0..pickerRows) {
                 let lineIdx = rows - 1 - pickerRows + pi
                 if (lineIdx >= 8 && lineIdx <= rows - 1) {
-                    lines[lineIdx] = this.truncateLine(rendered[pi], cols)
+                    this.canvas.setLine(lineIdx, rendered[pi])
                 }
             }
         }
 
-        // 差分渲染：逐行对比，只重绘变化行（省掉未变化区域的 ANSI 输出）
-        var sb = StringBuilder()
-        for (i in 0..rows) {
-            let content = lines[i]
-            if (this.prevLines.size <= i || this.prevLines[i] != content) {
-                sb.append(Ansi.moveTo(i + 1, 1))
-                sb.append(Ansi.clearLine())
-                sb.append(content)
-                // 扩容并写入缓存
-                while (this.prevLines.size <= i) {
-                    this.prevLines.add("")
-                }
-                this.prevLines[i] = content
-            }
-        }
-
-        // 光标定位到输入末尾（按字符数，中文输入时光标不错位）
-        var cur = 3
-        for (c in this.inputLine) {
-            cur += 1
-        }
-        sb.append(Ansi.moveTo(rows, cur))
-        print(sb.toString(), flush: true)
-    }
-
-    /**
-     * 截断行到列宽（按码点，防终端自动换行破坏对齐）
-     */
-    private func truncateLine(text: String, cols: Int64): String {
-        if (text.size <= cols - 1) {
-            return text
-        }
-        // 字节安全截断：从目标字节数递减，直到落在字符边界（非边界切片抛异常）
-        var k = cols - 1
-        while (k > 0) {
-            try {
-                return text[0..k]
-            } catch (e: Exception) {
-                k -= 1
-            }
-        }
-        return ""
+        // 差分渲染：只输出变化行 + 光标定位（InputBox 已设置）
+        print(this.canvas.flush(), flush: true)
     }
 }
