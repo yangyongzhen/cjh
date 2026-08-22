@@ -45,6 +45,8 @@ public class CjhConfig {
     public var maxTokens: Int64 = 4096
     // 可选模型列表（settings.json "models": [...]；/model 可切换）
     public var models: ArrayList<ModelEntry> = ArrayList<ModelEntry>()
+    // 三域 capability 安全模型（settings.json "capability": {...}；未配置=宽松模式）
+    public var capability: Capability = Capability.fromJson(None)
 
     public init() {
         // 配置目录：环境变量覆盖，默认 ~/.cjh
@@ -90,7 +92,7 @@ public class CjhConfig {
      */
     private func settingsTemplate(): String {
         return "{\n" +
-            "  \"_说明\": \"可选配置，默认即可运行。支持 base_url / model / max_iterations / system_prompt / temperature / max_tokens / models\",\n" +
+            "  \"_说明\": \"可选配置，默认即可运行。支持 base_url / model / max_iterations / system_prompt / temperature / max_tokens / models / capability。capability 为三域安全白名单（commands 命令 / tools 工具 / resources 文件与危险命令），配置后未声明即拒绝，详见 docs/进度记录 V2a\",\n" +
             "  \"base_url\": \"https://api.openai.com/v1/chat/completions\",\n" +
             "  \"model\": \"gpt-4o-mini\",\n" +
             "  \"max_iterations\": 10,\n" +
@@ -175,6 +177,10 @@ public class CjhConfig {
                             case JsonKind.JsInt => this.maxTokens = v.asInt().getValue()
                             case _ => ()
                         }
+                    }
+                    // capability 三域安全模型（未配置=宽松模式）
+                    if (let Some(v) <- obj.get("capability")) {
+                        this.capability = Capability.fromJson(Some(v))
                     }
                     // models 列表：每项可覆盖 id/name/base_url/api_key/temperature/max_tokens
                     if (let Some(v) <- obj.get("models")) {

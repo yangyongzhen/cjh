@@ -5,6 +5,7 @@ import stdx.encoding.json.*
 import cjllm.*
 import cjh.tools.*
 import cjllm.*
+import cjcfg.*
 
 /**
  * Agent 配置
@@ -12,10 +13,19 @@ import cjllm.*
 public class AgentConfig {
     public let systemPrompt: String
     public let maxIterations: Int64
+    // 三域 capability 安全模型（未配置=宽松模式，全部允许）
+    public let capability: Capability
 
     public init(systemPrompt: String, maxIterations: Int64) {
         this.systemPrompt = systemPrompt
         this.maxIterations = maxIterations
+        this.capability = Capability()
+    }
+
+    public init(systemPrompt: String, maxIterations: Int64, capability: Capability) {
+        this.systemPrompt = systemPrompt
+        this.maxIterations = maxIterations
+        this.capability = capability
     }
 }
 
@@ -38,6 +48,8 @@ public class Agent {
     public var onToolStart: (String, JsonObject) -> Unit = { n, a => }
     public var onToolResult: (String, ToolResult) -> Unit = { n, r => }
     public var onAssistantText: (String) -> Unit = { t => }
+    // 审批回调：危险操作需人工确认时调用，返回 true=同意执行（默认拒绝）
+    public var onApproval: (String, JsonObject, String) -> Bool = { n, a, r => false }
 
     public init(provider: LlmProvider, tools: ToolRegistry, config: AgentConfig) {
         this.provider = provider
@@ -80,7 +92,7 @@ public class Agent {
                 }
                 for (tc in response.toolCalls) {
                     this.onToolStart(tc.name, tc.arguments)
-                    let result = this.tools.execute(tc.name, tc.arguments)
+                    let result = this.executeGuarded(tc.name, tc.arguments)
                     this.onToolResult(tc.name, result)
                     // tool 结果回填
                     this.messages.add(ChatMessage("tool", result.content, tc.id, tc.name))
@@ -96,6 +108,57 @@ public class Agent {
             return response.text
         }
         return "[已达最大迭代次数 ${this.config.maxIterations}]"
+    }
+
+    /**
+     * 带安全护栏的工具执行：
+     * 1. 工具域检查（白名单/拒绝/审批）
+     * 2. bash 命令域检查（命令白名单 + 危险命令黑名单）
+     * 3. 文件资源域检查（fs glob 白名单/排除，write 区分读写）
+     * 未配置 capability 时（宽松模式）全部放行，行为与旧版一致
+     */
+    private func executeGuarded(name: String, args: JsonObject): ToolResult {
+        let cap = this.config.capability
+        // 1. 工具域
+        match (cap.checkTool(name)) {
+            case CapDecision.Allow => ()
+            case CapDecision.Deny(reason) =>
+                return ToolResult("被安全策略拒绝: ${reason}", true)
+            case CapDecision.NeedApproval(reason) =>
+                if (!this.onApproval(name, args, reason)) {
+                    return ToolResult("操作被用户拒绝（${reason}）", true)
+                }
+        }
+        // 2/3. 命令域 + 资源域（按工具类型检查参数）
+        let cmd = args.get("command")
+        if (cmd.isSome() && name == "bash") {
+            let c = cmd.getOrThrow().asString().getValue()
+            match (cap.checkCommand(c)) {
+                case CapDecision.Allow => ()
+                case CapDecision.Deny(reason) =>
+                    return ToolResult("被安全策略拒绝: ${reason}", true)
+                case CapDecision.NeedApproval(reason) =>
+                    if (!this.onApproval(name, args, reason)) {
+                        return ToolResult("操作被用户拒绝（${reason}）", true)
+                    }
+            }
+        }
+        let path = args.get("path")
+        if (path.isSome() && (name == "read_file" || name == "write_file" || name == "grep" || name == "list_dir")) {
+            let p = path.getOrThrow().asString().getValue()
+            let isWrite = (name == "write_file")
+            match (cap.checkPath(p, isWrite)) {
+                case CapDecision.Allow => ()
+                case CapDecision.Deny(reason) =>
+                    return ToolResult("被安全策略拒绝: ${reason}", true)
+                case CapDecision.NeedApproval(reason) =>
+                    if (!this.onApproval(name, args, reason)) {
+                        return ToolResult("操作被用户拒绝（${reason}）", true)
+                    }
+            }
+        }
+        // 全部通过：正常执行
+        return this.tools.execute(name, args)
     }
 
     /**

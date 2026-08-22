@@ -46,6 +46,12 @@ public class TuiApp {
     // 文件日志（TUI stderr 被屏蔽，写文件排查按键/下拉框问题）
     private var logger: Logger = NoopLogger()
 
+    // ── 审批链（危险操作需人工确认）──
+    // agent 线程 requestApproval() 阻塞等待；主循环读 y/n 后写回结果
+    private var approvalLock: Mutex = Mutex()
+    private var pendingApproval: Option<String> = None
+    private var approvalResult: Option<Bool> = None
+
     // 斜杠命令候选（对齐 main.cj handleSlashCommand 支持的命令）
     private static let SLASH_COMMANDS: Array<String> = [
         "/help", "/new", "/resume", "/model", "/settings", "/quit",
@@ -116,6 +122,29 @@ public class TuiApp {
         this.term.disableRaw()
         print(Ansi.showCursor(), flush: true)
         print(Ansi.clearScreen(), flush: true)
+    }
+
+    /**
+     * 请求人工审批（agent 线程调用，阻塞直到用户在 TUI 中按 y/n）。
+     * 返回 true=同意执行，false=拒绝。
+     */
+    public func requestApproval(prompt: String): Bool {
+        this.approvalLock.lock()
+        this.pendingApproval = Some(prompt)
+        this.approvalResult = None
+        this.approvalLock.unlock()
+        this.markDirty()
+        // 等待主循环读键写回结果
+        while (true) {
+            this.approvalLock.lock()
+            let result = this.approvalResult
+            this.approvalLock.unlock()
+            if (let Some(r) <- result) {
+                return r
+            }
+            sleep(Duration.millisecond * 5)
+        }
+        return false  // 不可达（while true 仅被 return 退出）
     }
 
     /**
@@ -222,6 +251,30 @@ public class TuiApp {
     }
 
     private func handleKey(key: KeyEvent): Unit {
+        // 审批模式优先：等待用户 y/n 决策（危险操作审批链）
+        this.approvalLock.lock()
+        let hasPending = this.pendingApproval.isSome()
+        this.approvalLock.unlock()
+        if (hasPending) {
+            var approve: Option<Bool> = None
+            if (key.isCtrlC || key.isEsc) {
+                approve = Some(false)
+            } else if (key.ch == 121 || key.ch == 89) {  // y / Y
+                approve = Some(true)
+            } else if (key.ch == 110 || key.ch == 78) {  // n / N
+                approve = Some(false)
+            } else if (key.isEnter) {
+                // 回车默认拒绝（谨慎默认）
+                approve = Some(false)
+            }
+            if (let Some(a) <- approve) {
+                this.approvalLock.lock()
+                this.approvalResult = Some(a)
+                this.approvalLock.unlock()
+                this.markDirty()
+            }
+            return
+        }
         // 文件日志：记录每个按键的完整形态（排查方向键/下拉框问题）
         this.logger.debug(
             "key ch=${key.ch} esc=${key.escapeSeq} text='${key.text}' " +
@@ -339,8 +392,28 @@ public class TuiApp {
             this.outputLock.unlock()
         }
 
-        // 状态行
-        this.statusBar.render(this.canvas, rows - 2, cols, 1)
+        // 状态行（审批模式：显示审批提示）
+        this.approvalLock.lock()
+        let pending = this.pendingApproval
+        this.approvalLock.unlock()
+        if (let Some(p) <- pending) {
+            // 字节安全截断（避免切片落在 UTF-8 字符中间抛异常）
+            var prompt = p
+            if (p.size > 40) {
+                var k: Int64 = 40
+                while (k > 0) {
+                    try {
+                        prompt = p[0..k] + "…"
+                        break
+                    } catch (e: Exception) {
+                        k -= 1
+                    }
+                }
+            }
+            this.canvas.setLine(rows - 2, Ansi.fg(Ansi.COLOR_YELLOW) + "⚠ 审批: ${prompt}  [y]=同意 [n]/[Esc]=拒绝" + Ansi.reset())
+        } else {
+            this.statusBar.render(this.canvas, rows - 2, cols, 1)
+        }
 
         // 输入行（InputBox 内部会设置光标）
         this.inputBox.render(this.canvas, rows - 1, cols, 1)

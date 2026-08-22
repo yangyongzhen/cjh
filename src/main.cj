@@ -60,7 +60,7 @@ func runMockVerify(): Int64 {
     agent.onToolResult = { name, result =>
         var preview = result.content
         if (preview.size > 60) {
-            preview = preview[0..60] + "…"
+            preview = truncateUtf8(preview, 60) + "…"
         }
         println("  ↳ ${name} 结果: ${preview}")
     }
@@ -131,6 +131,26 @@ func readLineFromStdIn(): Option<String> {
     }
 }
 
+/**
+ * 字节安全截断：最多截取 maxBytes 字节，若落在 UTF-8 多字节字符中间则递减到合法边界
+ * （与 cjterm TuiCanvas.truncate 同思路；避免 String 切片在字符中间抛
+ *  IllegalArgumentException: Invalid utf8 byte sequence）
+ */
+func truncateUtf8(text: String, maxBytes: Int64): String {
+    if (text.size <= maxBytes) {
+        return text
+    }
+    var k = maxBytes
+    while (k > 0) {
+        try {
+            return text[0..k]
+        } catch (e: Exception) {
+            k -= 1
+        }
+    }
+    return ""
+}
+
 main(args: Array<String>): Int64 {
     if (args.size > 0 && args[0] == "--mock") {
         return runMockVerify()
@@ -172,7 +192,8 @@ func runCli(sessionId: String): Int64 {
 
     let config = AgentConfig(
         cjhCfg.systemPrompt,
-        cjhCfg.maxIterations)
+        cjhCfg.maxIterations,
+        cjhCfg.capability)
 
     try {
         let provider: LlmProvider
@@ -204,10 +225,23 @@ func runCli(sessionId: String): Int64 {
         agent.onToolResult = { name, result =>
             var preview = result.content
             if (preview.size > 800) {
-                preview = preview[0..800] + "\n…（截断）"
+                preview = truncateUtf8(preview, 800) + "\n…（截断）"
             }
             println("  ↳ ${name} → ${preview}")
             println("")
+        }
+        // 审批链：CLI 模式读 stdin 一行 y/n（空/其它=拒绝；EOF 也拒绝，谨慎默认）
+        agent.onApproval = { name, args, reason =>
+            println("")
+            println("⚠ 需人工确认: ${name} ${args.toJsonString()}")
+            println("  ${reason}")
+            print("  同意执行? [y/N] ", flush: true)
+            let line = readLineFromStdIn()
+            if (line.isNone()) {
+                return false
+            }
+            let answer = line.getOrThrow().trimAscii()
+            return (answer == "y" || answer == "Y" || answer == "yes")
         }
         agent.onAssistantText = { text =>
             println("── 最终答复 ──")
@@ -216,7 +250,7 @@ func runCli(sessionId: String): Int64 {
 
         // 交互循环
         while (true) {
-            print("\n❯ ")
+            print("\n❯ ", flush: true)
             let line = readLineFromStdIn()
             if (line.isNone()) {
                 break
@@ -268,7 +302,8 @@ func runTui(sessionId: String): Int64 {
 
     let config = AgentConfig(
         cjhCfg.systemPrompt,
-        cjhCfg.maxIterations)
+        cjhCfg.maxIterations,
+        cjhCfg.capability)
 
     try {
         let provider: LlmProvider
@@ -319,9 +354,14 @@ func runTui(sessionId: String): Int64 {
         agent.onToolResult = { name, result =>
             var preview = result.content
             if (preview.size > 200) {
-                preview = preview[0..200] + "…"
+                preview = truncateUtf8(preview, 200) + "…"
             }
             TuiBridge.output(Ansi.fg(Ansi.COLOR_GRAY) + "  ↳ ${name}: ${preview}" + Ansi.reset())
+        }
+        // 审批链：危险操作需人工确认时，在 TUI 内嵌审批（y/n）
+        agent.onApproval = { name, args, reason =>
+            TuiBridge.output(Ansi.fg(Ansi.COLOR_YELLOW) + "⚠ 需人工确认: ${name} ${args.toJsonString()}" + Ansi.reset())
+            TuiBridge.requestApproval(reason)
         }
         agent.onAssistantText = { text =>
             if (StreamState.active) {
@@ -577,6 +617,16 @@ class TuiBridge {
         if (let Some(a) <- TuiBridge.app) {
             a.setStatus(text)
         }
+    }
+
+    /**
+     * 请求人工审批（agent 线程调用；阻塞直到用户在 TUI 按 y/n）
+     */
+    public static func requestApproval(prompt: String): Bool {
+        if (let Some(a) <- TuiBridge.app) {
+            return a.requestApproval(prompt)
+        }
+        return false
     }
 }
 
