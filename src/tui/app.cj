@@ -27,6 +27,7 @@ public class TuiApp {
     private var running: Bool = true
     private var dirty: Bool = true
     private var dirtyLock: Mutex = Mutex()
+    private var renderLock: Mutex = Mutex()
     private var scrollOffset: Int64 = 0
     private var statusLine: String = ""
     private var modelName: String = ""
@@ -88,8 +89,7 @@ public class TuiApp {
             this.outputLock.unlock()
         }
         this.markDirty()
-        // 立即渲染一次，实现流式效果
-        this.render()
+        // 由主循环统一渲染（跨线程直接 render 会导致并发写 stdout、光标错乱）
     }
 
     /**
@@ -185,6 +185,15 @@ public class TuiApp {
     }
 
     private func render(): Unit {
+        this.renderLock.lock()
+        try {
+            this.renderInner()
+        } finally {
+            this.renderLock.unlock()
+        }
+    }
+
+    private func renderInner(): Unit {
         let (rows, cols) = TermSize.get()
         if (rows < 4) {
             return
