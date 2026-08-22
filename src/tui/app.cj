@@ -239,15 +239,18 @@ public class TuiApp {
      * 截断行到列宽（按码点，防终端自动换行破坏对齐）
      */
     private func truncateLine(text: String, cols: Int64): String {
-        var sb = StringBuilder()
-        var w: Int64 = 0
-        for (cp in text) {
-            if (w >= cols - 1) {
-                break
-            }
-            sb.append(Rune(cp).toString())
-            w += 1
+        if (text.size <= cols - 1) {
+            return text
         }
-        return sb.toString()
+        // 字节安全截断：从目标字节数递减，直到落在字符边界（非边界切片抛异常）
+        var k = cols - 1
+        while (k > 0) {
+            try {
+                return text[0..k]
+            } catch (e: Exception) {
+                k -= 1
+            }
+        }
+        return ""
     }
 }

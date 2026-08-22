@@ -48,9 +48,8 @@ public class MockProvider <: LlmProvider {
             case _ =>
                 // 最终答复：分帧回调模拟流式
                 let finalText = "FINAL-DONE: 验证完成，工具链正常"
-                for (i in 0..finalText.size) {
-                    onDelta(finalText[i].toString())
-                }
+                // 整体回调（避免逐字节/码点重建的 mojibake 风险）
+                onDelta(finalText)
                 return ModelResponse(finalText, ArrayList<ToolCall>())
         }
     }

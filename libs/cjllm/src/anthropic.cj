@@ -275,7 +275,18 @@ public class AnthropicAccumulator {
         if (this.text.size <= this.lastDeltaLen) {
             return ""
         }
-        let delta = this.text[this.lastDeltaLen..this.text.size]
+        // 字节安全切片：若 lastDeltaLen 落在 UTF-8 字符中间（流式帧边界），
+        // 回退到上一个合法字符边界，避免抛 Invalid utf8
+        var start = this.lastDeltaLen
+        var delta = ""
+        while (start < this.text.size) {
+            try {
+                delta = this.text[start..this.text.size]
+                break
+            } catch (e: Exception) {
+                start -= 1
+            }
+        }
         this.lastDeltaLen = this.text.size
         return delta
     }
