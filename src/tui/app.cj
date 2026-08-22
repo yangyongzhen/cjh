@@ -268,8 +268,12 @@ public class TuiApp {
         sb.append(Ansi.clearLine())
         sb.append(Ansi.fg(Ansi.THEME_ACCENT) + "❯ " + Ansi.reset() + this.inputLine)
 
-        // 光标定位到输入末尾
-        sb.append(Ansi.moveTo(rows, 3 + this.inputLine.size))
+        // 光标定位到输入末尾（按字符数，中文输入时光标不错位）
+        var cur = 3
+        for (c in this.inputLine) {
+            cur += 1
+        }
+        sb.append(Ansi.moveTo(rows, cur))
         print(sb.toString(), flush: true)
     }
 
