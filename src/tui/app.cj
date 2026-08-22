@@ -29,6 +29,7 @@ public class TuiApp {
     private var dirtyLock: Mutex = Mutex()
     private var scrollOffset: Int64 = 0
     private var statusLine: String = ""
+    private var modelName: String = ""
 
     // 事件回调：提交输入时触发
     public var onSubmit: (String) -> Unit = { _ => }
@@ -96,6 +97,14 @@ public class TuiApp {
      */
     public func setStatus(text: String): Unit {
         this.statusLine = text
+        this.markDirty()
+    }
+
+    /**
+     * 设置模型名（状态徽章显示）
+     */
+    public func setModel(name: String): Unit {
+        this.modelName = name
         this.markDirty()
     }
 
@@ -186,8 +195,8 @@ public class TuiApp {
         this.outputLock.unlock()
         let outLines = outStr.split("\n", -1)
 
-        // 布局：行1 标题；行2..rows-2 输出区；行 rows-1 状态；行 rows 输入
-        let maxOut = rows - 3
+        // 布局：行1-5 logo；行6 标题；行7 分隔；行8..输出区；rows-1 状态；rows 输入
+        let maxOut = rows - 7
         let maxOffset = if (outLines.size > maxOut) { outLines.size - maxOut } else { 0 }
         if (this.scrollOffset > maxOffset) {
             this.scrollOffset = maxOffset
@@ -203,35 +212,55 @@ public class TuiApp {
         var sb = StringBuilder()
         sb.append(Ansi.clearScreen())
 
-        // 标题
-        sb.append(Ansi.moveTo(1, 1))
+        let utf8 = this.term.isUtf8()
+        // logo 区（5 行，box-drawing CJ 徽标）
+        let logoLines = Logo.renderLines(utf8)
+        var li: Int64 = 0
+        for (l in logoLines) {
+            sb.append(Ansi.moveTo(li + 1, 1))
+            sb.append(Ansi.clearLine())
+            sb.append(this.truncateLine(l, cols))
+            li += 1
+        }
+        // 标题栏（logo 下方独立行）
+        sb.append(Ansi.moveTo(6, 1))
         sb.append(Ansi.clearLine())
-        sb.append(Ansi.bold() + "cjh - Cangjie Coding Agent" + Ansi.reset())
+        sb.append(Logo.titleBar(utf8, this.modelName))
 
-        // 输出区
+        // 分隔线
+        sb.append(Ansi.moveTo(7, 1))
+        sb.append(Ansi.clearLine())
+        sb.append(this.truncateLine(Logo.separator(cols, utf8), cols))
+
+        // 输出区（从行 8 开始）
         var r: Int64 = 0
         for (i in startIdx..outLines.size) {
-            if (r >= maxOut) {
+            if (r >= maxOut - 2) {
                 break
             }
-            sb.append(Ansi.moveTo(r + 2, 1))
+            sb.append(Ansi.moveTo(r + 8, 1))
             sb.append(Ansi.clearLine())
             sb.append(this.truncateLine(outLines[i], cols))
             r += 1
         }
 
-        // 状态行
+        // 状态行（徽章：模型 + 会话 + 滚动提示）
         sb.append(Ansi.moveTo(rows - 1, 1))
         sb.append(Ansi.clearLine())
-        sb.append(Ansi.fg(Ansi.COLOR_DARK) + this.truncateLine(this.statusLine, cols) + Ansi.reset())
+        var status = this.statusLine
+        if (status.size > 0) {
+            sb.append(this.truncateLine(status, cols))
+        } else {
+            sb.append(Logo.badge("ready", Ansi.THEME_OK))
+        }
 
         // 输入行
         sb.append(Ansi.moveTo(rows, 1))
         sb.append(Ansi.clearLine())
-        sb.append(Ansi.fg(Ansi.COLOR_CYAN) + "cjh> " + Ansi.reset() + this.inputLine)
+        sb.append(Ansi.fg(Ansi.THEME_ACCENT) + "❯ " + Ansi.reset() + this.inputLine)
 
         // 光标定位到输入末尾
-        sb.append(Ansi.moveTo(rows, 6 + this.inputLine.size))
+        sb.append(Ansi.moveTo(rows, 3 + this.inputLine.size))
         print(sb.toString(), flush: true)
     }
 

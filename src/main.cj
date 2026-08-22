@@ -275,6 +275,7 @@ func runTui(sessionId: String): Int64 {
 
         // 线程安全的输出队列（agent 在调用线程运行，输出经队列到 TUI）
         let tui = TuiApp()
+        tui.setModel(cjhCfg.model)
 
         // 会话：恢复历史 / 新会话
         let store = SessionStore(cjhCfg.sessionsDir)

@@ -29,6 +29,14 @@ public class Ansi {
     public static let COLOR_RED: Int64 = 196
     public static let COLOR_BLUE: Int64 = 39
     public static let COLOR_DARK: Int64 = 240
+    // 主题色（华为蓝/青/紫）
+    public static let THEME_PRIMARY: Int64 = 33    // 华为蓝
+    public static let THEME_ACCENT: Int64 = 51     // 亮青
+    public static let THEME_PURPLE: Int64 = 141    // 紫
+    public static let THEME_OK: Int64 = 82         // 绿
+    public static let THEME_WARN: Int64 = 226      // 黄
+    public static let THEME_ERR: Int64 = 196       // 红
+    public static let THEME_MUTED: Int64 = 240     // 灰
 }
 
 /**
