@@ -166,8 +166,9 @@ public class TuiApp {
             }
             return
         }
-        if (key.ch >= 32 && key.ch < 127) {
-            this.inputLine += Rune(key.ch).toString()
+        // 可打印字符（含中文等多字节 UTF-8）
+        if (key.text.size > 0 && !key.isEsc && !key.isEnter && !key.isBackspace) {
+            this.inputLine += key.text
             this.markDirty()
         }
     }

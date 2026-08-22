@@ -80,6 +80,7 @@ public class KeyEvent {
     public let isCtrlU: Bool
     public let isCtrlD: Bool
     public let escapeSeq: String   // 完整转义序列（如 ESC[A）；普通键为空
+    public let text: String        // 输入字符（支持多字节 UTF-8，如中文）；控制键为空
 
     public init(ch: Int32) {
         this.ch = ch
@@ -96,23 +97,27 @@ public class KeyEvent {
         this.isCtrlU = (ch == 21)
         this.isCtrlD = (ch == 4)
         this.escapeSeq = ""
+        this.text = Rune(ch).toString()
     }
 
-    public init(ch: Int32, escapeSeq: String) {
+    public init(ch: Int32, seq: String) {
+        // seq 可能是转义序列（ESC[...）或输入字符（中文等）
         this.ch = ch
         this.isEsc = (ch == 27)
-        this.isEnter = false
-        this.isCtrlC = false
-        this.isBackspace = false
-        this.isArrowUp = (escapeSeq == TermEsc.UP)
-        this.isArrowDown = (escapeSeq == TermEsc.DOWN)
-        this.isArrowRight = (escapeSeq == TermEsc.RIGHT)
-        this.isArrowLeft = (escapeSeq == TermEsc.LEFT)
-        this.isPageUp = (escapeSeq == TermEsc.PGUP)
-        this.isPageDown = (escapeSeq == TermEsc.PGDN)
-        this.isCtrlU = false
-        this.isCtrlD = false
-        this.escapeSeq = escapeSeq
+        this.isEnter = (ch == 13 || ch == 10)
+        this.isCtrlC = (ch == 3)
+        this.isBackspace = (ch == 127 || ch == 8)
+        this.isArrowUp = (seq == TermEsc.UP)
+        this.isArrowDown = (seq == TermEsc.DOWN)
+        this.isArrowRight = (seq == TermEsc.RIGHT)
+        this.isArrowLeft = (seq == TermEsc.LEFT)
+        this.isPageUp = (seq == TermEsc.PGUP)
+        this.isPageDown = (seq == TermEsc.PGDN)
+        this.isCtrlU = (ch == 21)
+        this.isCtrlD = (ch == 4)
+        // 若是转义序列则 text 为空（非输入字符）；否则为输入字符
+        this.escapeSeq = if (seq.startsWith(TermEsc.ESC)) { seq } else { "" }
+        this.text = if (seq.startsWith(TermEsc.ESC)) { "" } else { seq }
     }
 }
 
@@ -223,6 +228,38 @@ public class Term {
                     return None
                 }
                 let ch = Int32(buf.read(0))
+                // 多字节 UTF-8（中文等）：按首字节判断长度，读完整字符
+                if (ch >= 0xC0 && ch < 0xF8) {
+                    var need: Int64 = 0
+                    if (ch >= 0xF0) { need = 3 }        // 4 字节
+                    else if (ch >= 0xE0) { need = 2 }   // 3 字节
+                    else { need = 1 }                   // 2 字节
+                    var bytes = Array<UInt8>(need + 1, repeat: 0)
+                    bytes[0] = buf.read(0)
+                    var got: Int64 = 1
+                    while (got <= need) {
+                        if (this.hasInput()) {
+                            if (let b2 <- LibC.malloc<UInt8>(count: 1)) {
+                                let n2 = read(STDIN, b2, 1)
+                                if (n2 > 0) {
+                                    bytes[got] = b2.read(0)
+                                    got += 1
+                                }
+                                LibC.free(b2)
+                            }
+                        } else {
+                            break
+                        }
+                    }
+                    LibC.free(buf)
+                    if (got > need) {
+                        // 拼完整字符
+                        let s = String.fromUtf8(bytes)
+                        return Some(KeyEvent(ch, s))
+                    }
+                    // 不完整：按单字节处理
+                    return Some(KeyEvent(ch))
+                }
                 // ESC 开头：尝试读完整转义序列（方向键/功能键）
                 if (ch == 27) {
                     var seq = Rune(27).toString()
