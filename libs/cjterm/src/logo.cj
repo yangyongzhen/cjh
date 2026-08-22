@@ -14,9 +14,23 @@ package cjterm
  *   ╚═════╝   ╚═╝
  */
 public class Logo {
-    // 普通 ASCII art "CJ"（任何终端渲染一致，避免 box-drawing 字体差异）
-    // C 用主题蓝，J 用亮青，双色拼接
-    // 大写 CJ（普通 ASCII，任何终端一致）：C 蓝 + J 青，中间 3 空格
+    // UTF-8 版：box-drawing CJ（C 蓝 + J 青）。J 顶钩 ██╗ + 底钩 ╚═╝，
+    // 钩子特征鲜明，绝不会误读为 I（旧 ASCII 竖线字形 |_| 正是 CI 误读根源）
+    private static let C_BOX_LINES: Array<String> = [
+        " ██████╗ ",
+        " ██╔════╝",
+        " ██║     ",
+        " ██║     ",
+        " ╚██████╗",
+    ]
+    private static let J_BOX_LINES: Array<String> = [
+        " ██╗ ",
+        " ██║ ",
+        " ██║ ",
+        " ██║ ",
+        " ╚═╝ ",
+    ]
+    // ASCII 降级版：C 保持原样，J 改带左钩字形（|_/），避免竖线+横读成 I
     private static let C_LINES: Array<String> = [
         "  ____   ",
         " / ___|  ",
@@ -25,22 +39,25 @@ public class Logo {
         " \\____|  ",
     ]
     private static let J_LINES: Array<String> = [
-        "   _    ",
-        "  | |   ",
-        "  | |   ",
-        "  | |   ",
-        "  |_|   ",
+        "   __  ",
+        "  |  | ",
+        "  |  | ",
+        "  |  | ",
+        "  |_/  ",
     ]
 
     /**
      * 渲染 logo 行数组（每行已着色），返回 Array<String>
-     * C 与 J 间 3 空格分隔，J 用宽竖线字形避免误读为 I
+     * C 与 J 间 3 空格分隔；UTF-8 用 box-drawing（J 顶钩+底钩），
+     * 非 UTF-8 降级 ASCII（J 带左钩），两版 J 都不再像 I
      */
     public static func renderLines(utf8: Bool): Array<String> {
         var lines = Array<String>(5, repeat: "")
+        let cSet = if (utf8) { Logo.C_BOX_LINES } else { Logo.C_LINES }
+        let jSet = if (utf8) { Logo.J_BOX_LINES } else { Logo.J_LINES }
         for (i in 0..5) {
-            let cPart = C_LINES[i] + "   "   // 3 空格
-            let jPart = J_LINES[i]
+            let cPart = cSet[i] + "   "   // 3 空格
+            let jPart = jSet[i]
             lines[i] = Ansi.fg(Ansi.THEME_PRIMARY) + cPart + Ansi.fg(Ansi.THEME_ACCENT) + jPart + Ansi.reset()
         }
         return lines

@@ -19,8 +19,19 @@ public class Ansi {
     public static func fg(code: Int64): String { return Ansi.esc() + "[38;5;${code}m" }
     public static func bg(code: Int64): String { return Ansi.esc() + "[48;5;${code}m" }
 
+    // ===== 备用缓冲区（alt screen）=====
+    // 进入后程序拥有独立屏幕，退出时恢复调用前画面（smcup/rmcup）
+    public static func enterAltScreen(): String { return Ansi.esc() + "[?1049h" }
+    public static func exitAltScreen(): String { return Ansi.esc() + "[?1049l" }
+
+    // ===== 鼠标模式 =====
+    // ?1000 基础点击；?1006 SGR 编码（坐标 1-based，支持 >223 列）；?1003 全区域移动
+    public static func enableMouse(): String { return Ansi.esc() + "[?1000h" + Ansi.esc() + "[?1006h" }
+    public static func disableMouse(): String { return Ansi.esc() + "[?1000l" + Ansi.esc() + "[?1006l" }
+
     // 常用色
     public static let COLOR_RESET: Int64 = 0
+    public static let COLOR_BLACK: Int64 = 0
     public static let COLOR_GRAY: Int64 = 245
     public static let COLOR_WHITE: Int64 = 15
     public static let COLOR_CYAN: Int64 = 51

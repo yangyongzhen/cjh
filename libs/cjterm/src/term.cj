@@ -1,5 +1,7 @@
 package cjterm
 
+import std.convert.Parsable
+
 /**
  * termios 纯 FFI 实现（直接调 libc，无外部 .so 依赖）
  *
@@ -71,6 +73,7 @@ public class KeyEvent {
     public let isEnter: Bool
     public let isCtrlC: Bool
     public let isBackspace: Bool
+    public let isTab: Bool
     public let isArrowUp: Bool
     public let isArrowDown: Bool
     public let isArrowLeft: Bool
@@ -81,6 +84,11 @@ public class KeyEvent {
     public let isCtrlD: Bool
     public let escapeSeq: String   // 完整转义序列（如 ESC[A）；普通键为空
     public let text: String        // 输入字符（支持多字节 UTF-8，如中文）；控制键为空
+    // 鼠标事件（SGR 编码 ESC[<b;x;yM/m）
+    public let isMouse: Bool
+    public let mouseButton: Int64  // 0=左 1=中 2=右（低 2 位）；64=滚轮上 65=滚轮下
+    public let mouseX: Int64       // 1-based 列
+    public let mouseY: Int64       // 1-based 行
 
     public init(ch: Int32) {
         this.ch = ch
@@ -88,6 +96,7 @@ public class KeyEvent {
         this.isEnter = (ch == 13 || ch == 10)
         this.isCtrlC = (ch == 3)
         this.isBackspace = (ch == 127 || ch == 8)
+        this.isTab = (ch == 9)
         this.isArrowUp = false
         this.isArrowDown = false
         this.isArrowLeft = false
@@ -98,6 +107,10 @@ public class KeyEvent {
         this.isCtrlD = (ch == 4)
         this.escapeSeq = ""
         this.text = Rune(ch).toString()
+        this.isMouse = false
+        this.mouseButton = -1
+        this.mouseX = -1
+        this.mouseY = -1
     }
 
     public init(ch: Int32, seq: String) {
@@ -107,10 +120,11 @@ public class KeyEvent {
         this.isEnter = (ch == 13 || ch == 10)
         this.isCtrlC = (ch == 3)
         this.isBackspace = (ch == 127 || ch == 8)
-        this.isArrowUp = (seq == TermEsc.UP)
-        this.isArrowDown = (seq == TermEsc.DOWN)
-        this.isArrowRight = (seq == TermEsc.RIGHT)
-        this.isArrowLeft = (seq == TermEsc.LEFT)
+        this.isTab = (ch == 9)
+        this.isArrowUp = (seq == TermEsc.UP || seq == TermEsc.SS3_UP)
+        this.isArrowDown = (seq == TermEsc.DOWN || seq == TermEsc.SS3_DOWN)
+        this.isArrowRight = (seq == TermEsc.RIGHT || seq == TermEsc.SS3_RIGHT)
+        this.isArrowLeft = (seq == TermEsc.LEFT || seq == TermEsc.SS3_LEFT)
         this.isPageUp = (seq == TermEsc.PGUP)
         this.isPageDown = (seq == TermEsc.PGDN)
         this.isCtrlU = (ch == 21)
@@ -118,6 +132,32 @@ public class KeyEvent {
         // 若是转义序列则 text 为空（非输入字符）；否则为输入字符
         this.escapeSeq = if (seq.startsWith(TermEsc.ESC)) { seq } else { "" }
         this.text = if (seq.startsWith(TermEsc.ESC)) { "" } else { seq }
+        // SGR 鼠标：ESC[<b;x;yM（按下）或 m（释放）
+        if (seq.startsWith(TermEsc.ESC + "[<")) {
+            let body = seq[3..seq.size - 1]
+            let parts = body.split(";", -1)
+            this.isMouse = true
+            if (parts.size >= 3) {
+                var b: Int64 = -1
+                var x: Int64 = -1
+                var y: Int64 = -1
+                try { b = Int64.parse(parts[0]) } catch (e: Exception) {}
+                try { x = Int64.parse(parts[1]) } catch (e: Exception) {}
+                try { y = Int64.parse(parts[2]) } catch (e: Exception) {}
+                this.mouseButton = b
+                this.mouseX = x
+                this.mouseY = y
+            } else {
+                this.mouseButton = -1
+                this.mouseX = -1
+                this.mouseY = -1
+            }
+        } else {
+            this.isMouse = false
+            this.mouseButton = -1
+            this.mouseX = -1
+            this.mouseY = -1
+        }
     }
 }
 
@@ -214,6 +254,34 @@ public class Term {
     }
 
     /**
+     * 带超时等待输入（select timeout）。
+     * 真实终端/SSH 中转义序列字节可能分批到达：ESC 后跟的字节常在同一
+     * 个 select 批次，但网络/PTY 缓冲下可能延迟。等待 timeoutMs 毫秒，
+     * 期间有输入返回 true，超时返回 false。
+     */
+    public func waitInput(timeoutMs: Int64): Bool {
+        unsafe {
+            if (let tv <- LibC.malloc<UInt8>(count: TIMEVAL_SIZE)) {
+                // timeval { tv_sec, tv_usec }
+                this.writeU64(tv, 0, UInt64(timeoutMs / 1000))
+                this.writeU64(tv, 8, UInt64((timeoutMs % 1000) * 1000))
+                if (let fds <- LibC.malloc<UInt8>(count: 128)) {
+                    for (i in 0..128) {
+                        fds.write(i, 0)
+                    }
+                    fds.write(0, 1)
+                    let n = select(1, fds, CPointer<UInt8>(), CPointer<UInt8>(), tv)
+                    LibC.free(fds)
+                    LibC.free(tv)
+                    return n > 0
+                }
+                LibC.free(tv)
+            }
+            return false
+        }
+    }
+
+    /**
      * 非阻塞读按键；无输入返回 None
      */
     public func readKey(): Option<KeyEvent> {
@@ -238,7 +306,7 @@ public class Term {
                     bytes[0] = buf.read(0)
                     var got: Int64 = 1
                     while (got <= need) {
-                        if (this.hasInput()) {
+                        if (this.waitInput(100)) {
                             if (let b2 <- LibC.malloc<UInt8>(count: 1)) {
                                 let n2 = read(STDIN, b2, 1)
                                 if (n2 > 0) {
@@ -260,22 +328,184 @@ public class Term {
                     // 不完整：按单字节处理
                     return Some(KeyEvent(ch))
                 }
-                // ESC 开头：尝试读完整转义序列（方向键/功能键）
+                // ESC 开头：读完整转义序列（方向键/功能键/鼠标 SGR + X10）
                 if (ch == 27) {
                     var seq = Rune(27).toString()
-                    // 最多读 4 个后续字节（CSI 序列通常 ESC [ <n> <char>）
-                    for (i in 0..4) {
-                        if (this.hasInput()) {
-                            if (let b2 <- LibC.malloc<UInt8>(count: 1)) {
-                                let n2 = read(STDIN, b2, 1)
-                                if (n2 > 0) {
-                                    let b = Int32(b2.read(0))
-                                    seq += Rune(b).toString()
+                    // 读第一个后续字节；若是 '[' 则按 CSI 序列读到终结字母（0x40..0x7E）
+                    if (this.waitInput(100)) {
+                        if (let b2 <- LibC.malloc<UInt8>(count: 1)) {
+                            let n2 = read(STDIN, b2, 1)
+                            if (n2 > 0) {
+                                let b = Int32(b2.read(0))
+                                seq += Rune(b).toString()
+                                if (b == 91 /* '[' */) {
+                                    // CSI 序列：先读下一个字节判断类型
+                                    //   'M' → X10 鼠标（ESC[M + 3 字节数据）
+                                    //   '<' → SGR 鼠标（ESC[<b;x;yM）
+                                    //   其他 → 普通 CSI（方向键 ESC[A 等）
+                                    var next: Int32 = -1
+                                    if (this.waitInput(100)) {
+                                        if (let b3 <- LibC.malloc<UInt8>(count: 1)) {
+                                            let n3 = read(STDIN, b3, 1)
+                                            if (n3 > 0) {
+                                                next = Int32(b3.read(0))
+                                                seq += Rune(next).toString()
+                                            }
+                                            LibC.free(b3)
+                                        }
+                                    }
+                                    if (next == 77 /* 'M' X10 鼠标 */) {
+                                        // X10 鼠标协议：ESC[M + 3 字节（按钮+32, x+32, y+32）
+                                        // 必须完整消费 3 个数据字节，否则残留被当普通字符输入
+                                        var data = Array<UInt8>(3, repeat: 0)
+                                        var got: Int64 = 0
+                                        var retry: Int64 = 0
+                                        // waitInput(30) 已等待输入窗口；重试上限 3（每字节最多等 30ms）
+                                        while (got < 3 && retry < 3) {
+                                            if (this.waitInput(100)) {
+                                                if (let b3 <- LibC.malloc<UInt8>(count: 1)) {
+                                                    let n3 = read(STDIN, b3, 1)
+                                                    if (n3 > 0) {
+                                                        data[got] = b3.read(0)
+                                                        got += 1
+                                                        retry = 0
+                                                    }
+                                                    LibC.free(b3)
+                                                }
+                                            } else {
+                                                retry += 1
+                                            }
+                                        }
+                                        LibC.free(b2)
+                                        LibC.free(buf)
+                                        if (got == 3) {
+                                            // 转成 SGR 形式（ESC[<b;x;yM）复用 KeyEvent 鼠标解析
+                                            let btn = Int64(data[0]) - 32
+                                            let mx = Int64(data[1]) - 32
+                                            let my = Int64(data[2]) - 32
+                                            let sgr = "${TermEsc.ESC}[<${btn};${mx};${my}M"
+                                            return Some(KeyEvent(ch, sgr))
+                                        }
+                                        // 数据不完整：按裸 ESC 处理（不输入残留字节）
+                                        return Some(KeyEvent(ch))
+                                    }
+                                    if (next == 60 /* '<' SGR 鼠标 */) {
+                                        // SGR：ESC[<b;x;yM 读到终结字母 M/m
+                                        var guard: Int64 = 0
+                                        while (guard < 64) {
+                                            if (this.waitInput(100)) {
+                                                if (let b3 <- LibC.malloc<UInt8>(count: 1)) {
+                                                    let n3 = read(STDIN, b3, 1)
+                                                    if (n3 > 0) {
+                                                        let bb = Int32(b3.read(0))
+                                                        seq += Rune(bb).toString()
+                                                        LibC.free(b3)
+                                                        // 终结符：M（按下）/m（释放）
+                                                        if (bb == 77 || bb == 109) {
+                                                            break
+                                                        }
+                                                    } else {
+                                                        LibC.free(b3)
+                                                        break
+                                                    }
+                                                } else {
+                                                    break
+                                                }
+                                            } else {
+                                                break
+                                            }
+                                            guard += 1
+                                        }
+                                    } else {
+                                        // 普通 CSI（方向键/功能键）：读到终结字母（0x40..0x7E）
+                                        var guard: Int64 = 0
+                                        while (guard < 64) {
+                                            if (this.waitInput(100)) {
+                                                if (let b3 <- LibC.malloc<UInt8>(count: 1)) {
+                                                    let n3 = read(STDIN, b3, 1)
+                                                    if (n3 > 0) {
+                                                        let bb = Int32(b3.read(0))
+                                                        seq += Rune(bb).toString()
+                                                        LibC.free(b3)
+                                                        // 终结符：ASCII 字母/波浪号/其他可见符
+                                                        if (bb >= 0x40 && bb <= 0x7E) {
+                                                            break
+                                                        }
+                                                    } else {
+                                                        LibC.free(b3)
+                                                        break
+                                                    }
+                                                } else {
+                                                    break
+                                                }
+                                            } else {
+                                                break
+                                            }
+                                            guard += 1
+                                        }
+                                    }
+                                } else if (b == 77 /* 'M' 裸 X10 鼠标（无 '['） */) {
+                                    // X10 鼠标协议：ESC[M + 3 字节（按钮+32, x+32, y+32）
+                                    // 不完整读取会残留数据字节被当普通字符输入（滚轮触发字母 bug）
+                                    var data = Array<UInt8>(3, repeat: 0)
+                                    var got: Int64 = 0
+                                    var retry: Int64 = 0
+                                    // waitInput(30) 已等待输入窗口；重试上限 3（每字节最多等 30ms）
+                                    while (got < 3 && retry < 3) {
+                                        if (this.waitInput(100)) {
+                                            if (let b3 <- LibC.malloc<UInt8>(count: 1)) {
+                                                let n3 = read(STDIN, b3, 1)
+                                                if (n3 > 0) {
+                                                    data[got] = b3.read(0)
+                                                    got += 1
+                                                    retry = 0
+                                                }
+                                                LibC.free(b3)
+                                            }
+                                        } else {
+                                            retry += 1
+                                        }
+                                    }
+                                    LibC.free(b2)
+                                    LibC.free(buf)
+                                    if (got == 3) {
+                                        // 转成 SGR 形式（ESC[<b;x;yM）复用 KeyEvent 鼠标解析
+                                        let btn = Int64(data[0]) - 32
+                                        let mx = Int64(data[1]) - 32
+                                        let my = Int64(data[2]) - 32
+                                        let sgr = "${TermEsc.ESC}[<${btn};${mx};${my}M"
+                                        return Some(KeyEvent(ch, sgr))
+                                    }
+                                    // 数据不完整：按裸 ESC 处理（不输入残留字节）
+                                    return Some(KeyEvent(ch))
+                                } else if (b == 79 /* 'O' SS3 应用方向键 */) {
+                                    // SS3 应用方向键：ESC O + 1 字母（A/B/C/D）。
+                                    // xterm 等终端在 alt-screen 下把滚轮映射为 SS3 方向键
+                                    // （ESC O A/B 连续多次），必须整组识别，否则残留字母输入
+                                    if (this.waitInput(100)) {
+                                        if (let b3 <- LibC.malloc<UInt8>(count: 1)) {
+                                            let n3 = read(STDIN, b3, 1)
+                                            if (n3 > 0) {
+                                                seq += Rune(Int32(b3.read(0))).toString()
+                                            }
+                                            LibC.free(b3)
+                                        }
+                                    }
+                                } else {
+                                    // 其他非 CSI 转义（如 ESC x = Alt+x）：只补读 1 个字符，
+                                    // 不再盲目补读 3 字节——否则连续事件（如滚轮）会被混读错位
+                                    if (this.waitInput(100)) {
+                                        if (let b3 <- LibC.malloc<UInt8>(count: 1)) {
+                                            let n3 = read(STDIN, b3, 1)
+                                            if (n3 > 0) {
+                                                seq += Rune(Int32(b3.read(0))).toString()
+                                            }
+                                            LibC.free(b3)
+                                        }
+                                    }
                                 }
-                                LibC.free(b2)
                             }
-                        } else {
-                            break
+                            LibC.free(b2)
                         }
                     }
                     LibC.free(buf)
@@ -317,6 +547,38 @@ public class Term {
             }
             return (24, 80)
         }
+    }
+
+    // ===== 尺寸变化探测（resize 自动感知）=====
+    private var lastRows: Int64 = -1
+    private var lastCols: Int64 = -1
+
+    /**
+     * 检测终端尺寸是否变化（与上次调用对比；首次调用返回 true）
+     */
+    public func sizeChanged(): Bool {
+        let (rows, cols) = this.size()
+        let changed = (rows != this.lastRows || cols != this.lastCols)
+        this.lastRows = rows
+        this.lastCols = cols
+        return changed
+    }
+
+    // ===== 备用缓冲区 / 鼠标模式便捷封装 =====
+    public func enterAltScreen(): Unit {
+        print(Ansi.enterAltScreen(), flush: true)
+    }
+
+    public func exitAltScreen(): Unit {
+        print(Ansi.exitAltScreen(), flush: true)
+    }
+
+    public func enableMouse(): Unit {
+        print(Ansi.enableMouse(), flush: true)
+    }
+
+    public func disableMouse(): Unit {
+        print(Ansi.disableMouse(), flush: true)
     }
 
     // ===== 内存读写辅助 =====
@@ -363,7 +625,7 @@ public class Term {
 @C
 foreign func getenv(name: CString): CPointer<UInt8>
 
-class TermEnv {
+public class TermEnv {
     public static func getenv(name: String): Option<String> {
         unsafe {
             let p = getenv(LibC.mallocCString(name))
@@ -381,12 +643,19 @@ class TermEnv {
  */
 public class TermEsc {
     public static let ESC: String = Rune(27).toString()
+    // CSI 方向键（多数终端）：ESC [ A/B/C/D
     public static let UP: String = ESC + "[A"
     public static let DOWN: String = ESC + "[B"
     public static let RIGHT: String = ESC + "[C"
     public static let LEFT: String = ESC + "[D"
     public static let PGUP: String = ESC + "[5~"
     public static let PGDN: String = ESC + "[6~"
+    // SS3 应用方向键（xterm/alt-screen 下滚轮映射、部分终端默认）：
+    // ESC O A/B/C/D —— 与 CSI 形式同义，必须识别，否则被拆成 ESC/O/A 残留字母
+    public static let SS3_UP: String = ESC + "OA"
+    public static let SS3_DOWN: String = ESC + "OB"
+    public static let SS3_RIGHT: String = ESC + "OC"
+    public static let SS3_LEFT: String = ESC + "OD"
 }
 
 /**
