@@ -34,9 +34,11 @@ public class MojibakeFix {
         try {
             let fixed = String.fromUtf8(ob)
             // 仅当含 CJK 字符（中文修复成功的标志）才替换
+            // 检查重组结果是否含 CJK（用 toRuneArray 迭代码点，非 Byte）
             var hasCjk = false
-            for (cp in fixed) {
-                let v = UInt32(cp)
+            let fixedRunes = fixed.toRuneArray()
+            for (r in fixedRunes) {
+                let v = UInt32(r)
                 if (v >= 0x4E00 && v <= 0x9FFF) {
                     hasCjk = true
                     break
