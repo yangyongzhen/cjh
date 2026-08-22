@@ -45,6 +45,10 @@ public class TuiApp {
     private var modelName: String = ""
     // 文件日志（TUI stderr 被屏蔽，写文件排查按键/下拉框问题）
     private var logger: Logger = NoopLogger()
+    // 流式加载指示器（agent 回复中显示）
+    private var spinner: Spinner = Spinner()
+    // 审批/确认弹窗（替代旧的状态行内联审批 UI）
+    private var confirmDialog: ConfirmDialog = ConfirmDialog()
 
     // ── 审批链（危险操作需人工确认）──
     // agent 线程 requestApproval() 阻塞等待；主循环读 y/n 后写回结果
@@ -62,6 +66,18 @@ public class TuiApp {
 
     public init() {
         this.term = Term()
+        // 流式指示器 / 审批弹窗按终端能力初始化
+        this.spinner = Spinner(this.term.isUtf8(), "思考中…")
+        this.confirmDialog = ConfirmDialog(this.term.isUtf8())
+        // 审批弹窗回调：把 y/n 结果写回等待中的 agent 线程
+        this.confirmDialog.onResult = { ok =>
+            this.approvalLock.lock()
+            this.approvalResult = Some(ok)
+            // 审批完成：清除待审批状态，后续按键恢复正常分发
+            this.pendingApproval = None
+            this.approvalLock.unlock()
+            this.markDirty()
+        }
         // 初始化文件日志（CJH_TUI_LOG 可覆盖路径；失败则降级 NoopLogger）
         try {
             let logPath = TermEnv.getenv("CJH_TUI_LOG") ?? "/tmp/cjh_tui.log"
@@ -133,6 +149,8 @@ public class TuiApp {
         this.pendingApproval = Some(prompt)
         this.approvalResult = None
         this.approvalLock.unlock()
+        // 弹出确认对话框（模态，渲染与按键由 ConfirmDialog 组件负责）
+        this.confirmDialog.show("审批", prompt, "[y]=同意 [n]/[Esc]=拒绝")
         this.markDirty()
         // 等待主循环读键写回结果
         while (true) {
@@ -268,23 +286,9 @@ public class TuiApp {
         let hasPending = this.pendingApproval.isSome()
         this.approvalLock.unlock()
         if (hasPending) {
-            var approve: Option<Bool> = None
-            if (key.isEsc) {
-                approve = Some(false)
-            } else if (key.ch == 121 || key.ch == 89) {  // y / Y
-                approve = Some(true)
-            } else if (key.ch == 110 || key.ch == 78) {  // n / N
-                approve = Some(false)
-            } else if (key.isEnter) {
-                // 回车默认拒绝（谨慎默认）
-                approve = Some(false)
-            }
-            if (let Some(a) <- approve) {
-                this.approvalLock.lock()
-                this.approvalResult = Some(a)
-                // 审批完成：清除待审批状态，后续按键恢复正常分发
-                this.pendingApproval = None
-                this.approvalLock.unlock()
+            // 审批模式：按键交给 ConfirmDialog 组件处理
+            // （y/n/Esc/Enter 命中时触发 onResult 写回审批结果）
+            if (this.confirmDialog.handleKey(key)) {
                 this.markDirty()
             }
             return
@@ -402,27 +406,23 @@ public class TuiApp {
             this.outputLock.unlock()
         }
 
-        // 状态行（审批模式：显示审批提示）
-        this.approvalLock.lock()
-        let pending = this.pendingApproval
-        this.approvalLock.unlock()
-        if (let Some(p) <- pending) {
-            // 字节安全截断（避免切片落在 UTF-8 字符中间抛异常）
-            var prompt = p
-            if (p.size > 40) {
-                var k: Int64 = 40
-                while (k > 0) {
-                    try {
-                        prompt = p[0..k] + "…"
-                        break
-                    } catch (e: Exception) {
-                        k -= 1
-                    }
-                }
-            }
-            this.canvas.setLine(rows - 2, Ansi.fg(Ansi.COLOR_YELLOW) + "⚠ 审批: ${prompt}  [y]=同意 [n]/[Esc]=拒绝" + Ansi.reset())
+        // 底部区域（rows-2 起）：审批弹窗 / 流式 spinner / 状态行 三选一
+        if (this.confirmDialog.isVisible()) {
+            // 审批弹窗：模态覆盖，弹窗 4 行，紧贴输入行上方渲染
+            let dlgRow = if (rows - 5 > 0) { rows - 5 } else { 0 }
+            this.confirmDialog.render(this.canvas, dlgRow, cols, 4)
         } else {
-            this.statusBar.render(this.canvas, rows - 2, cols, 1)
+            // 流式判定需要 outputLock（agent 线程写流式段，可能竞态）
+            this.outputLock.lock()
+            let streaming = this.outputView.isStreaming()
+            this.outputLock.unlock()
+            if (streaming) {
+                // 流式回复中：状态行显示加载指示器（每次渲染推进一帧）
+                this.spinner.tick()
+                this.spinner.render(this.canvas, rows - 2, cols, 1)
+            } else {
+                this.statusBar.render(this.canvas, rows - 2, cols, 1)
+            }
         }
 
         // 输入行（InputBox 内部会设置光标）
