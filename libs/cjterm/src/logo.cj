@@ -14,6 +14,9 @@ package cjterm
  *   ╚═════╝   ╚═╝
  */
 public class Logo {
+    // cjh 项目版本号（与根 cjpm.toml 的 version 字段保持同步；
+    // 标题栏展示用，发版时一并更新）
+    public static const VERSION: String = "v1.1.0"
     // UTF-8 版：box-drawing CJ（C 蓝 + J 青）。J 顶钩 ██╗ + 底钩 ╚═╝，
     // 钩子特征鲜明，绝不会误读为 I（旧 ASCII 竖线字形 |_| 正是 CI 误读根源）
     private static let C_BOX_LINES: Array<String> = [
@@ -144,26 +147,29 @@ public class Logo {
      * 生成标题栏右侧标题（含版本徽章）
      */
     public static func titleBar(utf8: Bool, model: String): String {
-        let name = if (utf8) { "cjh · Cangjie Agent" } else { "cjh - Cangjie Agent" }
+        let name = if (utf8) { "cjh · Agent made by Cangjie" } else { "cjh - Agent made by Cangjie" }
         return Ansi.bold() + Ansi.fg(Ansi.THEME_ACCENT) + name + Ansi.reset() +
-            "  " + Ansi.fg(Ansi.THEME_MUTED) + "[" + model + "]" + Ansi.reset()
+            "  " + Ansi.fg(Ansi.THEME_MUTED) + "[" + model + "]" + Ansi.reset() +
+            "  " + Ansi.fg(Ansi.THEME_OK) + Logo.VERSION + Ansi.reset()
     }
 
     /**
      * 生成完整标题栏行（铺满 cols 宽度）：
-     *   ╭── cjh · Cangjie Agent [model] ────────────────────╮
+     *   ╭── cjh · Agent made by Cangjie [model] v1.1.0 ───╮
      * 左圆角 + 标题 + 右侧横线填充 + 右圆角
      */
     public static func titleBarFull(utf8: Bool, model: String, cols: Int64): String {
         let hc = if (utf8) { "─" } else { "-" }
         let muted = Ansi.fg(Ansi.THEME_MUTED)
         let accent = Ansi.fg(Ansi.THEME_ACCENT)
-        let name = if (utf8) { "cjh · Cangjie Agent" } else { "cjh - Cangjie Agent" }
-        // ╭──  标题  ───╮
+        let ok = Ansi.fg(Ansi.THEME_OK)
+        let name = if (utf8) { "cjh · Agent made by Cangjie" } else { "cjh - Agent made by Cangjie" }
+        // ╭──  标题  [model]  v1.1.0  ───╮
         var sb = StringBuilder()
         sb.append(muted + "╭── " + Ansi.reset())
         sb.append(accent + Ansi.bold() + name + Ansi.reset())
         sb.append("  " + muted + "[" + model + "]" + Ansi.reset())
+        sb.append("  " + ok + Logo.VERSION + Ansi.reset())
         sb.append(" ")
         // 右侧横线填充到 cols 宽
         let used = TuiCanvas.displayWidth(sb.toString())
@@ -194,9 +200,9 @@ public class Logo {
     }
 
     /**
-     * 状态徽章（● 圆点 + 文本）
+     * 状态徽章（ASCII 圆点 + 文本，宽度恒定 1 列）
      */
     public static func badge(text: String, color: Int64): String {
-        return Ansi.fg(color) + "● " + Ansi.reset() + Ansi.fg(Ansi.THEME_MUTED) + text + Ansi.reset()
+        return Ansi.fg(color) + "* " + Ansi.reset() + Ansi.fg(Ansi.THEME_MUTED) + text + Ansi.reset()
     }
 }
