@@ -2,7 +2,7 @@
   cjc-version = "1.0.5"
   name = "cjh"
   description = "nothing here"
-  version = "1.2.1"
+  version = "1.2.2"
   target-dir = ""
   output-type = "executable"
   compile-option = ""

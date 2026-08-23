@@ -1066,7 +1066,9 @@ func runTui(sessionId: String): Int64 {
                 bar.append("─")
                 i += 1
             }
+            TuiBridge.output("")  // 上空行
             TuiBridge.output(Ansi.fg(Ansi.THEME_MUTED) + bar.toString() + Ansi.reset())
+            TuiBridge.output("")  // 下空行
         }
 
         SessionState.current = curSessionId
