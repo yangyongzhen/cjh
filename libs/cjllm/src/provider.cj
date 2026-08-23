@@ -58,9 +58,11 @@ public class StreamAccumulator {
     public var toolCalls: ArrayList<ToolCall> = ArrayList<ToolCall>()
     // 上次已回调的文本长度（供增量回调）
     private var lastSentText: String = ""
-    private var curToolId: String = ""
-    private var curToolName: String = ""
-    private var curToolArgs: String = ""
+    // 并行工具调用按 index 分别累积（OpenAI 流式 tool_calls 数组元素带 index；
+    // 旧实现单一 curToolArgs 会把多个调用参数拼成非法 JSON → _raw 透传 → "缺少参数"）
+    private var pendingToolIds: ArrayList<String> = ArrayList<String>()
+    private var pendingToolNames: ArrayList<String> = ArrayList<String>()
+    private var pendingToolArgs: ArrayList<String> = ArrayList<String>()
 
     /**
      * 处理一个 SSE data 帧（JSON）
@@ -151,11 +153,27 @@ public class StreamAccumulator {
         match (tc.kind()) {
             case JsonKind.JsObject =>
                 let obj = tc.asObject()
+                // 并行调用 index（缺失按 0 处理；流式分片同一 index 追加）
+                var index: Int64 = 0
+                if (let Some(idx) <- obj.get("index")) {
+                    match (idx.kind()) {
+                        case JsonKind.JsInt => index = idx.asInt().getValue()
+                        case JsonKind.JsFloat => index = Int64(idx.asFloat().getValue())
+                        case _ => ()
+                    }
+                }
+                // 扩容到 index+1（ArrayList 无 insert，用占位 + 赋值）
+                while (this.pendingToolIds.size <= index) {
+                    this.pendingToolIds.add("")
+                    this.pendingToolNames.add("")
+                    this.pendingToolArgs.add("")
+                }
                 if (let Some(id) <- obj.get("id")) {
                     match (id.kind()) {
                         case JsonKind.JsString =>
-                            if (this.curToolId.size == 0) {
-                                this.curToolId = id.asString().getValue()
+                            // id 只在首个分片出现，非空时保留
+                            if (this.pendingToolIds[index].size == 0) {
+                                this.pendingToolIds[index] = id.asString().getValue()
                             }
                         case _ => ()
                     }
@@ -166,13 +184,13 @@ public class StreamAccumulator {
                             let f = fn.asObject()
                             if (let Some(name) <- f.get("name")) {
                                 match (name.kind()) {
-                                    case JsonKind.JsString => this.curToolName = name.asString().getValue()
+                                    case JsonKind.JsString => this.pendingToolNames[index] = name.asString().getValue()
                                     case _ => ()
                                 }
                             }
                             if (let Some(args) <- f.get("arguments")) {
                                 match (args.kind()) {
-                                    case JsonKind.JsString => this.curToolArgs += args.asString().getValue()
+                                    case JsonKind.JsString => this.pendingToolArgs[index] += args.asString().getValue()
                                     case _ => ()
                                 }
                             }
@@ -209,24 +227,30 @@ public class StreamAccumulator {
     }
 
     /**
-     * 流结束后调用：将累积的工具调用参数解析为 ToolCall
+     * 流结束后调用：将累积的工具调用参数解析为 ToolCall（每个 index 一个）
      */
     public func finish(): ModelResponse {
-        if (this.curToolId.size > 0 && this.curToolName.size > 0) {
+        for (i in 0..this.pendingToolIds.size) {
+            let id = this.pendingToolIds[i]
+            let name = this.pendingToolNames[i]
+            if (id.size == 0 || name.size == 0) {
+                continue
+            }
             var args = JsonObject()
-            if (this.curToolArgs.size > 0) {
+            let raw = this.pendingToolArgs[i]
+            if (raw.size > 0) {
                 try {
-                    let parsed = JsonValue.fromStr(this.curToolArgs)
+                    let parsed = JsonValue.fromStr(raw)
                     match (parsed.kind()) {
                         case JsonKind.JsObject => args = parsed.asObject()
                         case _ => ()
                     }
                 } catch (e: Exception) {
-                    // 参数非法：透传原始字符串
-                    args.put("_raw", JsonString(this.curToolArgs))
+                    // 参数非法：透传原始字符串（仅该调用自身，不影响其他 index）
+                    args.put("_raw", JsonString(raw))
                 }
             }
-            this.toolCalls.add(ToolCall(this.curToolId, this.curToolName, args))
+            this.toolCalls.add(ToolCall(id, name, args))
         }
         // 整体修复：流式累积的原始文本可能含 DeepSeek Latin-1 误解码 mojibake
         return ModelResponse(MojibakeFix.fix(this.text), this.toolCalls)

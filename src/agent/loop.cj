@@ -15,17 +15,34 @@ public class AgentConfig {
     public let maxIterations: Int64
     // 三域 capability 安全模型（未配置=宽松模式，全部允许）
     public let capability: Capability
+    // Compaction 阈值：消息条数超过该值触发历史摘要压缩（0=禁用，对齐 pi）
+    public let compactThreshold: Int64
+    // 压缩时保留的最近消息条数
+    public let compactKeep: Int64
 
     public init(systemPrompt: String, maxIterations: Int64) {
         this.systemPrompt = systemPrompt
         this.maxIterations = maxIterations
         this.capability = Capability()
+        this.compactThreshold = 0
+        this.compactKeep = 12
     }
 
     public init(systemPrompt: String, maxIterations: Int64, capability: Capability) {
         this.systemPrompt = systemPrompt
         this.maxIterations = maxIterations
         this.capability = capability
+        this.compactThreshold = 0
+        this.compactKeep = 12
+    }
+
+    public init(systemPrompt: String, maxIterations: Int64, capability: Capability,
+        compactThreshold: Int64, compactKeep: Int64) {
+        this.systemPrompt = systemPrompt
+        this.maxIterations = maxIterations
+        this.capability = capability
+        this.compactThreshold = compactThreshold
+        this.compactKeep = compactKeep
     }
 }
 
@@ -71,6 +88,8 @@ public class Agent {
      */
     public func run(userInput: String): String {
         this.messages.add(ChatMessage("user", userInput))
+        // 长会话：超阈值先压缩早期历史（LLM 摘要），避免 token 爆炸
+        this.maybeCompact()
 
         var iterations: Int64 = 0
         while (iterations < this.config.maxIterations) {
@@ -108,6 +127,58 @@ public class Agent {
             return response.text
         }
         return "[已达最大迭代次数 ${this.config.maxIterations}]"
+    }
+
+    /**
+     * Compaction：消息历史超过阈值时，用 LLM 把早期消息压缩成摘要，
+     * 保留最近 compactKeep 条（含 system）。对齐 pi 的自动摘要压缩：
+     * 触发后调用链 = 摘要请求（无工具）→ 重建 messages = system + 摘要 + 近期历史
+     */
+    private func maybeCompact(): Unit {
+        if (this.config.compactThreshold <= 0) {
+            return
+        }
+        // 消息数 = system + 对话；超过阈值才压缩
+        if (this.messages.size <= this.config.compactThreshold) {
+            return
+        }
+        let keep = if (this.config.compactKeep >= 2) { this.config.compactKeep } else { 2 }
+        // 待压缩段：索引 1 .. size-keep-1（跳过 system，保留最近 keep 条）
+        let compactEnd = this.messages.size - keep
+        if (compactEnd <= 1) {
+            return
+        }
+        // 构造摘要请求：把待压缩段拼接给 LLM，请求生成紧凑摘要
+        var sb = StringBuilder()
+        sb.append("请把以下对话历史压缩成一段简洁的中文摘要（保留：任务目标、已完成的工具调用与关键结果、当前进度、尚未解决的问题）。不要遗漏重要事实。")
+        for (i in 1..compactEnd) {
+            let m = this.messages[i]
+            sb.append("\n[${m.role}] ${m.content}")
+        }
+        var summaryMsgs = ArrayList<ChatMessage>()
+        summaryMsgs.add(ChatMessage("user", sb.toString()))
+        var summary = ""
+        try {
+            let resp = this.provider.chatStream(summaryMsgs, ArrayList<ToolSpec>(), { _ => })
+            summary = resp.text
+        } catch (e: Exception) {
+            // 摘要失败不阻塞主流程（保持原历史继续）
+            return
+        }
+        if (summary.size == 0) {
+            return
+        }
+        // 重建历史：system + 摘要消息 + 最近 keep 条
+        var newMsgs = ArrayList<ChatMessage>()
+        if (this.messages.size > 0) {
+            newMsgs.add(this.messages[0])  // system
+        }
+        newMsgs.add(ChatMessage("user", "[历史摘要] ${summary}"))
+        for (i in compactEnd..this.messages.size) {
+            newMsgs.add(this.messages[i])
+        }
+        this.messages = newMsgs
+        this.onDelta("\n\n_[会话历史已自动压缩：${compactEnd - 1} 条早期消息 → 摘要]_")
     }
 
     /**

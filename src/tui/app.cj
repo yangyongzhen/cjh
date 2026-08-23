@@ -49,6 +49,15 @@ public class TuiApp {
     private var spinner: Spinner = Spinner()
     // 审批/确认弹窗（替代旧的状态行内联审批 UI）
     private var confirmDialog: ConfirmDialog = ConfirmDialog()
+    // 视图切换标签栏（对话 / 帮助）
+    private var tabBar: TabBar = TabBar()
+    // 启动欢迎视图（两栏：左 logo+模型，右 Tips+会话；输出区为空时显示）
+    private var welcomeView: WelcomeView = WelcomeView()
+    // 当前视图：0=对话 1=帮助
+    private var viewMode: Int64 = 0
+    // 多行编辑模式（Ctrl+E 切换；Alt+Enter 提交，Esc 退出）
+    private var editor: MultiLineEditor = MultiLineEditor()
+    private var editMode: Bool = false
 
     // ── 审批链（危险操作需人工确认）──
     // agent 线程 requestApproval() 阻塞等待；主循环读 y/n 后写回结果
@@ -69,6 +78,18 @@ public class TuiApp {
         // 流式指示器 / 审批弹窗按终端能力初始化
         this.spinner = Spinner(this.term.isUtf8(), "思考中…")
         this.confirmDialog = ConfirmDialog(this.term.isUtf8())
+        // 审批弹窗铺满终端宽度（对齐 TUI 全宽布局，避免半屏小窗）
+        this.confirmDialog.fullWidth = true
+        // 启动欢迎视图（utf8 能力对齐终端；模型/会话由外部 setModel/setSessions 注入）
+        this.welcomeView = WelcomeView(this.term.isUtf8())
+        // 多行编辑器（行号栏 + 多行编辑；Alt+Enter 由 TuiApp 拦截提交）
+        this.editor = MultiLineEditor("输入…（Ctrl+E 多行，Alt+Enter 提交）")
+        // 视图切换：对话 / 帮助（Tab/←→ 切换，Esc 回对话视图）
+        let tabs = ArrayList<String>()
+        tabs.add("对话")
+        tabs.add("帮助")
+        this.tabBar.setTabs(tabs)
+        this.tabBar.onSelect = { _ => this.markDirty() }
         // 审批弹窗回调：把 y/n 结果写回等待中的 agent 线程
         this.confirmDialog.onResult = { ok =>
             this.approvalLock.lock()
@@ -187,6 +208,19 @@ public class TuiApp {
     }
 
     /**
+     * 确保输出以换行结尾（工具调用提示前调用，线程安全）
+     */
+    public func ensureNewline(): Unit {
+        this.outputLock.lock()
+        try {
+            this.outputView.ensureNewline()
+        } finally {
+            this.outputLock.unlock()
+        }
+        this.markDirty()
+    }
+
+    /**
      * 流式追加：追加到当前输出行末尾（不换行），用于 LLM 增量渲染
      */
     public func appendDelta(text: String): Unit {
@@ -235,10 +269,20 @@ public class TuiApp {
     }
 
     /**
-     * 设置模型名（状态徽章显示）
+     * 设置模型名（状态徽章显示 + 状态栏分段 + 欢迎视图）
      */
     public func setModel(name: String): Unit {
         this.modelName = name
+        this.statusBar.setModel(name)
+        this.welcomeView.setModel(name)
+        this.markDirty()
+    }
+
+    /**
+     * 设置最近会话摘要（欢迎视图右栏展示；由外部 SessionStore.list() 注入）
+     */
+    public func setSessions(list: ArrayList<String>): Unit {
+        this.welcomeView.setSessions(list)
         this.markDirty()
     }
 
@@ -301,11 +345,45 @@ public class TuiApp {
             "picker=${this.picker.isVisible()}")
         if (key.escapeSeq == TermEsc.ESC) {
             // 裸 Esc（仅单个 ESC；方向键/功能键序列 ESC[A 等 ch 也是 27，但 escapeSeq 更长）
-            // 关闭下拉框（不退出）
+            // 关闭下拉框 / 退出多行编辑 / 帮助视图回对话
+            if (this.editMode) {
+                // 退出多行编辑：内容回填输入框（不提交）
+                this.editorExit()
+                return
+            }
+            if (this.viewMode == 1) {
+                // 帮助视图：Esc 回对话视图
+                this.setView(0)
+                return
+            }
             if (this.picker.isVisible()) {
                 this.picker.hide()
                 this.markDirty()
             }
+            return
+        }
+        // Ctrl+E：切换多行编辑模式（ch=5；Ctrl+U/D/C 已被占用）
+        if (key.ch == 5) {
+            if (this.editMode) {
+                // 再次 Ctrl+E：等价 Esc 退出（内容回填输入框）
+                this.editorExit()
+            } else {
+                this.editorEnter()
+            }
+            return
+        }
+        // 多行编辑模式：Alt+Enter（ESC \r 序列）提交；其余键交 MultiLineEditor
+        if (this.editMode) {
+            // Alt+Enter：ESC 后跟 \r（readKey 中 escapeSeq = "\x1b\r"）
+            if (key.escapeSeq == TermEsc.ESC + "\r") {
+                this.editorSubmit()
+                return
+            }
+            if (this.editor.handleKey(key)) {
+                this.markDirty()
+                return
+            }
+            // 编辑模式不消费的键（鼠标等）直接吞掉，避免穿透到输出滚动
             return
         }
         // 下拉框可见时：方向键选择、Tab 补全优先于滚动
@@ -331,6 +409,15 @@ public class TuiApp {
                 return
             }
         }
+        // 视图切换：Tab / ←→ 交给 TabBar（对话/帮助视图都可切换回）
+        if (this.tabBar.handleKey(key)) {
+            // 与当前视图不同才切换（TabBar 已更新 activeIndex）
+            if (this.tabBar.activeIndex() != this.viewMode) {
+                this.setView(this.tabBar.activeIndex())
+            }
+            this.markDirty()
+            return
+        }
         // 组件分发：滚动键（OutputView）→ 输入键（InputBox 消费字符/退格/回车）
         if (this.outputView.handleKey(key)) {
             this.markDirty()
@@ -340,6 +427,51 @@ public class TuiApp {
             this.markDirty()
             return
         }
+    }
+
+    /**
+     * 进入多行编辑模式：输入框内容带入编辑器，隐藏下拉框
+     */
+    private func editorEnter(): Unit {
+        this.editor.setText(this.inputBox.text())
+        this.editMode = true
+        this.picker.hide()
+        this.logger.info("editor enter: text='${this.editor.text()}'")
+        this.markDirty()
+    }
+
+    /**
+     * 退出多行编辑模式：编辑器内容回填输入框（不提交）
+     */
+    private func editorExit(): Unit {
+        this.inputBox.setTextSilent(this.editor.text())
+        this.editMode = false
+        this.logger.info("editor exit: text='${this.inputBox.text()}'")
+        this.markDirty()
+    }
+
+    /**
+     * 多行编辑提交：Alt+Enter → 回显 + 外部 onSubmit（与输入框提交同路径）
+     */
+    private func editorSubmit(): Unit {
+        let text = this.editor.text()
+        this.editMode = false
+        this.inputBox.clear()
+        if (text.size > 0) {
+            this.logger.info("editor submit: '${text}'")
+            this.appendOutput(Ansi.fg(Ansi.THEME_ACCENT) + "❯ " + Ansi.reset() + text)
+            this.onSubmit(text)
+        }
+        this.markDirty()
+    }
+
+    /**
+     * 切换视图（0=对话 1=帮助）
+     */
+    private func setView(v: Int64): Unit {
+        this.viewMode = v
+        this.tabBar.setActive(v)
+        this.markDirty()
     }
 
     /**
@@ -385,62 +517,138 @@ public class TuiApp {
         this.canvas.begin(rows, cols, this.term.sizeChanged())
         let utf8 = this.term.isUtf8()
 
-        // logo 区（5 行，box-drawing CJ 徽标）
-        let logoLines = Logo.renderLines(utf8)
-        var li: Int64 = 0
-        for (l in logoLines) {
-            this.canvas.setLine(li, l)
-            li += 1
-        }
-        // 标题栏（logo 下方独立行）
-        this.canvas.setLine(5, Logo.titleBar(utf8, this.modelName))
-        // 分隔线
-        this.canvas.setLine(6, Logo.separator(cols, utf8))
+        // 布局（对齐 omp pi-composer：无侧边框，上下全宽水平线，底部状态+输入）：
+        //   0..4        CJ 彩色 logo（现代 5 行）
+        //   5           标题栏（cjh Cangjie Agent [模型]）
+        //   6           视图标签栏（对话 / 帮助）
+        //   7           全宽分隔线（上）
+        //   8..bot-1    输出区（无边框全宽，可滚动）
+        //   bot         全宽分隔线（下）
+        //   statusRow   状态行
+        //   inputTop..  输入区（普通 1 行 / 多行编辑动态增高）
+        //   rows-1      末行（输入框或编辑器末行）
+        // 多行编辑模式：输入区动态增高（行号栏 + 内容行），分隔线/状态随之上移
+        // 欢迎视图（启动/新会话，输出区为空）时：隐藏顶部 logo/标题/TabBar/分隔线，
+        // 欢迎视图从行 0 占满到状态行上方（对齐 omp 启动画面整屏两栏布局）
 
-        // 输出区（行 7 起，高度 = rows - 9：留给状态行 + 输入行）
-        let outHeight = if (rows - 9 > 0) { rows - 9 } else { 0 }
+        // 输入区行数（编辑模式动态）
+        let editBoxH: Int64 = if (this.editMode) {
+            var h = this.editor.lineCount()
+            if (h < 1) { h = 1 }
+            if (h > 5) { h = 5 }
+            h
+        } else { 1 }
+        // 输入区顶行（编辑模式：编辑器占 inputTop..rows-1；普通模式：单行在 rows-1）
+        let inputTop = rows - editBoxH
+        // 状态行：输入区上方一行（omp 上边框：╭── 状态内容 ─▶──╮，兼作下分隔线）
+        let statusRow = inputTop - 1
+
+        // 是否显示欢迎视图（对话视图且输出区为空）
         this.outputLock.lock()
-        try {
-            this.outputView.render(this.canvas, 7, cols, outHeight)
-        } finally {
-            this.outputLock.unlock()
+        let showWelcome = this.viewMode == 0 && this.outputView.content().size == 0
+        this.outputLock.unlock()
+
+        if (showWelcome) {
+            // 欢迎视图占满全屏：行 0 .. statusRow-1（不渲染顶部 logo/标题/TabBar/分隔线）
+            let wH = if (statusRow > 0) { statusRow } else { 0 }
+            this.welcomeView.render(this.canvas, 0, cols, wH)
+        } else {
+            // 顶部：CJ logo（彩色）+ 标题栏 + 视图标签栏 + 上分隔线
+            let logoLines = Logo.renderLinesModern(utf8)
+            var li: Int64 = 0
+            for (l in logoLines) {
+                this.canvas.setLine(li, l)
+                li += 1
+            }
+            this.canvas.setLine(5, Logo.titleBar(utf8, this.modelName))
+            this.tabBar.render(this.canvas, 6, cols, 1)
+            this.canvas.setLine(7, Logo.separator(cols, utf8))
+
+            // 输出区可用高度：8 .. statusRow-1
+            let outH = if (statusRow - 8 > 0) { statusRow - 8 } else { 0 }
+
+            // 输出区（对话 / 帮助视图，无边框全宽）
+            if (this.viewMode == 1) {
+                this.renderHelp(this.canvas, 8, cols, outH)
+            } else {
+                this.outputLock.lock()
+                try {
+                    this.outputView.render(this.canvas, 8, cols, outH)
+                } finally {
+                    this.outputLock.unlock()
+                }
+            }
         }
 
-        // 底部区域（rows-2 起）：审批弹窗 / 流式 spinner / 状态行 三选一
+        // 底部区域：审批弹窗 / 流式 spinner / 状态行 三选一
+        // （状态行即 omp 上边框 ╭── 内容 ─▶──╮，兼作输出区下分隔线，不再单独画线）
         if (this.confirmDialog.isVisible()) {
-            // 审批弹窗：模态覆盖，弹窗 4 行，紧贴输入行上方渲染
-            let dlgRow = if (rows - 5 > 0) { rows - 5 } else { 0 }
+            // 审批弹窗：模态覆盖，弹窗 4 行，紧贴输入区上方渲染
+            let dlgRow = if (statusRow - 5 > 0) { statusRow - 5 } else { 0 }
             this.confirmDialog.render(this.canvas, dlgRow, cols, 4)
         } else {
             // 流式判定需要 outputLock（agent 线程写流式段，可能竞态）
             this.outputLock.lock()
             let streaming = this.outputView.isStreaming()
             this.outputLock.unlock()
-            if (streaming) {
+            if (streaming && this.viewMode == 0) {
                 // 流式回复中：状态行显示加载指示器（每次渲染推进一帧）
                 this.spinner.tick()
-                this.spinner.render(this.canvas, rows - 2, cols, 1)
+                this.spinner.render(this.canvas, statusRow, cols, 1)
             } else {
-                this.statusBar.render(this.canvas, rows - 2, cols, 1)
+                this.statusBar.render(this.canvas, statusRow, cols, 1)
             }
         }
 
-        // 输入行（InputBox 内部会设置光标）
-        this.inputBox.render(this.canvas, rows - 1, cols, 1)
+        // 输入区（无边框：InputBox 带 ❯ 提示符 / MultiLineEditor 行号栏）
+        if (this.editMode) {
+            // 编辑器从 inputTop 起占 editBoxH 行（顶到末行 rows-1）
+            this.editor.render(this.canvas, inputTop, cols, editBoxH)
+        } else {
+            this.inputBox.render(this.canvas, inputTop, cols, 1)
+        }
 
-        // / 命令下拉补全框：紧贴输入行上方渲染（覆盖状态行区域，最多 6 行）
+        // / 命令下拉补全框：紧贴输入区上方渲染（覆盖状态行区域，最多 6 行）
         if (this.picker.isVisible() && this.picker.size() > 0) {
             let pickerRows = if (this.picker.size() > 6) { 6 } else { this.picker.size() }
             let rendered = this.picker.render(pickerRows)
             for (pi in 0..pickerRows) {
-                let lineIdx = rows - 1 - pickerRows + pi
-                if (lineIdx >= 8 && lineIdx <= rows - 1) {
+                let lineIdx = statusRow - pickerRows + pi
+                // 下限对齐输出区起点（行 8），不覆盖输出区内容
+                if (lineIdx >= 8 && lineIdx <= statusRow) {
                     this.canvas.setLine(lineIdx, rendered[pi])
                 }
             }
         }
 
-        // 差分渲染：只输出变化行 + 光标定位（InputBox 已设置）
+        // 差分渲染：只输出变化行 + 光标定位（InputBox / MultiLineEditor 已设置）
         print(this.canvas.flush(), flush: true)
+    }
+
+    /**
+     * 帮助视图内容（无边框全宽渲染）
+     */
+    private func renderHelp(canvas: TuiCanvas, row: Int64, width: Int64, height: Int64): Unit {
+        let lines: ArrayList<String> = ArrayList<String>()
+        lines.add(Ansi.fg(Ansi.COLOR_CYAN) + "可用命令：" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.COLOR_GRAY) + "  /help          显示本帮助" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.COLOR_GRAY) + "  /new           开始新会话" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.COLOR_GRAY) + "  /resume [id]   恢复历史会话（无 id 时列出）" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.COLOR_GRAY) + "  /model [id|#]  列出/切换模型" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.COLOR_GRAY) + "  /settings      查看采样参数（temp/max_tokens）" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.COLOR_GRAY) + "  /quit          退出" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.COLOR_CYAN) + "快捷键：" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.COLOR_GRAY) + "  Tab / ←→       切换视图（对话/帮助）" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.COLOR_GRAY) + "  Ctrl+E         多行输入编辑" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.COLOR_GRAY) + "  Alt+Enter      多行编辑提交" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.COLOR_GRAY) + "  Esc            退出多行编辑 / 回对话视图" + Ansi.reset())
+        var r: Int64 = 0
+        for (l in lines) {
+            if (r >= height) {
+                break
+            }
+            canvas.setLine(row + r, l)
+            r += 1
+        }
     }
 }

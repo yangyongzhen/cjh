@@ -51,6 +51,56 @@ public class StreamAccumulatorTest {
         @Assert(resp.toolCalls[0].arguments.containsKey("path"), true)
     }
 
+    @TestCase
+    public func testToolCallParallel(): Unit {
+        // 并行工具调用（index 0/1）：两个 bash 调用，参数必须分别解析，
+        // 不能被拼成一个非法 JSON（旧实现 bug → _raw 透传 → "缺少参数"）
+        let acc = StreamAccumulator()
+
+        // index 0: bash g++ --version
+        var args0 = JsonObject()
+        args0.put("command", JsonString("g++ --version"))
+        var fn0 = JsonObject()
+        fn0.put("name", JsonString("bash"))
+        fn0.put("arguments", JsonString(args0.toJsonString()))
+        var tc0 = JsonObject()
+        tc0.put("index", JsonInt(0))
+        tc0.put("id", JsonString("call_a"))
+        tc0.put("function", fn0)
+        var arr0 = ArrayList<JsonValue>()
+        arr0.add(tc0)
+        var root0 = JsonObject()
+        root0.put("tool_calls", JsonArray(arr0))
+        acc.feed(root0.toJsonString())
+
+        // index 1: bash gcc --version
+        var args1 = JsonObject()
+        args1.put("command", JsonString("gcc --version"))
+        var fn1 = JsonObject()
+        fn1.put("name", JsonString("bash"))
+        fn1.put("arguments", JsonString(args1.toJsonString()))
+        var tc1 = JsonObject()
+        tc1.put("index", JsonInt(1))
+        tc1.put("id", JsonString("call_b"))
+        tc1.put("function", fn1)
+        var arr1 = ArrayList<JsonValue>()
+        arr1.add(tc1)
+        var root1 = JsonObject()
+        root1.put("tool_calls", JsonArray(arr1))
+        acc.feed(root1.toJsonString())
+
+        let resp = acc.finish()
+        @Assert(resp.toolCalls.size, 2)
+        // index 0 调用参数完整可解析
+        @Assert(resp.toolCalls[0].name, "bash")
+        @Assert(resp.toolCalls[0].arguments.containsKey("command"), true)
+        @Assert(resp.toolCalls[0].arguments.containsKey("_raw"), false)
+        // index 1 调用参数完整可解析
+        @Assert(resp.toolCalls[1].name, "bash")
+        @Assert(resp.toolCalls[1].arguments.containsKey("command"), true)
+        @Assert(resp.toolCalls[1].arguments.containsKey("_raw"), false)
+    }
+
     /**
      * 构造 {"choices":[{"delta":{"content":X}}]}
      */
@@ -114,6 +164,65 @@ public class AnthropicAccumulatorTest {
         @Assert(resp.toolCalls[0].name, "grep")
         @Assert(resp.toolCalls[0].arguments.containsKey("pattern"), true)
         @Assert(AnthTestState.delta, "处理中")
+    }
+
+    @TestCase
+    public func testParallelToolUse(): Unit {
+        // 并行 tool_use（content_block index 0/1）：参数必须分别累积解析，
+        // 不能被拼成一个非法 JSON（旧实现单一 curToolArgs 的同样 bug）
+        let acc = AnthropicAccumulator()
+        AnthTestState.delta = ""
+
+        // index 0: tool_use grep
+        var block0 = JsonObject()
+        block0.put("type", JsonString("tool_use"))
+        block0.put("id", JsonString("tu_a"))
+        block0.put("name", JsonString("grep"))
+        var ev0 = JsonObject()
+        ev0.put("type", JsonString("content_block_start"))
+        ev0.put("index", JsonInt(0))
+        ev0.put("content_block", block0)
+        acc.feed(ev0.toJsonString(), { d => AnthTestState.delta += d })
+        var partial0 = JsonObject()
+        partial0.put("pattern", JsonString("x"))
+        var d0 = JsonObject()
+        d0.put("type", JsonString("input_json_delta"))
+        d0.put("partial_json", JsonString(partial0.toJsonString()))
+        var e0 = JsonObject()
+        e0.put("type", JsonString("content_block_delta"))
+        e0.put("index", JsonInt(0))
+        e0.put("delta", d0)
+        acc.feed(e0.toJsonString(), { d => AnthTestState.delta += d })
+
+        // index 1: tool_use read_file
+        var block1 = JsonObject()
+        block1.put("type", JsonString("tool_use"))
+        block1.put("id", JsonString("tu_b"))
+        block1.put("name", JsonString("read_file"))
+        var ev1 = JsonObject()
+        ev1.put("type", JsonString("content_block_start"))
+        ev1.put("index", JsonInt(1))
+        ev1.put("content_block", block1)
+        acc.feed(ev1.toJsonString(), { d => AnthTestState.delta += d })
+        var partial1 = JsonObject()
+        partial1.put("path", JsonString("/tmp/x.txt"))
+        var d1 = JsonObject()
+        d1.put("type", JsonString("input_json_delta"))
+        d1.put("partial_json", JsonString(partial1.toJsonString()))
+        var e1 = JsonObject()
+        e1.put("type", JsonString("content_block_delta"))
+        e1.put("index", JsonInt(1))
+        e1.put("delta", d1)
+        acc.feed(e1.toJsonString(), { d => AnthTestState.delta += d })
+
+        let resp = acc.finish()
+        @Assert(resp.toolCalls.size, 2)
+        @Assert(resp.toolCalls[0].name, "grep")
+        @Assert(resp.toolCalls[0].arguments.containsKey("pattern"), true)
+        @Assert(resp.toolCalls[0].arguments.containsKey("_raw"), false)
+        @Assert(resp.toolCalls[1].name, "read_file")
+        @Assert(resp.toolCalls[1].arguments.containsKey("path"), true)
+        @Assert(resp.toolCalls[1].arguments.containsKey("_raw"), false)
     }
 }
 

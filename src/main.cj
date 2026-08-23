@@ -4,6 +4,7 @@ import std.collection.*
 import std.env.*
 import std.fs.*
 import std.convert.Parsable
+import stdx.encoding.json.*
 import cjllm.*
 import cjh.agent.*
 import cjh.tools.*
@@ -151,6 +152,95 @@ func truncateUtf8(text: String, maxBytes: Int64): String {
     return ""
 }
 
+/**
+ * 加载项目指令（AGENTS.md，对齐 pi 的 AGENTS.md 能力）：
+ * 从当前工作目录开始逐级向上查找，找到第一个 AGENTS.md 读取其内容；
+ * 找不到返回 ""。内容注入 system prompt（项目级指令优先于全局配置）。
+ */
+func loadProjectInstructions(): String {
+    var dir = getWorkingDirectory()
+    var depth: Int64 = 0
+    while (depth < 8) {
+        let p = dir.toString() + "/AGENTS.md"
+        if (exists(p)) {
+            try {
+                let content = String.fromUtf8(File.readFrom(p))
+                if (content.size > 0) {
+                    return content
+                }
+            } catch (e: Exception) {
+                ()
+            }
+        }
+        let parent = dir.parent
+        if (parent.toString() == dir.toString()) {
+            break
+        }
+        dir = parent
+        depth += 1
+    }
+    return ""
+}
+
+/**
+ * 组装 system prompt：全局配置 + 项目指令（AGENTS.md）
+ */
+func buildSystemPrompt(base: String): String {
+    let instr = loadProjectInstructions()
+    if (instr.size == 0) {
+        return base
+    }
+    return base + "\n\n## 项目指令（AGENTS.md）\n" + instr
+}
+
+/**
+ * 工具参数紧凑显示（无大括号）：
+ *   bash → 直接展示命令文本：▶ bash cat hello.cpp && ./hello
+ *   read/list/write → 直接展示路径：▶ read_file hello.cpp
+ *   grep 等多字段 → 主字段值 + 其余 "key: value" 平铺
+ * 字符串值取原始文本（避免 toJsonString 的 \u0026 等 JSON 转义），超长截断。
+ */
+func formatToolArgs(name: String, args: JsonObject): String {
+    let fields = args.getFields()
+    if (fields.size == 0) {
+        return ""
+    }
+    var sb = StringBuilder()
+    var first: Bool = true
+    // 主字段：bash→command，其余→path（直接展示值，无 key 前缀）
+    let mainKey = if (name == "bash") { "command" } else { "path" }
+    if (let Some(v) <- args.get(mainKey)) {
+        sb.append(shortArgValue(v))
+        first = false
+    }
+    // 其余字段：key: value 平铺（无大括号）
+    for ((k, v) in fields) {
+        if (k == mainKey) {
+            continue
+        }
+        if (!first) {
+            sb.append(" ")
+        }
+        first = false
+        sb.append(k)
+        sb.append(": ")
+        sb.append(shortArgValue(v))
+    }
+    return sb.toString()
+}
+
+/**
+ * 单值紧凑显示：字符串取原始文本（无引号/转义），超长截断
+ */
+func shortArgValue(v: JsonValue): String {
+    var raw = ""
+    match (v.kind()) {
+        case JsonKind.JsString => raw = v.asString().getValue()
+        case _ => raw = v.toJsonString()
+    }
+    return if (raw.size > 120) { truncateUtf8(raw, 120) + "…" } else { raw }
+}
+
 main(args: Array<String>): Int64 {
     if (args.size > 0 && args[0] == "--mock") {
         return runMockVerify()
@@ -190,10 +280,13 @@ func runCli(sessionId: String): Int64 {
     let cjhCfg = CjhConfig()
     cjhCfg.ensureDirs()
 
+    // system prompt：全局配置 + 项目指令（AGENTS.md 多级目录向上查找）
     let config = AgentConfig(
-        cjhCfg.systemPrompt,
+        buildSystemPrompt(cjhCfg.systemPrompt),
         cjhCfg.maxIterations,
-        cjhCfg.capability)
+        cjhCfg.capability,
+        cjhCfg.compactThreshold,
+        cjhCfg.compactKeep)
 
     try {
         let provider: LlmProvider
@@ -300,10 +393,13 @@ func runTui(sessionId: String): Int64 {
     let cjhCfg = CjhConfig()
     cjhCfg.ensureDirs()
 
+    // system prompt：全局配置 + 项目指令（AGENTS.md 多级目录向上查找）
     let config = AgentConfig(
-        cjhCfg.systemPrompt,
+        buildSystemPrompt(cjhCfg.systemPrompt),
         cjhCfg.maxIterations,
-        cjhCfg.capability)
+        cjhCfg.capability,
+        cjhCfg.compactThreshold,
+        cjhCfg.compactKeep)
 
     try {
         let provider: LlmProvider
@@ -320,6 +416,13 @@ func runTui(sessionId: String): Int64 {
 
         // 会话：恢复历史 / 新会话
         let store = SessionStore(cjhCfg.sessionsDir)
+        // 欢迎视图右栏：最近会话摘要（id 不显示，仅摘要）
+        let sessionList = store.list()
+        let sessionSummaries = ArrayList<String>()
+        for (s in sessionList) {
+            sessionSummaries.add(s[1])
+        }
+        tui.setSessions(sessionSummaries)
         var curSessionId = sessionId
         if (curSessionId.size > 0) {
             let history = store.load(curSessionId)
@@ -346,21 +449,25 @@ func runTui(sessionId: String): Int64 {
         }
         agent.onToolStart = { name, args =>
             if (StreamState.active) {
-                TuiBridge.output("")
+                TuiBridge.delta("")
                 StreamState.active = false
             }
-            TuiBridge.output(Ansi.fg(Ansi.COLOR_GREEN) + "▶ ${name} " + Ansi.reset() + Ansi.fg(Ansi.COLOR_GRAY) + "${args.toJsonString()}" + Ansi.reset())
+            // 工具调用提示单独一行开始（不拼到流式文字后面），参数紧凑无大括号
+            TuiBridge.ensureNewline()
+            TuiBridge.output(Ansi.fg(Ansi.COLOR_GREEN) + "▶ ${name} " + Ansi.reset() + Ansi.fg(Ansi.COLOR_GRAY) + formatToolArgs(name, args) + Ansi.reset())
         }
         agent.onToolResult = { name, result =>
             var preview = result.content
             if (preview.size > 200) {
                 preview = truncateUtf8(preview, 200) + "…"
             }
+            TuiBridge.ensureNewline()
             TuiBridge.output(Ansi.fg(Ansi.COLOR_GRAY) + "  ↳ ${name}: ${preview}" + Ansi.reset())
         }
         // 审批链：危险操作需人工确认时，在 TUI 内嵌审批（y/n）
         agent.onApproval = { name, args, reason =>
-            TuiBridge.output(Ansi.fg(Ansi.COLOR_YELLOW) + "⚠ 需人工确认: ${name} ${args.toJsonString()}" + Ansi.reset())
+            TuiBridge.ensureNewline()
+            TuiBridge.output(Ansi.fg(Ansi.COLOR_YELLOW) + "⚠ 需人工确认: ${name} " + Ansi.reset() + Ansi.fg(Ansi.COLOR_GRAY) + formatToolArgs(name, args) + Ansi.reset())
             TuiBridge.requestApproval(reason)
         }
         agent.onAssistantText = { text =>
@@ -595,6 +702,15 @@ class TuiBridge {
     public static func output(text: String): Unit {
         if (let Some(a) <- TuiBridge.app) {
             a.appendOutput(text)
+        }
+    }
+
+    /**
+     * 确保输出以换行结尾（工具调用提示前调用，避免拼到流式文字后面）
+     */
+    public static func ensureNewline(): Unit {
+        if (let Some(a) <- TuiBridge.app) {
+            a.ensureNewline()
         }
     }
 

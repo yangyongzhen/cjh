@@ -20,6 +20,8 @@ public class ConfirmDialog <: Component {
     private var utf8: Bool = true
     // 弹窗宽度（render 时按内容 + 终端宽度重算）
     private var boxW: Int64 = 40
+    // 全宽模式：铺满整个终端宽度（TUI 审批弹窗用；通用组件默认内容自适应）
+    public var fullWidth: Bool = false
     // Enter 是否表示确认（默认 false = 谨慎，Enter 与 n/Esc 同为取消）
     public var enterAccepts: Bool = false
 
@@ -57,20 +59,25 @@ public class ConfirmDialog <: Component {
         if (!this.visible) {
             return 0
         }
-        // 弹窗宽度：内容最长行（码点数）+ 内边距 + 左右边框
-        var maxLen: Int64 = 4
-        let t = this.runeCount(this.title) + 2
-        if (t > maxLen) { maxLen = t }
-        let m = this.runeCount(this.message) + 2
-        if (m > maxLen) { maxLen = m }
-        let h = this.runeCount(this.hint) + 2
-        if (h > maxLen) { maxLen = h }
-        this.boxW = maxLen + 2
-        if (this.boxW > width) {
+        if (this.fullWidth) {
+            // 全宽模式：铺满终端宽度
             this.boxW = width
-        }
-        if (this.boxW < 12) {
-            this.boxW = 12
+        } else {
+            // 内容自适应：最长行显示宽度 + 内边距 + 左右边框
+            var maxLen: Int64 = 4
+            let t = this.displayWidth(this.title) + 2
+            if (t > maxLen) { maxLen = t }
+            let m = this.displayWidth(this.message) + 2
+            if (m > maxLen) { maxLen = m }
+            let h = this.displayWidth(this.hint) + 2
+            if (h > maxLen) { maxLen = h }
+            this.boxW = maxLen + 2
+            if (this.boxW > width) {
+                this.boxW = width
+            }
+            if (this.boxW < 12) {
+                this.boxW = 12
+            }
         }
 
         let tl = if (this.utf8) { "╭" } else { "+" }
@@ -87,7 +94,7 @@ public class ConfirmDialog <: Component {
         top.append(" ")
         top.append(this.title)
         top.append(" ")
-        top.append(this.fill(hc, this.boxW - this.runeCount(this.title) - 4))
+        top.append(this.fill(hc, this.boxW - this.displayWidth(this.title) - 4))
         top.append(tr)
         canvas.setLine(row, top.toString())
 
@@ -133,52 +140,69 @@ public class ConfirmDialog <: Component {
     }
 
     /**
-     * 边框内容行：│ 内容（码点级截断）   │（宽度对齐 boxW）
+     * 边框内容行：│ 内容（显示宽度截断）   │（宽度对齐 boxW）
      */
     private func contentLine(vc: String, content: String): String {
         var sb = StringBuilder()
         sb.append(vc)
         sb.append(" ")
-        let text = this.truncateRunes(content, this.boxW - 4)
+        let text = this.truncateWidth(content, this.boxW - 4)
         sb.append(text)
         sb.append(" ")
-        sb.append(this.fill(" ", this.boxW - this.runeCount(text) - 3))
+        sb.append(this.fill(" ", this.boxW - this.displayWidth(text) - 3))
         sb.append(vc)
         return sb.toString()
     }
 
     /**
-     * 码点数（近似显示宽度：CJK 按 1 个码点计，与 canvas 截断一致）
+     * 显示宽度（东亚宽字符=2 列，其余=1 列；与终端渲染一致）
      */
-    private func runeCount(s: String): Int64 {
+    private func displayWidth(s: String): Int64 {
         var n: Int64 = 0
-        for (_ in s.toRuneArray()) {
-            n += 1
+        for (r in s.toRuneArray()) {
+            n += if (ConfirmDialog.isWideCp(UInt32(r))) { 2 } else { 1 }
         }
         return n
     }
 
     /**
-     * 按码点数截断（字节安全：经 toRuneArray 逐码点重建，不会切碎 UTF-8）
+     * 按显示宽度截断（字节安全：经 toRuneArray 逐码点重建，不会切碎 UTF-8；
+     * 超出 maxW 列即停，避免 CJK 2 列字符被切半）
      */
-    private func truncateRunes(s: String, maxRunes: Int64): String {
-        if (maxRunes <= 0) {
+    private func truncateWidth(s: String, maxW: Int64): String {
+        if (maxW <= 0) {
             return ""
         }
-        let runes = s.toRuneArray()
-        if (runes.size <= maxRunes) {
-            return s
-        }
         var sb = StringBuilder()
-        var n: Int64 = 0
-        for (r in runes) {
-            if (n >= maxRunes) {
+        var w: Int64 = 0
+        for (r in s.toRuneArray()) {
+            let rw = if (ConfirmDialog.isWideCp(UInt32(r))) { 2 } else { 1 }
+            if (w + rw > maxW) {
                 break
             }
             sb.append(r.toString())
-            n += 1
+            w += rw
         }
         return sb.toString()
+    }
+
+    /**
+     * 东亚宽字符码点判断（wcwidth wide 简化版，与 TuiCanvas.isWideCp 同规则）
+     */
+    private static func isWideCp(cp: UInt32): Bool {
+        if (cp >= 0x1100 && cp <= 0x115F) { return true }    // 谚文 Jamo
+        if (cp >= 0x2E80 && cp <= 0x303E) { return true }    // 部首/注音/东亚标点
+        if (cp >= 0x3041 && cp <= 0x33FF) { return true }    // 假名/谚文兼容符号
+        if (cp >= 0x3400 && cp <= 0x4DBF) { return true }    // CJK 扩展 A
+        if (cp >= 0x4E00 && cp <= 0x9FFF) { return true }    // CJK 统一表意
+        if (cp >= 0xA000 && cp <= 0xA4CF) { return true }    // 彝文/谚文字母
+        if (cp >= 0xAC00 && cp <= 0xD7A3) { return true }    // 谚文音节
+        if (cp >= 0xF900 && cp <= 0xFAFF) { return true }    // CJK 兼容表意
+        if (cp >= 0xFE30 && cp <= 0xFE4F) { return true }    // CJK 兼容形式
+        if (cp >= 0xFF00 && cp <= 0xFF60) { return true }    // 全角
+        if (cp >= 0xFFE0 && cp <= 0xFFE6) { return true }    // 全角符号
+        if (cp >= 0x20000 && cp <= 0x2FFFD) { return true }  // CJK 扩展 B+
+        return false
     }
 
     /**

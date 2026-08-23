@@ -62,15 +62,20 @@ public class Box <: Component {
         let br = if (this.utf8) { "╯" } else { "+" }
         let hc = if (this.utf8) { "─" } else { "-" }
         let vc = if (this.utf8) { "│" } else { "|" }
+        // 边框弱化色（标题保持主题色加粗，形成层次）
+        let muted = Ansi.fg(Ansi.THEME_MUTED)
 
         // 标题行（左上角）
         var top = StringBuilder()
+        top.append(muted)
         top.append(tl)
         top.append(hc)
         if (this.title.size > 0) {
             top.append(" ")
             if (this.titleStyled) {
                 top.append(Ansi.fg(Ansi.THEME_ACCENT) + Ansi.bold() + this.title + Ansi.reset())
+                // reset 后恢复边框弱化色
+                top.append(muted)
             } else {
                 top.append(this.title)
             }
@@ -79,29 +84,27 @@ public class Box <: Component {
         // 补齐标题行剩余边框（按可见标题宽度近似，canvas 截断兜底）
         top.append(this.fill(hc, width - 1 - this.visibleTitleWidth() - (if (this.title.size > 0) { 2 } else { 0 })))
         top.append(tr)
+        top.append(Ansi.reset())
         canvas.setLine(row, top.toString())
 
         // 内容区：顶边框下一行起，height-2 行（底部留边框行）
         let innerH = height - 2
+        var used: Int64 = 0
+        // 子组件渲染到内容区：列偏移 padX+1（左侧边框 + 内边距），避免覆盖边框
+        canvas.setOffset(this.padX + 1)
         if (let Some(c) <- this.child) {
-            let used = c.render(canvas, row + 1 + 1, width - 2 * (this.padX + 1), innerH - 1)
-            // 子组件内容未填满时，补空白内容行（含左右边框）
-            var r: Int64 = used
-            while (r < innerH - 1) {
-                canvas.setLine(row + 1 + r, vc + this.fill(" ", width - 2) + vc)
-                r += 1
-            }
-        } else {
-            // 无子组件：空内容行
-            var r: Int64 = 0
-            while (r < innerH - 1) {
-                canvas.setLine(row + 1 + r, vc + this.fill(" ", width - 2) + vc)
-                r += 1
-            }
+            used = c.render(canvas, row + 1, width - 2 * (this.padX + 1), innerH)
+        }
+        canvas.setOffset(0)
+        // 子组件内容未填满时，补空白内容行（含左右边框）
+        var r: Int64 = used
+        while (r < innerH) {
+            canvas.setLine(row + 1 + r, muted + vc + this.fill(" ", width - 2) + vc + Ansi.reset())
+            r += 1
         }
 
         // 底边框
-        canvas.setLine(row + height - 1, bl + this.fill(hc, width - 2) + br)
+        canvas.setLine(row + height - 1, muted + bl + this.fill(hc, width - 2) + br + Ansi.reset())
         return height
     }
 

@@ -47,6 +47,10 @@ public class CjhConfig {
     public var models: ArrayList<ModelEntry> = ArrayList<ModelEntry>()
     // 三域 capability 安全模型（settings.json "capability": {...}；未配置=宽松模式）
     public var capability: Capability = Capability.fromJson(None)
+    // Compaction：消息条数超阈值触发 LLM 摘要压缩早期历史（0=禁用，对齐 pi 自动摘要）
+    public var compactThreshold: Int64 = 0
+    // 压缩时保留的最近消息条数
+    public var compactKeep: Int64 = 12
 
     public init() {
         // 配置目录：环境变量覆盖，默认 ~/.cjh
@@ -181,6 +185,19 @@ public class CjhConfig {
                     // capability 三域安全模型（未配置=宽松模式）
                     if (let Some(v) <- obj.get("capability")) {
                         this.capability = Capability.fromJson(Some(v))
+                    }
+                    // Compaction：消息条数阈值（0=禁用）+ 保留最近条数
+                    if (let Some(v) <- obj.get("compact_threshold")) {
+                        match (v.kind()) {
+                            case JsonKind.JsInt => this.compactThreshold = v.asInt().getValue()
+                            case _ => ()
+                        }
+                    }
+                    if (let Some(v) <- obj.get("compact_keep")) {
+                        match (v.kind()) {
+                            case JsonKind.JsInt => this.compactKeep = v.asInt().getValue()
+                            case _ => ()
+                        }
                     }
                     // models 列表：每项可覆盖 id/name/base_url/api_key/temperature/max_tokens
                     if (let Some(v) <- obj.get("models")) {

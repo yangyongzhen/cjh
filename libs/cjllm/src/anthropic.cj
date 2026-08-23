@@ -200,11 +200,12 @@ public class AnthropicAccumulator {
     public var text: String = ""
     public var toolCalls: ArrayList<ToolCall> = ArrayList<ToolCall>()
 
-    // 当前工具调用分片状态
-    private var curToolId: String = ""
-    private var curToolName: String = ""
-    private var curToolArgs: String = ""
-    private var toolStarted: Bool = false
+    // 并行工具调用按 content_block index 分别累积（Anthropic 流式
+    // content_block_start/delta 事件带 index；旧实现单一 curToolArgs 会把
+    // 多个 tool_use 的 partial_json 拼成非法 JSON → _raw 透传 → "缺少参数"）
+    private var pendingToolIds: ArrayList<String> = ArrayList<String>()
+    private var pendingToolNames: ArrayList<String> = ArrayList<String>()
+    private var pendingToolArgs: ArrayList<String> = ArrayList<String>()
     // 增量游标
     private var lastSentText: String = ""
 
@@ -232,7 +233,7 @@ public class AnthropicAccumulator {
 
             match (eventType) {
                 case "content_block_start" =>
-                    // 工具调用开始
+                    // 工具调用开始（content_block 带 index，多个并行调用各自累积）
                     if (let Some(cb) <- obj.get("content_block")) {
                         match (cb.kind()) {
                             case JsonKind.JsObject =>
@@ -241,16 +242,28 @@ public class AnthropicAccumulator {
                                     match (bt.kind()) {
                                         case JsonKind.JsString =>
                                             if (bt.asString().getValue() == "tool_use") {
-                                                this.toolStarted = true
+                                                var index: Int64 = 0
+                                                if (let Some(idx) <- obj.get("index")) {
+                                                    match (idx.kind()) {
+                                                        case JsonKind.JsInt => index = idx.asInt().getValue()
+                                                        case JsonKind.JsFloat => index = Int64(idx.asFloat().getValue())
+                                                        case _ => ()
+                                                    }
+                                                }
+                                                while (this.pendingToolIds.size <= index) {
+                                                    this.pendingToolIds.add("")
+                                                    this.pendingToolNames.add("")
+                                                    this.pendingToolArgs.add("")
+                                                }
                                                 if (let Some(id) <- block.get("id")) {
                                                     match (id.kind()) {
-                                                        case JsonKind.JsString => this.curToolId = id.asString().getValue()
+                                                        case JsonKind.JsString => this.pendingToolIds[index] = id.asString().getValue()
                                                         case _ => ()
                                                     }
                                                 }
                                                 if (let Some(name) <- block.get("name")) {
                                                     match (name.kind()) {
-                                                        case JsonKind.JsString => this.curToolName = name.asString().getValue()
+                                                        case JsonKind.JsString => this.pendingToolNames[index] = name.asString().getValue()
                                                         case _ => ()
                                                     }
                                                 }
@@ -283,9 +296,21 @@ public class AnthropicAccumulator {
                                                         }
                                                     }
                                                 case "input_json_delta" =>
+                                                    // 按 content_block index 累积 partial_json
+                                                    var argsIdx: Int64 = 0
+                                                    if (let Some(idx) <- obj.get("index")) {
+                                                        match (idx.kind()) {
+                                                            case JsonKind.JsInt => argsIdx = idx.asInt().getValue()
+                                                            case JsonKind.JsFloat => argsIdx = Int64(idx.asFloat().getValue())
+                                                            case _ => ()
+                                                        }
+                                                    }
+                                                    while (this.pendingToolArgs.size <= argsIdx) {
+                                                        this.pendingToolArgs.add("")
+                                                    }
                                                     if (let Some(pj) <- delta.get("partial_json")) {
                                                         match (pj.kind()) {
-                                                            case JsonKind.JsString => this.curToolArgs += pj.asString().getValue()
+                                                            case JsonKind.JsString => this.pendingToolArgs[argsIdx] += pj.asString().getValue()
                                                             case _ => ()
                                                         }
                                                     }
@@ -333,23 +358,29 @@ public class AnthropicAccumulator {
     }
 
     /**
-     * 流结束：解析累积的工具调用
+     * 流结束：解析累积的工具调用（每个 content_block index 一个）
      */
     public func finish(): ModelResponse {
-        if (this.curToolId.size > 0 && this.curToolName.size > 0) {
+        for (i in 0..this.pendingToolIds.size) {
+            let id = this.pendingToolIds[i]
+            let name = this.pendingToolNames[i]
+            if (id.size == 0 || name.size == 0) {
+                continue
+            }
             var args = JsonObject()
-            if (this.curToolArgs.size > 0) {
+            let raw = this.pendingToolArgs[i]
+            if (raw.size > 0) {
                 try {
-                    let parsed = JsonValue.fromStr(this.curToolArgs)
+                    let parsed = JsonValue.fromStr(raw)
                     match (parsed.kind()) {
                         case JsonKind.JsObject => args = parsed.asObject()
                         case _ => ()
                     }
                 } catch (e: Exception) {
-                    args.put("_raw", JsonString(this.curToolArgs))
+                    args.put("_raw", JsonString(raw))
                 }
             }
-            this.toolCalls.add(ToolCall(this.curToolId, this.curToolName, args))
+            this.toolCalls.add(ToolCall(id, name, args))
         }
         // 整体修复：流式累积的原始文本可能含 mojibake（finish 时整体修复才能跨分片还原）
         return ModelResponse(MojibakeFix.fix(this.text), this.toolCalls)

@@ -64,6 +64,81 @@ public class Logo {
     }
 
     /**
+     * 渲染紧凑版 logo 行数组（3 行，压缩顶部空间给输出区）
+     * 保留 CJ 字形特征：C 的左上/下边框 + J 的顶钩/底钩
+     */
+    public static func renderLinesCompact(utf8: Bool): Array<String> {
+        // UTF-8 紧凑版（3 行）：C 保留上下两横 + J 顶钩/底钩
+        let cSet = if (utf8) {
+            [" ██████╗ ", " ██╔════╝", " ╚██████╗"]
+        } else {
+            ["  ____   ", " / ___|  ", " \\____|  "]
+        }
+        let jSet = if (utf8) {
+            [" ██╗ ", " ██║ ", " ╚═╝ "]
+        } else {
+            ["   __  ", "  |  | ", "  |_/  "]
+        }
+        var lines = Array<String>(3, repeat: "")
+        for (i in 0..3) {
+            lines[i] = Ansi.fg(Ansi.THEME_PRIMARY) + cSet[i] + "  " + Ansi.fg(Ansi.THEME_ACCENT) + jSet[i] + Ansi.reset()
+        }
+        return lines
+    }
+
+    /**
+     * 渲染现代版 logo 行数组（5 行，参考 omp 风格）
+     * C：半块字符（▀▄）圆润左弧、右侧开口，一眼是 C
+     * J：box-drawing 顶钩 ╗ + 长底钩 ╝，绝不误读为 I（旧紧凑版 J 竖线像 CI）
+     * 对齐要求：C 每行统一 10 列、J 每行统一 8 列；
+     * J 竖线 ██ 在列 4-5，顶钩 ╗ 与底钩 ╝ 同在列 6——5 行拼接后 J 垂直对齐。
+     * 非 UTF-8 降级 ASCII（斜线圆润 C + 顶横竖线底钩 J，同样等宽对齐）。
+     */
+    public static func renderLinesModern(utf8: Bool): Array<String> {
+        let cSet = if (utf8) {
+            [
+                "▀████████ ",
+                "██▀▀▀▀▀▀▀ ",
+                "██       ",
+                "██▄▄▄▄▄▄▄ ",
+                "▄████████ ",
+            ]
+        } else {
+            [
+                "  ____    ",
+                " / ___|   ",
+                "| |       ",
+                "| |___    ",
+                " \\____|   ",
+            ]
+        }
+        let jSet = if (utf8) {
+            [
+                "    ████ ",
+                "      ██ ",
+                "      ██ ",
+                "      ██ ",
+                "  █████  ",
+            ]
+        } else {
+            [
+                "   __   ",
+                "    |   ",
+                "    |   ",
+                "    |   ",
+                "  __/   ",
+            ]
+        }
+        var lines = Array<String>(5, repeat: "")
+        for (i in 0..5) {
+            let cPart = cSet[i] + "   "   // 3 空格分隔
+            let jPart = jSet[i]
+            lines[i] = Ansi.fg(Ansi.THEME_PRIMARY) + cPart + Ansi.fg(Ansi.THEME_ACCENT) + jPart + Ansi.reset()
+        }
+        return lines
+    }
+
+    /**
      * 生成标题栏右侧标题（含版本徽章）
      */
     public static func titleBar(utf8: Bool, model: String): String {

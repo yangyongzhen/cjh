@@ -52,6 +52,9 @@ public class TuiCanvas {
     private var cols: Int64 = 0
     private var cursorRow: Int64 = 1
     private var cursorCol: Int64 = 1
+    // 列偏移：内容区左侧预留列数（Box 内嵌子组件时设置，子组件 setLine/setCursor
+    // 自动左移 offsetCol 列，避免覆盖左/右边框）
+    private var offsetCol: Int64 = 0
 
     /**
      * 开始新帧。sizeChanged 为 true（首帧或终端尺寸变化）时清空缓存强制全量重绘。
@@ -66,6 +69,22 @@ public class TuiCanvas {
         if (sizeChanged) {
             this.prevLines = ArrayList<String>()
         }
+        this.offsetCol = 0
+    }
+
+    /**
+     * 设置当前列偏移（内容区左侧预留列数；0 = 无偏移）。容器组件（Box）在委托
+     * 子组件渲染前设置，渲染完成后恢复 0。
+     */
+    public func setOffset(off: Int64): Unit {
+        this.offsetCol = off
+    }
+
+    /**
+     * 当前列偏移
+     */
+    public func getOffset(): Int64 {
+        return this.offsetCol
     }
 
     /**
@@ -75,15 +94,19 @@ public class TuiCanvas {
         if (row < 0 || row >= this.rows) {
             return
         }
-        this.lines[row] = this.truncate(text, this.cols)
+        var line = text
+        if (this.offsetCol > 0) {
+            line = this.fillSpaces(this.offsetCol) + line
+        }
+        this.lines[row] = this.truncate(line, this.cols)
     }
 
     /**
-     * 设置硬件光标位置（1-based 行列，默认 (1,1)）
+     * 设置硬件光标位置（1-based 行列，默认 (1,1)；自动叠加列偏移）
      */
     public func setCursor(row: Int64, col: Int64): Unit {
         this.cursorRow = row
-        this.cursorCol = col
+        this.cursorCol = col + this.offsetCol
     }
 
     /**
@@ -109,22 +132,186 @@ public class TuiCanvas {
     }
 
     /**
-     * 按列宽截断行（字节安全：从目标字节数递减，直到落在合法字符边界）。
-     * 注意：含 ANSI 转义序列的行按原始字节计数，宽度为近似值（CJK=2 列未精确，
-     * 与 TuiApp 旧实现行为一致）。
+     * 按列宽截断行（ANSI 感知 + 显示宽度感知）：
+     * - ANSI 转义序列不计入可见宽度、整体复制；
+     * - 可见宽度按东亚宽字符（CJK/全角/谚文）=2 列、其余=1 列计算，
+     *   与终端实际渲染对齐——否则含中文的行实际超宽，被终端折行，
+     *   挤乱分隔线等宽布局。
+     * 修复 1：旧实现按原始字节数截断，ANSI 序列（约 14 字节）吃掉预算，
+     *         导致带色行（分隔线/Box 边框）比纯文本行短——长短不一。
+     * 修复 2：可见字符必须用【字节切片】text[i..i+len] 复制，保留原始
+     *         UTF-8 序列；禁止逐字节 Rune(byte).toString() 拼回——
+     *         那会把多字节字符按 Latin-1 误解码（"对话"→"å¯¹"乱码）。
      */
     public func truncate(text: String, cols: Int64): String {
-        if (text.size <= cols - 1) {
-            return text
-        }
-        var k = cols - 1
-        while (k > 0) {
-            try {
-                return text[0..k]
-            } catch (e: Exception) {
-                k -= 1
+        let maxVisible = cols - 1
+        var sb = StringBuilder()
+        var visible: Int64 = 0
+        var i: Int64 = 0
+        let n = text.size
+        while (i < n) {
+            let b = text[i]
+            if (b == 27u8) {
+                // ANSI 转义序列：整体复制，不计可见宽度（全 ASCII，逐字节切片安全）
+                sb.append(text[i..i + 1])
+                i += 1
+                // CSI 序列（ESC [ ... 终结字母 0x40..0x7E）：复制到终结符
+                if (i < n && text[i] == 91u8 /* '[' */) {
+                    while (i < n) {
+                        let c = text[i]
+                        sb.append(text[i..i + 1])
+                        i += 1
+                        if (Int32(c) >= 0x40 && Int32(c) <= 0x7E) {
+                            break
+                        }
+                    }
+                }
+                continue
             }
+            // 可见字符：按首字节判定完整字符字节数，整体切片复制（保留原始 UTF-8）
+            let b0 = Int32(text[i])
+            var len: Int64 = 1
+            if (b0 >= 0xF0) {
+                len = 4
+            } else if (b0 >= 0xE0) {
+                len = 3
+            } else if (b0 >= 0xC0) {
+                len = 2
+            }
+            if (i + len > n) {
+                len = n - i
+            }
+            // 数据异常（半截 UTF-8）时递减到合法边界，与旧实现 try/catch 语义一致
+            var ch: String = ""
+            var appended: Bool = false
+            while (len > 0) {
+                try {
+                    ch = text[i..i + len]
+                    appended = true
+                    break
+                } catch (e: Exception) {
+                    len -= 1
+                }
+            }
+            if (!appended) {
+                // 理论不可达：单字节必合法
+                ch = text[i..i + 1]
+            }
+            // 显示宽度：东亚宽字符=2 列，其余=1 列；放不下则停止（不切半字符）
+            let w = this.charWidth(ch)
+            if (visible + w > maxVisible) {
+                break
+            }
+            sb.append(ch)
+            visible += w
+            i += ch.size
         }
-        return ""
+        return sb.toString()
+    }
+
+    /**
+     * 字符显示宽度：东亚宽字符（CJK/全角/谚文等）=2 列，其余=1 列
+     */
+    private func charWidth(ch: String): Int64 {
+        let runes = ch.toRuneArray()
+        if (runes.size == 0) {
+            return 0
+        }
+        let cp = UInt32(runes[0])
+        return if (TuiCanvas.isWideCp(cp)) { 2 } else { 1 }
+    }
+
+    /**
+     * 东亚宽字符码点判断（wcwidth wide 简化版，覆盖 CJK/全角/谚文/emoji 等；
+     * public 供 StatusBar/ConfirmDialog 等组件复用宽度计算）
+     */
+    public static func isWideCp(cp: UInt32): Bool {
+        if (cp >= 0x1100 && cp <= 0x115F) { return true }    // 谚文 Jamo
+        if (cp >= 0x2E80 && cp <= 0x303E) { return true }    // 部首/注音/东亚标点
+        if (cp >= 0x3041 && cp <= 0x33FF) { return true }    // 假名/谚文兼容符号
+        if (cp >= 0x3400 && cp <= 0x4DBF) { return true }    // CJK 扩展 A
+        if (cp >= 0x4E00 && cp <= 0x9FFF) { return true }    // CJK 统一表意
+        if (cp >= 0xA000 && cp <= 0xA4CF) { return true }    // 彝文/谚文字母
+        if (cp >= 0xAC00 && cp <= 0xD7A3) { return true }    // 谚文音节
+        if (cp >= 0xF900 && cp <= 0xFAFF) { return true }    // CJK 兼容表意
+        if (cp >= 0xFE30 && cp <= 0xFE4F) { return true }    // CJK 兼容形式
+        if (cp >= 0xFF00 && cp <= 0xFF60) { return true }    // 全角
+        if (cp >= 0xFFE0 && cp <= 0xFFE6) { return true }    // 全角符号
+        if (cp >= 0x20000 && cp <= 0x2FFFD) { return true }  // CJK 扩展 B+
+        if (cp >= 0x1F000 && cp <= 0x1FAFF) { return true }  // emoji（📁 等，终端占 2 列）
+        if (cp >= 0x2600 && cp <= 0x27BF) { return true }    // 杂项符号/装饰（★ ☀ ♥ 等，部分宽）
+        return false
+    }
+
+    /**
+     * 字符串显示宽度（ANSI 感知）：转义序列整体跳过不计宽，可见字符按
+     * 码点判断（CJK/emoji=2 列）。与 truncate 同规则，供组件做宽度对齐
+     * 填充（边框线、两栏布局）时复用——若把 ANSI 序列按字符计宽，
+     * 带色内容宽度会虚高，导致填充不足、边框不铺满。
+     */
+    public static func displayWidth(s: String): Int64 {
+        var n: Int64 = 0
+        var i: Int64 = 0
+        let len = s.size
+        while (i < len) {
+            let b = s[i]
+            if (b == 27u8) {
+                // ANSI 转义序列：整体跳过，不计可见宽度
+                i += 1
+                // CSI 序列（ESC [ ... 终结字母 0x40..0x7E）
+                if (i < len && s[i] == 91u8 /* '[' */) {
+                    i += 1
+                    while (i < len) {
+                        let c = s[i]
+                        i += 1
+                        if (Int32(c) >= 0x40 && Int32(c) <= 0x7E) {
+                            break
+                        }
+                    }
+                }
+                continue
+            }
+            // 可见字符：按首字节判定完整字符字节数
+            let b0 = Int32(b)
+            var chLen: Int64 = 1
+            if (b0 >= 0xF0) {
+                chLen = 4
+            } else if (b0 >= 0xE0) {
+                chLen = 3
+            } else if (b0 >= 0xC0) {
+                chLen = 2
+            }
+            if (i + chLen > len) {
+                chLen = len - i
+            }
+            var cp: UInt32 = UInt32(b)
+            if (chLen > 1) {
+                // 多字节字符：取首个码点判宽
+                try {
+                    let runes = s[i..i + chLen].toRuneArray()
+                    if (runes.size > 0) {
+                        cp = UInt32(runes[0])
+                    }
+                } catch (e: Exception) {
+                    ()
+                }
+            }
+            n += if (TuiCanvas.isWideCp(cp)) { 2 } else { 1 }
+            i += chLen
+        }
+        return n
+    }
+
+    /**
+     * 重复空格填充（列偏移占位）
+     */
+    private func fillSpaces(n: Int64): String {
+        var sb = StringBuilder()
+        var i: Int64 = 0
+        while (i < n) {
+            sb.append(" ")
+            i += 1
+        }
+        return sb.toString()
     }
 }

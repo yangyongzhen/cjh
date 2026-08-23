@@ -30,6 +30,17 @@ public class OutputView <: Component {
     }
 
     /**
+     * 确保输出以换行结尾（工具调用提示等新行开始的元素调用；
+     * 流式文本 appendDelta 不换行，直接 append 会拼到文字后面）
+     */
+    public func ensureNewline(): Unit {
+        let s = this.output.toString()
+        if (s.size > 0 && s[s.size - 1] != 10u8) {
+            this.output.append("\n")
+        }
+    }
+
+    /**
      * 流式追加：追加到当前输出行末尾（不换行），用于 LLM 增量渲染
      */
     public func appendDelta(text: String): Unit {
