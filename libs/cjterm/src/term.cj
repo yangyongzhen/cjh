@@ -168,9 +168,21 @@ public class KeyEvent {
 public class Term {
     private var rawOn: Bool = false
     private var orig: Array<UInt8>
+    // 静态缓存：Stderr.suppress() 前通过 TermSize.prefetch() 设置，
+    // 之后 size() 优先返回缓存值（避免 ioctl(STDERR) 失效回退到 80 列）
+    private static var cachedRows: Int64 = -1
+    private static var cachedCols: Int64 = -1
 
     public init() {
         this.orig = Array<UInt8>(TERMIOS_SIZE, repeat: 0)
+    }
+
+    /**
+     * 预缓存终端尺寸（在屏蔽 stderr 前调用）
+     */
+    public static func prefetch(rows: Int64, cols: Int64): Unit {
+        Term.cachedRows = rows
+        Term.cachedCols = cols
     }
 
     public func enableRaw(): Unit {
@@ -531,11 +543,14 @@ public class Term {
     }
 
     public func size(): (Int64, Int64) {
+        // 优先返回预缓存尺寸（Stderr.suppress() 前由 TermSize.get() 设置）
+        if (Term.cachedRows > 0 && Term.cachedCols > 0) {
+            return (Term.cachedRows, Term.cachedCols)
+        }
         unsafe {
             if (let buf <- LibC.malloc<UInt8>(count: 8)) {
-                // 依次尝试 STDERR / STDOUT / STDIN：只要其中一个是 tty 就能拿到尺寸
-                // （管道/重定向场景下 STDOUT 可能不是 tty，但 STDERR 通常还是 tty）
-                let fds = [STDERR, STDOUT, STDIN]
+                // 依次尝试 STDIN / STDOUT / STDERR
+                let fds = [STDIN, STDOUT, STDERR]
                 for (fd in fds) {
                     let r = ioctl(fd, TIOCGWINSZ, buf)
                     if (r == 0) {
@@ -549,7 +564,16 @@ public class Term {
                 }
                 LibC.free(buf)
             }
-            return (24, 80)
+            // ioctl 全部失败：用环境变量 COLUMNS/LINES 兜底
+            let envCols = TermEnv.getenv("COLUMNS") ?? ""
+            let envRows = TermEnv.getenv("LINES") ?? ""
+            var cols: Int64 = 80
+            var rows: Int64 = 24
+            try { cols = Int64.parse(envCols) } catch (e: Exception) { () }
+            try { rows = Int64.parse(envRows) } catch (e: Exception) { () }
+            if (cols < 1) { cols = 80 }
+            if (rows < 1) { rows = 24 }
+            return (rows, cols)
         }
     }
 

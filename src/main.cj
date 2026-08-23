@@ -774,6 +774,8 @@ func runJson(prompt: String, sessionId: String): Int64 {
  * TUI 交互模式（默认）
  */
 func runTui(sessionId: String): Int64 {
+    // 在屏蔽 stderr 前先缓存终端尺寸（suppress 后 ioctl(STDERR) 失效）
+    let (initRows, initCols) = TermSize.get()
     // TUI 全屏模式：立即屏蔽 stderr（配置生成等提示不污染屏幕）
     Stderr.suppress()
     let registry = ToolRegistry()
