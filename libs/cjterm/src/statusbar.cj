@@ -39,6 +39,7 @@ public class StatusBar <: Component {
     public override func render(canvas: TuiCanvas, row: Int64, width: Int64, height: Int64): Int64 {
         let sep = Ansi.fg(Ansi.THEME_MUTED) + " > " + Ansi.reset()
         let muted = Ansi.fg(Ansi.THEME_MUTED)
+        let border = Ansi.fg(Ansi.COLOR_BLUE)
         let hc = "-"
         // 分段 1：模型名（# accent 色；ASCII 宽度恒定 1 列）
         let modelPart = if (this.model.size > 0) {
@@ -54,19 +55,19 @@ public class StatusBar <: Component {
         } else {
             this.text
         }
-        // ASCII 上边框：+-- 内容 ->------+
+        // ASCII 上边框：+-- 内容 ->------+（边框蓝色醒目，标识输入框位置）
         let content = modelPart + dirPart + sep + statusPart
         var sb = StringBuilder()
-        sb.append(muted + "+-- " + Ansi.reset())
+        sb.append(border + "+-- " + Ansi.reset())
         sb.append(content)
-        sb.append(muted + " ->" + Ansi.reset())
+        sb.append(border + " ->" + Ansi.reset())
         // 右侧横线填充：used + fillN + 1(+) 必须 ≤ cols-1（truncate 上限）
         let used = TuiCanvas.displayWidth(sb.toString())
         var fillN = width - used - 2
         if (fillN < 0) {
             fillN = 0
         }
-        sb.append(muted)
+        sb.append(border)
         var i: Int64 = 0
         while (i < fillN) {
             sb.append(hc)
