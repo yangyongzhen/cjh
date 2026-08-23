@@ -37,30 +37,30 @@ public class StatusBar <: Component {
     }
 
     public override func render(canvas: TuiCanvas, row: Int64, width: Int64, height: Int64): Int64 {
-        let sep = Ansi.fg(Ansi.THEME_MUTED) + " › " + Ansi.reset()
+        let sep = Ansi.fg(Ansi.THEME_MUTED) + " > " + Ansi.reset()
         let muted = Ansi.fg(Ansi.THEME_MUTED)
-        let hc = if (true) { "─" } else { "-" }   // UTF-8 默认（StatusBar 不持 utf8 标志，用 box-drawing）
-        // 分段 1：模型名（⬢ accent 色）
+        let hc = "-"
+        // 分段 1：模型名（# accent 色；ASCII 宽度恒定 1 列）
         let modelPart = if (this.model.size > 0) {
-            Ansi.fg(Ansi.THEME_ACCENT) + "⬢ " + this.model + Ansi.reset() + sep
+            Ansi.fg(Ansi.THEME_ACCENT) + "# " + this.model + Ansi.reset() + sep
         } else {
             ""
         }
-        // 分段 2：当前工作目录（📁 muted，HOME 缩写为 ~）
-        let dirPart = Ansi.fg(Ansi.THEME_MUTED) + "📁 " + StatusBar.homeAbbrev(StatusBar.getCwd()) + Ansi.reset()
+        // 分段 2：当前工作目录（[cwd] muted，HOME 缩写为 ~；避免 📁 等 emoji 宽度歧义）
+        let dirPart = Ansi.fg(Ansi.THEME_MUTED) + "[ " + StatusBar.homeAbbrev(StatusBar.getCwd()) + " ]" + Ansi.reset()
         // 分段 3：状态（ready 徽章或自定义文本）
         let statusPart = if (this.text.size == 0) {
             Logo.badge("ready", Ansi.THEME_OK)
         } else {
             this.text
         }
-        // omp 风格上边框：╭── 内容 ─▶──────╮（铺满 width 列）
+        // ASCII 上边框：+-- 内容 ->------+
         let content = modelPart + dirPart + sep + statusPart
         var sb = StringBuilder()
-        sb.append(muted + "╭── " + Ansi.reset())
+        sb.append(muted + "+-- " + Ansi.reset())
         sb.append(content)
-        sb.append(muted + " ─▶" + Ansi.reset())
-        // 右侧横线填充：used + fillN + 1(╮) = cols-1（setLine 按 cols-1 截断）
+        sb.append(muted + " ->" + Ansi.reset())
+        // 右侧横线填充：used + fillN + 1(+) 必须 ≤ cols-1（truncate 上限）
         let used = TuiCanvas.displayWidth(sb.toString())
         var fillN = width - used - 2
         if (fillN < 0) {
@@ -72,7 +72,7 @@ public class StatusBar <: Component {
             sb.append(hc)
             i += 1
         }
-        sb.append("╮" + Ansi.reset())
+        sb.append("+" + Ansi.reset())
         canvas.setLine(row, sb.toString())
         return 1
     }

@@ -87,6 +87,9 @@ public class TuiCanvas {
         return this.offsetCol
     }
 
+    public func getCols(): Int64 { return this.cols }
+    public func getRows(): Int64 { return this.rows }
+
     /**
      * 设置某行内容（0-based；自动截断到列宽；越界忽略）
      */
@@ -157,6 +160,8 @@ public class TuiCanvas {
                 i += 1
                 // CSI 序列（ESC [ ... 终结字母 0x40..0x7E）：复制到终结符
                 if (i < n && text[i] == 91u8 /* '[' */) {
+                    sb.append(text[i..i + 1])   // 复制 '['
+                    i += 1                       // 跳过 '['，进入参数/终结字母循环
                     while (i < n) {
                         let c = text[i]
                         sb.append(text[i..i + 1])
@@ -239,7 +244,7 @@ public class TuiCanvas {
         if (cp >= 0xFFE0 && cp <= 0xFFE6) { return true }    // 全角符号
         if (cp >= 0x20000 && cp <= 0x2FFFD) { return true }  // CJK 扩展 B+
         if (cp >= 0x1F000 && cp <= 0x1FAFF) { return true }  // emoji（📁 等，终端占 2 列）
-        if (cp >= 0x2600 && cp <= 0x27BF) { return true }    // 杂项符号/装饰（★ ☀ ♥ 等，部分宽）
+        if (cp >= 0x2600 && cp <= 0x27BF) { return true }    // 杂项符号/装饰（★ ☀ ♥ ▶ ● ⬢ 等，部分终端占 2 列）
         return false
     }
 
