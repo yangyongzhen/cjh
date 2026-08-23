@@ -29,6 +29,10 @@ foreign func read(fd: Int32, buf: CPointer<UInt8>, count: UInt64): Int64
 @C
 foreign func ioctl(fd: Int32, request: UInt64, arg: CPointer<UInt8>): Int32
 
+// C 辅助库（native/libcjterm_helper.so）：非变参封装的 winsize 查询
+@C
+foreign func cj_get_winsize(fd: Int32, rows: CPointer<UInt16>, cols: CPointer<UInt16>): Int32
+
 @C
 foreign func select(nfds: Int32, readfds: CPointer<UInt8>, writefds: CPointer<UInt8>, exceptfds: CPointer<UInt8>, timeout: CPointer<UInt8>): Int32
 
@@ -548,23 +552,27 @@ public class Term {
             return (Term.cachedRows, Term.cachedCols)
         }
         unsafe {
-            if (let buf <- LibC.malloc<UInt8>(count: 8)) {
-                // 依次尝试 STDIN / STDOUT / STDERR
-                let fds = [STDIN, STDOUT, STDERR]
-                for (fd in fds) {
-                    let r = ioctl(fd, TIOCGWINSZ, buf)
-                    if (r == 0) {
-                        let rows = Int64(this.readU16(buf, 0))
-                        let cols = Int64(this.readU16(buf, 2))
-                        if (rows > 0 && cols > 0) {
-                            LibC.free(buf)
-                            return (rows, cols)
+            // cj_get_winsize：非变参封装，绕过 Cangjie FFI 对变参 ioctl 的支持问题
+            if (let rowsBuf <- LibC.malloc<UInt16>(count: 1)) {
+                if (let colsBuf <- LibC.malloc<UInt16>(count: 1)) {
+                    let fds = [STDIN, STDOUT, STDERR]
+                    for (fd in fds) {
+                        let r = cj_get_winsize(fd, rowsBuf, colsBuf)
+                        if (r == 0) {
+                            let rows = Int64(rowsBuf.read(0))
+                            let cols = Int64(colsBuf.read(0))
+                            if (rows > 0 && cols > 0) {
+                                LibC.free(colsBuf)
+                                LibC.free(rowsBuf)
+                                return (rows, cols)
+                            }
                         }
                     }
+                    LibC.free(colsBuf)
                 }
-                LibC.free(buf)
+                LibC.free(rowsBuf)
             }
-            // ioctl 全部失败：用环境变量 COLUMNS/LINES 兜底
+            // cj_get_winsize 全部失败：用环境变量 COLUMNS/LINES 兜底
             let envCols = TermEnv.getenv("COLUMNS") ?? ""
             let envRows = TermEnv.getenv("LINES") ?? ""
             var cols: Int64 = 80
