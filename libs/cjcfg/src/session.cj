@@ -88,9 +88,17 @@ public class SessionStore {
     }
 
     /**
-     * 保存消息历史到新会话文件，返回会话 ID
+     * 保存消息历史到新会话文件，返回会话 ID（无父会话）
      */
     public func save(messages: ArrayList<ChatMessage>): String {
+        return this.saveFork(messages, "")
+    }
+
+    /**
+     * 保存分支会话（树形）：parent 为来源会话 ID（空=根会话），
+     * forkAt 为分支点的消息条数（从第 0 条到 forkAt 条属于该分支前缀）。
+     */
+    public func saveFork(messages: ArrayList<ChatMessage>, parent: String): String {
         this.ensureDir()
         let id = this.newSessionId()
         let path = this.dir + "/" + id + ".json"
@@ -98,6 +106,9 @@ public class SessionStore {
         var root = JsonObject()
         root.put("id", JsonString(id))
         root.put("created", JsonString(DateTime.now().toString()))
+        if (parent.size > 0) {
+            root.put("parent", JsonString(parent))
+        }
         var msgArr = ArrayList<JsonValue>()
         for (m in messages) {
             msgArr.add(m.toOpenAiJson())
@@ -105,6 +116,57 @@ public class SessionStore {
         root.put("messages", JsonArray(msgArr))
         File.writeTo(path, root.toJsonString().toArray())
         return id
+    }
+
+    /**
+     * 会话的父会话 ID（树形分支链）；无父返回 ""
+     */
+    public func parentOf(id: String): String {
+        let path = this.dir + "/" + id + ".json"
+        if (!exists(path)) {
+            return ""
+        }
+        try {
+            let json = JsonValue.fromStr(String.fromUtf8(File.readFrom(path)))
+            match (json.kind()) {
+                case JsonKind.JsObject =>
+                    let obj = json.asObject()
+                    if (let Some(p) <- obj.get("parent")) {
+                        match (p.kind()) {
+                            case JsonKind.JsString => return p.asString().getValue()
+                            case _ => ()
+                        }
+                    }
+                case _ => ()
+            }
+        } catch (e: Exception) {
+            ()
+        }
+        return ""
+    }
+
+    /**
+     * 列出所有会话（树形视图数据）：(id, 摘要, parent)
+     */
+    public func listTree(): ArrayList<(String, String, String)> {
+        var result = ArrayList<(String, String, String)>()
+        if (!exists(this.dir)) {
+            return result
+        }
+        let files = ArrayList<String>()
+        Directory.walk(this.dir, { fi =>
+            if (fi.name.endsWith(".json")) {
+                files.add(fi.name)
+            }
+            return true
+        })
+        for (e in files) {
+            let id = e[0..e.size - 5]
+            let summary = this.summary(e)
+            let parent = this.parentOf(id)
+            result.add((id, summary, parent))
+        }
+        return result
     }
 
     /**

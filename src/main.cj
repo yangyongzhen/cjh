@@ -183,6 +183,88 @@ func loadProjectInstructions(): String {
 }
 
 /**
+ * 解析 Markdown frontmatter（--- 之间的 YAML 子集）。
+ * 返回字段名 → 原始值字符串的 map。支持两种形态：
+ *   1) 单行标量：`name: xxx` → value = "xxx"
+ *   2) 多行块：`tools:` 单独成行，其后到下一个顶级 key 或 frontmatter
+ *      结束的所有行合并为 value（保留 JSON 数组字面量）
+ * 标量值做 trimAscii；多行块保留原始缩进与换行，由调用方按 JSON 解析。
+ */
+func parseFrontmatter(fm: String): HashMap<String, String> {
+    let result = HashMap<String, String>()
+    let lines = fm.split("\n", -1)
+    var i = 0
+    while (i < lines.size) {
+        let line = lines[i]
+        let t = line.trimAscii()
+        if (t.size == 0 || t.startsWith("#")) {
+            i += 1
+            continue
+        }
+        // key: value 单行形态
+        let colon = t.indexOf(":")
+        if (colon.isSome()) {
+            let key = t[0..colon.getOrThrow()].trimAscii()
+            let rest = t[colon.getOrThrow() + 1..t.size].trimAscii()
+            if (rest.size > 0) {
+                // 单行标量：key: value
+                result.add(key, rest)
+                i += 1
+            } else {
+                // 多行块：key: 单独成行，后续缩进行合并
+                var sb = StringBuilder()
+                var j = i + 1
+                var gathered: Bool = false
+                while (j < lines.size) {
+                    let nl = lines[j]
+                    let nt = nl.trimAscii()
+                    // 空行或注释跳过
+                    if (nt.size == 0) {
+                        j += 1
+                        continue
+                    }
+                    // 下一个顶级 key（非缩进、含冒号）则结束块
+                    let nColon = nt.indexOf(":")
+                    if (nColon.isSome() && nl.size > 0 && nl[0] != 32u8 /* ' ' */ && nl[0] != 9u8 /* '\t' */) {
+                        break
+                    }
+                    // 缩进行：合并（保留 trimAscii 后内容，换行分隔）
+                    if (gathered) {
+                        sb.append("\n")
+                    }
+                    sb.append(nt)
+                    gathered = true
+                    j += 1
+                }
+                if (gathered) {
+                    result.add(key, sb.toString())
+                }
+                i = j
+            }
+        } else {
+            i += 1
+        }
+    }
+    return result
+}
+
+/**
+ * 统计 frontmatter tools 段里声明的工具数（JSON 数组长度）。
+ * 解析失败或非数组返回 0。
+ */
+func countSkillTools(toolsStr: String): Int64 {
+    try {
+        let v = JsonValue.fromStr(toolsStr)
+        match (v.kind()) {
+            case JsonKind.JsArray => return Int64(v.asArray().size())
+            case _ => return 0
+        }
+    } catch (e: Exception) {
+        return 0
+    }
+}
+
+/**
  * 技能是否启用（enabledSkills 空=全部启用；非空=白名单）
  */
 func skillEnabled(name: String, enabled: ArrayList<String>): Bool {
@@ -228,23 +310,20 @@ func listSkills(skillsDir: String, enabled: ArrayList<String>, tui: TuiApp): Uni
                 let endFm = content.indexOf("\n---")
                 if (endFm.isSome()) {
                     let fm = content[3..endFm.getOrThrow()]
-                    for (line in fm.split("\n", -1)) {
-                        let t = line.trimAscii()
-                        if (t.startsWith("name:")) {
-                            let v = t[5..t.size].trimAscii()
-                            if (v.size > 0) {
-                                name = v
-                            }
+                    let fields = parseFrontmatter(fm)
+                    if (let Some(v) <- fields.get("name")) {
+                        if (v.size > 0) {
+                            name = v
                         }
-                        if (t.startsWith("description:")) {
-                            let v = t[12..t.size].trimAscii()
-                            if (v.size > 0) {
-                                desc = v
-                            }
+                    }
+                    if (let Some(v) <- fields.get("description")) {
+                        if (v.size > 0) {
+                            desc = v
                         }
-                        if (t.startsWith("tools:")) {
-                            toolCount += 1
-                        }
+                    }
+                    if (let Some(v) <- fields.get("tools")) {
+                        // 统计 tools JSON 数组里的对象数
+                        toolCount = countSkillTools(v)
                     }
                 }
             }
@@ -304,14 +383,10 @@ func loadSkills(skillsDir: String, enabled: ArrayList<String>): String {
                 if (endFm.isSome()) {
                     let fmEnd = endFm.getOrThrow()
                     let fm = content[3..fmEnd]
-                    // 解析 name 行
-                    for (line in fm.split("\n", -1)) {
-                        let t = line.trimAscii()
-                        if (t.startsWith("name:")) {
-                            let v = t[5..t.size].trimAscii()
-                            if (v.size > 0) {
-                                name = v
-                            }
+                    let fields = parseFrontmatter(fm)
+                    if (let Some(v) <- fields.get("name")) {
+                        if (v.size > 0) {
+                            name = v
                         }
                     }
                     body = content[fmEnd + 4..content.size].trimAscii()
@@ -365,28 +440,21 @@ func loadSkillTools(skillsDir: String, registry: ToolRegistry, enabled: ArrayLis
                 continue
             }
             let fm = content[3..endFm.getOrThrow()]
+            let fields = parseFrontmatter(fm)
             // 技能名（frontmatter name 或文件名去 .md），白名单过滤
             var name = f[0..f.size - 3]
-            for (line in fm.split("\n", -1)) {
-                let t = line.trimAscii()
-                if (t.startsWith("name:")) {
-                    let v = t[5..t.size].trimAscii()
-                    if (v.size > 0) {
-                        name = v
-                    }
+            if (let Some(v) <- fields.get("name")) {
+                if (v.size > 0) {
+                    name = v
                 }
             }
             if (!skillEnabled(name, enabled)) {
                 continue
             }
-            // frontmatter 中找 tools: [json array] 行
-            for (line in fm.split("\n", -1)) {
-                let t = line.trimAscii()
-                if (t.startsWith("tools:")) {
-                    let raw = t[6..t.size].trimAscii()
-                    if (raw.size > 0) {
-                        registerSkillTools(raw, registry)
-                    }
+            // frontmatter 的 tools 段（多行 JSON 数组），注册声明式工具
+            if (let Some(toolsStr) <- fields.get("tools")) {
+                if (toolsStr.size > 0) {
+                    registerSkillTools(toolsStr, registry)
                 }
             }
         } catch (e: Exception) {

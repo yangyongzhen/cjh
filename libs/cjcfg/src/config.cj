@@ -33,6 +33,8 @@ public class CjhConfig {
     public let settingsPath: String
     public let authPath: String
     public let sessionsDir: String
+    // 技能目录（~/.cjh/skills/<name>.md，按需加载注入 system prompt）
+    public let skillsDir: String
 
     // 配置值
     public var baseUrl: String = "https://api.openai.com/v1/chat/completions"
@@ -51,6 +53,8 @@ public class CjhConfig {
     public var compactThreshold: Int64 = 0
     // 压缩时保留的最近消息条数
     public var compactKeep: Int64 = 12
+    // 启用的技能白名单（settings.json "enabled_skills": [...]；空=全部启用）
+    public var enabledSkills: ArrayList<String> = ArrayList<String>()
 
     public init() {
         // 配置目录：环境变量覆盖，默认 ~/.cjh
@@ -59,6 +63,7 @@ public class CjhConfig {
         this.settingsPath = this.configDir + "/settings.json"
         this.authPath = this.configDir + "/auth.json"
         this.sessionsDir = this.configDir + "/sessions"
+        this.skillsDir = this.configDir + "/skills"
         this.load()
     }
 
@@ -107,6 +112,64 @@ public class CjhConfig {
             "    { \"id\": \"deepseek-chat\", \"name\": \"DeepSeek V3\", \"base_url\": \"https://api.deepseek.com/v1/chat/completions\", \"temperature\": 1.0 }\n" +
             "  ]\n" +
             "}\n"
+    }
+
+    /**
+     * 写回 provider 配置（/provider 命令）：更新 settings.json 的 base_url/model，
+     * 保留文件里已有的其他字段（读-改-写）。文件不存在则先建模板再更新。
+     */
+    public func saveProvider(baseUrl: String, model: String): Unit {
+        this.ensureDir(this.configDir)
+        var root = JsonObject()
+        if (exists(this.settingsPath)) {
+            try {
+                let json = JsonValue.fromStr(String.fromUtf8(File.readFrom(this.settingsPath)))
+                match (json.kind()) {
+                    case JsonKind.JsObject => root = json.asObject()
+                    case _ => ()
+                }
+            } catch (e: Exception) {
+                eprintln("[cjh] settings.json 解析失败，重建: ${e}")
+            }
+        }
+        root.put("base_url", JsonString(baseUrl))
+        root.put("model", JsonString(model))
+        File.writeTo(this.settingsPath, root.toJsonString().toArray())
+        // 同步内存配置
+        this.baseUrl = baseUrl
+        this.model = model
+    }
+
+    /**
+     * 写回 API Key（/provider 命令）：更新 auth.json 的 api_key 字段，
+     * 保留其他兼容字段。同时同步内存 apiKey。
+     */
+    public func saveApiKey(key: String): Unit {
+        this.ensureDir(this.configDir)
+        var root = JsonObject()
+        if (exists(this.authPath)) {
+            try {
+                let json = JsonValue.fromStr(String.fromUtf8(File.readFrom(this.authPath)))
+                match (json.kind()) {
+                    case JsonKind.JsObject => root = json.asObject()
+                    case _ => ()
+                }
+            } catch (e: Exception) {
+                eprintln("[cjh] auth.json 解析失败，重建: ${e}")
+            }
+        }
+        root.put("api_key", JsonString(key))
+        File.writeTo(this.authPath, root.toJsonString().toArray())
+        this.apiKey = key
+    }
+
+    /**
+     * 确保目录存在（save 系列写文件前调用）
+     */
+    private func ensureDir(dir: String): Unit {
+        if (!exists(dir)) {
+            Directory.create(dir, recursive: true)
+        }
     }
 
     /**
@@ -196,6 +259,23 @@ public class CjhConfig {
                     if (let Some(v) <- obj.get("compact_keep")) {
                         match (v.kind()) {
                             case JsonKind.JsInt => this.compactKeep = v.asInt().getValue()
+                            case _ => ()
+                        }
+                    }
+                    // 启用技能白名单（空=全部启用）
+                    if (let Some(v) <- obj.get("enabled_skills")) {
+                        match (v.kind()) {
+                            case JsonKind.JsArray =>
+                                let arr = v.asArray()
+                                for (i in 0..arr.size()) {
+                                    if (let Some(item) <- arr.get(i)) {
+                                        match (item.kind()) {
+                                            case JsonKind.JsString =>
+                                                this.enabledSkills.add(item.asString().getValue())
+                                            case _ => ()
+                                        }
+                                    }
+                                }
                             case _ => ()
                         }
                     }

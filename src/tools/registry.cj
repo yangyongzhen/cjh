@@ -1,6 +1,7 @@
 package cjh.tools
 
 import std.collection.*
+import std.process.*
 import stdx.encoding.json.*
 import cjllm.ToolSpec
 
@@ -94,5 +95,74 @@ public class JsonSchema {
         obj.put("type", JsonString("string"))
         obj.put("description", JsonString(description))
         return obj
+    }
+}
+
+/**
+ * 声明式工具（Skill 携带的自定义工具，对齐 v2 4.3b 声明式形态）：
+ * 由 shell 命令模板 + 参数 schema 声明定义，execute 时展开参数执行。
+ * 技能文件 frontmatter 的 tools 段可声明多个此类工具（低门槛，写 Markdown 即贡献）。
+ */
+public class DeclarativeTool <: CjhTool {
+    public let name: String
+    public let description: String
+    // 命令模板：${argName} 占位符在 execute 时替换为参数值
+    public let commandTemplate: String
+    // 参数 schema：argName → (type, description)
+    public let argSpecs: HashMap<String, (String, String)>
+
+    public init(name: String, description: String, commandTemplate: String,
+        argSpecs: HashMap<String, (String, String)>) {
+        this.name = name
+        this.description = description
+        this.commandTemplate = commandTemplate
+        this.argSpecs = argSpecs
+    }
+
+    public override func spec(): ToolSpec {
+        var props = HashMap<String, JsonValue>()
+        var required = ArrayList<String>()
+        for ((k, spec) in this.argSpecs) {
+            var obj = JsonObject()
+            obj.put("type", JsonString(spec[0]))
+            obj.put("description", JsonString(spec[1]))
+            props.add(k, obj)
+            required.add(k)
+        }
+        let schema = JsonSchema.object(props, required)
+        return ToolSpec(this.name, this.description, schema)
+    }
+
+    public override func execute(args: JsonObject): ToolResult {
+        // 模板展开：${argName} → 参数值；未提供的参数替换为空串
+        var cmd = this.commandTemplate
+        for ((k, _) in this.argSpecs) {
+            var value = ""
+            if (let Some(v) <- args.get(k)) {
+                match (v.kind()) {
+                    case JsonKind.JsString => value = v.asString().getValue()
+                    case _ => value = v.toJsonString()
+                }
+            }
+            cmd = cmd.replace("${" + k + "}", value)
+        }
+        try {
+            var argv = Array<String>(2, repeat: "")
+            argv[0] = "-c"
+            argv[1] = cmd
+            let (code, stdoutBytes, stderrBytes) = executeWithOutput("/bin/bash", argv)
+            var out = String.fromUtf8(stdoutBytes)
+            var err = String.fromUtf8(stderrBytes)
+            var result = "exit code: ${code}\n"
+            if (out.size > 0) {
+                result += "stdout:\n${out}\n"
+            }
+            if (err.size > 0) {
+                result += "stderr:\n${err}\n"
+            }
+            return ToolResult(result, code != 0)
+        } catch (e: Exception) {
+            return ToolResult("命令执行异常: ${e}", true)
+        }
     }
 }
