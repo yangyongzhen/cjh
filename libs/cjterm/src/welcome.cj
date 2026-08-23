@@ -53,25 +53,25 @@ public class WelcomeView <: Component {
         let vc = if (this.utf8) { "│" } else { "|" }
         let tc = if (this.utf8) { "┴" } else { "+" }
 
-        // 两栏宽度：左栏约 38%（至少 24 列），右栏取剩余。
-        // 注意：setLine 会按 cols-1 截断（maxVisible = cols-1），因此每行总宽
-        // 必须设计为 width-1，右侧边框 │/╮/╯ 才能保住（否则落在被截断的最后一列）。
-        // 内容行结构 = │ 左(leftW) │ 右(rightW) │，总宽 = leftW+rightW+7 = width-1
-        var leftW: Int64 = width * 38 / 100
+        // 统一弹窗宽度 boxW（铺满 width 列；setLine 按 cols-1 截断，width==cols 时刚好）
+        let boxW = width
+        // 两栏宽度：内容行结构 │ 左(leftW) │ 右(rightW) │
+        //   总宽 = 1 + 1 + leftW + 1 + 1 + 1 + rightW + 1 + 1 = leftW + rightW + 7
+        //   令总宽 = boxW - 1（留 1 列防 setLine 截断），则 rightW = boxW - 2 - leftW
+        var leftW: Int64 = boxW * 38 / 100
         if (leftW < 24) {
             leftW = 24
         }
-        var rightW = width - leftW - 8
+        var rightW = boxW - 2 - leftW
         if (rightW < 20) {
-            // 终端过窄：收缩左栏保右栏
             rightW = 20
-            leftW = width - rightW - 8
+            leftW = boxW - 2 - rightW
             if (leftW < 10) {
                 leftW = 10
             }
         }
 
-        // 行 0：顶边框 + 标题（标题后填充横线）
+        // 行 0：顶边框 + 标题（标题后填充横线到 boxW-1，再接 ╮）
         var top = StringBuilder()
         top.append(tl)
         top.append(hc)
@@ -80,9 +80,15 @@ public class WelcomeView <: Component {
         top.append(" ")
         top.append(Ansi.bold() + Ansi.fg(Ansi.THEME_ACCENT) + "cjh · Cangjie Agent" + Ansi.reset())
         top.append(" ")
-        let topFill = width - 2 - TuiCanvas.displayWidth(top.toString())
-        for (_ in 0..topFill) {
+        let topUsed = TuiCanvas.displayWidth(top.toString())   // 已构建部分可见宽度
+        var topFill = boxW - 1 - topUsed   // 填充到 boxW-1，留 1 列给 ╮
+        if (topFill < 0) {
+            topFill = 0
+        }
+        var tfi: Int64 = 0
+        while (tfi < topFill) {
             top.append(hc)
+            tfi += 1
         }
         top.append(tr)
         canvas.setLine(row, top.toString())
@@ -97,6 +103,7 @@ public class WelcomeView <: Component {
         for (i in 0..rows) {
             let left = if (i < leftLines.size) { leftLines[i] } else { "" }
             let right = if (i < rightLines.size) { rightLines[i] } else { "" }
+            // 内容行总宽 = leftW + rightW + 7，令其 = boxW - 1（与顶边框对齐）
             var sb = StringBuilder()
             sb.append(vc)
             sb.append(" ")
@@ -110,15 +117,21 @@ public class WelcomeView <: Component {
             canvas.setLine(row + 1 + i, sb.toString())
         }
 
-        // 底边框：╰────┴────╯（┴ 在左栏右边界，对齐 omp）
+        // 底边框：╰────┴────╯（总宽 = boxW-1，与顶边框对齐）
         var bottom = StringBuilder()
         bottom.append(bl)
-        for (_ in 0..(leftW + 2)) {
+        // 左栏段：leftW + 2 列横线
+        var bli: Int64 = 0
+        while (bli < leftW + 2) {
             bottom.append(hc)
+            bli += 1
         }
         bottom.append(tc)
-        for (_ in 0..(rightW + 2)) {
+        // 右栏段：rightW + 2 列横线
+        var bri: Int64 = 0
+        while (bri < rightW + 2) {
             bottom.append(hc)
+            bri += 1
         }
         bottom.append(br)
         canvas.setLine(row + 1 + rows, bottom.toString())
