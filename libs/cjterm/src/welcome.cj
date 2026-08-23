@@ -168,11 +168,11 @@ public class WelcomeView <: Component {
     private func rightLines(): ArrayList<String> {
         let lines = ArrayList<String>()
         lines.add(Ansi.bold() + Ansi.fg(Ansi.THEME_ACCENT) + "Tips" + Ansi.reset())
-        lines.add(Ansi.fg(Ansi.COLOR_GRAY) + "  / 命令：/new /resume /model /help" + Ansi.reset())
-        lines.add(Ansi.fg(Ansi.COLOR_GRAY) + "  Tab / ←→   切换视图（对话/帮助）" + Ansi.reset())
-        lines.add(Ansi.fg(Ansi.COLOR_GRAY) + "  Ctrl+E      多行输入编辑" + Ansi.reset())
-        lines.add(Ansi.fg(Ansi.COLOR_GRAY) + "  Alt+Enter   多行编辑提交" + Ansi.reset())
-        lines.add(Ansi.fg(Ansi.COLOR_GRAY) + "  y / n       审批弹窗确认/取消" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  / 命令：/new /resume /model /help" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Tab / ←→   切换视图（对话/帮助）" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Ctrl+E      多行输入编辑" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Alt+Enter   多行编辑提交" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  y / n       审批弹窗确认/取消" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  ────────────────────────" + Ansi.reset())
         lines.add(Ansi.bold() + Ansi.fg(Ansi.THEME_ACCENT) + "Recent sessions" + Ansi.reset())
         if (this.sessions.size == 0) {
@@ -181,7 +181,7 @@ public class WelcomeView <: Component {
             // 最多展示 6 条
             let maxShow = if (this.sessions.size > 6) { 6 } else { this.sessions.size }
             for (i in 0..maxShow) {
-                lines.add(Ansi.fg(Ansi.COLOR_GRAY) + "  • " + this.sessions[i] + Ansi.reset())
+                lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  • " + this.sessions[i] + Ansi.reset())
             }
         }
         lines.add("")

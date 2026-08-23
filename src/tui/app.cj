@@ -78,7 +78,7 @@ public class TuiApp {
 
     // 斜杠命令候选（对齐 main.cj handleSlashCommand 支持的命令）
     private static let SLASH_COMMANDS: Array<String> = [
-        "/help", "/new", "/resume", "/model", "/provider", "/skills", "/compact", "/tree", "/fork", "/settings", "/task", "/quit",
+        "/help", "/new", "/resume", "/model", "/provider", "/skills", "/compact", "/tree", "/fork", "/settings", "/task", "/theme", "/quit",
     ]
 
     // 事件回调：提交输入时触发（外部接线）
@@ -824,18 +824,18 @@ public class TuiApp {
      */
     private func renderHelp(canvas: TuiCanvas, row: Int64, width: Int64, height: Int64): Unit {
         let lines: ArrayList<String> = ArrayList<String>()
-        lines.add(Ansi.fg(Ansi.COLOR_CYAN) + "可用命令：" + Ansi.reset())
-        lines.add(Ansi.fg(Ansi.COLOR_GRAY) + "  /help          显示本帮助" + Ansi.reset())
-        lines.add(Ansi.fg(Ansi.COLOR_GRAY) + "  /new           开始新会话" + Ansi.reset())
-        lines.add(Ansi.fg(Ansi.COLOR_GRAY) + "  /resume [id]   恢复历史会话（无 id 时列出）" + Ansi.reset())
-        lines.add(Ansi.fg(Ansi.COLOR_GRAY) + "  /model [id|#]  列出/切换模型" + Ansi.reset())
-        lines.add(Ansi.fg(Ansi.COLOR_GRAY) + "  /settings      查看采样参数（temp/max_tokens）" + Ansi.reset())
-        lines.add(Ansi.fg(Ansi.COLOR_GRAY) + "  /quit          退出" + Ansi.reset())
-        lines.add(Ansi.fg(Ansi.COLOR_CYAN) + "快捷键：" + Ansi.reset())
-        lines.add(Ansi.fg(Ansi.COLOR_GRAY) + "  Tab / ←→       切换视图（对话/帮助）" + Ansi.reset())
-        lines.add(Ansi.fg(Ansi.COLOR_GRAY) + "  Ctrl+E         多行输入编辑" + Ansi.reset())
-        lines.add(Ansi.fg(Ansi.COLOR_GRAY) + "  Alt+Enter      多行编辑提交" + Ansi.reset())
-        lines.add(Ansi.fg(Ansi.COLOR_GRAY) + "  Esc            退出多行编辑 / 回对话视图" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_ACCENT) + "可用命令：" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  /help          显示本帮助" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  /new           开始新会话" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  /resume [id]   恢复历史会话（无 id 时列出）" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  /model [id|#]  列出/切换模型" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  /settings      查看采样参数（temp/max_tokens）" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  /quit          退出" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_ACCENT) + "快捷键：" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Tab / ←→       切换视图（对话/帮助）" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Ctrl+E         多行输入编辑" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Alt+Enter      多行编辑提交" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Esc            退出多行编辑 / 回对话视图" + Ansi.reset())
         var r: Int64 = 0
         for (l in lines) {
             if (r >= height) {

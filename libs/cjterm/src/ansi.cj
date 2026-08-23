@@ -40,14 +40,19 @@ public class Ansi {
     public static let COLOR_RED: Int64 = 196
     public static let COLOR_BLUE: Int64 = 39
     public static let COLOR_DARK: Int64 = 240
-    // 主题色（华为蓝/青/紫）
-    public static let THEME_PRIMARY: Int64 = 33    // 华为蓝
-    public static let THEME_ACCENT: Int64 = 51     // 亮青
-    public static let THEME_PURPLE: Int64 = 141    // 紫
-    public static let THEME_OK: Int64 = 82         // 绿
-    public static let THEME_WARN: Int64 = 226      // 黄
-    public static let THEME_ERR: Int64 = 196       // 红
-    public static let THEME_MUTED: Int64 = 240     // 灰
+    // 主题色（运行时可变，Theme.apply(name) 切换；详见 docs/cjh-TUI主题设计方案.md）
+    // 初始值 = starfrost 星霜青配色，由 Theme.apply 在启动时写入
+    public static var THEME_PRIMARY: Int64 = 67    // 雾面深青蓝（鸿蒙蓝灰调，品牌辅色）
+    public static var THEME_ACCENT: Int64 = 73     // 星霜青（低饱和雾面青，品牌主色）
+    public static var THEME_PURPLE: Int64 = 141    // 紫
+    public static var THEME_OK: Int64 = 108        // 低饱和鼠尾草绿（成功 / 就绪）
+    public static var THEME_WARN: Int64 = 179      // 浅琥珀金（警告 / 高亮交互 / 状态栏边框）
+    public static var THEME_ERR: Int64 = 167       // 低饱和暖红（错误 / 崩溃栈）
+    public static var THEME_MUTED: Int64 = 245     // 中性灰（静音 / 分隔线 / 次要文本）
+    public static var THEME_INFO: Int64 = 103      // 淡灰蓝（次要信息 / 后台状态）
+    public static var THEME_HIGHLIGHT: Int64 = 179 // 浅琥珀金（选中行 / 预览卡片高亮，与 THEME_WARN 同色码）
+    public static var COLOR_TEXT: Int64 = 254      // 素白（基础文本层，#E8EAEF 近似）
+    public static var COLOR_BG: Int64 = 235        // 深炭灰（背景层，#1A1F26 近似，暂未启用背景色）
 }
 
 /**

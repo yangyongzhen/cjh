@@ -61,13 +61,13 @@ public class MarkdownRender {
                     // `` 可能是代码块开始
                     this.codeBlockStart = true
                     this.codeBlockOn = true
-                    sb.append(Ansi.fg(Ansi.COLOR_GRAY))
+                    sb.append(Ansi.fg(Ansi.THEME_MUTED))
                     this.pendingBacktick = false
                 } else {
                     this.pendingBacktick = true
                     // 先按行内代码处理，若下一帧是 ` 再转代码块
                     this.inlineCodeOn = !this.inlineCodeOn
-                    sb.append(if (this.inlineCodeOn) { Ansi.fg(Ansi.COLOR_CYAN) } else { Ansi.reset() })
+                    sb.append(if (this.inlineCodeOn) { Ansi.fg(Ansi.THEME_ACCENT) } else { Ansi.reset() })
                 }
                 continue
             }

@@ -55,6 +55,8 @@ public class CjhConfig {
     public var compactKeep: Int64 = 12
     // 启用的技能白名单（settings.json "enabled_skills": [...]；空=全部启用）
     public var enabledSkills: ArrayList<String> = ArrayList<String>()
+    // TUI 主题（settings.json "theme": "starfrost"|"classic"|...；空=starfrost 默认）
+    public var theme: String = "starfrost"
 
     public init() {
         // 配置目录：环境变量覆盖，默认 ~/.cjh
@@ -138,6 +140,30 @@ public class CjhConfig {
         // 同步内存配置
         this.baseUrl = baseUrl
         this.model = model
+    }
+
+    /**
+     * 写回 TUI 主题（/theme 命令）：更新 settings.json 的 theme 字段，
+     * 保留文件里已有的其他字段（读-改-写）。文件不存在则先建模板再更新。
+     */
+    public func saveTheme(theme: String): Unit {
+        this.ensureDir(this.configDir)
+        var root = JsonObject()
+        if (exists(this.settingsPath)) {
+            try {
+                let json = JsonValue.fromStr(String.fromUtf8(File.readFrom(this.settingsPath)))
+                match (json.kind()) {
+                    case JsonKind.JsObject => root = json.asObject()
+                    case _ => ()
+                }
+            } catch (e: Exception) {
+                eprintln("[cjh] settings.json 解析失败，重建: ${e}")
+            }
+        }
+        root.put("theme", JsonString(theme))
+        File.writeTo(this.settingsPath, root.toJsonString().toArray())
+        // 同步内存配置
+        this.theme = theme
     }
 
     /**
@@ -276,6 +302,13 @@ public class CjhConfig {
                                         }
                                     }
                                 }
+                            case _ => ()
+                        }
+                    }
+                    // TUI 主题（starfrost|classic|...；未配置=starfrost 默认）
+                    if (let Some(v) <- obj.get("theme")) {
+                        match (v.kind()) {
+                            case JsonKind.JsString => this.theme = v.asString().getValue()
                             case _ => ()
                         }
                     }

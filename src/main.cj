@@ -304,7 +304,7 @@ func skillEnabled(name: String, enabled: ArrayList<String>): Bool {
  */
 func listSkills(skillsDir: String, enabled: ArrayList<String>, tui: TuiApp): Unit {
     if (!exists(skillsDir)) {
-        tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "[技能目录不存在: ${skillsDir}；创建 ~/.cjh/skills/<name>.md 即可启用]" + Ansi.reset())
+        tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "[技能目录不存在: ${skillsDir}；创建 ~/.cjh/skills/<name>.md 即可启用]" + Ansi.reset())
         return
     }
     let files = ArrayList<String>()
@@ -315,10 +315,10 @@ func listSkills(skillsDir: String, enabled: ArrayList<String>, tui: TuiApp): Uni
         return true
     })
     if (files.size == 0) {
-        tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "[无技能；创建 ~/.cjh/skills/<name>.md（frontmatter: name/description + 正文指令）]" + Ansi.reset())
+        tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "[无技能；创建 ~/.cjh/skills/<name>.md（frontmatter: name/description + 正文指令）]" + Ansi.reset())
         return
     }
-    tui.appendOutput(Ansi.fg(Ansi.COLOR_CYAN) + "可用技能（settings.json 的 enabled_skills 白名单控制开关，空=全部启用）：" + Ansi.reset())
+    tui.appendOutput(Ansi.fg(Ansi.THEME_ACCENT) + "可用技能（settings.json 的 enabled_skills 白名单控制开关，空=全部启用）：" + Ansi.reset())
     for (f in files) {
         try {
             let content = String.fromUtf8(File.readFrom(skillsDir + "/" + f))
@@ -356,14 +356,14 @@ func listSkills(skillsDir: String, enabled: ArrayList<String>, tui: TuiApp): Uni
                 line += " — ${desc}"
             }
             if (toolCount > 0) {
-                line += Ansi.fg(Ansi.COLOR_GRAY) + " [${toolCount} 个声明式工具]" + Ansi.reset()
+                line += Ansi.fg(Ansi.THEME_MUTED) + " [${toolCount} 个声明式工具]" + Ansi.reset()
             }
             tui.appendOutput(line)
         } catch (e: Exception) {
             ()
         }
     }
-    tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "示例：/skills 查看；编辑 ~/.cjh/settings.json 的 enabled_skills 数组切换开关" + Ansi.reset())
+    tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "示例：/skills 查看；编辑 ~/.cjh/settings.json 的 enabled_skills 数组切换开关" + Ansi.reset())
 }
 
 /**
@@ -647,6 +647,8 @@ func runCli(sessionId: String): Int64 {
     // 配置加载
     let cjhCfg = CjhConfig()
     cjhCfg.ensureDirs()
+    // 应用 TUI 主题（settings.json "theme" 字段；默认 starfrost 星霜青）
+    Theme.apply(cjhCfg.theme)
     // 注册技能携带的声明式工具（Skill 自定义工具）
     loadSkillTools(cjhCfg.skillsDir, registry, cjhCfg.enabledSkills)
 
@@ -768,6 +770,8 @@ func runJson(prompt: String, sessionId: String): Int64 {
 
     let cjhCfg = CjhConfig()
     cjhCfg.ensureDirs()
+    // 应用 TUI 主题（settings.json "theme" 字段；默认 starfrost 星霜青）
+    Theme.apply(cjhCfg.theme)
     loadSkillTools(cjhCfg.skillsDir, registry, cjhCfg.enabledSkills)
 
     let config = AgentConfig(
@@ -901,6 +905,8 @@ func runTui(sessionId: String): Int64 {
     // 配置加载
     let cjhCfg = CjhConfig()
     cjhCfg.ensureDirs()
+    // 应用 TUI 主题（settings.json "theme" 字段；默认 starfrost 星霜青）
+    Theme.apply(cjhCfg.theme)
     // 注册技能携带的声明式工具（Skill 自定义工具）
     loadSkillTools(cjhCfg.skillsDir, registry, cjhCfg.enabledSkills)
 
@@ -961,9 +967,9 @@ func runTui(sessionId: String): Int64 {
             let history = store.load(curSessionId)
             if (history.size > 0) {
                 agent.loadHistory(history)
-                tui.appendOutput(Ansi.fg(Ansi.COLOR_BLUE) + "[resumed ${curSessionId} (${history.size} msgs)]" + Ansi.reset())
+                tui.appendOutput(Ansi.fg(Ansi.THEME_WARN) + "[resumed ${curSessionId} (${history.size} msgs)]" + Ansi.reset())
             } else {
-                tui.appendOutput(Ansi.fg(Ansi.COLOR_YELLOW) + "[session ${curSessionId} not found, new session]" + Ansi.reset())
+                tui.appendOutput(Ansi.fg(Ansi.THEME_WARN) + "[session ${curSessionId} not found, new session]" + Ansi.reset())
                 curSessionId = ""
             }
         }
@@ -987,7 +993,7 @@ func runTui(sessionId: String): Int64 {
             }
             // 工具调用提示单独一行开始（不拼到流式文字后面），参数紧凑无大括号
             TuiBridge.ensureNewline()
-            TuiBridge.output(Ansi.fg(Ansi.COLOR_GREEN) + "▶ ${name} " + Ansi.reset() + Ansi.fg(Ansi.COLOR_GRAY) + formatToolArgs(name, args) + Ansi.reset())
+            TuiBridge.output(Ansi.fg(Ansi.THEME_OK) + "▶ ${name} " + Ansi.reset() + Ansi.fg(Ansi.THEME_MUTED) + formatToolArgs(name, args) + Ansi.reset())
         }
         agent.onToolResult = { name, result =>
             var preview = result.content
@@ -995,12 +1001,12 @@ func runTui(sessionId: String): Int64 {
                 preview = truncateUtf8(preview, 200) + "…"
             }
             TuiBridge.ensureNewline()
-            TuiBridge.output(Ansi.fg(Ansi.COLOR_GRAY) + "  ↳ ${name}: ${preview}" + Ansi.reset())
+            TuiBridge.output(Ansi.fg(Ansi.THEME_MUTED) + "  ↳ ${name}: ${preview}" + Ansi.reset())
         }
         // 审批链：危险操作需人工确认时，在 TUI 内嵌审批（y/n）
         agent.onApproval = { name, args, reason =>
             TuiBridge.ensureNewline()
-            TuiBridge.output(Ansi.fg(Ansi.COLOR_YELLOW) + "⚠ 需人工确认: ${name} " + Ansi.reset() + Ansi.fg(Ansi.COLOR_GRAY) + formatToolArgs(name, args) + Ansi.reset())
+            TuiBridge.output(Ansi.fg(Ansi.THEME_WARN) + "⚠ 需人工确认: ${name} " + Ansi.reset() + Ansi.fg(Ansi.THEME_MUTED) + formatToolArgs(name, args) + Ansi.reset())
             TuiBridge.requestApproval(reason)
         }
         agent.onAssistantText = { text =>
@@ -1036,9 +1042,9 @@ func runTui(sessionId: String): Int64 {
                 let np = makeProvider(cjhCfg)
                 agent.setProvider(np)
                 tui.setModel(model)
-                tui.appendOutput(Ansi.fg(Ansi.COLOR_GREEN) + "[已切换 provider: ${label}（model=${model}）]" + Ansi.reset())
+                tui.appendOutput(Ansi.fg(Ansi.THEME_OK) + "[已切换 provider: ${label}（model=${model}）]" + Ansi.reset())
             } catch (e: Exception) {
-                tui.appendOutput(Ansi.fg(Ansi.COLOR_RED) + "[provider 切换失败: ${e}]" + Ansi.reset())
+                tui.appendOutput(Ansi.fg(Ansi.THEME_ERR) + "[provider 切换失败: ${e}]" + Ansi.reset())
             }
         }
         tui.onSubmit = { input =>
@@ -1068,7 +1074,7 @@ func runTui(sessionId: String): Int64 {
                         let _ = store.save(agent.history())
                     }
                 } catch (e: Exception) {
-                    TuiBridge.output(Ansi.fg(Ansi.COLOR_RED) + "错误: ${e}" + Ansi.reset())
+                    TuiBridge.output(Ansi.fg(Ansi.THEME_ERR) + "错误: ${e}" + Ansi.reset())
                 }
                 tui.setAgentRunning(false)
                 // 自动处理队列下一条（如果有）
@@ -1126,10 +1132,10 @@ func applyProvider(cfg: CjhConfig, agent: Agent, tui: TuiApp, label: String, bas
         }
         let np = makeProvider(cfg)
         agent.setProvider(np)
-        tui.appendOutput(Ansi.fg(Ansi.COLOR_GREEN) + "[已切换 provider: ${label}（model=${cfg.model}）]" + Ansi.reset())
+        tui.appendOutput(Ansi.fg(Ansi.THEME_OK) + "[已切换 provider: ${label}（model=${cfg.model}）]" + Ansi.reset())
         return true
     } catch (e: Exception) {
-        tui.appendOutput(Ansi.fg(Ansi.COLOR_RED) + "[provider 切换失败: ${e}]" + Ansi.reset())
+        tui.appendOutput(Ansi.fg(Ansi.THEME_ERR) + "[provider 切换失败: ${e}]" + Ansi.reset())
         return false
     }
 }
@@ -1142,19 +1148,20 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
     let args = input.trimAscii()
     match (cmd) {
         case "/help" =>
-            tui.appendOutput(Ansi.fg(Ansi.COLOR_CYAN) + "可用命令：" + Ansi.reset())
-            tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  /help          显示本帮助" + Ansi.reset())
-            tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  /new           开始新会话" + Ansi.reset())
-            tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  /resume [id]   恢复历史会话（无 id 时列出）" + Ansi.reset())
-            tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  /model [id|#]  列出/切换模型" + Ansi.reset())
-            tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  /provider [name] [key]  切换 provider（deepseek/openai/glm）" + Ansi.reset())
-            tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  /skills        列出技能与启用状态" + Ansi.reset())
-            tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  /compact       手动压缩历史（LLM 摘要早期消息）" + Ansi.reset())
-            tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  /tree          树形列示会话分支" + Ansi.reset())
-            tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  /fork          从当前会话分支新会话" + Ansi.reset())
-            tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  /settings      查看采样参数（temp/max_tokens）" + Ansi.reset())
-            tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  /task          任务管理（add/done/doing/clear/list）" + Ansi.reset())
-            tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  /quit          退出" + Ansi.reset())
+            tui.appendOutput(Ansi.fg(Ansi.THEME_ACCENT) + "可用命令：" + Ansi.reset())
+            tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /help          显示本帮助" + Ansi.reset())
+            tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /new           开始新会话" + Ansi.reset())
+            tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /resume [id]   恢复历史会话（无 id 时列出）" + Ansi.reset())
+            tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /model [id|#]  列出/切换模型" + Ansi.reset())
+            tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /provider [name] [key]  切换 provider（deepseek/openai/glm）" + Ansi.reset())
+            tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /skills        列出技能与启用状态" + Ansi.reset())
+            tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /compact       手动压缩历史（LLM 摘要早期消息）" + Ansi.reset())
+            tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /tree          树形列示会话分支" + Ansi.reset())
+            tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /fork          从当前会话分支新会话" + Ansi.reset())
+            tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /settings      查看采样参数（temp/max_tokens）" + Ansi.reset())
+            tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /task          任务管理（add/done/doing/clear/list）" + Ansi.reset())
+            tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /theme [name] TUI 主题切换（starfrost|classic）" + Ansi.reset())
+            tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /quit          退出" + Ansi.reset())
         case "/provider" =>
             // provider 预设切换：/provider [name] [api_key]
             // name ∈ deepseek|openai|glm（预设 base_url+model，写回 settings.json）
@@ -1183,7 +1190,7 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
                         }
                         applyProvider(cfg, agent, tui, "Ollama", "http://localhost:11434/v1", ollamaModel, key)
                     case _ =>
-                        tui.appendOutput(Ansi.fg(Ansi.COLOR_RED) + "[未知 provider: ${name}；/provider 查看预设列表]" + Ansi.reset())
+                        tui.appendOutput(Ansi.fg(Ansi.THEME_ERR) + "[未知 provider: ${name}；/provider 查看预设列表]" + Ansi.reset())
                 }
             } else {
                 // 无参数：弹出 provider 配置表单（参考 omp sign-in 弹窗）
@@ -1228,26 +1235,26 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
                     try {
                         let np = makeProvider(cfg)
                         agent.setProvider(np)
-                        tui.appendOutput(Ansi.fg(Ansi.COLOR_GREEN) + "[已切换模型: ${cfg.model} (temp=${cfg.temperature})]" + Ansi.reset())
+                        tui.appendOutput(Ansi.fg(Ansi.THEME_OK) + "[已切换模型: ${cfg.model} (temp=${cfg.temperature})]" + Ansi.reset())
                     } catch (e: Exception) {
-                        tui.appendOutput(Ansi.fg(Ansi.COLOR_RED) + "[切换模型失败: ${e}]" + Ansi.reset())
+                        tui.appendOutput(Ansi.fg(Ansi.THEME_ERR) + "[切换模型失败: ${e}]" + Ansi.reset())
                     }
                 } else {
-                    tui.appendOutput(Ansi.fg(Ansi.COLOR_RED) + "[未知模型: ${target}；/model 查看列表]" + Ansi.reset())
+                    tui.appendOutput(Ansi.fg(Ansi.THEME_ERR) + "[未知模型: ${target}；/model 查看列表]" + Ansi.reset())
                 }
             } else {
                 // 列出模型
                 if (cfg.models.size == 0) {
-                    tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "[未配置 models 列表；当前: ${cfg.model} (temp=${cfg.temperature})]" + Ansi.reset())
+                    tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "[未配置 models 列表；当前: ${cfg.model} (temp=${cfg.temperature})]" + Ansi.reset())
                 } else {
-                    tui.appendOutput(Ansi.fg(Ansi.COLOR_CYAN) + "可用模型（/model <id|#序号> 切换）：" + Ansi.reset())
+                    tui.appendOutput(Ansi.fg(Ansi.THEME_ACCENT) + "可用模型（/model <id|#序号> 切换）：" + Ansi.reset())
                     for (i in 0..cfg.models.size) {
                         let m = cfg.models[i]
                         let label = if (m.name.size > 0) { m.name } else { m.id }
                         let cur = if (m.id == cfg.model) { " ◀" } else { "" }
-                        tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  #${i} ${label} (${m.id})${cur}" + Ansi.reset())
+                        tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  #${i} ${label} (${m.id})${cur}" + Ansi.reset())
                     }
-                    tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "当前: ${cfg.model} (temp=${cfg.temperature}, max_tokens=${cfg.maxTokens})" + Ansi.reset())
+                    tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "当前: ${cfg.model} (temp=${cfg.temperature}, max_tokens=${cfg.maxTokens})" + Ansi.reset())
                 }
             }
         case "/settings" =>
@@ -1260,12 +1267,12 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
                     try {
                         let np = makeProvider(cfg)
                         agent.setProvider(np)
-                        tui.appendOutput(Ansi.fg(Ansi.COLOR_GREEN) + "[temperature = ${cfg.temperature}]" + Ansi.reset())
+                        tui.appendOutput(Ansi.fg(Ansi.THEME_OK) + "[temperature = ${cfg.temperature}]" + Ansi.reset())
                     } catch (e: Exception) {
-                        tui.appendOutput(Ansi.fg(Ansi.COLOR_RED) + "[应用失败: ${e}]" + Ansi.reset())
+                        tui.appendOutput(Ansi.fg(Ansi.THEME_ERR) + "[应用失败: ${e}]" + Ansi.reset())
                     }
                 } catch (e: Exception) {
-                    tui.appendOutput(Ansi.fg(Ansi.COLOR_RED) + "[无效数值: ${parts[2]}]" + Ansi.reset())
+                    tui.appendOutput(Ansi.fg(Ansi.THEME_ERR) + "[无效数值: ${parts[2]}]" + Ansi.reset())
                 }
             } else if (parts.size == 3 && parts[1] == "max_tokens") {
                 try {
@@ -1273,19 +1280,19 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
                     try {
                         let np = makeProvider(cfg)
                         agent.setProvider(np)
-                        tui.appendOutput(Ansi.fg(Ansi.COLOR_GREEN) + "[max_tokens = ${cfg.maxTokens}]" + Ansi.reset())
+                        tui.appendOutput(Ansi.fg(Ansi.THEME_OK) + "[max_tokens = ${cfg.maxTokens}]" + Ansi.reset())
                     } catch (e: Exception) {
-                        tui.appendOutput(Ansi.fg(Ansi.COLOR_RED) + "[应用失败: ${e}]" + Ansi.reset())
+                        tui.appendOutput(Ansi.fg(Ansi.THEME_ERR) + "[应用失败: ${e}]" + Ansi.reset())
                     }
                 } catch (e: Exception) {
-                    tui.appendOutput(Ansi.fg(Ansi.COLOR_RED) + "[无效数值: ${parts[2]}]" + Ansi.reset())
+                    tui.appendOutput(Ansi.fg(Ansi.THEME_ERR) + "[无效数值: ${parts[2]}]" + Ansi.reset())
                 }
             } else {
-                tui.appendOutput(Ansi.fg(Ansi.COLOR_CYAN) + "采样参数（/settings temp 0.9 或 /settings max_tokens 8192 调整）：" + Ansi.reset())
-                tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  model       ${cfg.model}" + Ansi.reset())
-                tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  temperature ${cfg.temperature}" + Ansi.reset())
-                tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  max_tokens  ${cfg.maxTokens}" + Ansi.reset())
-                tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  base_url    ${cfg.baseUrl}" + Ansi.reset())
+                tui.appendOutput(Ansi.fg(Ansi.THEME_ACCENT) + "采样参数（/settings temp 0.9 或 /settings max_tokens 8192 调整）：" + Ansi.reset())
+                tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  model       ${cfg.model}" + Ansi.reset())
+                tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  temperature ${cfg.temperature}" + Ansi.reset())
+                tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  max_tokens  ${cfg.maxTokens}" + Ansi.reset())
+                tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  base_url    ${cfg.baseUrl}" + Ansi.reset())
             }
         case "/new" =>
             // 清空会话：重开 agent 历史（保留 system）
@@ -1294,21 +1301,21 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
                 history.remove(history.size - 1..history.size)
             }
             SessionState.current = ""
-            tui.appendOutput(Ansi.fg(Ansi.COLOR_YELLOW) + "[新会话]" + Ansi.reset())
+            tui.appendOutput(Ansi.fg(Ansi.THEME_WARN) + "[新会话]" + Ansi.reset())
         case "/skills" =>
             // 列示技能（~/.cjh/skills/<name>.md）与启用状态
             listSkills(cfg.skillsDir, cfg.enabledSkills, tui)
         case "/compact" =>
             // 手动触发 Compaction：强制把早期历史压成 LLM 摘要
             // 无视 compactThreshold 阈值；compact_keep 仍生效
-            tui.appendOutput(Ansi.fg(Ansi.COLOR_CYAN) + "[压缩历史中…]" + Ansi.reset())
+            tui.appendOutput(Ansi.fg(Ansi.THEME_ACCENT) + "[压缩历史中…]" + Ansi.reset())
             spawn {
                 let (done, before, after) = agent.compact(true)
                 if (done) {
-                    TuiBridge.output(Ansi.fg(Ansi.COLOR_GREEN) +
+                    TuiBridge.output(Ansi.fg(Ansi.THEME_OK) +
                         "[历史已压缩：${before} → ${after} 条消息]" + Ansi.reset())
                 } else {
-                    TuiBridge.output(Ansi.fg(Ansi.COLOR_GRAY) +
+                    TuiBridge.output(Ansi.fg(Ansi.THEME_MUTED) +
                         "[历史较短，无需压缩（${before} 条）]" + Ansi.reset())
                 }
             }
@@ -1319,9 +1326,9 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
                 // 无参数：列出当前任务
                 let todos = agent.getTodos()
                 if (todos.size == 0) {
-                    tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "[暂无任务]" + Ansi.reset())
+                    tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "[暂无任务]" + Ansi.reset())
                 } else {
-                    tui.appendOutput(Ansi.fg(Ansi.COLOR_CYAN) + "Tasks:" + Ansi.reset())
+                    tui.appendOutput(Ansi.fg(Ansi.THEME_ACCENT) + "Tasks:" + Ansi.reset())
                     for (item in todos) {
                         let marker = match (item.status) {
                             case TodoStatus.Completed => "✓"
@@ -1330,7 +1337,7 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
                         }
                         let color = match (item.status) {
                             case TodoStatus.Completed => Ansi.fg(Ansi.THEME_OK)
-                            case TodoStatus.InProgress => Ansi.fg(Ansi.COLOR_YELLOW)
+                            case TodoStatus.InProgress => Ansi.fg(Ansi.THEME_WARN)
                             case TodoStatus.Pending => Ansi.fg(Ansi.THEME_MUTED)
                         }
                         tui.appendOutput(color + "  ${marker} #${item.id} ${item.content}" + Ansi.reset())
@@ -1348,31 +1355,31 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
                                 content += parts[i]
                             }
                             let id = agent.addTask(content)
-                            tui.appendOutput(Ansi.fg(Ansi.COLOR_GREEN) + "[已添加任务 #${id}: ${content}]" + Ansi.reset())
+                            tui.appendOutput(Ansi.fg(Ansi.THEME_OK) + "[已添加任务 #${id}: ${content}]" + Ansi.reset())
                         } else {
-                            tui.appendOutput(Ansi.fg(Ansi.COLOR_RED) + "用法: /task add <内容>" + Ansi.reset())
+                            tui.appendOutput(Ansi.fg(Ansi.THEME_ERR) + "用法: /task add <内容>" + Ansi.reset())
                         }
                     case "done" =>
                         // /task done <id>
                         if (parts.size > 2) {
                             let id = Int64.parse(parts[2])
                             agent.updateTaskStatus(id, TodoStatus.Completed)
-                            tui.appendOutput(Ansi.fg(Ansi.COLOR_GREEN) + "[任务 #${id} → completed]" + Ansi.reset())
+                            tui.appendOutput(Ansi.fg(Ansi.THEME_OK) + "[任务 #${id} → completed]" + Ansi.reset())
                         }
                     case "doing" =>
                         // /task doing <id>
                         if (parts.size > 2) {
                             let id = Int64.parse(parts[2])
                             agent.updateTaskStatus(id, TodoStatus.InProgress)
-                            tui.appendOutput(Ansi.fg(Ansi.COLOR_YELLOW) + "[任务 #${id} → in_progress]" + Ansi.reset())
+                            tui.appendOutput(Ansi.fg(Ansi.THEME_WARN) + "[任务 #${id} → in_progress]" + Ansi.reset())
                         }
                     case "clear" =>
                         agent.clearTodos()
-                        tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "[已清空任务列表]" + Ansi.reset())
+                        tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "[已清空任务列表]" + Ansi.reset())
                     case "list" =>
                         let todos = agent.getTodos()
                         if (todos.size == 0) {
-                            tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "[暂无任务]" + Ansi.reset())
+                            tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "[暂无任务]" + Ansi.reset())
                         } else {
                             for (item in todos) {
                                 let marker = match (item.status) {
@@ -1384,7 +1391,7 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
                             }
                         }
                     case _ =>
-                        tui.appendOutput(Ansi.fg(Ansi.COLOR_RED) + "[未知子命令: ${sub}；支持 add/done/doing/clear/list]" + Ansi.reset())
+                        tui.appendOutput(Ansi.fg(Ansi.THEME_ERR) + "[未知子命令: ${sub}；支持 add/done/doing/clear/list]" + Ansi.reset())
                 }
             }
         case "/resume" =>
@@ -1401,19 +1408,19 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
                     }
                     agent.loadHistory(history)
                     SessionState.current = id
-                    tui.appendOutput(Ansi.fg(Ansi.COLOR_BLUE) + "[resumed ${id} (${history.size} msgs)]" + Ansi.reset())
+                    tui.appendOutput(Ansi.fg(Ansi.THEME_WARN) + "[resumed ${id} (${history.size} msgs)]" + Ansi.reset())
                 } else {
-                    tui.appendOutput(Ansi.fg(Ansi.COLOR_RED) + "[会话 ${id} 不存在]" + Ansi.reset())
+                    tui.appendOutput(Ansi.fg(Ansi.THEME_ERR) + "[会话 ${id} 不存在]" + Ansi.reset())
                 }
             } else {
                 // 列出会话
                 let sessions = store.list()
                 if (sessions.size == 0) {
-                    tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "[暂无会话]" + Ansi.reset())
+                    tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "[暂无会话]" + Ansi.reset())
                 } else {
-                    tui.appendOutput(Ansi.fg(Ansi.COLOR_CYAN) + "已保存的会话（/resume <id> 恢复）：" + Ansi.reset())
+                    tui.appendOutput(Ansi.fg(Ansi.THEME_ACCENT) + "已保存的会话（/resume <id> 恢复）：" + Ansi.reset())
                     for ((id, summary) in sessions) {
-                        tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  ${id}  |  ${summary}" + Ansi.reset())
+                        tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  ${id}  |  ${summary}" + Ansi.reset())
                     }
                 }
             }
@@ -1421,9 +1428,9 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
             // 树形会话列示：按 parent 链展示分支（pi /tree 能力）
             let nodes = store.listTree()
             if (nodes.size == 0) {
-                tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "[暂无会话]" + Ansi.reset())
+                tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "[暂无会话]" + Ansi.reset())
             } else {
-                tui.appendOutput(Ansi.fg(Ansi.COLOR_CYAN) + "会话树（/resume <id> 恢复，/fork 从当前分支）：" + Ansi.reset())
+                tui.appendOutput(Ansi.fg(Ansi.THEME_ACCENT) + "会话树（/resume <id> 恢复，/fork 从当前分支）：" + Ansi.reset())
                 // 标记有子会话的节点（作为分支点）
                 var childCount = HashMap<String, Int64>()
                 for ((id, _, parent) in nodes) {
@@ -1444,9 +1451,9 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
                         line += "  |  ${summary}"
                     }
                     if (SessionState.current == id) {
-                        tui.appendOutput(Ansi.fg(Ansi.COLOR_GREEN) + line + Ansi.reset() + Ansi.fg(Ansi.COLOR_GRAY) + " ◀" + Ansi.reset())
+                        tui.appendOutput(Ansi.fg(Ansi.THEME_OK) + line + Ansi.reset() + Ansi.fg(Ansi.THEME_MUTED) + " ◀" + Ansi.reset())
                     } else {
-                        tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + line + Ansi.reset())
+                        tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + line + Ansi.reset())
                     }
                 }
             }
@@ -1456,13 +1463,33 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
             let history = agent.history()
             let newId = store.saveFork(history, curId)
             SessionState.current = newId
-            tui.appendOutput(Ansi.fg(Ansi.COLOR_GREEN) + "[已分支为 ${newId}（parent=${curId}）]" + Ansi.reset())
+            tui.appendOutput(Ansi.fg(Ansi.THEME_OK) + "[已分支为 ${newId}（parent=${curId}）]" + Ansi.reset())
         case "/quit" =>
-            tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "[再见]" + Ansi.reset())
+            tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "[再见]" + Ansi.reset())
             // 退出由主循环处理；先短暂刷新再退出
             spawn { tui.quit() }
+        case "/theme" =>
+            // /theme [name]：切换 TUI 主题（starfrost|classic）；无参数列出可用主题
+            let parts = args.split(" ", -1)
+            if (parts.size > 1 && parts[1].size > 0) {
+                let applied = Theme.apply(parts[1])
+                // 写回 settings.json 持久化
+                cfg.theme = applied
+                cfg.saveTheme(applied)
+                tui.appendOutput(Ansi.fg(Ansi.THEME_OK) + "[主题已切换: ${applied}]" + Ansi.reset())
+                tui.markDirty()
+            } else {
+                let cur = Theme.current()
+                let all = Theme.list()
+                tui.appendOutput(Ansi.fg(Ansi.THEME_ACCENT) + "TUI 主题（当前: ${cur}）" + Ansi.reset())
+                for (name in all) {
+                    let marker = if (name == cur) { "▶" } else { " " }
+                    tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  ${marker} ${name}" + Ansi.reset())
+                }
+                tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "用法: /theme <名称> 切换" + Ansi.reset())
+            }
         case _ =>
-            tui.appendOutput(Ansi.fg(Ansi.COLOR_RED) + "未知命令: ${cmd}（输入 /help 查看）" + Ansi.reset())
+            tui.appendOutput(Ansi.fg(Ansi.THEME_ERR) + "未知命令: ${cmd}（输入 /help 查看）" + Ansi.reset())
     }
 }
 
@@ -1530,6 +1557,8 @@ class TuiBridge {
 func listSessions(): Int64 {
     let cjhCfg = CjhConfig()
     cjhCfg.ensureDirs()
+    // 应用 TUI 主题（settings.json "theme" 字段；默认 starfrost 星霜青）
+    Theme.apply(cjhCfg.theme)
     let store = SessionStore(cjhCfg.sessionsDir)
     let sessions = store.list()
     if (sessions.size == 0) {

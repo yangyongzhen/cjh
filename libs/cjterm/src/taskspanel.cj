@@ -148,7 +148,7 @@ public class TasksPanel {
         let muted: String = Ansi.fg(Ansi.THEME_MUTED)
         let accent: String = Ansi.fg(Ansi.THEME_ACCENT)
         let ok: String = Ansi.fg(Ansi.THEME_OK)
-        let warn: String = Ansi.fg(Ansi.COLOR_YELLOW)
+        let warn: String = Ansi.fg(Ansi.THEME_WARN)
         let reset: String = Ansi.reset()
 
         // 顶边框：╭─ Tasks (1 done, 1 in progress, 2 open) ───╮

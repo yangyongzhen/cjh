@@ -39,7 +39,7 @@ public class StatusBar <: Component {
     public override func render(canvas: TuiCanvas, row: Int64, width: Int64, height: Int64): Int64 {
         let sep = Ansi.fg(Ansi.THEME_MUTED) + " > " + Ansi.reset()
         let muted = Ansi.fg(Ansi.THEME_MUTED)
-        let border = Ansi.fg(Ansi.COLOR_BLUE)
+        let border = Ansi.fg(Ansi.THEME_WARN)
         let hc = "-"
         // 分段 1：模型名（# accent 色；ASCII 宽度恒定 1 列）
         let modelPart = if (this.model.size > 0) {

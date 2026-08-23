@@ -271,12 +271,12 @@ public class FormDialog <: Component {
                 }
             } else {
                 // 非聚焦：value 或 placeholder（前置 ▷ 占位对齐聚焦 ▶）
-                mid.append(Ansi.fg(Ansi.COLOR_DARK) + "▷ " + Ansi.reset())
+                mid.append(Ansi.fg(Ansi.THEME_MUTED) + "▷ " + Ansi.reset())
                 if (isSel) {
                     mid.append(Ansi.fg(Ansi.THEME_MUTED) + displayStr + Ansi.reset())
                 } else {
                     let showStr = if (valStr.size > 0) { displayStr } else { this.placeholders[i] }
-                    let showColor = if (valStr.size > 0) { Ansi.THEME_MUTED } else { Ansi.COLOR_DARK }
+                    let showColor = if (valStr.size > 0) { Ansi.THEME_MUTED } else { Ansi.THEME_MUTED }
                     mid.append(Ansi.fg(showColor) + showStr + Ansi.reset())
                 }
             }
