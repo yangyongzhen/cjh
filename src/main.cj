@@ -183,14 +183,278 @@ func loadProjectInstructions(): String {
 }
 
 /**
- * 组装 system prompt：全局配置 + 项目指令（AGENTS.md）
+ * 技能是否启用（enabledSkills 空=全部启用；非空=白名单）
  */
-func buildSystemPrompt(base: String): String {
-    let instr = loadProjectInstructions()
-    if (instr.size == 0) {
-        return base
+func skillEnabled(name: String, enabled: ArrayList<String>): Bool {
+    if (enabled.size == 0) {
+        return true
     }
-    return base + "\n\n## 项目指令（AGENTS.md）\n" + instr
+    for (e in enabled) {
+        if (e == name) {
+            return true
+        }
+    }
+    return false
+}
+
+/**
+ * 列示技能（/skills 命令）：扫描 ~/.cjh/skills/<name>.md，输出名称、启用状态、
+ * 前端声明的描述与携带工具数；无技能目录时提示创建方法。
+ */
+func listSkills(skillsDir: String, enabled: ArrayList<String>, tui: TuiApp): Unit {
+    if (!exists(skillsDir)) {
+        tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "[技能目录不存在: ${skillsDir}；创建 ~/.cjh/skills/<name>.md 即可启用]" + Ansi.reset())
+        return
+    }
+    let files = ArrayList<String>()
+    Directory.walk(skillsDir, { fi =>
+        if (fi.name.endsWith(".md")) {
+            files.add(fi.name)
+        }
+        return true
+    })
+    if (files.size == 0) {
+        tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "[无技能；创建 ~/.cjh/skills/<name>.md（frontmatter: name/description + 正文指令）]" + Ansi.reset())
+        return
+    }
+    tui.appendOutput(Ansi.fg(Ansi.COLOR_CYAN) + "可用技能（settings.json 的 enabled_skills 白名单控制开关，空=全部启用）：" + Ansi.reset())
+    for (f in files) {
+        try {
+            let content = String.fromUtf8(File.readFrom(skillsDir + "/" + f))
+            var name = f[0..f.size - 3]
+            var desc = ""
+            var toolCount: Int64 = 0
+            if (content.startsWith("---")) {
+                let endFm = content.indexOf("\n---")
+                if (endFm.isSome()) {
+                    let fm = content[3..endFm.getOrThrow()]
+                    for (line in fm.split("\n", -1)) {
+                        let t = line.trimAscii()
+                        if (t.startsWith("name:")) {
+                            let v = t[5..t.size].trimAscii()
+                            if (v.size > 0) {
+                                name = v
+                            }
+                        }
+                        if (t.startsWith("description:")) {
+                            let v = t[12..t.size].trimAscii()
+                            if (v.size > 0) {
+                                desc = v
+                            }
+                        }
+                        if (t.startsWith("tools:")) {
+                            toolCount += 1
+                        }
+                    }
+                }
+            }
+            let state = if (skillEnabled(name, enabled)) {
+                Ansi.fg(Ansi.THEME_OK) + "● 启用" + Ansi.reset()
+            } else {
+                Ansi.fg(Ansi.THEME_MUTED) + "○ 禁用" + Ansi.reset()
+            }
+            var line = "  ${state} ${name}"
+            if (desc.size > 0) {
+                line += " — ${desc}"
+            }
+            if (toolCount > 0) {
+                line += Ansi.fg(Ansi.COLOR_GRAY) + " [${toolCount} 个声明式工具]" + Ansi.reset()
+            }
+            tui.appendOutput(line)
+        } catch (e: Exception) {
+            ()
+        }
+    }
+    tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "示例：/skills 查看；编辑 ~/.cjh/settings.json 的 enabled_skills 数组切换开关" + Ansi.reset())
+}
+
+/**
+ * 加载技能（Skills，对齐 pi 的按需能力包）：
+ * 扫描 ~/.cjh/skills/<name>.md（v2 4.3c"技能即文件"：Markdown 文本资产，
+ * frontmatter 声明 name/description + 正文为指令），把所有技能指令拼接返回；
+ * 目录不存在或无技能返回 ""。技能指令注入 system prompt（按需能力，不破缓存）。
+ */
+func loadSkills(skillsDir: String, enabled: ArrayList<String>): String {
+    if (!exists(skillsDir)) {
+        return ""
+    }
+    let files = ArrayList<String>()
+    Directory.walk(skillsDir, { fi =>
+        if (fi.name.endsWith(".md")) {
+            files.add(fi.name)
+        }
+        return true
+    })
+    if (files.size == 0) {
+        return ""
+    }
+    var sb = StringBuilder()
+    var count: Int64 = 0
+    for (f in files) {
+        try {
+            let content = String.fromUtf8(File.readFrom(skillsDir + "/" + f))
+            if (content.size == 0) {
+                continue
+            }
+            // 提取 frontmatter：---\nname: xxx\ndescription: xxx\n---\n正文
+            var name = f[0..f.size - 3]  // 去 .md
+            var body = content
+            if (content.startsWith("---")) {
+                let endFm = content.indexOf("\n---")
+                if (endFm.isSome()) {
+                    let fmEnd = endFm.getOrThrow()
+                    let fm = content[3..fmEnd]
+                    // 解析 name 行
+                    for (line in fm.split("\n", -1)) {
+                        let t = line.trimAscii()
+                        if (t.startsWith("name:")) {
+                            let v = t[5..t.size].trimAscii()
+                            if (v.size > 0) {
+                                name = v
+                            }
+                        }
+                    }
+                    body = content[fmEnd + 4..content.size].trimAscii()
+                }
+            }
+            // 白名单过滤：未启用的技能不注入
+            if (!skillEnabled(name, enabled)) {
+                continue
+            }
+            if (body.size == 0) {
+                continue
+            }
+            if (count > 0) {
+                sb.append("\n\n")
+            }
+            sb.append("### 技能：${name}\n")
+            sb.append(body)
+            count += 1
+        } catch (e: Exception) {
+            ()
+        }
+    }
+    return sb.toString()
+}
+
+/**
+ * 加载技能携带的声明式工具（对齐 v2 4.3b 声明式形态）：
+ * 技能 frontmatter 的 tools 段为 JSON 数组，每项 {name, description, command, args?}，
+ * 注册为 DeclarativeTool（shell 模板 + 参数 schema，低门槛）。
+ * 无 tools 段或解析失败则跳过该技能；技能目录不存在时静默。
+ */
+func loadSkillTools(skillsDir: String, registry: ToolRegistry, enabled: ArrayList<String>): Unit {
+    if (!exists(skillsDir)) {
+        return
+    }
+    let files = ArrayList<String>()
+    Directory.walk(skillsDir, { fi =>
+        if (fi.name.endsWith(".md")) {
+            files.add(fi.name)
+        }
+        return true
+    })
+    for (f in files) {
+        try {
+            let content = String.fromUtf8(File.readFrom(skillsDir + "/" + f))
+            if (content.size == 0 || !content.startsWith("---")) {
+                continue
+            }
+            let endFm = content.indexOf("\n---")
+            if (endFm.isNone()) {
+                continue
+            }
+            let fm = content[3..endFm.getOrThrow()]
+            // 技能名（frontmatter name 或文件名去 .md），白名单过滤
+            var name = f[0..f.size - 3]
+            for (line in fm.split("\n", -1)) {
+                let t = line.trimAscii()
+                if (t.startsWith("name:")) {
+                    let v = t[5..t.size].trimAscii()
+                    if (v.size > 0) {
+                        name = v
+                    }
+                }
+            }
+            if (!skillEnabled(name, enabled)) {
+                continue
+            }
+            // frontmatter 中找 tools: [json array] 行
+            for (line in fm.split("\n", -1)) {
+                let t = line.trimAscii()
+                if (t.startsWith("tools:")) {
+                    let raw = t[6..t.size].trimAscii()
+                    if (raw.size > 0) {
+                        registerSkillTools(raw, registry)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            ()
+        }
+    }
+}
+
+/**
+ * 解析 tools JSON 数组并注册声明式工具
+ */
+func registerSkillTools(jsonStr: String, registry: ToolRegistry): Unit {
+    try {
+        let v = JsonValue.fromStr(jsonStr)
+        match (v.kind()) {
+            case JsonKind.JsArray =>
+                let arr = v.asArray()
+                for (i in 0..arr.size()) {
+                    if (let Some(item) <- arr.get(i)) {
+                        match (item.kind()) {
+                            case JsonKind.JsObject =>
+                                let obj = item.asObject()
+                                let name = obj.get("name").getOrThrow().asString().getValue()
+                                let desc = obj.get("description").getOrThrow().asString().getValue()
+                                let cmd = obj.get("command").getOrThrow().asString().getValue()
+                                // 参数 schema（可选）：args: {"argName": "描述"}
+                                var argSpecs = HashMap<String, (String, String)>()
+                                if (let Some(av) <- obj.get("args")) {
+                                    match (av.kind()) {
+                                        case JsonKind.JsObject =>
+                                            let ao = av.asObject()
+                                            for ((k, sv) in ao.getFields()) {
+                                                match (sv.kind()) {
+                                                    case JsonKind.JsString =>
+                                                        argSpecs.add(k, ("string", sv.asString().getValue()))
+                                                    case _ => ()
+                                                }
+                                            }
+                                        case _ => ()
+                                    }
+                                }
+                                let tool = DeclarativeTool(name, desc, cmd, argSpecs)
+                                registry.register(tool)
+                            case _ => ()
+                        }
+                    }
+                }
+            case _ => ()
+        }
+    } catch (e: Exception) {
+        ()
+    }
+}
+
+/**
+ * 组装 system prompt：全局配置 + 项目指令（AGENTS.md）+ 技能（Skills）
+ */
+func buildSystemPrompt(base: String, skillsDir: String, enabled: ArrayList<String>): String {
+    var s = base
+    let instr = loadProjectInstructions()
+    if (instr.size > 0) {
+        s += "\n\n## 项目指令（AGENTS.md）\n" + instr
+    }
+    let skills = loadSkills(skillsDir, enabled)
+    if (skills.size > 0) {
+        s += "\n\n## 可用技能（Skills，按需使用）\n" + skills
+    }
+    return s
 }
 
 /**
@@ -245,6 +509,22 @@ main(args: Array<String>): Int64 {
     if (args.size > 0 && args[0] == "--mock") {
         return runMockVerify()
     }
+    if (args.size > 0 && args[0] == "--mode" && args.size > 1 && args[1] == "json") {
+        // --mode json [--resume <id>] <prompt...>：无头模式，输出 JSON 结果（脚本可解析）
+        var sessionId = ""
+        var prompt = ""
+        var i: Int64 = 2
+        while (i < args.size) {
+            if (args[i] == "--resume" && i + 1 < args.size) {
+                sessionId = args[i + 1]
+                i += 2
+            } else {
+                prompt = args[i]
+                i += 1
+            }
+        }
+        return runJson(prompt, sessionId)
+    }
     if (args.size > 0 && args[0] == "--cli") {
         if (args.size > 2 && args[1] == "--resume") {
             return runCli(args[2])
@@ -279,10 +559,12 @@ func runCli(sessionId: String): Int64 {
     // 配置加载
     let cjhCfg = CjhConfig()
     cjhCfg.ensureDirs()
+    // 注册技能携带的声明式工具（Skill 自定义工具）
+    loadSkillTools(cjhCfg.skillsDir, registry, cjhCfg.enabledSkills)
 
-    // system prompt：全局配置 + 项目指令（AGENTS.md 多级目录向上查找）
+    // system prompt：全局配置 + 项目指令（AGENTS.md）+ 技能（Skills）
     let config = AgentConfig(
-        buildSystemPrompt(cjhCfg.systemPrompt),
+        buildSystemPrompt(cjhCfg.systemPrompt, cjhCfg.skillsDir, cjhCfg.enabledSkills),
         cjhCfg.maxIterations,
         cjhCfg.capability,
         cjhCfg.compactThreshold,
@@ -377,6 +659,118 @@ func runCli(sessionId: String): Int64 {
 }
 
 /**
+ * --mode json 无头模式（对齐 pi 的 print-JSON 模式，供脚本/集成调用）：
+ * 单次运行：加载配置 → 恢复可选会话 → agent.run(prompt) → 输出 JSON
+ * {"reply", "session_id", "tool_calls": [{name, args, result}], "error"}
+ * 会话自动保存（新会话或原会话 id 覆盖），便于链式调用。
+ */
+class JsonState {
+    // 静态字段：lambda 闭包不能捕获可变局部变量，用静态容器收集工具调用记录
+    static var toolCalls: ArrayList<(String, String, String)> = ArrayList<(String, String, String)>()
+}
+
+func runJson(prompt: String, sessionId: String): Int64 {
+    let registry = ToolRegistry()
+    registry.register(BashTool())
+    registry.register(ReadTool())
+    registry.register(WriteTool())
+    registry.register(GrepTool())
+    registry.register(ListDirTool())
+
+    let cjhCfg = CjhConfig()
+    cjhCfg.ensureDirs()
+    loadSkillTools(cjhCfg.skillsDir, registry, cjhCfg.enabledSkills)
+
+    let config = AgentConfig(
+        buildSystemPrompt(cjhCfg.systemPrompt, cjhCfg.skillsDir, cjhCfg.enabledSkills),
+        cjhCfg.maxIterations,
+        cjhCfg.capability,
+        cjhCfg.compactThreshold,
+        cjhCfg.compactKeep)
+
+    try {
+        let provider: LlmProvider
+        if ((readEnv("CJH_MOCK") ?? "") == "1") {
+            provider = MockProvider("/tmp/cjh_verify.txt")
+        } else {
+            provider = makeProvider(cjhCfg)
+        }
+        let agent = Agent(provider, registry, config)
+        let store = SessionStore(cjhCfg.sessionsDir)
+
+        // 恢复会话（--resume <id>）
+        var curId = sessionId
+        if (curId.size > 0) {
+            let history = store.load(curId)
+            if (history.size > 0) {
+                agent.loadHistory(history)
+            } else {
+                curId = ""
+            }
+        }
+
+        // 收集工具调用记录（供 JSON 输出）
+        JsonState.toolCalls = ArrayList<(String, String, String)>()
+        agent.onDelta = { d => () }
+        agent.onToolStart = { name, args =>
+            JsonState.toolCalls.add((name, args.toJsonString(), ""))
+        }
+        agent.onToolResult = { name, result =>
+            for (i in 0..JsonState.toolCalls.size) {
+                if (JsonState.toolCalls[i][0] == name && JsonState.toolCalls[i][2].size == 0) {
+                    JsonState.toolCalls[i] = (JsonState.toolCalls[i][0], JsonState.toolCalls[i][1], result.content)
+                    break
+                }
+            }
+        }
+        agent.onApproval = { name, args, reason => false }  // 无头模式默认拒绝危险操作
+        agent.onAssistantText = { text => () }
+
+        if (prompt.size == 0) {
+            // 无 prompt：输出会话摘要 JSON（--mode json --resume <id> 查历史）
+            var out = JsonObject()
+            out.put("reply", JsonString(""))
+            out.put("session_id", JsonString(curId))
+            out.put("error", JsonString("empty prompt"))
+            println(out.toJsonString())
+            return 1
+        }
+
+        let reply = agent.run(prompt)
+
+        // 保存会话：新会话用 store.save；恢复的会话更新原文件（删旧建新以更新消息）
+        if (curId.size == 0) {
+            curId = store.save(agent.history())
+        } else {
+            let _ = store.save(agent.history())
+        }
+
+        // 输出 JSON 结果
+        var out = JsonObject()
+        out.put("reply", JsonString(reply))
+        out.put("session_id", JsonString(curId))
+        var tcArr = ArrayList<JsonValue>()
+        for (tc in JsonState.toolCalls) {
+            var t = JsonObject()
+            t.put("name", JsonString(tc[0]))
+            t.put("args", JsonString(tc[1]))
+            t.put("result", JsonString(tc[2]))
+            tcArr.add(t)
+        }
+        out.put("tool_calls", JsonArray(tcArr))
+        println(out.toJsonString())
+        return 0
+    } catch (e: Exception) {
+        var err = JsonObject()
+        err.put("reply", JsonString(""))
+        err.put("session_id", JsonString(sessionId))
+        err.put("error", JsonString(e.toString()))
+        println(err.toJsonString())
+        return 1
+    }
+}
+
+/**
  * TUI 交互模式（默认）
  */
 func runTui(sessionId: String): Int64 {
@@ -392,10 +786,12 @@ func runTui(sessionId: String): Int64 {
     // 配置加载
     let cjhCfg = CjhConfig()
     cjhCfg.ensureDirs()
+    // 注册技能携带的声明式工具（Skill 自定义工具）
+    loadSkillTools(cjhCfg.skillsDir, registry, cjhCfg.enabledSkills)
 
-    // system prompt：全局配置 + 项目指令（AGENTS.md 多级目录向上查找）
+    // system prompt：全局配置 + 项目指令（AGENTS.md）+ 技能（Skills）
     let config = AgentConfig(
-        buildSystemPrompt(cjhCfg.systemPrompt),
+        buildSystemPrompt(cjhCfg.systemPrompt, cjhCfg.skillsDir, cjhCfg.enabledSkills),
         cjhCfg.maxIterations,
         cjhCfg.capability,
         cjhCfg.compactThreshold,
@@ -484,6 +880,26 @@ func runTui(sessionId: String): Int64 {
         }
 
         SessionState.current = curSessionId
+        // provider 配置表单提交回调：写回 settings/auth，重建 provider 热切换
+        tui.onProviderSubmit = { provider, baseUrl, model, apiKey =>
+            // provider 字段用于预设匹配（空则按 base_url/model 直接写）
+            var label = provider
+            if (label.size == 0) {
+                label = model
+            }
+            try {
+                cjhCfg.saveProvider(baseUrl, model)
+                if (apiKey.size > 0) {
+                    cjhCfg.saveApiKey(apiKey)
+                }
+                let np = makeProvider(cjhCfg)
+                agent.setProvider(np)
+                tui.setModel(model)
+                tui.appendOutput(Ansi.fg(Ansi.COLOR_GREEN) + "[已切换 provider: ${label}（model=${model}）]" + Ansi.reset())
+            } catch (e: Exception) {
+                tui.appendOutput(Ansi.fg(Ansi.COLOR_RED) + "[provider 切换失败: ${e}]" + Ansi.reset())
+            }
+        }
         tui.onSubmit = { input =>
             // slash 命令（对齐 pi：/help /new /resume /quit /model /settings）
             if (input.startsWith("/")) {
@@ -529,6 +945,45 @@ class SessionState {
 }
 
 /**
+ * 会话在树中的深度（沿 parent 链向上计数；根=0，防环上限 32）
+ */
+func depthOf(id: String, store: SessionStore): Int64 {
+    var depth: Int64 = 0
+    var cur = id
+    var guard: Int64 = 0
+    while (guard < 32) {
+        let p = store.parentOf(cur)
+        if (p.size == 0) {
+            break
+        }
+        depth += 1
+        cur = p
+        guard += 1
+    }
+    return depth
+}
+
+/**
+ * 应用 provider 预设：写回 settings（base_url/model）+ 可选 auth（api_key），
+ * 重建 provider 热切换。返回是否成功（失败时 TUI 已输出原因）。
+ */
+func applyProvider(cfg: CjhConfig, agent: Agent, tui: TuiApp, label: String, baseUrl: String, model: String, apiKey: String): Bool {
+    try {
+        cfg.saveProvider(baseUrl, model)
+        if (apiKey.size > 0) {
+            cfg.saveApiKey(apiKey)
+        }
+        let np = makeProvider(cfg)
+        agent.setProvider(np)
+        tui.appendOutput(Ansi.fg(Ansi.COLOR_GREEN) + "[已切换 provider: ${label}（model=${cfg.model}）]" + Ansi.reset())
+        return true
+    } catch (e: Exception) {
+        tui.appendOutput(Ansi.fg(Ansi.COLOR_RED) + "[provider 切换失败: ${e}]" + Ansi.reset())
+        return false
+    }
+}
+
+/**
  * TUI slash 命令分发（对齐 pi 基础命令：/help /new /resume /quit /model /settings）
  */
 func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: TuiApp, cfg: CjhConfig): Unit {
@@ -541,8 +996,33 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
             tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  /new           开始新会话" + Ansi.reset())
             tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  /resume [id]   恢复历史会话（无 id 时列出）" + Ansi.reset())
             tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  /model [id|#]  列出/切换模型" + Ansi.reset())
+            tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  /provider [name] [key]  切换 provider（deepseek/openai/glm）" + Ansi.reset())
+            tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  /skills        列出技能与启用状态" + Ansi.reset())
+            tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  /tree          树形列示会话分支" + Ansi.reset())
+            tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  /fork          从当前会话分支新会话" + Ansi.reset())
             tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  /settings      查看采样参数（temp/max_tokens）" + Ansi.reset())
             tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  /quit          退出" + Ansi.reset())
+        case "/provider" =>
+            // provider 预设切换：/provider [name] [api_key]
+            // name ∈ deepseek|openai|glm（预设 base_url+model，写回 settings.json）
+            let parts = args.split(" ", -1)
+            if (parts.size > 1 && parts[1].size > 0) {
+                let name = parts[1]
+                let key = if (parts.size > 2) { parts[2] } else { "" }
+                match (name) {
+                    case "deepseek" =>
+                        applyProvider(cfg, agent, tui, "DeepSeek", "https://api.deepseek.com/v1/chat/completions", "deepseek-chat", key)
+                    case "openai" =>
+                        applyProvider(cfg, agent, tui, "OpenAI", "https://api.openai.com/v1/chat/completions", "gpt-4o-mini", key)
+                    case "glm" =>
+                        applyProvider(cfg, agent, tui, "GLM", "https://open.bigmodel.cn/api/paas/v4/chat/completions", "glm-4-flash", key)
+                    case _ =>
+                        tui.appendOutput(Ansi.fg(Ansi.COLOR_RED) + "[未知 provider: ${name}；/provider 查看预设列表]" + Ansi.reset())
+                }
+            } else {
+                // 无参数：弹出 provider 配置表单（参考 omp sign-in 弹窗）
+                tui.showProviderDialog(cfg.baseUrl, cfg.model, cfg.apiKey)
+            }
         case "/model" =>
             let parts = args.split(" ", -1)
             if (parts.size > 1 && parts[1].size > 0) {
@@ -649,6 +1129,9 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
             }
             SessionState.current = ""
             tui.appendOutput(Ansi.fg(Ansi.COLOR_YELLOW) + "[新会话]" + Ansi.reset())
+        case "/skills" =>
+            // 列示技能（~/.cjh/skills/<name>.md）与启用状态
+            listSkills(cfg.skillsDir, cfg.enabledSkills, tui)
         case "/resume" =>
             let parts = args.split(" ", -1)
             if (parts.size > 1 && parts[1].size > 0) {
@@ -679,6 +1162,46 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
                     }
                 }
             }
+        case "/tree" =>
+            // 树形会话列示：按 parent 链展示分支（pi /tree 能力）
+            let nodes = store.listTree()
+            if (nodes.size == 0) {
+                tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "[暂无会话]" + Ansi.reset())
+            } else {
+                tui.appendOutput(Ansi.fg(Ansi.COLOR_CYAN) + "会话树（/resume <id> 恢复，/fork 从当前分支）：" + Ansi.reset())
+                // 标记有子会话的节点（作为分支点）
+                var childCount = HashMap<String, Int64>()
+                for ((id, _, parent) in nodes) {
+                    if (parent.size > 0) {
+                        childCount.add(parent, (childCount.get(parent) ?? 0) + 1)
+                    }
+                }
+                for ((id, summary, parent) in nodes) {
+                    let depth = depthOf(id, store)
+                    var indent = ""
+                    for (_ in 0..depth) {
+                        indent += "  "
+                    }
+                    let isFork = if (parent.size > 0) { " ↳" } else { "" }
+                    let hasChild = if ((childCount.get(id) ?? 0) > 0) { " ◆" } else { "" }
+                    var line = "  ${indent}${isFork} ${id}${hasChild}"
+                    if (summary.size > 0) {
+                        line += "  |  ${summary}"
+                    }
+                    if (SessionState.current == id) {
+                        tui.appendOutput(Ansi.fg(Ansi.COLOR_GREEN) + line + Ansi.reset() + Ansi.fg(Ansi.COLOR_GRAY) + " ◀" + Ansi.reset())
+                    } else {
+                        tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + line + Ansi.reset())
+                    }
+                }
+            }
+        case "/fork" =>
+            // 分支：把当前历史保存为新会话，parent = 当前会话（或根）
+            let curId = SessionState.current
+            let history = agent.history()
+            let newId = store.saveFork(history, curId)
+            SessionState.current = newId
+            tui.appendOutput(Ansi.fg(Ansi.COLOR_GREEN) + "[已分支为 ${newId}（parent=${curId}）]" + Ansi.reset())
         case "/quit" =>
             tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "[再见]" + Ansi.reset())
             // 退出由主循环处理；先短暂刷新再退出

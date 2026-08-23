@@ -49,6 +49,8 @@ public class TuiApp {
     private var spinner: Spinner = Spinner()
     // 审批/确认弹窗（替代旧的状态行内联审批 UI）
     private var confirmDialog: ConfirmDialog = ConfirmDialog()
+    // provider 配置表单弹窗（/provider 无参数时弹出）
+    private var providerDialog: FormDialog = FormDialog()
     // 视图切换标签栏（对话 / 帮助）
     private var tabBar: TabBar = TabBar()
     // 启动欢迎视图（两栏：左 logo+模型，右 Tips+会话；输出区为空时显示）
@@ -67,11 +69,14 @@ public class TuiApp {
 
     // 斜杠命令候选（对齐 main.cj handleSlashCommand 支持的命令）
     private static let SLASH_COMMANDS: Array<String> = [
-        "/help", "/new", "/resume", "/model", "/settings", "/quit",
+        "/help", "/new", "/resume", "/model", "/provider", "/skills", "/tree", "/fork", "/settings", "/quit",
     ]
 
     // 事件回调：提交输入时触发（外部接线）
     public var onSubmit: (String) -> Unit = { _ => }
+
+    // provider 配置表单提交回调（外部接线；参数：provider/baseUrl/model/apiKey）
+    public var onProviderSubmit: (String, String, String, String) -> Unit = { _, _, _, _ => }
 
     public init() {
         this.term = Term()
@@ -97,6 +102,21 @@ public class TuiApp {
             // 审批完成：清除待审批状态，后续按键恢复正常分发
             this.pendingApproval = None
             this.approvalLock.unlock()
+            this.markDirty()
+        }
+        // provider 配置表单弹窗（utf8 能力对齐终端；居中弹窗，不全宽）
+        this.providerDialog = FormDialog(this.term.isUtf8())
+        // 提交回调：将表单字段值传回外部 onProviderSubmit
+        this.providerDialog.onSubmit = { values =>
+            this.providerDialog.hide()
+            this.markDirty()
+            // 转发：index 0=provider 1=base_url 2=model 3=api_key
+            if (values.size >= 4) {
+                this.onProviderSubmit(values[0], values[1], values[2], values[3])
+            }
+        }
+        this.providerDialog.onCancel = { =>
+            this.providerDialog.hide()
             this.markDirty()
         }
         // 初始化文件日志（CJH_TUI_LOG 可覆盖路径；失败则降级 NoopLogger）
@@ -191,6 +211,52 @@ public class TuiApp {
      */
     public func quit(): Unit {
         this.running = false
+        this.markDirty()
+    }
+
+    /**
+     * 弹出 provider 配置表单（/provider 无参数时调用）
+     * Provider 字段为 select 下拉（deepseek/openai/glm），
+     * ←→ 切换时联动填充对应 baseUrl/model 预设
+     */
+    public func showProviderDialog(currentBaseUrl: String, currentModel: String, currentApiKey: String): Unit {
+        this.providerDialog.clearFields()
+        // 字段 0：Provider（select，含三个预设）
+        let providers = ArrayList<String>()
+        providers.add("deepseek")
+        providers.add("openai")
+        providers.add("glm")
+        this.providerDialog.addSelectField("Provider", providers)
+        // 字段 1：API 端点（text）
+        this.providerDialog.addField("API 端点", "https://api.openai.com/v1/chat/completions", false)
+        // 字段 2：模型（text）
+        this.providerDialog.addField("模型", "gpt-4o-mini", false)
+        // 字段 3：API Key（secret）
+        this.providerDialog.addField("API Key", "sk-xxxx", true)
+        // 预填当前配置，方便增量修改
+        this.providerDialog.setFieldValue(1, currentBaseUrl)
+        this.providerDialog.setFieldValue(2, currentModel)
+        this.providerDialog.setFieldValue(3, currentApiKey)
+        // select 联动：切换 Provider 时填充对应 baseUrl/model 预设
+        this.providerDialog.onSelectChange = { index, value =>
+            if (index == 0) {
+                // 联动填充 baseUrl/model 预设
+                match (value) {
+                    case "deepseek" =>
+                        this.providerDialog.setFieldValue(1, "https://api.deepseek.com/v1/chat/completions")
+                        this.providerDialog.setFieldValue(2, "deepseek-chat")
+                    case "openai" =>
+                        this.providerDialog.setFieldValue(1, "https://api.openai.com/v1/chat/completions")
+                        this.providerDialog.setFieldValue(2, "gpt-4o-mini")
+                    case "glm" =>
+                        this.providerDialog.setFieldValue(1, "https://open.bigmodel.cn/api/paas/v4/chat/completions")
+                        this.providerDialog.setFieldValue(2, "glm-4-flash")
+                    case _ => ()
+                }
+                this.markDirty()
+            }
+        }
+        this.providerDialog.show("配置 Provider", "[Enter]=保存 [Esc]=取消 [↑↓/Tab]切换字段 [←→]选择Provider")
         this.markDirty()
     }
 
@@ -333,6 +399,13 @@ public class TuiApp {
             // 审批模式：按键交给 ConfirmDialog 组件处理
             // （y/n/Esc/Enter 命中时触发 onResult 写回审批结果）
             if (this.confirmDialog.handleKey(key)) {
+                this.markDirty()
+            }
+            return
+        }
+        // provider 配置表单弹窗：可见时拦截所有按键
+        if (this.providerDialog.isVisible()) {
+            if (this.providerDialog.handleKey(key)) {
                 this.markDirty()
             }
             return
@@ -619,6 +692,16 @@ public class TuiApp {
                     this.canvas.setLine(lineIdx, rendered[pi])
                 }
             }
+        }
+
+        // provider 配置表单弹窗：可见时居中覆盖在输出区上方
+        if (this.providerDialog.isVisible()) {
+            // 居中：行 = (输出区起点 8 + 状态行 statusRow) / 2 - 弹窗高度/2
+            // 弹窗高度约 8 行（4 字段 + 空行 + 提示 + 上下边框）
+            let dlgH: Int64 = 8
+            let centerRow = 8 + (if (statusRow > 8) { statusRow - 8 } else { 0 }) / 2 - dlgH / 2
+            let dlgRow = if (centerRow < 1) { 1 } else { centerRow }
+            this.providerDialog.render(this.canvas, dlgRow, cols, dlgH)
         }
 
         // 差分渲染：只输出变化行 + 光标定位（InputBox / MultiLineEditor 已设置）
