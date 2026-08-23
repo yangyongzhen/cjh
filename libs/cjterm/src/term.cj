@@ -56,6 +56,7 @@ private let TCSAFLUSH: Int32 = 2
 // 标准文件描述符
 private let STDIN: Int32 = 0
 private let STDOUT: Int32 = 1
+private let STDERR: Int32 = 2
 
 // ioctl TIOCGWINSZ = 0x5413
 private let TIOCGWINSZ: UInt64 = 0x5413
@@ -532,16 +533,19 @@ public class Term {
     public func size(): (Int64, Int64) {
         unsafe {
             if (let buf <- LibC.malloc<UInt8>(count: 8)) {
-                // winsize { ws_row: UInt16, ws_col: UInt16, ws_xpixel, ws_ypixel }
-                let r = ioctl(STDOUT, TIOCGWINSZ, buf)
-                if (r == 0) {
-                    let rows = Int64(this.readU16(buf, 0))
-                    let cols = Int64(this.readU16(buf, 2))
-                    LibC.free(buf)
-                    if (rows > 0 && cols > 0) {
-                        return (rows, cols)
+                // 依次尝试 STDERR / STDOUT / STDIN：只要其中一个是 tty 就能拿到尺寸
+                // （管道/重定向场景下 STDOUT 可能不是 tty，但 STDERR 通常还是 tty）
+                let fds = [STDERR, STDOUT, STDIN]
+                for (fd in fds) {
+                    let r = ioctl(fd, TIOCGWINSZ, buf)
+                    if (r == 0) {
+                        let rows = Int64(this.readU16(buf, 0))
+                        let cols = Int64(this.readU16(buf, 2))
+                        if (rows > 0 && cols > 0) {
+                            LibC.free(buf)
+                            return (rows, cols)
+                        }
                     }
-                    return (24, 80)
                 }
                 LibC.free(buf)
             }
