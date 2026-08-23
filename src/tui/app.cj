@@ -605,31 +605,36 @@ public class TuiApp {
         // 欢迎视图从行 0 占满到状态行上方（对齐 omp 启动画面整屏两栏布局）
 
         // 输入区行数（编辑模式动态）
-        let editBoxH: Int64 = if (this.editMode) {
+        let editBoxH0: Int64 = if (this.editMode) {
             var h = this.editor.lineCount()
             if (h < 1) { h = 1 }
             if (h > 5) { h = 5 }
             h
         } else { 1 }
-        // 输入区顶行（编辑模式：编辑器占 inputTop..rows-1；普通模式：单行在 rows-1）
-        let inputTop = rows - editBoxH
-        // 状态行：输入区上方一行（omp 上边框：╭── 状态内容 ─▶──╮，兼作下分隔线）
-        let statusRow = inputTop - 1
 
         // 是否显示欢迎视图（对话视图且输出区为空）
         this.outputLock.lock()
         let showWelcome = this.viewMode == 0 && this.outputView.content().size == 0
         this.outputLock.unlock()
 
+        // 欢迎视图布局：整体（欢迎视图 + 状态行 + 输入框）垂直居中
+        //   welcomeContentH（约 12）+ 状态行 1 + 输入框 1 = 总高 14
+        let welcomeContentH: Int64 = 12
+        let welcomeTotalH = welcomeContentH + 2   // +状态行 +输入框
+        var inputTop: Int64 = rows - editBoxH0
+        var statusRow: Int64 = inputTop - 1
+
         if (showWelcome) {
-            // 欢迎视图垂直居中：可用高度 statusRow，视图实际高约 12 行
-            let wH = if (statusRow > 0) { statusRow } else { 0 }
-            let welcomeContentH: Int64 = 12
+            // 整体居中：起始行 wRow = (rows - 14) / 2
             var wRow: Int64 = 0
-            if (wH > welcomeContentH) {
-                wRow = (wH - welcomeContentH) / 2
+            if (rows > welcomeTotalH) {
+                wRow = (rows - welcomeTotalH) / 2
             }
-            this.welcomeView.render(this.canvas, wRow, cols, wH - wRow)
+            // 欢迎视图占 wRow .. wRow+welcomeContentH-1
+            this.welcomeView.render(this.canvas, wRow, cols, welcomeContentH)
+            // 状态行紧随欢迎视图下方
+            statusRow = wRow + welcomeContentH
+            inputTop = statusRow + 1
         } else {
             // 顶部：CJ logo（彩色）+ 标题栏 + 视图标签栏 + 上分隔线
             let logoLines = Logo.renderLinesModern(utf8)
@@ -680,8 +685,8 @@ public class TuiApp {
 
         // 输入区（无边框：InputBox 带 ❯ 提示符 / MultiLineEditor 行号栏）
         if (this.editMode) {
-            // 编辑器从 inputTop 起占 editBoxH 行（顶到末行 rows-1）
-            this.editor.render(this.canvas, inputTop, cols, editBoxH)
+            // 编辑器从 inputTop 起占 editBoxH0 行（顶到末行 rows-1）
+            this.editor.render(this.canvas, inputTop, cols, editBoxH0)
         } else {
             this.inputBox.render(this.canvas, inputTop, cols, 1)
         }
