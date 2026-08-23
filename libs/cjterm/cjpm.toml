@@ -7,7 +7,7 @@
   output-type = "static"
   compile-option = ""
   override-compile-option = ""
-  link-option = "-Lnative -lcjterm_helper"
+  link-option = ""
   package-configuration = {}
 
 [dependencies]
