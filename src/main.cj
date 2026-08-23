@@ -1032,6 +1032,8 @@ func runTui(sessionId: String): Int64 {
                 let md = MarkdownRender()
                 TuiBridge.output(indentReply(md.process(text) + md.finish()))
             }
+            // 回复结束后加空行：与下一轮用户输入分隔
+            TuiBridge.output("")
         }
         // Tasks 面板：Agent 任务变更时刷新快照
         agent.onTodosChanged = { =>
