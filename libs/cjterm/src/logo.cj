@@ -117,6 +117,7 @@ public class Logo {
                 " '----' ",
             ]
         }
+        
         let jSet = if (utf8) {
             [
                 "       ╗",
@@ -134,11 +135,32 @@ public class Logo {
                 "  '----'",
             ]
         }
+        
+        let hSet = if (utf8) {
+            [
+                "│    │  ",
+                "│    │  ",
+                "├────┤  ",
+                "│    │  ",
+                "│    │  ",
+            ]
+        } else {
+            [
+                " |    | ",
+                " |    | ",
+                " ------ ",
+                " |    | ",
+                " |    | ",
+            ]
+        }
+        
         var lines = Array<String>(5, repeat: "")
         for (i in 0..5) {
             let cPart = cSet[i] + "   "   // 3 空格分隔
-            let jPart = jSet[i]
-            lines[i] = Ansi.fg(Ansi.THEME_PRIMARY) + cPart + Ansi.fg(Ansi.THEME_ACCENT) + jPart + Ansi.reset()
+            let jPart = jSet[i] + "     " // 5 空格分隔（J-H 间距加大）
+            let hPart = hSet[i]
+            lines[i] = Ansi.fg(Ansi.THEME_PRIMARY) + cPart + Ansi.fg(Ansi.THEME_ACCENT) +
+                jPart + hPart + Ansi.reset()
         }
         return lines
     }
