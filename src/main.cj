@@ -83,18 +83,35 @@ func runMockVerify(): Int64 {
 
 /**
  * 由配置生成 LLM provider（业务装配，不属于 cjcfg 通用库）
- * 提供商选择：CJH_PROVIDER=anthropic 用 Anthropic，默认 OpenAI 兼容
+ * 提供商选择：
+ *   - CJH_PROVIDER=ollama 或 base_url 含 localhost/127.0.0.1 → OllamaProvider（本地模型，apiKey 可空）
+ *   - CJH_PROVIDER=anthropic → AnthropicProvider
+ *   - 默认 → OpenAiProvider（OpenAI/DeepSeek/通义 等兼容协议）
  */
 func makeProvider(cfg: CjhConfig): LlmProvider {
-    if (cfg.apiKey.size == 0) {
-        throw LlmException(
-            "未配置 API Key。请在 ${cfg.authPath} 的 api_key 字段填写，或设置 OPENAI_API_KEY / DEEPSEEK_API_KEY / DASHSCOPE_API_KEY / CJH_API_KEY 环境变量")
-    }
     // provider 选择：显式 CJH_PROVIDER=anthropic 才用 Anthropic
     // （auth.json 的 key 优先；env 变量可覆盖。绝不自动劫持到 Anthropic）
     let providerName = readEnv("CJH_PROVIDER") ?? ""
+    // Ollama 本地模型：CJH_PROVIDER=ollama 或 base_url 指向 localhost/127.0.0.1
+    let isOllama = (providerName == "ollama") ||
+        cfg.baseUrl.contains("localhost") || cfg.baseUrl.contains("127.0.0.1")
+    // Ollama 本地服务无需认证，apiKey 可空；其他 provider 必须有 apiKey
+    if (!isOllama && cfg.apiKey.size == 0) {
+        throw LlmException(
+            "未配置 API Key。请在 ${cfg.authPath} 的 api_key 字段填写，或设置 OPENAI_API_KEY / DEEPSEEK_API_KEY / DASHSCOPE_API_KEY / CJH_API_KEY 环境变量")
+    }
     var p: LlmProvider
-    if (providerName == "anthropic") {
+    if (isOllama) {
+        // Ollama 端点：base_url 已指向 localhost/127.0.0.1 时优先用配置；
+        // 否则（CJH_PROVIDER=ollama 但 base_url 是云端默认）强制 localhost
+        let ollamaBase = if (cfg.baseUrl.contains("localhost") ||
+            cfg.baseUrl.contains("127.0.0.1")) {
+            cfg.baseUrl
+        } else {
+            "http://localhost:11434/v1"
+        }
+        p = OllamaProvider(ollamaBase, cfg.apiKey, cfg.model)
+    } else if (providerName == "anthropic") {
         let anthropicKey = readEnv("ANTHROPIC_API_KEY") ?? readEnv("ANTHROPIC_AUTH_TOKEN") ?? cfg.apiKey
         let anthropicBase = readEnv("ANTHROPIC_BASE_URL") ?? "https://api.anthropic.com/v1/messages"
         p = AnthropicProvider(anthropicBase, anthropicKey, cfg.model)
@@ -105,6 +122,7 @@ func makeProvider(cfg: CjhConfig): LlmProvider {
     match (p) {
         case oa: OpenAiProvider => oa.setSampling(cfg.temperature, cfg.maxTokens)
         case ap: AnthropicProvider => ap.setSampling(cfg.temperature, cfg.maxTokens)
+        case op: OllamaProvider => op.setSampling(cfg.temperature, cfg.maxTokens)
         case _ => ()
     }
     return p
@@ -1079,7 +1097,7 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
             let parts = args.split(" ", -1)
             if (parts.size > 1 && parts[1].size > 0) {
                 let name = parts[1]
-                let key = if (parts.size > 2) { parts[2] } else { "" }
+                var key = if (parts.size > 2) { parts[2] } else { "" }
                 match (name) {
                     case "deepseek" =>
                         applyProvider(cfg, agent, tui, "DeepSeek", "https://api.deepseek.com/v1/chat/completions", "deepseek-chat", key)
@@ -1087,6 +1105,19 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
                         applyProvider(cfg, agent, tui, "OpenAI", "https://api.openai.com/v1/chat/completions", "gpt-4o-mini", key)
                     case "glm" =>
                         applyProvider(cfg, agent, tui, "GLM", "https://open.bigmodel.cn/api/paas/v4/chat/completions", "glm-4-flash", key)
+                    case "ollama" =>
+                        // 本地 Ollama：无需 API Key，默认 llama3.2 模型
+                        // 用法：/provider ollama [model] [api_key]
+                        var ollamaModel = "llama3.2"
+                        // key 当前 = parts[2]；若 parts[2] 像 model 名则视为 model，
+                        // parts[3] 才是 apiKey。简化：parts[2] 存在 → model；parts[3] 存在 → apiKey
+                        if (parts.size > 2 && parts[2].size > 0) {
+                            ollamaModel = parts[2]
+                            key = if (parts.size > 3) { parts[3] } else { "" }
+                        } else {
+                            key = ""
+                        }
+                        applyProvider(cfg, agent, tui, "Ollama", "http://localhost:11434/v1", ollamaModel, key)
                     case _ =>
                         tui.appendOutput(Ansi.fg(Ansi.COLOR_RED) + "[未知 provider: ${name}；/provider 查看预设列表]" + Ansi.reset())
                 }
