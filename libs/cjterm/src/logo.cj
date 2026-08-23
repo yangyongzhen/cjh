@@ -33,6 +33,13 @@ public class Logo {
         " ██║ ",
         " ╚═╝ ",
     ]
+    private static let H_BOX_LINES: Array<String> = [
+        "██╗  ██╗",
+        "██║  ██║",
+        "████████║",
+        "██║  ██║",
+        "██║  ██║",
+    ]
     // ASCII 降级版：C 保持原样，J 改带左钩字形（|_/），避免竖线+横读成 I
     private static let C_LINES: Array<String> = [
         "  ____   ",
@@ -48,6 +55,13 @@ public class Logo {
         "  |  | ",
         "  |_/  ",
     ]
+    private static let H_LINES: Array<String> = [
+        "  _   _  ",
+        " | | | | ",
+        " |_| |_| ",
+        "  _| |_  ",
+        " | | | | ",
+    ]
 
     /**
      * 渲染 logo 行数组（每行已着色），返回 Array<String>
@@ -57,11 +71,14 @@ public class Logo {
     public static func renderLines(utf8: Bool): Array<String> {
         var lines = Array<String>(5, repeat: "")
         let cSet = if (utf8) { Logo.C_BOX_LINES } else { Logo.C_LINES }
+        let hSet = if (utf8) { Logo.H_BOX_LINES } else { Logo.H_LINES }
         let jSet = if (utf8) { Logo.J_BOX_LINES } else { Logo.J_LINES }
         for (i in 0..5) {
             let cPart = cSet[i] + "   "   // 3 空格
+            let hPart = hSet[i] + "   "   // 3 空格
             let jPart = jSet[i]
-            lines[i] = Ansi.fg(Ansi.THEME_PRIMARY) + cPart + Ansi.fg(Ansi.THEME_ACCENT) + jPart + Ansi.reset()
+            lines[i] = Ansi.fg(Ansi.THEME_PRIMARY) + cPart + Ansi.fg(Ansi.THEME_ACCENT) +
+                hPart + jPart + Ansi.reset()
         }
         return lines
     }
@@ -71,11 +88,16 @@ public class Logo {
      * 保留 CJ 字形特征：C 的左上/下边框 + J 的顶钩/底钩
      */
     public static func renderLinesCompact(utf8: Bool): Array<String> {
-        // UTF-8 紧凑版（3 行）：C 保留上下两横 + J 顶钩/底钩
+        // UTF-8 紧凑版（3 行）：C 保留上下两横 + H 横杠 + J 顶钩/底钩
         let cSet = if (utf8) {
             [" ██████╗ ", " ██╔════╝", " ╚██████╗"]
         } else {
             ["  ____   ", " / ___|  ", " \\____|  "]
+        }
+        let hSet = if (utf8) {
+            ["██╗  ██╗", "████████║", "██║  ██║"]
+        } else {
+            ["  _   _  ", " |_| |_| ", "  _| |_  "]
         }
         let jSet = if (utf8) {
             [" ██╗ ", " ██║ ", " ╚═╝ "]
@@ -84,7 +106,8 @@ public class Logo {
         }
         var lines = Array<String>(3, repeat: "")
         for (i in 0..3) {
-            lines[i] = Ansi.fg(Ansi.THEME_PRIMARY) + cSet[i] + "  " + Ansi.fg(Ansi.THEME_ACCENT) + jSet[i] + Ansi.reset()
+            lines[i] = Ansi.fg(Ansi.THEME_PRIMARY) + cSet[i] + "  " + Ansi.fg(Ansi.THEME_ACCENT) +
+                hSet[i] + "  " + jSet[i] + Ansi.reset()
         }
         return lines
     }
@@ -117,6 +140,23 @@ public class Logo {
                 " '----' ",
             ]
         }
+        let hSet = if (utf8) {
+            [
+                "╭──╮",
+                "│  │",
+                "╰──╯",
+                "│  │",
+                "│  │",
+            ]
+        } else {
+            [
+                " .--.",
+                " |  |",
+                " '--'",
+                " |  |",
+                " |  |",
+            ]
+        }
         let jSet = if (utf8) {
             [
                 "       ╗",
@@ -137,8 +177,10 @@ public class Logo {
         var lines = Array<String>(5, repeat: "")
         for (i in 0..5) {
             let cPart = cSet[i] + "   "   // 3 空格分隔
+            let hPart = hSet[i] + "   "   // 3 空格分隔
             let jPart = jSet[i]
-            lines[i] = Ansi.fg(Ansi.THEME_PRIMARY) + cPart + Ansi.fg(Ansi.THEME_ACCENT) + jPart + Ansi.reset()
+            lines[i] = Ansi.fg(Ansi.THEME_PRIMARY) + cPart + Ansi.fg(Ansi.THEME_ACCENT) +
+                hPart + Ansi.fg(Ansi.THEME_ACCENT) + jPart + Ansi.reset()
         }
         return lines
     }
