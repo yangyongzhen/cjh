@@ -14,6 +14,10 @@ import cjllm.ToolSpec
 public class BashTool <: CjhTool {
     public init() {}
 
+    public func isReadOnly(): Bool {
+        return false  // 有副作用：V2d 并发执行引擎分类
+    }
+
     public func spec(): ToolSpec {
         var props = HashMap<String, JsonValue>()
         props.add("command", JsonSchema.str("要执行的 shell 命令"))
@@ -53,13 +57,16 @@ public class BashTool <: CjhTool {
 public class ReadTool <: CjhTool {
     public init() {}
 
+    public func isReadOnly(): Bool {
+        return true  // 纯读：V2d 并发执行引擎分类
+    }
+
     public func spec(): ToolSpec {
         var props = HashMap<String, JsonValue>()
         props.add("path", JsonSchema.str("要读取的文件路径"))
         let schema = JsonSchema.object(props, ArrayList<String>(["path"]))
         return ToolSpec("read_file", "读取指定文件的完整内容。用于了解代码、配置等。", schema)
     }
-
     public func execute(args: JsonObject): ToolResult {
         if (!args.containsKey("path")) {
             return ToolResult("缺少参数: path", true)
@@ -79,6 +86,10 @@ public class ReadTool <: CjhTool {
  */
 public class WriteTool <: CjhTool {
     public init() {}
+
+    public func isReadOnly(): Bool {
+        return false  // 写文件：V2d 并发执行引擎分类
+    }
 
     public func spec(): ToolSpec {
         var props = HashMap<String, JsonValue>()
@@ -108,6 +119,10 @@ public class WriteTool <: CjhTool {
  */
 public class GrepTool <: CjhTool {
     public init() {}
+
+    public func isReadOnly(): Bool {
+        return true  // 纯读：V2d 并发执行引擎分类
+    }
 
     public func spec(): ToolSpec {
         var props = HashMap<String, JsonValue>()
@@ -152,6 +167,10 @@ public class GrepTool <: CjhTool {
  */
 public class ListDirTool <: CjhTool {
     public init() {}
+
+    public func isReadOnly(): Bool {
+        return true  // 纯读：V2d 并发执行引擎分类
+    }
 
     public func spec(): ToolSpec {
         var props = HashMap<String, JsonValue>()

@@ -6,6 +6,7 @@ import cjllm.*
 import cjh.tools.*
 import cjllm.*
 import cjcfg.*
+import std.sync.*
 
 /**
  * Agent 配置
@@ -109,12 +110,38 @@ public class Agent {
                 if (response.text.size > 0) {
                     this.onAssistantText(response.text)
                 }
-                for (tc in response.toolCalls) {
-                    this.onToolStart(tc.name, tc.arguments)
-                    let result = this.executeGuarded(tc.name, tc.arguments)
-                    this.onToolResult(tc.name, result)
-                    // tool 结果回填
-                    this.messages.add(ChatMessage("tool", result.content, tc.id, tc.name))
+                // V2d 并发执行引擎：Read vs. Write 分类调度（对齐 pi/omp/anon-kode）
+                // - 全 read-only → spawn 并发执行，结果按 LLM 原始顺序重排
+                // - 含 state-modifying → 整批串行（避免并发写竞态）
+                let allReadOnly = this.allReadOnly(response.toolCalls)
+                if (allReadOnly && response.toolCalls.size > 1) {
+                    // 并发执行：每个 tool_call 独立 spawn，Future 按原始顺序 get()
+                    var futures = ArrayList<Future<ToolResult>>()
+                    for (tc in response.toolCalls) {
+                        this.onToolStart(tc.name, tc.arguments)
+                        let localName = tc.name
+                        let localArgs = tc.arguments
+                        futures.add(spawn {
+                            this.executeGuarded(localName, localArgs)
+                        })
+                    }
+                    // 按原始顺序 get 结果，回填消息历史
+                    var idx: Int64 = 0
+                    for (tc in response.toolCalls) {
+                        let result = futures[idx].get()
+                        this.onToolResult(tc.name, result)
+                        this.messages.add(ChatMessage("tool", result.content, tc.id, tc.name))
+                        idx += 1
+                    }
+                } else {
+                    // 串行执行：含 state-modifying 工具或单工具调用
+                    for (tc in response.toolCalls) {
+                        this.onToolStart(tc.name, tc.arguments)
+                        let result = this.executeGuarded(tc.name, tc.arguments)
+                        this.onToolResult(tc.name, result)
+                        // tool 结果回填
+                        this.messages.add(ChatMessage("tool", result.content, tc.id, tc.name))
+                    }
                 }
                 continue
             }
@@ -249,6 +276,19 @@ public class Agent {
         }
         this.messages = newMsgs
         this.onDelta("\n\n_[会话历史已自动压缩：${compactEnd - 1} 条早期消息 → 摘要]_")
+    }
+
+    /**
+     * V2d 并发执行引擎：判断一批 tool_calls 是否全部 read-only
+     * 全 read-only → 可并发执行；含 state-modifying → 整批串行
+     */
+    private func allReadOnly(toolCalls: ArrayList<ToolCall>): Bool {
+        for (tc in toolCalls) {
+            if (!this.tools.isReadOnly(tc.name)) {
+                return false
+            }
+        }
+        return true
     }
 
     /**

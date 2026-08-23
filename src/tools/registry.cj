@@ -27,10 +27,20 @@ public class ToolResult {
 
 /**
  * 工具接口：schema 定义 + 执行
+ *
+ * isReadOnly 分类（V2d 并发执行引擎，对齐 pi/omp/anon-kode Read vs. Write）：
+ * - true（read-only）：纯读无副作用，同一批 tool_calls 可并发执行
+ * - false（state-modifying）：有写/副作用，整批串行执行避免竞态
+ * 默认 false（保守：新工具除非显式声明，否则视为有副作用）
  */
 public interface CjhTool {
     public func spec(): ToolSpec
     public func execute(args: JsonObject): ToolResult
+    /**
+     * V2d 并发执行引擎分类：true=纯读无副作用（可并发），false=有写/副作用（串行）
+     * 默认 false（保守：新工具除非显式 override，否则视为有副作用）
+     */
+    public func isReadOnly(): Bool
 }
 
 /**
@@ -55,6 +65,17 @@ public class ToolRegistry {
 
     public func has(name: String): Bool {
         return this.tools.contains(name)
+    }
+
+    /**
+     * 查询工具是否 read-only（V2d 并发执行引擎分类）
+     * 工具不存在时返回 false（保守：未知工具不并发）
+     */
+    public func isReadOnly(name: String): Bool {
+        if (!this.tools.contains(name)) {
+            return false
+        }
+        return this.tools.get(name).getOrThrow().isReadOnly()
     }
 
     public func execute(name: String, args: JsonObject): ToolResult {
@@ -117,6 +138,13 @@ public class DeclarativeTool <: CjhTool {
         this.description = description
         this.commandTemplate = commandTemplate
         this.argSpecs = argSpecs
+    }
+
+    /**
+     * 声明式工具执行 shell 命令，默认有副作用（V2d 并发执行引擎分类）
+     */
+    public func isReadOnly(): Bool {
+        return false
     }
 
     public override func spec(): ToolSpec {

@@ -24,11 +24,15 @@ public class MockProvider <: LlmProvider {
         this.callCount += 1
         match (this.callCount) {
             case 1 =>
-                // 工具调用 1：读文件
+                // 工具调用 1：并发 2 个 read-only 工具（V2d 并发执行引擎验证）
                 var args1 = JsonObject()
                 args1.put("path", JsonString(this.scriptedPath))
+                var args1b = JsonObject()
+                args1b.put("pattern", JsonString("line"))
+                args1b.put("path", JsonString(this.scriptedPath))
                 var calls = ArrayList<ToolCall>()
-                calls.add(ToolCall("call_1", "read_file", args1))
+                calls.add(ToolCall("call_1a", "read_file", args1))
+                calls.add(ToolCall("call_1b", "grep", args1b))
                 return ModelResponse("我来先看看文件内容。", calls)
             case 2 =>
                 // 工具调用 2：grep 搜索
