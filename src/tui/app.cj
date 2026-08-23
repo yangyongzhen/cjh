@@ -69,7 +69,7 @@ public class TuiApp {
 
     // 斜杠命令候选（对齐 main.cj handleSlashCommand 支持的命令）
     private static let SLASH_COMMANDS: Array<String> = [
-        "/help", "/new", "/resume", "/model", "/provider", "/skills", "/tree", "/fork", "/settings", "/quit",
+        "/help", "/new", "/resume", "/model", "/provider", "/skills", "/compact", "/tree", "/fork", "/settings", "/quit",
     ]
 
     // 事件回调：提交输入时触发（外部接线）
