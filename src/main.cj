@@ -1068,6 +1068,7 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
             tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  /model [id|#]  列出/切换模型" + Ansi.reset())
             tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  /provider [name] [key]  切换 provider（deepseek/openai/glm）" + Ansi.reset())
             tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  /skills        列出技能与启用状态" + Ansi.reset())
+            tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  /compact       手动压缩历史（LLM 摘要早期消息）" + Ansi.reset())
             tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  /tree          树形列示会话分支" + Ansi.reset())
             tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  /fork          从当前会话分支新会话" + Ansi.reset())
             tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  /settings      查看采样参数（temp/max_tokens）" + Ansi.reset())
@@ -1202,6 +1203,20 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
         case "/skills" =>
             // 列示技能（~/.cjh/skills/<name>.md）与启用状态
             listSkills(cfg.skillsDir, cfg.enabledSkills, tui)
+        case "/compact" =>
+            // 手动触发 Compaction：强制把早期历史压成 LLM 摘要
+            // 无视 compactThreshold 阈值；compact_keep 仍生效
+            tui.appendOutput(Ansi.fg(Ansi.COLOR_CYAN) + "[压缩历史中…]" + Ansi.reset())
+            spawn {
+                let (done, before, after) = agent.compact(true)
+                if (done) {
+                    TuiBridge.output(Ansi.fg(Ansi.COLOR_GREEN) +
+                        "[历史已压缩：${before} → ${after} 条消息]" + Ansi.reset())
+                } else {
+                    TuiBridge.output(Ansi.fg(Ansi.COLOR_GRAY) +
+                        "[历史较短，无需压缩（${before} 条）]" + Ansi.reset())
+                }
+            }
         case "/resume" =>
             let parts = args.split(" ", -1)
             if (parts.size > 1 && parts[1].size > 0) {

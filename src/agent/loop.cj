@@ -133,6 +133,76 @@ public class Agent {
      * Compaction：消息历史超过阈值时，用 LLM 把早期消息压缩成摘要，
      * 保留最近 compactKeep 条（含 system）。对齐 pi 的自动摘要压缩：
      * 触发后调用链 = 摘要请求（无工具）→ 重建 messages = system + 摘要 + 近期历史
+     *
+     * 返回值：(是否执行了压缩, 压缩前消息数, 压缩后消息数)。
+     * force=true 时无视阈值强制压缩（/compact 手动命令）。
+     */
+    public func compact(force: Bool): (Bool, Int64, Int64) {
+        let before: Int64 = this.messages.size
+        if (force) {
+            // 强制压缩：跳过阈值判断，但仍保留 system + 最近 keep 条
+            this.doCompact()
+        } else {
+            this.maybeCompact()
+        }
+        let after: Int64 = this.messages.size
+        return (after < before, before, after)
+    }
+
+    /**
+     * 实际执行压缩（force 路径）：无阈值判断，keep 至少 2 条
+     */
+    private func doCompact(): Unit {
+        let keep = if (this.config.compactKeep >= 2) { this.config.compactKeep } else { 2 }
+        if (this.messages.size <= keep + 1) {
+            // 历史 + system 不足，无需压缩
+            return
+        }
+        this.maybeCompactForce(keep)
+    }
+
+    /**
+     * 强制压缩实现（复用 maybeCompact 的摘要请求逻辑）
+     */
+    private func maybeCompactForce(keep: Int64): Unit {
+        let compactEnd = this.messages.size - keep
+        if (compactEnd <= 1) {
+            return
+        }
+        var sb = StringBuilder()
+        sb.append("请把以下对话历史压缩成一段简洁的中文摘要（保留：任务目标、已完成的工具调用与关键结果、当前进度、尚未解决的问题）。不要遗漏重要事实。")
+        for (i in 1..compactEnd) {
+            let m = this.messages[i]
+            sb.append("\n[${m.role}] ${m.content}")
+        }
+        var summaryMsgs = ArrayList<ChatMessage>()
+        summaryMsgs.add(ChatMessage("user", sb.toString()))
+        var summary = ""
+        try {
+            let resp = this.provider.chatStream(summaryMsgs, ArrayList<ToolSpec>(), { _ => })
+            summary = resp.text
+        } catch (e: Exception) {
+            return
+        }
+        if (summary.size == 0) {
+            return
+        }
+        var newMsgs = ArrayList<ChatMessage>()
+        if (this.messages.size > 0) {
+            newMsgs.add(this.messages[0])
+        }
+        newMsgs.add(ChatMessage("user", "[历史摘要] ${summary}"))
+        for (i in compactEnd..this.messages.size) {
+            newMsgs.add(this.messages[i])
+        }
+        this.messages = newMsgs
+        this.onDelta("\n\n_[会话历史已手动压缩：${compactEnd - 1} 条早期消息 → 摘要]_")
+    }
+
+    /**
+     * Compaction：消息历史超过阈值时，用 LLM 把早期消息压缩成摘要，
+     * 保留最近 compactKeep 条（含 system）。对齐 pi 的自动摘要压缩：
+     * 触发后调用链 = 摘要请求（无工具）→ 重建 messages = system + 摘要 + 近期历史
      */
     private func maybeCompact(): Unit {
         if (this.config.compactThreshold <= 0) {
