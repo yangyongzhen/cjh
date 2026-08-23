@@ -3,8 +3,7 @@ package cjh.tools
 import std.collection.*
 import stdx.encoding.json.*
 import std.fs.*
-import std.io.*
-import std.crypto.digest.*
+import std.convert.*
 import cjllm.ToolSpec
 
 /**
@@ -44,13 +43,15 @@ public class HashlineEditTool <: CjhTool {
     public func spec(): ToolSpec {
         var props = HashMap<String, JsonValue>()
         props.add("path", JsonSchema.str("要编辑的文件路径"))
-        props.add("patch", JsonSchema.str("Hashline 格式补丁（@@{hash} 锚点 + +/- 改动行）"))
+        props.add("patch", JsonSchema.str("行号锚点补丁：@@N 定位第 N 行（1-based，推荐）；或 @@{hash} 哈希锚点。紧跟 +/- 改动行"))
         let schema = JsonSchema.object(props, ArrayList<String>(["path", "patch"]))
         return ToolSpec("hashline_edit",
-            "用内容哈希锚点编辑文件（Hashline 机制）。patch 格式：每行一种类型。" +
-            "@@{hash} 锚点定位行（hash=行内容 SHA-256 前 4 hex）；" +
-            "+content 在锚点行后插入；-content 删除锚点行。" +
-            "文件变了哈希对不上会拒绝（不打错地方）。编辑成功率比全文覆盖高 10×。",
+            "用行号锚点编辑文件（比 write_file 全文覆盖高效）。" +
+            "patch 格式（每行一种）：@@N 定位第 N 行（1-based，read_file 已给行号）；" +
+            "+content 在锚点行后插入；-content 删除锚点行（content 必须精确匹配）；" +
+            "-old +new 替换锚点行。" +
+            "示例替换第 2 行：'@@2\\n-line2 this is a test\\n+line2 MODIFIED'。" +
+            "内容不匹配会拒绝（防打错地方）。",
             schema)
     }
 
@@ -100,12 +101,21 @@ public class HashlineEditTool <: CjhTool {
 
 /**
  * patch 操作类型
+ *
+ * V2 设计变更：原方案用 FNV-1a 哈希锚点（@@{hash}），但模型无法预先
+ * 计算哈希值，实测 LLM 反复尝试各种 hash 格式都失败。
+ *
+ * 新方案：行号锚点（@@N，N=1-based 行号）+ 内容验证（-old 必须匹配）
+ * - 模型用 read_file 读文件时已看到行号（1-based），直接引用
+ * - -old 的 old 必须精确匹配该行内容，不匹配则拒绝（防打错地方）
+ * - 比 omp Hashline 简单，但对模型友好（omp 要求模型输出哈希前缀）
  */
 public enum PatchOp {
-    | Anchor(String)       // @@{hash}：锚点，hash 前 4 hex
-    | Insert(String)       // +content：在锚点行后插入
-    | Delete(String)       // -content：删除锚点行（content 双保险匹配）
-    | Replace(String, String)  // -old +new：替换锚点行
+    | LineAnchor(Int64)           // @@N：定位第 N 行（1-based）
+    | HashAnchor(String)          // @@{hash}：哈希锚点（向后兼容，但模型难用）
+    | Insert(String)              // +content：在锚点行后插入
+    | Delete(String)              // -content：删除锚点行（content 双保险匹配）
+    | Replace(String, String)     // -old +new：替换锚点行
 }
 
 /**
@@ -129,6 +139,16 @@ public enum ApplyResult {
 public class HashlineEditParser {
     /**
      * 解析 patch 文本为操作列表
+     *
+     * 锚点格式（三种都支持，降低 LLM 使用门槛）：
+     *   @@3        → 行号锚点（定位第 3 行，1-based，推荐）
+     *   @@{a3f2}   → 哈希锚点（hash = a3f2，向后兼容）
+     *   @@a3f2     → 哈希锚点（hash = a3f2，向后兼容）
+     *
+     * 操作格式（紧跟锚点）：
+     *   +content    → 在锚点行后插入
+     *   -content    → 删除锚点行（content 双保险匹配）
+     *   -old\n+new  → 替换锚点行
      */
     public static func parse(patch: String): ArrayList<PatchOp> {
         var ops = ArrayList<PatchOp>()
@@ -136,49 +156,110 @@ public class HashlineEditParser {
         var i = 0
         while (i < lines.size) {
             let line = lines[i]
-            // 锚点行：@@{hash}
-            if (line.startsWith("@@{") && line.endsWith("}")) {
-                let hash = line[3..line.size - 1]
-                ops.add(PatchOp.Anchor(hash))
-                i += 1
-                // 收集紧跟的 +/- 操作
-                var pendingDelete: String = ""
-                var hasDelete: Bool = false
-                while (i < lines.size) {
-                    let opLine = lines[i]
-                    if (opLine.startsWith("+")) {
-                        let content = opLine[1..opLine.size]
-                        if (hasDelete) {
-                            // -old +new → Replace
-                            ops.add(PatchOp.Replace(pendingDelete, content))
-                            hasDelete = false
-                            pendingDelete = ""
+            if (line.startsWith("@@")) {
+                // 先尝试行号锚点：@@N
+                let lineNoResult = parseLineAnchor(line)
+                match (lineNoResult) {
+                    case Some(lineNo) =>
+                        ops.add(PatchOp.LineAnchor(lineNo))
+                        i += 1
+                        i = collectOps(lines, i, ops)
+                    case None =>
+                        // 行号解析失败，尝试哈希锚点
+                        let hash = parseHashAnchor(line)
+                        if (hash.size > 0) {
+                            ops.add(PatchOp.HashAnchor(hash))
+                            i += 1
+                            i = collectOps(lines, i, ops)
                         } else {
-                            ops.add(PatchOp.Insert(content))
+                            i += 1  // @@ 后无内容，跳过
                         }
-                        i += 1
-                    } else if (opLine.startsWith("-")) {
-                        let content = opLine[1..opLine.size]
-                        if (hasDelete) {
-                            // 前一个 - 还没配对，作为独立 Delete
-                            ops.add(PatchOp.Delete(pendingDelete))
-                        }
-                        pendingDelete = content
-                        hasDelete = true
-                        i += 1
-                    } else {
-                        break  // 非操作行，结束当前锚点块
-                    }
-                }
-                // 处理末尾未配对的 Delete
-                if (hasDelete) {
-                    ops.add(PatchOp.Delete(pendingDelete))
                 }
             } else {
                 i += 1  // 跳过非锚点行
             }
         }
         return ops
+    }
+
+    /**
+     * 收集紧跟锚点的 +/- 操作，返回下一个待处理行索引
+     */
+    private static func collectOps(lines: Array<String>, start: Int64, ops: ArrayList<PatchOp>): Int64 {
+        var i = start
+        var pendingDelete: String = ""
+        var hasDelete: Bool = false
+        while (i < Int64(lines.size)) {
+            let opLine = lines[i]
+            if (opLine.startsWith("+")) {
+                let content = opLine[1..opLine.size]
+                if (hasDelete) {
+                    ops.add(PatchOp.Replace(pendingDelete, content))
+                    hasDelete = false
+                    pendingDelete = ""
+                } else {
+                    ops.add(PatchOp.Insert(content))
+                }
+                i += 1
+            } else if (opLine.startsWith("-")) {
+                let content = opLine[1..opLine.size]
+                if (hasDelete) {
+                    ops.add(PatchOp.Delete(pendingDelete))
+                }
+                pendingDelete = content
+                hasDelete = true
+                i += 1
+            } else if (opLine.startsWith("@@")) {
+                break  // 遇到下一个锚点，结束当前块
+            } else {
+                break  // 非操作行，结束当前锚点块
+            }
+        }
+        // 处理末尾未配对的 Delete
+        if (hasDelete) {
+            ops.add(PatchOp.Delete(pendingDelete))
+        }
+        return i
+    }
+
+    /**
+     * 解析行号锚点：@@N → N（1-based）
+     * 返回 None 表示不是行号锚点
+     */
+    private static func parseLineAnchor(line: String): Option<Int64> {
+        let rest = line[2..line.size]  // 去掉 @@
+        if (rest.size == 0) {
+            return None
+        }
+        // 检查是否全数字（用 Rune 字面量比较）
+        var allDigits: Bool = true
+        for (ch in rest) {
+            if (ch < 48 || ch > 57) {  // '0'=48, '9'=57
+                allDigits = false
+                break
+            }
+        }
+        if (!allDigits) {
+            return None
+        }
+        try {
+            return Some(Int64.parse(rest))
+        } catch (e: Exception) {
+            return None
+        }
+    }
+
+    /**
+     * 解析哈希锚点：@@{hash} 或 @@hash → hash
+     */
+    private static func parseHashAnchor(line: String): String {
+        if (line.startsWith("@@{") && line.endsWith("}")) {
+            return line[3..line.size - 1]
+        }
+        if (line.startsWith("@@")) {
+            return line[2..line.size]
+        }
+        return ""
     }
 }
 
@@ -197,6 +278,12 @@ public class HashlineEditParser {
 public class HashlineEditApplier {
     /**
      * 应用 patch 到原文件行列表
+     *
+     * 行号锚点（@@N）：直接定位第 N 行（1-based）
+     * 哈希锚点（@@{hash}）：行内容 FNV-1a 低 16 位 == hash
+     *
+     * 内容验证：-old 的 old 必须精确匹配锚点行内容，不匹配则拒绝
+     * 防打错地方：文件变了导致行号/哈希对不上，patch 被拒绝
      */
     public static func apply(originalLines: Array<String>, ops: ArrayList<PatchOp>): ApplyResult {
         // 转为可变列表
@@ -206,11 +293,48 @@ public class HashlineEditApplier {
         }
 
         var appliedCount: Int64 = 0
-        var summary = ""
         var i = 0
         while (i < ops.size) {
             match (ops[i]) {
-                case Anchor(hash) =>
+                case LineAnchor(lineNo) =>
+                    // 行号锚点：1-based → 0-based
+                    let lineIdx: Int64 = lineNo - 1
+                    if (lineIdx < 0 || lineIdx >= Int64(lines.size)) {
+                        return ApplyResult.ApplyError("行号 ${lineNo} 超出范围（文件共 ${lines.size} 行）")
+                    }
+                    var insertAfterLine: Int64 = lineIdx
+                    i += 1
+                    while (i < ops.size) {
+                        match (ops[i]) {
+                            case Insert(content) =>
+                                lines = ArrayListOps.insertAfter(lines, insertAfterLine, content)
+                                insertAfterLine += 1
+                                appliedCount += 1
+                                i += 1
+                            case Delete(oldContent) =>
+                                // 内容验证：-old 必须匹配锚点行
+                                if (oldContent.size > 0 && lines[lineIdx] != oldContent) {
+                                    return ApplyResult.ApplyError(
+                                        "删除内容不匹配：期望「${oldContent}」，实际「${lines[lineIdx]}」")
+                                }
+                                lines = ArrayListOps.removeAt(lines, lineIdx)
+                                appliedCount += 1
+                                i += 1
+                            case Replace(oldContent, newContent) =>
+                                // 内容验证：-old 必须匹配锚点行
+                                if (oldContent.size > 0 && lines[lineIdx] != oldContent) {
+                                    return ApplyResult.ApplyError(
+                                        "替换内容不匹配：期望「${oldContent}」，实际「${lines[lineIdx]}」")
+                                }
+                                lines[lineIdx] = newContent
+                                appliedCount += 1
+                                i += 1
+                            case LineAnchor(_) | HashAnchor(_) =>
+                                break  // 遇到下一个锚点，结束当前块
+                        }
+                    }
+                case HashAnchor(hash) =>
+                    // 哈希锚点：行内容 FNV-1a 低 16 位 == hash
                     let locateResult = HashlineHash.locate(lines, hash)
                     match (locateResult) {
                         case LocateError(reason) =>
@@ -225,25 +349,32 @@ public class HashlineEditApplier {
                                         insertAfterLine += 1
                                         appliedCount += 1
                                         i += 1
-                                    case Delete(_) =>
+                                    case Delete(oldContent) =>
+                                        if (oldContent.size > 0 && lines[lineIdx] != oldContent) {
+                                            return ApplyResult.ApplyError(
+                                                "删除内容不匹配：期望「${oldContent}」，实际「${lines[lineIdx]}」")
+                                        }
                                         lines = ArrayListOps.removeAt(lines, lineIdx)
                                         appliedCount += 1
                                         i += 1
-                                    case Replace(_, newContent) =>
+                                    case Replace(oldContent, newContent) =>
+                                        if (oldContent.size > 0 && lines[lineIdx] != oldContent) {
+                                            return ApplyResult.ApplyError(
+                                                "替换内容不匹配：期望「${oldContent}」，实际「${lines[lineIdx]}」")
+                                        }
                                         lines[lineIdx] = newContent
                                         appliedCount += 1
                                         i += 1
-                                    case Anchor(_) =>
+                                    case LineAnchor(_) | HashAnchor(_) =>
                                         break
                                 }
                             }
                     }
                 case _ =>
-                    i += 1
+                    i += 1  // 跳过非锚点操作（Insert/Delete/Replace 无锚点时不应用）
             }
         }
-        summary = "应用 ${appliedCount} 个操作"
-        return ApplyResult.Applied(lines, summary)
+        return ApplyResult.Applied(lines, "应用 ${appliedCount} 个操作")
     }
 }
 
