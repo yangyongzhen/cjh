@@ -147,7 +147,7 @@ public class Logo {
      * 生成标题栏右侧标题（含版本徽章）
      */
     public static func titleBar(utf8: Bool, model: String): String {
-        let name = if (utf8) { "cjh · Agent made by Cangjie" } else { "cjh - Agent made by Cangjie" }
+        let name = if (utf8) { "cjh · Harness made by Cangjie" } else { "cjh - Harness made by Cangjie" }
         return Ansi.bold() + Ansi.fg(Ansi.THEME_ACCENT) + name + Ansi.reset() +
             "  " + Ansi.fg(Ansi.THEME_MUTED) + "[" + model + "]" + Ansi.reset() +
             "  " + Ansi.fg(Ansi.THEME_OK) + Logo.VERSION + Ansi.reset()
@@ -155,7 +155,7 @@ public class Logo {
 
     /**
      * 生成完整标题栏行（铺满 cols 宽度）：
-     *   ╭── cjh · Agent made by Cangjie [model] v1.2.0 ───╮
+     *   ╭── cjh · Harness made by Cangjie [model] v1.2.0 ───╮
      * 左圆角 + 标题 + 右侧横线填充 + 右圆角
      */
     public static func titleBarFull(utf8: Bool, model: String, cols: Int64): String {
@@ -163,7 +163,7 @@ public class Logo {
         let muted = Ansi.fg(Ansi.THEME_MUTED)
         let accent = Ansi.fg(Ansi.THEME_ACCENT)
         let ok = Ansi.fg(Ansi.THEME_OK)
-        let name = if (utf8) { "cjh · Agent made by Cangjie" } else { "cjh - Agent made by Cangjie" }
+        let name = if (utf8) { "cjh · Harness made by Cangjie" } else { "cjh - Harness made by Cangjie" }
         // ╭──  标题  [model]  v1.2.0  ───╮
         var sb = StringBuilder()
         sb.append(muted + "╭── " + Ansi.reset())

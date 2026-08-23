@@ -7,6 +7,7 @@ import std.collection.*
 import stdx.log.*
 import stdx.logger.*
 import cjterm.*
+import cjh.agent.*
 
 /**
  * TUI 应用：对话界面（组件化编排）
@@ -43,6 +44,12 @@ public class TuiApp {
     private var dirtyLock: Mutex = Mutex()
     private var renderLock: Mutex = Mutex()
     private var modelName: String = ""
+    // Agent 执行状态（方案 B：执行期间输入可编辑，提交时入队 + 提示）
+    private var agentRunning: Bool = false
+    private var agentRunningLock: Mutex = Mutex()
+    // 输入队列：Agent 执行期间提交的消息排队，执行完毕后自动处理
+    private var inputQueue: ArrayList<String> = ArrayList<String>()
+    private var inputQueueLock: Mutex = Mutex()
     // 文件日志（TUI stderr 被屏蔽，写文件排查按键/下拉框问题）
     private var logger: Logger = NoopLogger()
     // 流式加载指示器（agent 回复中显示）
@@ -55,6 +62,8 @@ public class TuiApp {
     private var tabBar: TabBar = TabBar()
     // 启动欢迎视图（两栏：左 logo+模型，右 Tips+会话；输出区为空时显示）
     private var welcomeView: WelcomeView = WelcomeView()
+    // Tasks 面板（Agent 内置任务列表实时展示）
+    private var tasksPanel: TasksPanel = TasksPanel()
     // 当前视图：0=对话 1=帮助
     private var viewMode: Int64 = 0
     // 多行编辑模式（Ctrl+E 切换；Alt+Enter 提交，Esc 退出）
@@ -69,7 +78,7 @@ public class TuiApp {
 
     // 斜杠命令候选（对齐 main.cj handleSlashCommand 支持的命令）
     private static let SLASH_COMMANDS: Array<String> = [
-        "/help", "/new", "/resume", "/model", "/provider", "/skills", "/compact", "/tree", "/fork", "/settings", "/quit",
+        "/help", "/new", "/resume", "/model", "/provider", "/skills", "/compact", "/tree", "/fork", "/settings", "/task", "/quit",
     ]
 
     // 事件回调：提交输入时触发（外部接线）
@@ -150,7 +159,15 @@ public class TuiApp {
             if (finalLine.size > 0) {
                 this.logger.info("submit: '${finalLine}'")
                 this.appendOutput(Ansi.fg(Ansi.THEME_ACCENT) + "❯ " + Ansi.reset() + finalLine)
-                this.onSubmit(finalLine)
+                // 方案 B：Agent 执行期间提交的消息入队，执行完毕后自动处理
+                if (this.isAgentBusy()) {
+                    let qLen: Int64 = this.enqueueInput(finalLine)
+                    let suffix = if (qLen > 1) { "（前面还有 ${qLen - 1} 条）" } else { "" }
+                    this.appendOutput(Ansi.fg(Ansi.THEME_MUTED) +
+                        "  ↳ 已入队，将在当前任务完成后发送${suffix}" + Ansi.reset())
+                } else {
+                    this.onSubmit(finalLine)
+                }
             }
             this.markDirty()
         }
@@ -212,6 +229,70 @@ public class TuiApp {
     public func quit(): Unit {
         this.running = false
         this.markDirty()
+    }
+
+    /**
+     * 设置 Agent 执行状态（方案 B：执行期间输入可编辑，提交时入队 + 提示）
+     * @param running true=Agent 开始执行；false=Agent 执行完毕
+     */
+    public func setAgentRunning(running: Bool): Unit {
+        this.agentRunningLock.lock()
+        this.agentRunning = running
+        this.agentRunningLock.unlock()
+        this.markDirty()
+    }
+
+    /**
+     * 查询 Agent 是否正在执行
+     */
+    public func isAgentBusy(): Bool {
+        this.agentRunningLock.lock()
+        let busy: Bool = this.agentRunning
+        this.agentRunningLock.unlock()
+        return busy
+    }
+
+    /**
+     * 入队待发送消息（Agent 执行期间提交的输入）
+     * @return 队列长度（用于提示"前面还有 N 条"）
+     */
+    public func enqueueInput(text: String): Int64 {
+        this.inputQueueLock.lock()
+        this.inputQueue.add(text)
+        let len: Int64 = Int64(this.inputQueue.size)
+        this.inputQueueLock.unlock()
+        return len
+    }
+
+    /**
+     * 出队下一条待发送消息（FIFO）
+     * @return Some(text) 有消息；None 队列为空
+     */
+    public func dequeueInput(): Option<String> {
+        this.inputQueueLock.lock()
+        if (this.inputQueue.size == 0) {
+            this.inputQueueLock.unlock()
+            return None
+        }
+        let first: String = this.inputQueue[0]
+        // 移除首元素：重建列表（ArrayList 无 removeAt）
+        var rest: ArrayList<String> = ArrayList<String>()
+        for (i in 1..this.inputQueue.size) {
+            rest.add(this.inputQueue[i])
+        }
+        this.inputQueue = rest
+        this.inputQueueLock.unlock()
+        return Some(first)
+    }
+
+    /**
+     * 查询输入队列长度
+     */
+    public func queueLength(): Int64 {
+        this.inputQueueLock.lock()
+        let len: Int64 = Int64(this.inputQueue.size)
+        this.inputQueueLock.unlock()
+        return len
     }
 
     /**
@@ -349,6 +430,24 @@ public class TuiApp {
      */
     public func setSessions(list: ArrayList<String>): Unit {
         this.welcomeView.setSessions(list)
+        this.markDirty()
+    }
+
+    /**
+     * 更新 Tasks 面板快照（Agent.onTodosChanged 回调调用）
+     * @param items Agent 的 TodoItem 列表
+     */
+    public func updateTasks(items: ArrayList<TodoItem>): Unit {
+        var snaps: ArrayList<TaskSnapshot> = ArrayList<TaskSnapshot>()
+        for (item in items) {
+            let state: TaskState = match (item.status) {
+                case TodoStatus.Pending => TaskState.Pending
+                case TodoStatus.InProgress => TaskState.InProgress
+                case TodoStatus.Completed => TaskState.Completed
+            }
+            snaps.add(TaskSnapshot(item.id, item.content, state))
+        }
+        this.tasksPanel.updateSnapshots(snaps)
         this.markDirty()
     }
 
@@ -660,6 +759,8 @@ public class TuiApp {
                 } finally {
                     this.outputLock.unlock()
                 }
+                // Tasks 面板：有任务时在输出区右下角渲染
+                this.tasksPanel.render(this.canvas, statusRow - 1, cols, outH)
             }
         }
 

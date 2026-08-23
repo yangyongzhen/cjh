@@ -6,7 +6,7 @@ import std.collection.*
  * WelcomeView：启动欢迎视图（参考 omp 首次启动画面）
  *
  * 两栏边框布局：
- *   ╭─── cjh · Agent made by Cangjie ──────────────╮
+ *   ╭─── cjh · Harness made by Cangjie ──────────────╮
  *   │   Welcome back!          │ Tips                │
  *   │     ▀████████             │ / 命令：/new /resume│
  *   │     ██▀▀▀▀▀▀             │ Tab/←→ 切换视图     │
@@ -78,7 +78,7 @@ public class WelcomeView <: Component {
         top.append(hc)
         top.append(hc)
         top.append(" ")
-        top.append(Ansi.bold() + Ansi.fg(Ansi.THEME_ACCENT) + "cjh · Agent made by Cangjie" + Ansi.reset())
+        top.append(Ansi.bold() + Ansi.fg(Ansi.THEME_ACCENT) + "cjh · Harness made by Cangjie" + Ansi.reset())
         top.append("  " + Ansi.fg(Ansi.THEME_OK) + Logo.VERSION + Ansi.reset())
         top.append(" ")
         let topUsed = TuiCanvas.displayWidth(top.toString())   // 已构建部分可见宽度

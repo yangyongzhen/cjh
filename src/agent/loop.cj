@@ -48,6 +48,30 @@ public class AgentConfig {
 }
 
 /**
+ * 任务状态
+ */
+public enum TodoStatus {
+    | Pending    // 待处理
+    | InProgress // 进行中
+    | Completed  // 已完成
+}
+
+/**
+ * 任务项（Agent 内置任务管理，对齐 Claude Code TodoWrite）
+ */
+public class TodoItem {
+    public let id: Int64
+    public var content: String
+    public var status: TodoStatus
+
+    public init(id: Int64, content: String) {
+        this.id = id
+        this.content = content
+        this.status = TodoStatus.Pending
+    }
+}
+
+/**
  * Agent 主循环：消息历史 → LLM → 工具调用 → 结果回填 → 循环
  *
  * 流程：
@@ -60,6 +84,9 @@ public class Agent {
     private let tools: ToolRegistry
     private let config: AgentConfig
     private var messages: ArrayList<ChatMessage>
+    // 内置任务列表（对齐 Claude Code TodoWrite，TUI Tasks 面板数据源）
+    private var todos: ArrayList<TodoItem> = ArrayList<TodoItem>()
+    private var nextTodoId: Int64 = 1
 
     // 事件回调（供 TUI/CLI 展示）
     public var onDelta: (String) -> Unit = { d => }
@@ -68,6 +95,8 @@ public class Agent {
     public var onAssistantText: (String) -> Unit = { t => }
     // 审批回调：危险操作需人工确认时调用，返回 true=同意执行（默认拒绝）
     public var onApproval: (String, JsonObject, String) -> Bool = { n, a, r => false }
+    // 任务变更回调（TUI Tasks 面板实时刷新）
+    public var onTodosChanged: () -> Unit = { => }
 
     public init(provider: LlmProvider, tools: ToolRegistry, config: AgentConfig) {
         this.provider = provider
@@ -82,6 +111,61 @@ public class Agent {
      */
     public func setProvider(p: LlmProvider): Unit {
         this.provider = p
+    }
+
+    // ==================== 内置任务管理 ====================
+
+    /**
+     * 添加任务，返回新任务 id
+     */
+    public func addTask(content: String): Int64 {
+        let item: TodoItem = TodoItem(this.nextTodoId, content)
+        this.nextTodoId += 1
+        this.todos.add(item)
+        this.onTodosChanged()
+        return item.id
+    }
+
+    /**
+     * 更新任务状态
+     */
+    public func updateTaskStatus(id: Int64, status: TodoStatus): Unit {
+        for (item in this.todos) {
+            if (item.id == id) {
+                item.status = status
+                this.onTodosChanged()
+                return
+            }
+        }
+    }
+
+    /**
+     * 更新任务内容
+     */
+    public func updateTaskContent(id: Int64, content: String): Unit {
+        for (item in this.todos) {
+            if (item.id == id) {
+                item.content = content
+                this.onTodosChanged()
+                return
+            }
+        }
+    }
+
+    /**
+     * 获取所有任务（按添加顺序）
+     */
+    public func getTodos(): ArrayList<TodoItem> {
+        return this.todos
+    }
+
+    /**
+     * 清空任务列表
+     */
+    public func clearTodos(): Unit {
+        this.todos = ArrayList<TodoItem>()
+        this.nextTodoId = 1
+        this.onTodosChanged()
     }
 
     /**

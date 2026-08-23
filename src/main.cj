@@ -787,6 +787,29 @@ func runJson(prompt: String, sessionId: String): Int64 {
         let agent = Agent(provider, registry, config)
         let store = SessionStore(cjhCfg.sessionsDir)
 
+        // TodoWriteTool：LLM 通过工具调用管理任务列表（回调绑定到 agent）
+        registry.register(TodoWriteTool(
+            { c => agent.addTask(c) },
+            { id => agent.updateTaskStatus(id, TodoStatus.InProgress) },
+            { id => agent.updateTaskStatus(id, TodoStatus.Completed) },
+            { id, c => agent.updateTaskContent(id, c) },
+            { => agent.clearTodos() },
+            { =>
+                let todos = agent.getTodos()
+                if (todos.size == 0) { return "暂无任务" }
+                var result = "Tasks:\n"
+                for (item in todos) {
+                    let marker = match (item.status) {
+                        case TodoStatus.Completed => "✓"
+                        case TodoStatus.InProgress => "▶"
+                        case TodoStatus.Pending => "☐"
+                    }
+                    result += "  ${marker} #${item.id} ${item.content}\n"
+                }
+                return result
+            }
+        ))
+
         // 恢复会话（--resume <id>）
         var curId = sessionId
         if (curId.size > 0) {
@@ -898,6 +921,28 @@ func runTui(sessionId: String): Int64 {
         }
         let agent = Agent(provider, registry, config)
 
+        // TodoWriteTool：LLM 通过工具调用管理任务列表（回调绑定到 agent）
+        registry.register(TodoWriteTool(
+            { c => agent.addTask(c) },
+            { id => agent.updateTaskStatus(id, TodoStatus.InProgress) },
+            { id => agent.updateTaskStatus(id, TodoStatus.Completed) },
+            { id, c => agent.updateTaskContent(id, c) },
+            { => agent.clearTodos() },
+            { =>
+                let todos = agent.getTodos()
+                if (todos.size == 0) { return "暂无任务" }
+                var result = "Tasks:\n"
+                for (item in todos) {
+                    let marker = match (item.status) {
+                        case TodoStatus.Completed => "✓"
+                        case TodoStatus.InProgress => "▶"
+                        case TodoStatus.Pending => "☐"
+                    }
+                    result += "  ${marker} #${item.id} ${item.content}\n"
+                }
+                return result
+            }
+        ))
         // 线程安全的输出队列（agent 在调用线程运行，输出经队列到 TUI）
         let tui = TuiApp()
         tui.setModel(cjhCfg.model)
@@ -970,6 +1015,10 @@ func runTui(sessionId: String): Int64 {
                 TuiBridge.output(md.process(text) + md.finish())
             }
         }
+        // Tasks 面板：Agent 任务变更时刷新快照
+        agent.onTodosChanged = { =>
+            tui.updateTasks(agent.getTodos())
+        }
 
         SessionState.current = curSessionId
         // provider 配置表单提交回调：写回 settings/auth，重建 provider 热切换
@@ -999,7 +1048,9 @@ func runTui(sessionId: String): Int64 {
                 return
             }
             // 异步执行 agent（TUI 主循环持续渲染，避免阻塞）
+            // 方案 B：setAgentRunning 锁定输入框提交，执行完自动处理队列下一条
             spawn {
+                tui.setAgentRunning(true)
                 try {
                     let _ = agent.run(input)
                     if (StreamState.active) {
@@ -1018,6 +1069,14 @@ func runTui(sessionId: String): Int64 {
                     }
                 } catch (e: Exception) {
                     TuiBridge.output(Ansi.fg(Ansi.COLOR_RED) + "错误: ${e}" + Ansi.reset())
+                }
+                tui.setAgentRunning(false)
+                // 自动处理队列下一条（如果有）
+                if (let Some(next) <- tui.dequeueInput()) {
+                    let (rows, cols) = TermSize.get()
+                    tui.appendDivider(cols)
+                    tui.appendOutput(Ansi.fg(Ansi.THEME_ACCENT) + "❯ " + Ansi.reset() + next)
+                    tui.onSubmit(next)
                 }
             }
         }
@@ -1094,6 +1153,7 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
             tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  /tree          树形列示会话分支" + Ansi.reset())
             tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  /fork          从当前会话分支新会话" + Ansi.reset())
             tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  /settings      查看采样参数（temp/max_tokens）" + Ansi.reset())
+            tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  /task          任务管理（add/done/doing/clear/list）" + Ansi.reset())
             tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "  /quit          退出" + Ansi.reset())
         case "/provider" =>
             // provider 预设切换：/provider [name] [api_key]
@@ -1250,6 +1310,81 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
                 } else {
                     TuiBridge.output(Ansi.fg(Ansi.COLOR_GRAY) +
                         "[历史较短，无需压缩（${before} 条）]" + Ansi.reset())
+                }
+            }
+        case "/task" =>
+            // /task add <content> | /task done <id> | /task doing <id> | /task rm <id> | /task clear | /task list
+            let parts = args.split(" ", -1)
+            if (parts.size < 2) {
+                // 无参数：列出当前任务
+                let todos = agent.getTodos()
+                if (todos.size == 0) {
+                    tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "[暂无任务]" + Ansi.reset())
+                } else {
+                    tui.appendOutput(Ansi.fg(Ansi.COLOR_CYAN) + "Tasks:" + Ansi.reset())
+                    for (item in todos) {
+                        let marker = match (item.status) {
+                            case TodoStatus.Completed => "✓"
+                            case TodoStatus.InProgress => "▶"
+                            case TodoStatus.Pending => "☐"
+                        }
+                        let color = match (item.status) {
+                            case TodoStatus.Completed => Ansi.fg(Ansi.THEME_OK)
+                            case TodoStatus.InProgress => Ansi.fg(Ansi.COLOR_YELLOW)
+                            case TodoStatus.Pending => Ansi.fg(Ansi.THEME_MUTED)
+                        }
+                        tui.appendOutput(color + "  ${marker} #${item.id} ${item.content}" + Ansi.reset())
+                    }
+                }
+            } else {
+                let sub = parts[1]
+                match (sub) {
+                    case "add" =>
+                        // /task add <content...>
+                        if (parts.size > 2) {
+                            var content = ""
+                            for (i in 2..parts.size) {
+                                if (content.size > 0) { content += " " }
+                                content += parts[i]
+                            }
+                            let id = agent.addTask(content)
+                            tui.appendOutput(Ansi.fg(Ansi.COLOR_GREEN) + "[已添加任务 #${id}: ${content}]" + Ansi.reset())
+                        } else {
+                            tui.appendOutput(Ansi.fg(Ansi.COLOR_RED) + "用法: /task add <内容>" + Ansi.reset())
+                        }
+                    case "done" =>
+                        // /task done <id>
+                        if (parts.size > 2) {
+                            let id = Int64.parse(parts[2])
+                            agent.updateTaskStatus(id, TodoStatus.Completed)
+                            tui.appendOutput(Ansi.fg(Ansi.COLOR_GREEN) + "[任务 #${id} → completed]" + Ansi.reset())
+                        }
+                    case "doing" =>
+                        // /task doing <id>
+                        if (parts.size > 2) {
+                            let id = Int64.parse(parts[2])
+                            agent.updateTaskStatus(id, TodoStatus.InProgress)
+                            tui.appendOutput(Ansi.fg(Ansi.COLOR_YELLOW) + "[任务 #${id} → in_progress]" + Ansi.reset())
+                        }
+                    case "clear" =>
+                        agent.clearTodos()
+                        tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "[已清空任务列表]" + Ansi.reset())
+                    case "list" =>
+                        let todos = agent.getTodos()
+                        if (todos.size == 0) {
+                            tui.appendOutput(Ansi.fg(Ansi.COLOR_GRAY) + "[暂无任务]" + Ansi.reset())
+                        } else {
+                            for (item in todos) {
+                                let marker = match (item.status) {
+                                    case TodoStatus.Completed => "✓"
+                                    case TodoStatus.InProgress => "▶"
+                                    case TodoStatus.Pending => "☐"
+                                }
+                                tui.appendOutput("  ${marker} #${item.id} ${item.content}")
+                            }
+                        }
+                    case _ =>
+                        tui.appendOutput(Ansi.fg(Ansi.COLOR_RED) + "[未知子命令: ${sub}；支持 add/done/doing/clear/list]" + Ansi.reset())
                 }
             }
         case "/resume" =>
