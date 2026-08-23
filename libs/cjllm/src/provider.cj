@@ -63,6 +63,10 @@ public class StreamAccumulator {
     private var pendingToolIds: ArrayList<String> = ArrayList<String>()
     private var pendingToolNames: ArrayList<String> = ArrayList<String>()
     private var pendingToolArgs: ArrayList<String> = ArrayList<String>()
+    // token 用量（SSE 最后一帧或非流式响应的 usage 字段）
+    public var promptTokens: Int64 = 0
+    public var completionTokens: Int64 = 0
+    public var cachedTokens: Int64 = 0
 
     /**
      * 处理一个 SSE data 帧（JSON）
@@ -139,6 +143,40 @@ public class StreamAccumulator {
                                         }
                                     case _ => ()
                                 }
+                            }
+                        }
+                    case _ => ()
+                }
+            }
+            // token 用量（OpenAI 流式最后一帧或非流式响应顶层 usage）
+            if (let Some(u) <- obj.get("usage")) {
+                match (u.kind()) {
+                    case JsonKind.JsObject =>
+                        let usage = u.asObject()
+                        if (let Some(pt) <- usage.get("prompt_tokens")) {
+                            match (pt.kind()) {
+                                case JsonKind.JsInt => this.promptTokens = pt.asInt().getValue()
+                                case _ => ()
+                            }
+                        }
+                        if (let Some(ct) <- usage.get("completion_tokens")) {
+                            match (ct.kind()) {
+                                case JsonKind.JsInt => this.completionTokens = ct.asInt().getValue()
+                                case _ => ()
+                            }
+                        }
+                        // DeepSeek 缓存命中：prompt_cache_hit_tokens
+                        if (let Some(ch) <- usage.get("prompt_cache_hit_tokens")) {
+                            match (ch.kind()) {
+                                case JsonKind.JsInt => this.cachedTokens = ch.asInt().getValue()
+                                case _ => ()
+                            }
+                        }
+                        // Anthropic 缓存命中：cache_read_input_tokens
+                        if (let Some(cr) <- usage.get("cache_read_input_tokens")) {
+                            match (cr.kind()) {
+                                case JsonKind.JsInt => this.cachedTokens += cr.asInt().getValue()
+                                case _ => ()
                             }
                         }
                     case _ => ()
@@ -253,6 +291,10 @@ public class StreamAccumulator {
             this.toolCalls.add(ToolCall(id, name, args))
         }
         // 整体修复：流式累积的原始文本可能含 DeepSeek Latin-1 误解码 mojibake
-        return ModelResponse(MojibakeFix.fix(this.text), this.toolCalls)
+        let resp = ModelResponse(MojibakeFix.fix(this.text), this.toolCalls)
+        resp.usage.promptTokens = this.promptTokens
+        resp.usage.completionTokens = this.completionTokens
+        resp.usage.cachedTokens = this.cachedTokens
+        return resp
     }
 }

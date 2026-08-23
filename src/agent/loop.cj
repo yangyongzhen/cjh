@@ -2,6 +2,7 @@ package cjh.agent
 
 import std.collection.*
 import stdx.encoding.json.*
+import std.time.*
 import cjllm.*
 import cjh.tools.*
 import cjllm.*
@@ -72,6 +73,37 @@ public class TodoItem {
 }
 
 /**
+ * 单次 Agent.run 的统计摘要（回合总结条数据源）
+ */
+public class RunSummary {
+    public var rounds: Int64 = 0           // LLM 调用轮数
+    public var toolCalls: Int64 = 0        // 工具调用总数
+    public var durationMs: Int64 = 0       // 总耗时（毫秒）
+    public var promptTokens: Int64 = 0     // 输入 token 累计
+    public var completionTokens: Int64 = 0 // 输出 token 累计
+    public var cachedTokens: Int64 = 0     // 缓存命中 token 累计
+
+    public init() {}
+
+    /**
+     * 缓存命中率（0-100，prompt_tokens=0 时返回 0）
+     */
+    public func cacheHitRate(): Int64 {
+        if (this.promptTokens == 0) {
+            return 0
+        }
+        return this.cachedTokens * 100 / this.promptTokens
+    }
+
+    /**
+     * 总 token 用量
+     */
+    public func totalTokens(): Int64 {
+        return this.promptTokens + this.completionTokens
+    }
+}
+
+/**
  * Agent 主循环：消息历史 → LLM → 工具调用 → 结果回填 → 循环
  *
  * 流程：
@@ -97,6 +129,8 @@ public class Agent {
     public var onApproval: (String, JsonObject, String) -> Bool = { n, a, r => false }
     // 任务变更回调（TUI Tasks 面板实时刷新）
     public var onTodosChanged: () -> Unit = { => }
+    // 回合结束回调（渲染回合总结条：轮数/工具数/耗时/token用量/缓存命中率）
+    public var onRunComplete: (RunSummary) -> Unit = { s => }
 
     public init(provider: LlmProvider, tools: ToolRegistry, config: AgentConfig) {
         this.provider = provider
@@ -176,13 +210,21 @@ public class Agent {
         // 长会话：超阈值先压缩早期历史（LLM 摘要），避免 token 爆炸
         this.maybeCompact()
 
+        // 回合统计收集
+        let summary = RunSummary()
+        let startTime = DateTime.now()
         var iterations: Int64 = 0
         while (iterations < this.config.maxIterations) {
             iterations += 1
+            summary.rounds = iterations
 
             let response = this.provider.chatStream(this.messages, this.tools.specs(), { delta =>
                 this.onDelta(delta)
             })
+            // 累计 token 用量
+            summary.promptTokens += response.usage.promptTokens
+            summary.completionTokens += response.usage.completionTokens
+            summary.cachedTokens += response.usage.cachedTokens
 
             if (response.hasToolCalls()) {
                 // 把 assistant 文本（若有）+ 工具调用加入历史（toolCalls 随消息携带，供 Anthropic 回传）
@@ -194,6 +236,7 @@ public class Agent {
                 if (response.text.size > 0) {
                     this.onAssistantText(response.text)
                 }
+                summary.toolCalls += Int64(response.toolCalls.size)
                 // V2d 并发执行引擎：Read vs. Write 分类调度（对齐 pi/omp/anon-kode）
                 // - 全 read-only → spawn 并发执行，结果按 LLM 原始顺序重排
                 // - 含 state-modifying → 整批串行（避免并发写竞态）
@@ -235,8 +278,16 @@ public class Agent {
                 this.messages.add(ChatMessage("assistant", response.text))
                 this.onAssistantText(response.text)
             }
+            // 回合结束：计算耗时并触发 onRunComplete
+            let durationMs = (DateTime.now() - startTime).toMilliseconds()
+            summary.durationMs = durationMs
+            this.onRunComplete(summary)
             return response.text
         }
+        // 达最大迭代次数也触发总结
+        let durationMsMax = (DateTime.now() - startTime).toMilliseconds()
+        summary.durationMs = durationMsMax
+        this.onRunComplete(summary)
         return "[已达最大迭代次数 ${this.config.maxIterations}]"
     }
 

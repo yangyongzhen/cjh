@@ -118,6 +118,7 @@ public class ToolCall {
 public class ModelResponse {
     public let text: String
     public let toolCalls: ArrayList<ToolCall>
+    public var usage: TokenUsage = TokenUsage()
 
     public init(text: String, toolCalls: ArrayList<ToolCall>) {
         this.text = text
@@ -127,4 +128,15 @@ public class ModelResponse {
     public func hasToolCalls(): Bool {
         return this.toolCalls.size > 0
     }
+}
+
+/**
+ * 单次 LLM 调用的 token 用量
+ */
+public class TokenUsage {
+    public var promptTokens: Int64 = 0       // 输入 token
+    public var completionTokens: Int64 = 0   // 输出 token
+    public var cachedTokens: Int64 = 0       // 缓存命中 token（prompt_cache_hit_tokens 等）
+
+    public init() {}
 }

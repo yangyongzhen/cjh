@@ -1039,6 +1039,35 @@ func runTui(sessionId: String): Int64 {
         agent.onTodosChanged = { =>
             tui.updateTasks(agent.getTodos())
         }
+        // 回合总结条：Agent.run 结束后渲染统计
+        agent.onRunComplete = { s =>
+            let secs = Float64(s.durationMs) / 1000.0
+            let tokensK = Float64(s.totalTokens()) / 1000.0
+            let rate = s.cacheHitRate()
+            // 格式：─── ✓ 2 rounds · 3 tools · 42.6s · 1.53K tokens · 99% cached ───
+            let stat = "✓ ${s.rounds} rounds · ${s.toolCalls} tools · ${secs}s · ${tokensK}K tokens · ${rate}% cached"
+            let (rows, cols) = TermSize.get()
+            let lineW = TuiCanvas.displayWidth(stat) + 8  // ─── 两侧 ───
+            var leftDash: Int64 = 3
+            var rightDash: Int64 = cols - lineW - 1
+            if (rightDash < 3) {
+                rightDash = 3
+            }
+            var bar = StringBuilder()
+            var i: Int64 = 0
+            while (i < leftDash) {
+                bar.append("─")
+                i += 1
+            }
+            bar.append(Ansi.fg(Ansi.THEME_MUTED) + " " + Ansi.fg(Ansi.THEME_OK) + stat +
+                Ansi.fg(Ansi.THEME_MUTED) + " " + Ansi.reset())
+            i = 0
+            while (i < rightDash) {
+                bar.append("─")
+                i += 1
+            }
+            TuiBridge.output(Ansi.fg(Ansi.THEME_MUTED) + bar.toString() + Ansi.reset())
+        }
 
         SessionState.current = curSessionId
         // provider 配置表单提交回调：写回 settings/auth，重建 provider 热切换
