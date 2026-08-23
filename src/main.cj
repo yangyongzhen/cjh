@@ -1010,15 +1010,27 @@ func runTui(sessionId: String): Int64 {
             TuiBridge.requestApproval(reason)
         }
         agent.onAssistantText = { text =>
+            // 回复内容左侧缩进 1 个空格：不贴左边缘，视觉更舒适
+            let indentReply = { raw: String =>
+                let lines = raw.split("\n", -1)
+                var sb = StringBuilder()
+                for (i in 0..lines.size) {
+                    if (i > 0) {
+                        sb.append("\n")
+                    }
+                    sb.append(" " + lines[i])
+                }
+                sb.toString()
+            }
             if (StreamState.active) {
                 // 流式结束：用最终完整文本（已整体修复 mojibake）整体渲染并重绘替换流式段
                 let md = MarkdownRender()
-                TuiBridge.endStream(md.process(text) + md.finish())
+                TuiBridge.endStream(indentReply(md.process(text) + md.finish()))
                 StreamState.active = false
             } else {
                 // 非流式（旧协议全量返回）：整体渲染 markdown
                 let md = MarkdownRender()
-                TuiBridge.output(md.process(text) + md.finish())
+                TuiBridge.output(indentReply(md.process(text) + md.finish()))
             }
         }
         // Tasks 面板：Agent 任务变更时刷新快照
@@ -1063,9 +1075,6 @@ func runTui(sessionId: String): Int64 {
                         tui.appendOutput(Ansi.reset())
                         StreamState.active = false
                     }
-                    // 会话分隔线
-                    let (rows, cols) = TermSize.get()
-                    tui.appendDivider(cols)
                     // 保存会话（含首轮时创建 ID）
                     if (SessionState.current.size == 0) {
                         SessionState.current = store.save(agent.history())
@@ -1079,9 +1088,8 @@ func runTui(sessionId: String): Int64 {
                 tui.setAgentRunning(false)
                 // 自动处理队列下一条（如果有）
                 if (let Some(next) <- tui.dequeueInput()) {
-                    let (rows, cols) = TermSize.get()
-                    tui.appendDivider(cols)
                     tui.appendOutput(Ansi.fg(Ansi.THEME_ACCENT) + "❯ " + Ansi.reset() + next)
+                    tui.appendOutput("")  // 空行：分隔用户输入与 Agent 回复
                     tui.onSubmit(next)
                 }
             }

@@ -175,6 +175,7 @@ public class TuiApp {
             if (finalLine.size > 0) {
                 this.logger.info("submit: '${finalLine}'")
                 this.appendOutput(Ansi.fg(Ansi.THEME_ACCENT) + "❯ " + Ansi.reset() + finalLine)
+                this.appendOutput("")  // 空行：分隔用户输入与 Agent 回复
                 // 方案 B：Agent 执行期间提交的消息入队，执行完毕后自动处理
                 if (this.isAgentBusy()) {
                     let qLen: Int64 = this.enqueueInput(finalLine)
