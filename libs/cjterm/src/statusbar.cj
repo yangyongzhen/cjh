@@ -60,9 +60,9 @@ public class StatusBar <: Component {
         sb.append(muted + "╭── " + Ansi.reset())
         sb.append(content)
         sb.append(muted + " ─▶" + Ansi.reset())
-        // 右侧横线填充到 width-1（留 1 列右圆角 ╮）
+        // 右侧横线填充：used + fillN + 1(╮) = cols-1（setLine 按 cols-1 截断）
         let used = TuiCanvas.displayWidth(sb.toString())
-        var fillN = width - used - 1
+        var fillN = width - used - 2
         if (fillN < 0) {
             fillN = 0
         }
