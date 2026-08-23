@@ -617,23 +617,23 @@ public class TuiApp {
         let showWelcome = this.viewMode == 0 && this.outputView.content().size == 0
         this.outputLock.unlock()
 
-        // 欢迎视图布局：整体（欢迎视图 + 状态行 + 输入框）垂直居中
-        //   welcomeContentH（约 12）+ 状态行 1 + 输入框 1 = 总高 14
+        // 欢迎视图布局：欢迎视图固定顶部，状态行+输入框首次居中
         let welcomeContentH: Int64 = 12
-        let welcomeTotalH = welcomeContentH + 2   // +状态行 +输入框
         var inputTop: Int64 = rows - editBoxH0
         var statusRow: Int64 = inputTop - 1
 
         if (showWelcome) {
-            // 整体居中：起始行 wRow = (rows - 14) / 2
-            var wRow: Int64 = 0
-            if (rows > welcomeTotalH) {
-                wRow = (rows - welcomeTotalH) / 2
+            // 欢迎视图固定从行 0 开始（顶部展示）
+            this.welcomeView.render(this.canvas, 0, cols, welcomeContentH)
+            // 状态行+输入框垂直居中在欢迎视图下方的剩余空间
+            // 剩余空间 = rows - welcomeContentH，状态行+输入框占 2 行
+            // 居中起始行 = welcomeContentH + (剩余空间 - 2) / 2
+            let remain = rows - welcomeContentH
+            if (remain > 2) {
+                statusRow = welcomeContentH + (remain - 2) / 2
+            } else {
+                statusRow = welcomeContentH
             }
-            // 欢迎视图占 wRow .. wRow+welcomeContentH-1
-            this.welcomeView.render(this.canvas, wRow, cols, welcomeContentH)
-            // 状态行紧随欢迎视图下方
-            statusRow = wRow + welcomeContentH
             inputTop = statusRow + 1
         } else {
             // 顶部：CJ logo（彩色）+ 标题栏 + 视图标签栏 + 上分隔线
