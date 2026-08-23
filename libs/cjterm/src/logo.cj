@@ -150,6 +150,38 @@ public class Logo {
     }
 
     /**
+     * 生成完整标题栏行（铺满 cols 宽度）：
+     *   ╭── cjh · Cangjie Agent [model] ────────────────────╮
+     * 左圆角 + 标题 + 右侧横线填充 + 右圆角
+     */
+    public static func titleBarFull(utf8: Bool, model: String, cols: Int64): String {
+        let hc = if (utf8) { "─" } else { "-" }
+        let muted = Ansi.fg(Ansi.THEME_MUTED)
+        let accent = Ansi.fg(Ansi.THEME_ACCENT)
+        let name = if (utf8) { "cjh · Cangjie Agent" } else { "cjh - Cangjie Agent" }
+        // ╭──  标题  ───╮
+        var sb = StringBuilder()
+        sb.append(muted + "╭── " + Ansi.reset())
+        sb.append(accent + Ansi.bold() + name + Ansi.reset())
+        sb.append("  " + muted + "[" + model + "]" + Ansi.reset())
+        sb.append(" ")
+        // 右侧横线填充到 cols 宽
+        let used = TuiCanvas.displayWidth(sb.toString())
+        var fillN = cols - used - 1   // -1 留右圆角
+        if (fillN < 0) {
+            fillN = 0
+        }
+        sb.append(muted)
+        var i: Int64 = 0
+        while (i < fillN) {
+            sb.append(hc)
+            i += 1
+        }
+        sb.append("╮" + Ansi.reset())
+        return sb.toString()
+    }
+
+    /**
      * 生成分隔线（按列宽）
      */
     public static func separator(cols: Int64, utf8: Bool): String {

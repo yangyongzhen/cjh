@@ -622,9 +622,14 @@ public class TuiApp {
         this.outputLock.unlock()
 
         if (showWelcome) {
-            // 欢迎视图占满全屏：行 0 .. statusRow-1（不渲染顶部 logo/标题/TabBar/分隔线）
+            // 欢迎视图垂直居中：可用高度 statusRow，视图实际高约 12 行
             let wH = if (statusRow > 0) { statusRow } else { 0 }
-            this.welcomeView.render(this.canvas, 0, cols, wH)
+            let welcomeContentH: Int64 = 12
+            var wRow: Int64 = 0
+            if (wH > welcomeContentH) {
+                wRow = (wH - welcomeContentH) / 2
+            }
+            this.welcomeView.render(this.canvas, wRow, cols, wH - wRow)
         } else {
             // 顶部：CJ logo（彩色）+ 标题栏 + 视图标签栏 + 上分隔线
             let logoLines = Logo.renderLinesModern(utf8)
@@ -633,7 +638,7 @@ public class TuiApp {
                 this.canvas.setLine(li, l)
                 li += 1
             }
-            this.canvas.setLine(5, Logo.titleBar(utf8, this.modelName))
+            this.canvas.setLine(5, Logo.titleBarFull(utf8, this.modelName, cols))
             this.tabBar.render(this.canvas, 6, cols, 1)
             this.canvas.setLine(7, Logo.separator(cols, utf8))
 

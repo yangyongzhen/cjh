@@ -38,6 +38,8 @@ public class StatusBar <: Component {
 
     public override func render(canvas: TuiCanvas, row: Int64, width: Int64, height: Int64): Int64 {
         let sep = Ansi.fg(Ansi.THEME_MUTED) + " › " + Ansi.reset()
+        let muted = Ansi.fg(Ansi.THEME_MUTED)
+        let hc = if (true) { "─" } else { "-" }   // UTF-8 默认（StatusBar 不持 utf8 标志，用 box-drawing）
         // 分段 1：模型名（⬢ accent 色）
         let modelPart = if (this.model.size > 0) {
             Ansi.fg(Ansi.THEME_ACCENT) + "⬢ " + this.model + Ansi.reset() + sep
@@ -52,24 +54,25 @@ public class StatusBar <: Component {
         } else {
             this.text
         }
-        // omp 风格上边框：╭── 内容 ─▶────╮（内容靠左，右侧 ▶ 指示 + 圆角收尾）
+        // omp 风格上边框：╭── 内容 ─▶──────╮（铺满 width 列）
         let content = modelPart + dirPart + sep + statusPart
-        let contentW = TuiCanvas.displayWidth(content)
         var sb = StringBuilder()
-        sb.append(Ansi.fg(Ansi.THEME_MUTED))
-        sb.append("╭── ")
-        sb.append(Ansi.reset())
+        sb.append(muted + "╭── " + Ansi.reset())
         sb.append(content)
-        sb.append(Ansi.fg(Ansi.THEME_MUTED))
-        sb.append(" ─▶")
-        let fillN = width - 8 - contentW
-        if (fillN > 0) {
-            for (_ in 0..fillN) {
-                sb.append("─")
-            }
+        sb.append(muted + " ─▶" + Ansi.reset())
+        // 右侧横线填充到 width-1（留 1 列右圆角 ╮）
+        let used = TuiCanvas.displayWidth(sb.toString())
+        var fillN = width - used - 1
+        if (fillN < 0) {
+            fillN = 0
         }
-        sb.append("╮")
-        sb.append(Ansi.reset())
+        sb.append(muted)
+        var i: Int64 = 0
+        while (i < fillN) {
+            sb.append(hc)
+            i += 1
+        }
+        sb.append("╮" + Ansi.reset())
         canvas.setLine(row, sb.toString())
         return 1
     }
