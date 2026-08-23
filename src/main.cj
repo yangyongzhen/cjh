@@ -48,6 +48,7 @@ func runMockVerify(): Int64 {
     registry.register(WriteTool())
     registry.register(GrepTool())
     registry.register(ListDirTool())
+    registry.register(HashlineEditTool())
 
     let provider = MockProvider(testPath)
     let config = AgentConfig("你是测试代理。", 5)
@@ -641,6 +642,7 @@ func runCli(sessionId: String): Int64 {
     registry.register(WriteTool())
     registry.register(GrepTool())
     registry.register(ListDirTool())
+    registry.register(HashlineEditTool())
 
     // 配置加载
     let cjhCfg = CjhConfig()
@@ -762,6 +764,7 @@ func runJson(prompt: String, sessionId: String): Int64 {
     registry.register(WriteTool())
     registry.register(GrepTool())
     registry.register(ListDirTool())
+    registry.register(HashlineEditTool())
 
     let cjhCfg = CjhConfig()
     cjhCfg.ensureDirs()
@@ -870,6 +873,7 @@ func runTui(sessionId: String): Int64 {
     registry.register(WriteTool())
     registry.register(GrepTool())
     registry.register(ListDirTool())
+    registry.register(HashlineEditTool())
 
     // 配置加载
     let cjhCfg = CjhConfig()

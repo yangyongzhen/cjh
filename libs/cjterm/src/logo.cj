@@ -16,7 +16,7 @@ package cjterm
 public class Logo {
     // cjh 项目版本号（与根 cjpm.toml 的 version 字段保持同步；
     // 标题栏展示用，发版时一并更新）
-    public static const VERSION: String = "v1.1.0"
+    public static const VERSION: String = "v1.2.0"
     // UTF-8 版：box-drawing CJ（C 蓝 + J 青）。J 顶钩 ██╗ + 底钩 ╚═╝，
     // 钩子特征鲜明，绝不会误读为 I（旧 ASCII 竖线字形 |_| 正是 CI 误读根源）
     private static let C_BOX_LINES: Array<String> = [
@@ -155,7 +155,7 @@ public class Logo {
 
     /**
      * 生成完整标题栏行（铺满 cols 宽度）：
-     *   ╭── cjh · Agent made by Cangjie [model] v1.1.0 ───╮
+     *   ╭── cjh · Agent made by Cangjie [model] v1.2.0 ───╮
      * 左圆角 + 标题 + 右侧横线填充 + 右圆角
      */
     public static func titleBarFull(utf8: Bool, model: String, cols: Int64): String {
@@ -164,7 +164,7 @@ public class Logo {
         let accent = Ansi.fg(Ansi.THEME_ACCENT)
         let ok = Ansi.fg(Ansi.THEME_OK)
         let name = if (utf8) { "cjh · Agent made by Cangjie" } else { "cjh - Agent made by Cangjie" }
-        // ╭──  标题  [model]  v1.1.0  ───╮
+        // ╭──  标题  [model]  v1.2.0  ───╮
         var sb = StringBuilder()
         sb.append(muted + "╭── " + Ansi.reset())
         sb.append(accent + Ansi.bold() + name + Ansi.reset())
