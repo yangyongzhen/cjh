@@ -64,6 +64,8 @@ public class TuiApp {
     private var welcomeView: WelcomeView = WelcomeView()
     // Tasks 面板（Agent 内置任务列表实时展示）
     private var tasksPanel: TasksPanel = TasksPanel()
+    // /theme 交互式选择模式：picker 显示主题列表，选中后提交 /theme <name>
+    private var themePickerMode: Bool = false
     // 当前视图：0=对话 1=帮助
     private var viewMode: Int64 = 0
     // 多行编辑模式（Ctrl+E 切换；Alt+Enter 提交，Esc 退出）
@@ -145,6 +147,20 @@ public class TuiApp {
         }
         // 提交（Enter）→ 下拉确认 + 输出回显 + 外部 onSubmit
         this.inputBox.onSubmit = { line =>
+            // /theme 交互式选择：picker 选中后直接提交 /theme <选中项>
+            if (this.themePickerMode) {
+                this.themePickerMode = false
+                let cur = this.picker.current()
+                this.inputBox.clear()
+                this.picker.hide()
+                if (cur.size > 0) {
+                    let cmd = "/theme " + cur
+                    this.appendOutput(Ansi.fg(Ansi.THEME_ACCENT) + "❯ " + Ansi.reset() + cmd)
+                    this.onSubmit(cmd)
+                }
+                this.markDirty()
+                return
+            }
             // 下拉框可见时：Enter 确认当前选中项（否则提交原始输入）
             var finalLine = line
             if (this.picker.isVisible()) {
@@ -448,6 +464,29 @@ public class TuiApp {
             snaps.add(TaskSnapshot(item.id, item.content, state))
         }
         this.tasksPanel.updateSnapshots(snaps)
+        this.markDirty()
+    }
+
+    /**
+     * 弹出主题选择 picker（/theme 无参数时调用）
+     * @param themes 可用主题名列表
+     * @param current 当前主题名（picker 默认指向它）
+     */
+    public func showThemePicker(themes: ArrayList<String>, current: String): Unit {
+        this.themePickerMode = true
+        this.picker.show(themes)
+        // 默认指向当前主题
+        var idx: Int64 = 0
+        for (i in 0..themes.size) {
+            if (themes[i] == current) {
+                idx = i
+                break
+            }
+        }
+        // picker.show 已重置 selected=0，需要手动移到当前主题
+        while (this.picker.selectedIndex() < idx) {
+            this.picker.next()
+        }
         this.markDirty()
     }
 

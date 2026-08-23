@@ -1469,7 +1469,7 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
             // 退出由主循环处理；先短暂刷新再退出
             spawn { tui.quit() }
         case "/theme" =>
-            // /theme [name]：切换 TUI 主题（starfrost|classic）；无参数列出可用主题
+            // /theme [name]：切换 TUI 主题（starfrost|classic）；无参数弹出交互式 picker
             let parts = args.split(" ", -1)
             if (parts.size > 1 && parts[1].size > 0) {
                 let applied = Theme.apply(parts[1])
@@ -1479,14 +1479,8 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
                 tui.appendOutput(Ansi.fg(Ansi.THEME_OK) + "[主题已切换: ${applied}]" + Ansi.reset())
                 tui.markDirty()
             } else {
-                let cur = Theme.current()
-                let all = Theme.list()
-                tui.appendOutput(Ansi.fg(Ansi.THEME_ACCENT) + "TUI 主题（当前: ${cur}）" + Ansi.reset())
-                for (name in all) {
-                    let marker = if (name == cur) { "▶" } else { " " }
-                    tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  ${marker} ${name}" + Ansi.reset())
-                }
-                tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "用法: /theme <名称> 切换" + Ansi.reset())
+                // 无参数：弹出交互式主题选择 picker（上下键选择，Enter 确认）
+                tui.showThemePicker(Theme.list(), Theme.current())
             }
         case _ =>
             tui.appendOutput(Ansi.fg(Ansi.THEME_ERR) + "未知命令: ${cmd}（输入 /help 查看）" + Ansi.reset())
