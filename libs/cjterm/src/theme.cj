@@ -80,6 +80,70 @@ public class Theme {
         classic.bg = 235             // 深炭灰
         map["classic"] = classic
 
+        // dracula：经典暗色主题（紫粉青绿）
+        // 参考 omp dark-dracula：accent=purple, border=purple, borderAccent=pink
+        let dracula = Palette()
+        dracula.primary = 61         // 深紫 (#563f66 近似)
+        dracula.accent = 177         // 紫 (#BD93F9)
+        dracula.purple = 141         // 紫
+        dracula.ok = 84              // 绿 (#50FA7B)
+        dracula.warn = 222           // 黄 (#F1FA8C)
+        dracula.err = 203            // 红 (#FF5555)
+        dracula.muted = 60           // 暗紫灰 (#44475A)
+        dracula.info = 117           // 青 (#8BE9FD)
+        dracula.highlight = 177      // 紫（选中行高亮）
+        dracula.text = 231           // 近白 (#F8F8F2)
+        dracula.bg = 235             // 深炭灰 (#282A36 近似)
+        map["dracula"] = dracula
+
+        // nord：北欧极简冷色主题（蓝灰冰原）
+        // 参考 omp dark-nord：accent=nord8, border=nord10, muted=nord3
+        let nord = Palette()
+        nord.primary = 67            // 深青蓝 (nord10 近似)
+        nord.accent = 110            // 冰蓝青 (nord8 #88C0D0 近似)
+        nord.purple = 139            // 北欧紫 (nord15 #B48EAD)
+        nord.ok = 150                // 绿 (nord14 #A3BE8C)
+        nord.warn = 222              // 黄 (nord13 #EBCB8B)
+        nord.err = 174               // 红 (nord11 #BF616A)
+        nord.muted = 60              // 深蓝灰 (nord3 #4C566A 近似)
+        nord.info = 110              // 冰蓝青
+        nord.highlight = 222         // 黄（选中行高亮）
+        nord.text = 254              // 素白 (nord6 #ECEFF4 近似)
+        nord.bg = 235                // 深炭灰 (nord0 #2E3440 近似)
+        map["nord"] = nord
+
+        // gruvbox：复古暖色主题（橙黄绿棕）
+        // 参考 omp dark-gruvbox：accent=orange, border=neutralBlue
+        let gruvbox = Palette()
+        gruvbox.primary = 66         // 复古蓝灰 (neutralBlue #458588 近似)
+        gruvbox.accent = 208         // 橙 (#FE8019)
+        gruvbox.purple = 175         // 紫粉 (neutralPurple #B16286)
+        gruvbox.ok = 142             // 复古绿 (neutralGreen #98971A 近似)
+        gruvbox.warn = 214           // 亮黄橙 (yellow #FABD2F 近似)
+        gruvbox.err = 160            // 复古红 (neutralRed #CC241D 近似)
+        gruvbox.muted = 241          // 中性灰 (bg4 #7C6F64 近似)
+        gruvbox.info = 108           // 复古青绿 (aqua #689D6A 近似)
+        gruvbox.highlight = 208      // 橙（选中行高亮）
+        gruvbox.text = 230           // 暖白 (fg1 #EBDBB2 近似)
+        gruvbox.bg = 235             // 深炭灰 (bg0 #282828 近似)
+        map["gruvbox"] = gruvbox
+
+        // tokyo-night：东京夜色主题（深蓝紫粉霓虹感）
+        // 参考 omp dark-tokyo-night：accent=purple, border=blue, info=cyan
+        let tokyoNight = Palette()
+        tokyoNight.primary = 33      // 华为蓝 (blue #7AA2F7 近似)
+        tokyoNight.accent = 141      // 紫 (purple #BB9AF7)
+        tokyoNight.purple = 141      // 紫
+        tokyoNight.ok = 114          // 鼠尾草绿 (green #9ECE6A 近似)
+        tokyoNight.warn = 179        // 浅琥珀金 (yellow #E0AF68 近似)
+        tokyoNight.err = 168         // 樱花粉红 (red #F7768E 近似)
+        tokyoNight.muted = 60        // 深蓝紫灰 (comment #51597D 近似)
+        tokyoNight.info = 117        // 青 (cyan #7DCFFF)
+        tokyoNight.highlight = 141   // 紫（选中行高亮）
+        tokyoNight.text = 189        // 浅蓝灰白 (lightBlue #C0CAF5 近似)
+        tokyoNight.bg = 235          // 深炭灰 (bg #1A1B26 近似)
+        map["tokyo-night"] = tokyoNight
+
         return map
     }
 
