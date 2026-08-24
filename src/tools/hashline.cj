@@ -43,22 +43,22 @@ public class HashlineEditTool <: CjhTool {
 
     public func spec(): ToolSpec {
         var props = HashMap<String, JsonValue>()
-        props.add("path", JsonSchema.str("要编辑的文件路径"))
-        props.add("patch", JsonSchema.str("行号锚点补丁：@@N 定位第 N 行（1-based，推荐）；或 @@{hash} 哈希锚点。紧跟 +/- 改动行"))
+        props.add("path", JsonSchema.str("File path to edit"))
+        props.add("patch", JsonSchema.str("Line-anchored patch: @@N targets line N (1-based, recommended); or @@{hash} hash anchor. Followed by +/- change lines"))
         let schema = JsonSchema.object(props, ArrayList<String>(["path", "patch"]))
         return ToolSpec("hashline_edit",
-            "用行号锚点编辑文件（比 write_file 全文覆盖高效）。" +
-            "patch 格式（每行一种）：@@N 定位第 N 行（1-based，read_file 已给行号）；" +
-            "+content 在锚点行后插入；-content 删除锚点行（content 必须精确匹配）；" +
-            "-old +new 替换锚点行。" +
-            "示例替换第 2 行：'@@2\\n-line2 this is a test\\n+line2 MODIFIED'。" +
-            "内容不匹配会拒绝（防打错地方）。",
+            "Edit a file with line anchors (more efficient than write_file full overwrite). " +
+            "Patch format (one directive per line): @@N targets line N (1-based, read_file already shows line numbers); " +
+            "+content inserts after the anchor line; -content deletes the anchor line (content must match exactly); " +
+            "-old +new replaces the anchor line. " +
+            "Example replacing line 2: '@@2\\n-line2 this is a test\\n+line2 MODIFIED'. " +
+            "Mismatched content is rejected (prevents editing the wrong location).",
             schema)
     }
 
     public func execute(args: JsonObject): ToolResult {
         if (!args.containsKey("path") || !args.containsKey("patch")) {
-            return ToolResult("缺少参数: path/patch", true)
+            return ToolResult("Missing parameter: path/patch", true)
         }
         let path = args.get("path").getOrThrow().asString().getValue()
         let patch = args.get("patch").getOrThrow().asString().getValue()

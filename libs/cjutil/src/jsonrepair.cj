@@ -92,6 +92,14 @@ public func repairTruncatedJson(raw: String): String {
         }
         i += 1
     }
+    // 方案2优先：字符串被截断（inString 仍然为 true）
+    // 场景：write_file 的 content 字段值（HTML/JS，很长）被 max_tokens 截断。
+    // 此时 raw = {"path": "...", "content": "<!DOCTYPE...（content 字符串没闭合）
+    // 必须先补 " 闭合 content 字符串，再补 } 闭合 JSON，保留被截断的 content。
+    // 否则走方案1会截断到 path 字段结束位置，丢弃整个 content 字段。
+    if (inString) {
+        return s + "\"}"
+    }
     // 方案1：有完整字段，截断到最后一个完整字段的结束位置
     if (lastCompleteEnd > 0) {
         var result = s[0..lastCompleteEnd]
@@ -104,11 +112,6 @@ public func repairTruncatedJson(raw: String): String {
             result = result + "}"
         }
         return result
-    }
-    // 方案2：没有完整字段，但字符串被截断（inString 仍然为 true）
-    if (inString) {
-        // 补 " 闭合字符串，再补 } 闭合 JSON
-        return s + "\"}"
     }
     // 方案3：没有字符串字段，或字符串已闭合但字段不完整
     // 截断到最后一个 , 或 { ，补 }

@@ -264,19 +264,66 @@ public class Agent {
                     // 按原始顺序 get 结果，回填消息历史
                     var idx: Int64 = 0
                     for (tc in response.toolCalls) {
-                        let result = futures[idx].get()
+                        var result = futures[idx].get()
+                        // 输出被 max_tokens 截断：write_file/edit_file 的 content 不完整
+                        if (response.truncated && (tc.name == "write_file" || tc.name == "edit_file")) {
+                            result = ToolResult(result.content + "\n\n⚠️ 截断警告：本轮 LLM 输出被 max_tokens 强制截断，上面写入的文件内容【不完整】。\n请【立即】按以下步骤修复（不要再用 write_file 重写整个文件，那会再次截断）：\n1. 调用 read_file 读取刚写入的文件，确认截断位置\n2. 调用 edit_file，old_string 填文件末尾最后几个有效字符，new_string 续写剩余部分\n3. 重复 1-2 直到文件完整闭合（HTML 需 </script></body></html>）\n务必分多次小段续写，每段 new_string 控制在 ~1500 字符以内。", true)
+                        }
                         this.onToolResult(tc.name, result)
-                        this.messages.add(ChatMessage("tool", result.content, tc.id, tc.name))
+                        this.messages.add(ChatMessage("tool", truncateToolResult(result.content, tc.name), tc.id, tc.name))
                         idx += 1
+                    }
+                    // 截断打断：检测到被截断的 write_file/edit_file 路径，注入 [System Notice] 绝对指令
+                    // 斩断 LLM "重新 write_file" 的念头，强行拉入 append_file 续写模式
+                    if (response.truncatedPaths.size > 0) {
+                        var notice = "\n[System Notice - ABSOLUTE DIRECTIVE, MUST EXECUTE]\n"
+                        notice += "The previous write_file was truncated by the model's max_tokens. The file has been saved to disk but is INCOMPLETE.\n"
+                        notice += "Truncated files:\n"
+                        for (i in 0..response.truncatedPaths.size) {
+                            notice += "  - ${response.truncatedPaths[i]}\n"
+                        }
+                        notice += "\n[FORBIDDEN] Absolutely DO NOT call write_file again to rewrite these files -- it will truncate again and fall into an infinite loop.\n"
+                        notice += "[MANDATORY] For each truncated file, execute immediately:\n"
+                        notice += "  1. read_file <path> to confirm the current end of the file\n"
+                        notice += "  2. append_file <path> \"<next chunk of remaining content>\" (each chunk <= 1500 chars)\n"
+                        notice += "  3. Repeat step 2; the final chunk MUST append the closing tags </script></body></html>\n"
+                        notice += "  4. read_file <path> to verify the file is complete and properly closed\n"
+                        notice += "Do NOT perform any other action until the above steps are complete."
+                        this.messages.add(ChatMessage("user", notice))
+                        this.onAssistantText("\n[System] Truncation detected, forced continuation directive injected\n")
                     }
                 } else {
                     // 串行执行：含 state-modifying 工具或单工具调用
                     for (tc in response.toolCalls) {
                         this.onToolStart(tc.name, tc.arguments)
-                        let result = this.executeGuarded(tc.name, tc.arguments)
+                        var result = this.executeGuarded(tc.name, tc.arguments)
+                        // 输出被 max_tokens 截断：write_file 的 content 不完整
+                        // 给 LLM 明确信号——已写入部分需用 edit_file 续写
+                        if (response.truncated && (tc.name == "write_file" || tc.name == "edit_file")) {
+                            result = ToolResult(result.content + "\n\n⚠️ 截断警告：本轮 LLM 输出被 max_tokens 强制截断，上面写入的文件内容【不完整】。\n请【立即】按以下步骤修复（不要再用 write_file 重写整个文件，那会再次截断）：\n1. 调用 read_file 读取刚写入的文件，确认截断位置\n2. 调用 edit_file，old_string 填文件末尾最后几个有效字符，new_string 续写剩余部分\n3. 重复 1-2 直到文件完整闭合（HTML 需 </script></body></html>）\n务必分多次小段续写，每段 new_string 控制在 ~1500 字符以内。", true)
+                        }
                         this.onToolResult(tc.name, result)
                         // tool 结果回填
-                        this.messages.add(ChatMessage("tool", result.content, tc.id, tc.name))
+                        this.messages.add(ChatMessage("tool", truncateToolResult(result.content, tc.name), tc.id, tc.name))
+                    }
+                    // 截断打断：检测到被截断的 write_file/edit_file 路径，注入 [System Notice] 绝对指令
+                    // 斩断 LLM "重新 write_file" 的念头，强行拉入 append_file 续写模式
+                    if (response.truncatedPaths.size > 0) {
+                        var notice = "\n[System Notice - ABSOLUTE DIRECTIVE, MUST EXECUTE]\n"
+                        notice += "The previous write_file was truncated by the model's max_tokens. The file has been saved to disk but is INCOMPLETE.\n"
+                        notice += "Truncated files:\n"
+                        for (i in 0..response.truncatedPaths.size) {
+                            notice += "  - ${response.truncatedPaths[i]}\n"
+                        }
+                        notice += "\n[FORBIDDEN] Absolutely DO NOT call write_file again to rewrite these files -- it will truncate again and fall into an infinite loop.\n"
+                        notice += "[MANDATORY] For each truncated file, execute immediately:\n"
+                        notice += "  1. read_file <path> to confirm the current end of the file\n"
+                        notice += "  2. append_file <path> \"<next chunk of remaining content>\" (each chunk <= 1500 chars)\n"
+                        notice += "  3. Repeat step 2; the final chunk MUST append the closing tags </script></body></html>\n"
+                        notice += "  4. read_file <path> to verify the file is complete and properly closed\n"
+                        notice += "Do NOT perform any other action until the above steps are complete."
+                        this.messages.add(ChatMessage("user", notice))
+                        this.onAssistantText("\n[System] Truncation detected, forced continuation directive injected\n")
                     }
                 }
                 continue
@@ -368,6 +415,25 @@ public class Agent {
         }
         this.messages = newMsgs
         this.onDelta("\n\n_[会话历史已手动压缩：${compactEnd - 1} 条早期消息 → 摘要]_")
+    }
+
+    /**
+     * Tool Output 压缩 Hook：tool_result 过长时裁剪成 Head/Tail 摘要，
+     * 避免巨大 tool 结果（如 read_file 读了个几千行日志）冲垮前缀缓存或 token 预算。
+     * 对齐 OMP 的 toolResultMaxChars 硬性裁剪。
+     */
+    private func truncateToolResult(content: String, toolName: String): String {
+        let MAX_CHARS: Int64 = 6000   // 单个 tool_result 存入历史的字符上限
+        if (Int64(content.size) <= MAX_CHARS) {
+            return content
+        }
+        let headLen: Int64 = MAX_CHARS / 2
+        let tailLen: Int64 = MAX_CHARS - headLen
+        let head = content[0..Int64(headLen)]
+        let tailStart = Int64(content.size) - tailLen
+        let tail = content[Int64(tailStart)..Int64(content.size)]
+        let skipped = Int64(content.size) - MAX_CHARS
+        return head + "\n\n…[截断 " + skipped.toString() + " 字符]…\n\n" + tail
     }
 
     /**

@@ -13,7 +13,7 @@ public class ModelEntry {
     public var baseUrl: String = ""     // 端点（可空，用全局 base_url）
     public var apiKey: String = ""      // 该模型的 key（可空，用全局 api_key）
     public var temperature: Float64 = 0.7
-    public var maxTokens: Int64 = 4096
+    public var maxTokens: Int64 = 16384
 }
 
 /**
@@ -44,7 +44,7 @@ public class CjhConfig {
     public var systemPrompt: String = ""
     // 采样参数（对齐 pi：/settings 可调）
     public var temperature: Float64 = 0.7
-    public var maxTokens: Int64 = 4096
+    public var maxTokens: Int64 = 16384
     // 可选模型列表（settings.json "models": [...]；/model 可切换）
     public var models: ArrayList<ModelEntry> = ArrayList<ModelEntry>()
     // 三域 capability 安全模型（settings.json "capability": {...}；未配置=宽松模式）
@@ -108,7 +108,7 @@ public class CjhConfig {
             "  \"model\": \"gpt-4o-mini\",\n" +
             "  \"max_iterations\": 10,\n" +
             "  \"temperature\": 0.7,\n" +
-            "  \"max_tokens\": 4096,\n" +
+            "  \"max_tokens\": 16384,\n" +
             "  \"models\": [\n" +
             "    { \"id\": \"gpt-4o-mini\", \"name\": \"GPT-4o mini\" },\n" +
             "    { \"id\": \"deepseek-chat\", \"name\": \"DeepSeek V3\", \"base_url\": \"https://api.deepseek.com/v1/chat/completions\", \"temperature\": 1.0 }\n" +
@@ -220,8 +220,17 @@ public class CjhConfig {
         this.applyEnvOverrides()
         // 默认系统提示词
         if (this.systemPrompt.size == 0) {
-            this.systemPrompt = "你是一个运行在终端里的编码代理（cjh）。你可以使用工具完成任务：bash 执行命令、read_file 读文件、write_file 写文件。" +
-                "任务通常需要多步：先读代码理解现状，再修改，再用 bash 验证。保持简洁，用中文回答。"
+            this.systemPrompt = "You are a coding agent running in the terminal (cjh). You can use tools to complete tasks: bash executes commands, read_file reads files, write_file writes files, append_file appends to files, edit_file modifies files." +
+                " Tasks usually require multiple steps: first read code to understand the current state, then modify, then verify with bash. Keep it concise, answer in Chinese." +
+                "\n\n## Large file write strategy (important)\n" +
+                " The model's single-turn output has a max_tokens limit (usually 4000~8000 chars). Writing a large file (full HTML game, multi-function JS, long markdown) in a single write_file call will be truncated, leaving the file incomplete (missing </script></body></html> etc.).\n" +
+                " Correct approach:\n" +
+                " 1. Estimate file size. Files exceeding 150 lines / 4000 chars must be written in chunks.\n" +
+                " 2. First chunk: use write_file to write the file skeleton (HTML head + empty body/script tags, or JS structure definitions).\n" +
+                " 3. Subsequent chunks: call append_file multiple times, each appending one part (<style>, <script> function bodies, HTML body, etc.). Keep each content chunk under 1500 chars.\n" +
+                " 4. Last chunk: append_file appends the closing tags (</script></body></html>), ensuring the file is complete.\n" +
+                " 5. After writing, use read_file to verify file integrity.\n" +
+                " Absolutely forbidden: using write_file to rewrite a file that is already incomplete due to truncation -- this will truncate again and fall into an infinite loop. When truncated, you MUST use append_file to continue writing."
         }
     }
 

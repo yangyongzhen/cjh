@@ -22,14 +22,14 @@ public class BashTool <: CjhTool {
 
     public func spec(): ToolSpec {
         var props = HashMap<String, JsonValue>()
-        props.add("command", JsonSchema.str("要执行的 shell 命令"))
+        props.add("command", JsonSchema.str("Shell command to execute"))
         let schema = JsonSchema.object(props, ArrayList<String>(["command"]))
-        return ToolSpec("bash", "在本地 shell 中执行命令并返回 stdout/stderr 输出。用于运行构建、测试、git 操作等。", schema)
+        return ToolSpec("bash", "Execute a command in the local shell and return combined stdout/stderr. Use for builds, tests, git, etc.", schema)
     }
 
     public func execute(args: JsonObject): ToolResult {
         if (!args.containsKey("command")) {
-            return ToolResult("缺少参数: command", true)
+            return ToolResult("Missing parameter: command", true)
         }
         let cmd = args.get("command").getOrThrow().asString().getValue()
         try {
@@ -75,14 +75,13 @@ public class ReadTool <: CjhTool {
 
     public func spec(): ToolSpec {
         var props = HashMap<String, JsonValue>()
-        props.add("path", JsonSchema.str("要读取的文件路径"))
-        props.add("offset", JsonSchema.str("起始行号（1-based，默认 1）"))
-        props.add("limit", JsonSchema.str("返回行数（默认返回结构化摘要或全文）"))
+        props.add("path", JsonSchema.str("File path to read"))
+        props.add("offset", JsonSchema.str("Start line (1-based, default 1)"))
+        props.add("limit", JsonSchema.str("Number of lines to return (default: structured summary or full file)"))
         let schema = JsonSchema.object(props, ArrayList<String>(["path"]))
         return ToolSpec("read_file",
-            "读取文件。默认返回结构化摘要（函数名/类名/注释，省 Token）；" +
-            "带 offset+limit 返回指定行段（按需展开）；" +
-            "小文件（<200 行）直接返回全文。",
+            "Read a file. By default returns a structured summary (function/class names + comments, saves tokens); " +
+            "with offset+limit returns the specified line range; small files (<200 lines) return the full content.",
             schema)
     }
 
@@ -236,30 +235,92 @@ public class WriteTool <: CjhTool {
 
     public func spec(): ToolSpec {
         var props = HashMap<String, JsonValue>()
-        props.add("path", JsonSchema.str("要写入的文件路径"))
-        props.add("content", JsonSchema.str("完整的新文件内容"))
+        props.add("path", JsonSchema.str("File path to write"))
+        props.add("content", JsonSchema.str("File content (overwrites existing)"))
         let schema = JsonSchema.object(props, ArrayList<String>(["path", "content"]))
         return ToolSpec("write_file",
-            "将完整内容写入指定文件（覆盖）。用于创建或修改文件。" +
-            "重要：path 和 content 必须在同一次调用中一起传入，" +
-            "不能分两次调用（先传 path 再传 content 会失败）。",
+            "Create or overwrite a file. WARNING: single-call content must NOT exceed 150 lines / 4000 chars, " +
+            "otherwise the model's max_tokens will truncate it and leave the file incomplete. " +
+            "Write strategy: (1) small file (HTML/CSS snippet, config, single function) -> write_file in one call; " +
+            "(2) large file (full HTML game, multi-function JS, long markdown) -> first use write_file to write the skeleton " +
+            "(HTML head + empty body/script tags), then call append_file multiple times to append <style>, <script>, etc. " +
+            "path and content MUST be passed together in the same call.",
             schema)
     }
 
     public func execute(args: JsonObject): ToolResult {
         if (!args.containsKey("path") || !args.containsKey("content")) {
             return ToolResult(
-                "错误：write_file 需要 path 和 content 两个参数同时传入。" +
-                "请重新调用 write_file，在一次调用中同时提供 path（文件路径）和 content（完整文件内容）。",
+                "Error: write_file requires both path and content. " +
+                "Call write_file again with path (file path) and content (full file content) together.",
                 true)
         }
         let path = args.get("path").getOrThrow().asString().getValue()
         let content = args.get("content").getOrThrow().asString().getValue()
+        // 软约束：超长 content 警告但不阻断（让 LLM 自行决定是否拆分）
+        let lines = content.split('\n').size
+        if (content.size > 4000 || lines > 150) {
+            try {
+                File.writeTo(path, content.toArray())
+                return ToolResult("Written ${path} (${content.size} chars).\nWARNING: content exceeds the recommended limit (${lines} lines / ${content.size} chars); risk of max_tokens truncation. If the file turns out incomplete, switch to: write_file for the skeleton + append_file for incremental chunks.", false)
+            } catch (e: Exception) {
+                return ToolResult("Write failed: ${e}", true)
+            }
+        }
         try {
             File.writeTo(path, content.toArray())
-            return ToolResult("已写入 ${path}（${content.size} 字符）", false)
+            return ToolResult("Written ${path} (${content.size} chars)", false)
         } catch (e: Exception) {
-            return ToolResult("写入失败: ${e}", true)
+            return ToolResult("Write failed: ${e}", true)
+        }
+    }
+}
+
+/**
+ * append_file 工具：向文件末尾追加内容（增量写入）
+ *
+ * 设计动机：DeepSeek 等模型单轮 max_tokens 装不下完整 HTML 游戏（通常 5000+ 字符）。
+ * 一次性 write_file 会被截断，导致文件不完整（缺 </script></body></html>）。
+ * 业界 CLI（Aider/Cursor）的解法：write_file 写骨架，append_file 多段追加。
+ *
+ * 配合 system prompt 的"骨架 + 增量"写入策略，断绝 LLM 全量重写的死循环。
+ */
+public class AppendFileTool <: CjhTool {
+    public init() {}
+
+    public func isReadOnly(): Bool {
+        return false
+    }
+
+    public func spec(): ToolSpec {
+        var props = HashMap<String, JsonValue>()
+        props.add("path", JsonSchema.str("File path to append to (must already exist)"))
+        props.add("content", JsonSchema.str("Content to append at end of file"))
+        let schema = JsonSchema.object(props, ArrayList<String>(["path", "content"]))
+        return ToolSpec("append_file",
+            "Append content to the end of an existing file (incremental write). " +
+            "Used for multi-chunk writing of large files: first create the skeleton with write_file, " +
+            "then call append_file multiple times to append each part. " +
+            "Single-call content should stay under 150 lines / 4000 chars; exceeding this risks truncation. " +
+            "Fails if the file does not exist -- create it with write_file first.",
+            schema)
+    }
+
+    public func execute(args: JsonObject): ToolResult {
+        if (!args.containsKey("path") || !args.containsKey("content")) {
+            return ToolResult("Error: append_file requires both path and content.", true)
+        }
+        let path = args.get("path").getOrThrow().asString().getValue()
+        let content = args.get("content").getOrThrow().asString().getValue()
+        try {
+            // 检查文件是否存在（读取失败说明不存在）
+            let existing = String.fromUtf8(File.readFrom(path))
+            let newContent = existing + content
+            File.writeTo(path, newContent.toArray())
+            return ToolResult("Appended ${content.size} chars to ${path} (now ${newContent.size} chars total)", false)
+        } catch (e: Exception) {
+            // 文件不存在或读取失败
+            return ToolResult("Error: cannot append to ${path} (file may not exist). Create the skeleton with write_file first. Detail: ${e}", true)
         }
     }
 }
@@ -286,14 +347,15 @@ public class GrepTool <: CjhTool {
 
     public func spec(): ToolSpec {
         var props = HashMap<String, JsonValue>()
-        props.add("pattern", JsonSchema.str("正则表达式（std.regex 语法）"))
-        props.add("path", JsonSchema.str("要搜索的文件或目录路径"))
-        props.add("context", JsonSchema.str("上下文行数（默认 0=不显示上下文）"))
+        props.add("pattern", JsonSchema.str("Regex pattern (std.regex syntax)"))
+        props.add("path", JsonSchema.str("File or directory path to search"))
+        props.add("context", JsonSchema.str("Context lines around each match (default 0 = no context)"))
         let schema = JsonSchema.object(props, ArrayList<String>(["pattern", "path"]))
         return ToolSpec("grep",
-            "在文件或目录树中用正则搜索。path 支持文件/目录（目录递归）；" +
-            "自动跳过 .git/node_modules/target/dist；" +
-            "context 参数控制匹配行周围 N 行。",
+            "Search file(s) or a directory tree with a regex. " +
+            "path can be a file or a directory (recursive); " +
+            "auto-skips .git/node_modules/target/dist; " +
+            "context controls N lines shown around each match.",
             schema)
     }
 
@@ -530,9 +592,9 @@ public class ListDirTool <: CjhTool {
 
     public func spec(): ToolSpec {
         var props = HashMap<String, JsonValue>()
-        props.add("path", JsonSchema.str("要列出的目录路径"))
+        props.add("path", JsonSchema.str("Directory path to list"))
         let schema = JsonSchema.object(props, ArrayList<String>(["path"]))
-        return ToolSpec("list_dir", "列出目录下的文件和子目录。用于了解项目结构。", schema)
+        return ToolSpec("list_dir", "List files and subdirectories under a directory. Use to understand project structure.", schema)
     }
 
     public func execute(args: JsonObject): ToolResult {

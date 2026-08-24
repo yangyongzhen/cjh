@@ -119,6 +119,9 @@ public class ModelResponse {
     public let text: String
     public let toolCalls: ArrayList<ToolCall>
     public var usage: TokenUsage = TokenUsage()
+    public var truncated: Bool = false   // finish_reason=="length"：输出被 max_tokens 截断
+    // 被截断的 write_file/edit_file 的 path 列表（agent loop 据此注入 [System Notice]）
+    public var truncatedPaths: ArrayList<String> = ArrayList<String>()
 
     public init(text: String, toolCalls: ArrayList<ToolCall>) {
         this.text = text

@@ -68,6 +68,10 @@ public class StreamAccumulator {
     public var promptTokens: Int64 = 0
     public var completionTokens: Int64 = 0
     public var cachedTokens: Int64 = 0
+    // 输出被 max_tokens 截断（finish_reason=="length"）
+    public var truncated: Bool = false
+    // 被截断的 write_file/edit_file 路径（agent loop 据此注入强制续写指令）
+    public var truncatedPaths: ArrayList<String> = ArrayList<String>()
 
     /**
      * 处理一个 SSE data 帧（JSON）
@@ -138,7 +142,11 @@ public class StreamAccumulator {
                                         // 流结束标记（finish_reason）
                                         if (let Some(fr) <- c.get("finish_reason")) {
                                             match (fr.kind()) {
-                                                case JsonKind.JsString => () // 可记录
+                                                case JsonKind.JsString =>
+                                                    // 检测 max_tokens 截断（对齐 atomcode openai_compat.rs:1558）
+                                                    if (fr.asString().getValue() == "length") {
+                                                        this.truncated = true
+                                                    }
                                                 case _ => ()
                                             }
                                         }
@@ -166,17 +174,17 @@ public class StreamAccumulator {
                                 case _ => ()
                             }
                         }
-                        // DeepSeek 缓存命中：prompt_cache_hit_tokens
+                        // 缓存命中：DeepSeek prompt_cache_hit_tokens / Anthropic cache_read_input_tokens
+                        // 对齐 atomcode openai_compat.rs map_usage：单值 fallback，流式 last-wins（= 赋值）
                         if (let Some(ch) <- usage.get("prompt_cache_hit_tokens")) {
                             match (ch.kind()) {
                                 case JsonKind.JsInt => this.cachedTokens = ch.asInt().getValue()
                                 case _ => ()
                             }
                         }
-                        // Anthropic 缓存命中：cache_read_input_tokens
                         if (let Some(cr) <- usage.get("cache_read_input_tokens")) {
                             match (cr.kind()) {
-                                case JsonKind.JsInt => this.cachedTokens += cr.asInt().getValue()
+                                case JsonKind.JsInt => this.cachedTokens = cr.asInt().getValue()
                                 case _ => ()
                             }
                         }
@@ -278,27 +286,36 @@ public class StreamAccumulator {
             var args = JsonObject()
             let raw = this.pendingToolArgs[i]
             if (raw.size > 0) {
-                // 三级容错：直接解析 → 去双重转义 → JSON 补全
-                // 参考 OpenAI SDK accumulate_delta + partialParse
+                // OpenAI SDK / atomcode 标准做法：
+                // delta.function.arguments 片段累积后，一次性 json.loads。
+                // 不做"去双重转义"——那会破坏 content 里的合法 JSON 转义。
+                // 解析失败才兜底 repair（处理 max_tokens 截断）。
                 let parsed = tryParseJson(raw)
                 match (parsed) {
                     case Some(obj) => args = obj
-                    case None => 
-                        // 去掉双重转义（DeepSeek 返回 \\\" → \"）
-                        let unescaped = raw.replace("\\\\\"", "\"").replace("\\\\\\\\", "\\\\")
-                        let parsed2 = tryParseJson(unescaped)
-                        match (parsed2) {
-                            case Some(obj) => args = obj
-                            case None =>
-                                // JSON 被截断：补全
-                                let repaired = repairTruncatedJson(raw)
-                                let parsed3 = tryParseJson(repaired)
-                                match (parsed3) {
-                                    case Some(obj) => args = obj
-                                    case None =>
-                                        Log.error("finish: JSON 解析失败, raw[:200]=${raw[0..(if (raw.size > 200) { 200 } else { raw.size })]}")
-                                        args.put("_raw", JsonString(raw))
+                    case None =>
+                        // tryParseJson 失败 = JSON 被截断（content 太长被 max_tokens 切断）
+                        // 标记 truncated，让 agent loop 给 write_file/edit_file 发续写提示
+                        this.truncated = true
+                        let repaired = repairTruncatedJson(raw)
+                        match (tryParseJson(repaired)) {
+                            case Some(obj) =>
+                                args = obj
+                                // 记录被截断的 write_file/edit_file 的 path
+                                //（即使 repair 救回前半部分，content 仍不完整，需 append_file 续写）
+                                if (name == "write_file" || name == "edit_file") {
+                                    match (obj.get("path")) {
+                                        case Some(p) =>
+                                            match (p.kind()) {
+                                                case JsonKind.JsString => this.truncatedPaths.add(p.asString().getValue())
+                                                case _ => ()
+                                            }
+                                        case None => ()
+                                    }
                                 }
+                            case None =>
+                                Log.error("finish: JSON 解析失败, raw[:200]=${raw[0..(if (raw.size > 200) { 200 } else { raw.size })]}")
+                                args.put("_raw", JsonString(raw))
                         }
                 }
             }
@@ -309,6 +326,10 @@ public class StreamAccumulator {
         resp.usage.promptTokens = this.promptTokens
         resp.usage.completionTokens = this.completionTokens
         resp.usage.cachedTokens = this.cachedTokens
+        resp.truncated = this.truncated
+        for (i in 0..this.truncatedPaths.size) {
+            resp.truncatedPaths.add(this.truncatedPaths[i])
+        }
         return resp
     }
 }
