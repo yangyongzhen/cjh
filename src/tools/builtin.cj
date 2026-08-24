@@ -239,12 +239,19 @@ public class WriteTool <: CjhTool {
         props.add("path", JsonSchema.str("要写入的文件路径"))
         props.add("content", JsonSchema.str("完整的新文件内容"))
         let schema = JsonSchema.object(props, ArrayList<String>(["path", "content"]))
-        return ToolSpec("write_file", "将完整内容写入指定文件（覆盖）。用于创建或修改文件。", schema)
+        return ToolSpec("write_file",
+            "将完整内容写入指定文件（覆盖）。用于创建或修改文件。" +
+            "重要：path 和 content 必须在同一次调用中一起传入，" +
+            "不能分两次调用（先传 path 再传 content 会失败）。",
+            schema)
     }
 
     public func execute(args: JsonObject): ToolResult {
         if (!args.containsKey("path") || !args.containsKey("content")) {
-            return ToolResult("缺少参数: path/content", true)
+            return ToolResult(
+                "错误：write_file 需要 path 和 content 两个参数同时传入。" +
+                "请重新调用 write_file，在一次调用中同时提供 path（文件路径）和 content（完整文件内容）。",
+                true)
         }
         let path = args.get("path").getOrThrow().asString().getValue()
         let content = args.get("content").getOrThrow().asString().getValue()

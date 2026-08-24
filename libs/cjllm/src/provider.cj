@@ -4,6 +4,7 @@ import stdx.encoding.json.*
 import stdx.net.http.*
 import std.io.*
 import std.collection.*
+import cjutil.*
 
 /**
  * 工具定义（发送给模型的 tool schema，OpenAI 格式）
@@ -277,15 +278,28 @@ public class StreamAccumulator {
             var args = JsonObject()
             let raw = this.pendingToolArgs[i]
             if (raw.size > 0) {
-                try {
-                    let parsed = JsonValue.fromStr(raw)
-                    match (parsed.kind()) {
-                        case JsonKind.JsObject => args = parsed.asObject()
-                        case _ => ()
-                    }
-                } catch (e: Exception) {
-                    // 参数非法：透传原始字符串（仅该调用自身，不影响其他 index）
-                    args.put("_raw", JsonString(raw))
+                // 三级容错：直接解析 → 去双重转义 → JSON 补全
+                // 参考 OpenAI SDK accumulate_delta + partialParse
+                let parsed = tryParseJson(raw)
+                match (parsed) {
+                    case Some(obj) => args = obj
+                    case None => 
+                        // 去掉双重转义（DeepSeek 返回 \\\" → \"）
+                        let unescaped = raw.replace("\\\\\"", "\"").replace("\\\\\\\\", "\\\\")
+                        let parsed2 = tryParseJson(unescaped)
+                        match (parsed2) {
+                            case Some(obj) => args = obj
+                            case None =>
+                                // JSON 被截断：补全
+                                let repaired = repairTruncatedJson(raw)
+                                let parsed3 = tryParseJson(repaired)
+                                match (parsed3) {
+                                    case Some(obj) => args = obj
+                                    case None =>
+                                        Log.error("finish: JSON 解析失败, raw[:200]=${raw[0..(if (raw.size > 200) { 200 } else { raw.size })]}")
+                                        args.put("_raw", JsonString(raw))
+                                }
+                        }
                 }
             }
             this.toolCalls.add(ToolCall(id, name, args))
