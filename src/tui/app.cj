@@ -74,6 +74,8 @@ public class TuiApp {
     private var tasksPanel: TasksPanel = TasksPanel()
     // /theme 交互式选择模式：picker 显示主题列表，选中后提交 /theme <name>
     private var themePickerMode: Bool = false
+    // 主题预览：picker 移动时即时预览，Esc 恢复原主题，Enter 持久化
+    private var themePreviewOriginal: String = ""  // 进入预览前的主题名（Esc 恢复用）
     // 当前视图：0=对话 1=帮助
     private var viewMode: Int64 = 0
     // 多行编辑模式（Ctrl+E 切换；Alt+Enter 提交，Esc 退出）
@@ -96,6 +98,9 @@ public class TuiApp {
 
     // provider 配置表单提交回调（外部接线；参数：provider/baseUrl/model/apiKey）
     public var onProviderSubmit: (String, String, String, String) -> Unit = { _, _, _, _ => }
+
+    // 主题确认回调（外部接线；参数：主题名）—— Enter 确认时触发，写回 settings.json
+    public var onThemeApply: (String) -> Unit = { _ => }
 
     public init() {
         this.term = Term()
@@ -155,16 +160,18 @@ public class TuiApp {
         }
         // 提交（Enter）→ 下拉确认 + 输出回显 + 外部 onSubmit
         this.inputBox.onSubmit = { line =>
-            // /theme 交互式选择：picker 选中后直接提交 /theme <选中项>
+            // /theme 交互式选择：picker 选中后确认当前预览主题
             if (this.themePickerMode) {
                 this.themePickerMode = false
                 let cur = this.picker.current()
                 this.inputBox.clear()
                 this.picker.hide()
                 if (cur.size > 0) {
-                    let cmd = "/theme " + cur
-                    this.appendOutput(Ansi.fg(Ansi.THEME_ACCENT) + "❯ " + Ansi.reset() + cmd)
-                    this.onSubmit(cmd)
+                    // 预览已 apply，这里只需持久化
+                    Theme.apply(cur)
+                    this.onThemeApply(cur)
+                    this.appendOutput(Ansi.fg(Ansi.THEME_OK) +
+                        "[主题已切换: ${cur}]" + Ansi.reset())
                 }
                 this.markDirty()
                 return
@@ -528,6 +535,7 @@ public class TuiApp {
      */
     public func showThemePicker(themes: ArrayList<String>, current: String): Unit {
         this.themePickerMode = true
+        this.themePreviewOriginal = current  // 记录原主题，Esc 恢复用
         this.picker.show(themes)
         // 默认指向当前主题
         var idx: Int64 = 0
@@ -622,8 +630,16 @@ public class TuiApp {
                 return
             }
             if (this.picker.isVisible()) {
-                this.picker.hide()
-                this.markDirty()
+                // 主题预览模式：Esc 恢复原主题
+                if (this.themePickerMode) {
+                    this.themePickerMode = false
+                    Theme.apply(this.themePreviewOriginal)
+                    this.picker.hide()
+                    this.markDirty()
+                } else {
+                    this.picker.hide()
+                    this.markDirty()
+                }
             }
             return
         }
@@ -655,11 +671,19 @@ public class TuiApp {
         if (this.picker.isVisible()) {
             if (key.isArrowUp) {
                 this.picker.prev()
+                // 主题预览：即时应用选中主题
+                if (this.themePickerMode) {
+                    Theme.apply(this.picker.current())
+                }
                 this.markDirty()
                 return
             }
             if (key.isArrowDown) {
                 this.picker.next()
+                // 主题预览：即时应用选中主题
+                if (this.themePickerMode) {
+                    Theme.apply(this.picker.current())
+                }
                 this.markDirty()
                 return
             }

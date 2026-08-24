@@ -1111,6 +1111,11 @@ func runTui(sessionId: String): Int64 {
                 tui.appendOutput(Ansi.fg(Ansi.THEME_ERR) + "[provider 切换失败: ${e}]" + Ansi.reset())
             }
         }
+        // 主题确认回调：写回 settings.json 持久化
+        tui.onThemeApply = { name =>
+            cjhCfg.theme = name
+            cjhCfg.saveTheme(name)
+        }
         tui.onSubmit = { input =>
             // slash 命令（对齐 pi：/help /new /resume /quit /model /settings）
             if (input.startsWith("/")) {
