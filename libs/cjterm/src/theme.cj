@@ -144,6 +144,70 @@ public class Theme {
         tokyoNight.bg = 235          // 深炭灰 (bg #1A1B26 近似)
         map["tokyo-night"] = tokyoNight
 
+        // catppuccin：柔和暖色暗色主题（粉橙薰衣草）
+        // 参考 omp dark-catppuccin：accent=peach, border=blue, borderAccent=lavender
+        let catppuccin = Palette()
+        catppuccin.primary = 111     // 柔蓝 (blue #89B4FA 近似)
+        catppuccin.accent = 216      // 桃橙 (peach #FAB387 近似)
+        catppuccin.purple = 183      // 薰衣草 (mauve #CBA6F7 近似)
+        catppuccin.ok = 151          // 柔绿 (green #A6E3A1 近似)
+        catppuccin.warn = 229        // 暖黄 (yellow #F9E2AF 近似)
+        catppuccin.err = 211         // 柔粉红 (red #F38BA8 近似)
+        catppuccin.muted = 102       // 灰蓝 (overlay1 #7F849C 近似)
+        catppuccin.info = 147        // 淡薰衣草 (lavender #B4BEFE 近似)
+        catppuccin.highlight = 216   // 桃橙（选中行高亮）
+        catppuccin.text = 189        // 近白 (text #CDD6F4 近似)
+        catppuccin.bg = 235          // 深炭灰 (base #1E1E2E 近似)
+        map["catppuccin"] = catppuccin
+
+        // rose-pine：玫瑰松石暗色主题（玫红松绿金）
+        // 参考 omp dark-rose-pine：accent=iris, border=pine, borderAccent=foam
+        let rosePine = Palette()
+        rosePine.primary = 30        // 松石青 (pine #31748F 近似)
+        rosePine.accent = 183        // 鸢尾紫 (iris #C4A7E7 近似)
+        rosePine.purple = 183        // 鸢尾紫
+        rosePine.ok = 152            // 泡沫青 (foam #9CCFD8 近似)
+        rosePine.warn = 222          // 玫瑰金 (gold #F6C177 近似)
+        rosePine.err = 204           // 玫红 (love #EB6F92 近似)
+        rosePine.muted = 60          // 暗紫灰 (muted #6E6A86 近似)
+        rosePine.info = 181          // 玫瑰粉 (rose #EBBCBA 近似)
+        rosePine.highlight = 183     // 鸢尾紫（选中行高亮）
+        rosePine.text = 189          // 近白 (text #E0DEF4 近似)
+        rosePine.bg = 235            // 深炭灰 (base #191724 近似)
+        map["rose-pine"] = rosePine
+
+        // solarized：经典护眼暗色主题（蓝青绿黄）
+        // 参考 omp dark-solarized：accent=blue, border=base01, borderAccent=cyan
+        let solarized = Palette()
+        solarized.primary = 66       // 深蓝灰 (base01 #586E75 近似)
+        solarized.accent = 33        // 太阳蓝 (blue #268BD2 近似)
+        solarized.purple = 62        // 紫罗兰 (violet #6C71C4 近似)
+        solarized.ok = 100           // 深苔绿 (green #859900 近似)
+        solarized.warn = 136         // 琥珀黄 (yellow #B58900 近似)
+        solarized.err = 166          // 深红 (red #DC322F 近似)
+        solarized.muted = 102        // 暗蓝灰 (base00 #657B83 近似)
+        solarized.info = 37          // 青绿 (cyan #2AA198 近似)
+        solarized.highlight = 33     // 太阳蓝（选中行高亮）
+        solarized.text = 230         // 暖白 (base3 #FDF6E3 近似)
+        solarized.bg = 235           // 深炭灰 (base03 #002B36 近似)
+        map["solarized"] = solarized
+
+        // monokai：经典编辑器暗色主题（粉绿黄橙紫）
+        // 参考 omp dark-monokai：accent=orange, border=cyan, borderAccent=pink
+        let monokai = Palette()
+        monokai.primary = 81         // 青绿 (cyan #66D9EF 近似)
+        monokai.accent = 214         // 橙 (orange #FD971F 近似)
+        monokai.purple = 141         // 紫 (purple #AE81FF 近似)
+        monokai.ok = 119             // 鲜绿 (green #A6E22E 近似)
+        monokai.warn = 186           // 暖黄 (yellow #E6DB74 近似)
+        monokai.err = 197            // 粉红 (pink #F92672 近似)
+        monokai.muted = 247          // 中灰 (gray #999999 近似)
+        monokai.info = 101           // 暗橄榄 (comment #75715E 近似)
+        monokai.highlight = 214      // 橙（选中行高亮）
+        monokai.text = 231           // 近白 (foreground #F8F8F2 近似)
+        monokai.bg = 235             // 深炭灰 (background #272822 近似)
+        map["monokai"] = monokai
+
         return map
     }
 
