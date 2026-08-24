@@ -49,9 +49,11 @@ public class HashlineEditTool <: CjhTool {
         return ToolSpec("hashline_edit",
             "Edit a file with line anchors (more efficient than write_file full overwrite). " +
             "Patch format (one directive per line): @@N targets line N (1-based, read_file already shows line numbers); " +
+            "@@N content optionally verifies line N equals content (mismatch -> reject, prevents editing a stale file). " +
             "+content inserts after the anchor line; -content deletes the anchor line (content must match exactly); " +
             "-old +new replaces the anchor line. " +
             "Example replacing line 2: '@@2\\n-line2 this is a test\\n+line2 MODIFIED'. " +
+            "Example with content guard: '@@2 line2 this is a test\\n+line2 MODIFIED'. " +
             "Mismatched content is rejected (prevents editing the wrong location).",
             schema)
     }
@@ -112,7 +114,7 @@ public class HashlineEditTool <: CjhTool {
  * - 比 omp Hashline 简单，但对模型友好（omp 要求模型输出哈希前缀）
  */
 public enum PatchOp {
-    | LineAnchor(Int64)           // @@N：定位第 N 行（1-based）
+    | LineAnchor(Int64, String)   // @@N [content]：定位第 N 行（1-based）；可选 content 校验该行内容
     | HashAnchor(String)          // @@{hash}：哈希锚点（向后兼容，但模型难用）
     | Insert(String)              // +content：在锚点行后插入
     | Delete(String)              // -content：删除锚点行（content 双保险匹配）
@@ -158,11 +160,11 @@ public class HashlineEditParser {
         while (i < lines.size) {
             let line = lines[i]
             if (line.startsWith("@@")) {
-                // 先尝试行号锚点：@@N
+                // 先尝试行号锚点：@@N 或 @@N content
                 let lineNoResult = parseLineAnchor(line)
                 match (lineNoResult) {
-                    case Some(lineNo) =>
-                        ops.add(PatchOp.LineAnchor(lineNo))
+                    case Some((lineNo, expected)) =>
+                        ops.add(PatchOp.LineAnchor(lineNo, expected))
                         i += 1
                         i = collectOps(lines, i, ops)
                     case None =>
@@ -227,24 +229,43 @@ public class HashlineEditParser {
      * 解析行号锚点：@@N → N（1-based）
      * 返回 None 表示不是行号锚点
      */
-    private static func parseLineAnchor(line: String): Option<Int64> {
+    /**
+     * 解析行号锚点：@@N 或 @@N content → (N, content)
+     * - @@N       → (N, "")    不校验该行内容
+     * - @@N foo   → (N, "foo") 校验第 N 行内容必须 == "foo"
+     * 返回 None 表示不是行号锚点
+     */
+    private static func parseLineAnchor(line: String): Option<(Int64, String)> {
         let rest = line[2..line.size]  // 去掉 @@
         if (rest.size == 0) {
             return None
         }
-        // 检查是否全数字（用 Rune 字面量比较）
-        var allDigits: Bool = true
+        // 找第一个空格，分隔行号和可选 content
+        var spaceIdx: Int64 = -1
+        var j: Int64 = 0
         for (ch in rest) {
+            if (ch == 32) {  // ' '
+                spaceIdx = j
+                break
+            }
+            j += 1
+        }
+        let numPart = if (spaceIdx >= 0) { rest[0..spaceIdx] } else { rest }
+        // 检查是否全数字
+        var allDigits: Bool = true
+        for (ch in numPart) {
             if (ch < 48 || ch > 57) {  // '0'=48, '9'=57
                 allDigits = false
                 break
             }
         }
-        if (!allDigits) {
+        if (!allDigits || numPart.size == 0) {
             return None
         }
         try {
-            return Some(Int64.parse(rest))
+            let lineNo = Int64.parse(numPart)
+            let expected = if (spaceIdx >= 0) { rest[(spaceIdx + 1)..rest.size] } else { "" }
+            return Some((lineNo, expected))
         } catch (e: Exception) {
             return None
         }
@@ -297,11 +318,16 @@ public class HashlineEditApplier {
         var i = 0
         while (i < ops.size) {
             match (ops[i]) {
-                case LineAnchor(lineNo) =>
+                case LineAnchor(lineNo, expected) =>
                     // 行号锚点：1-based → 0-based
                     let lineIdx: Int64 = lineNo - 1
                     if (lineIdx < 0 || lineIdx >= Int64(lines.size)) {
                         return ApplyResult.ApplyError("行号 ${lineNo} 超出范围（文件共 ${lines.size} 行）")
+                    }
+                    // 可选内容校验：@@N content 格式，content 非空时必须匹配第 N 行内容
+                    if (expected.size > 0 && lines[lineIdx] != expected) {
+                        return ApplyResult.ApplyError(
+                            "行号 ${lineNo} 内容不匹配：期望「${expected}」，实际「${lines[lineIdx]}」")
                     }
                     var insertAfterLine: Int64 = lineIdx
                     i += 1
@@ -330,7 +356,7 @@ public class HashlineEditApplier {
                                 lines[lineIdx] = newContent
                                 appliedCount += 1
                                 i += 1
-                            case LineAnchor(_) | HashAnchor(_) =>
+                            case LineAnchor(_, _) | HashAnchor(_) =>
                                 break  // 遇到下一个锚点，结束当前块
                         }
                     }
@@ -366,7 +392,7 @@ public class HashlineEditApplier {
                                         lines[lineIdx] = newContent
                                         appliedCount += 1
                                         i += 1
-                                    case LineAnchor(_) | HashAnchor(_) =>
+                                    case LineAnchor(_, _) | HashAnchor(_) =>
                                         break
                                 }
                             }
