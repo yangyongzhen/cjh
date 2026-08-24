@@ -6,6 +6,7 @@ import stdx.net.tls.*
 import stdx.crypto.x509.X509Certificate
 import std.collection.*
 import std.io.*
+import cjutil.*
 
 /**
  * OpenAI 兼容协议实现（OpenAI / DeepSeek / 通义 / Moonshot 等均兼容）

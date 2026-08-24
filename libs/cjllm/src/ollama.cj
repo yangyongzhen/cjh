@@ -4,6 +4,7 @@ import stdx.encoding.json.*
 import stdx.net.http.*
 import std.collection.*
 import std.io.*
+import cjutil.*
 
 /**
  * Ollama 本地模型 Provider（V3b：解锁离线场景）

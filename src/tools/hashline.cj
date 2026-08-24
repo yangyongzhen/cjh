@@ -4,6 +4,7 @@ import std.collection.*
 import stdx.encoding.json.*
 import std.fs.*
 import std.convert.*
+import cjutil.*
 import cjllm.ToolSpec
 
 /**
@@ -65,7 +66,7 @@ public class HashlineEditTool <: CjhTool {
         try {
             // 1. 读取原文件
             let originalBytes = File.readFrom(path)
-            let original = safeFromUtf8Decode(originalBytes)
+            let original = safeFromUtf8(originalBytes)
             let lines = original.split("\n", -1)
 
             // 2. 解析 patch

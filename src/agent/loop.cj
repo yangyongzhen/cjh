@@ -7,6 +7,7 @@ import cjllm.*
 import cjh.tools.*
 import cjllm.*
 import cjcfg.*
+import cjutil.*
 import std.sync.*
 
 /**
@@ -226,6 +227,7 @@ public class Agent {
                     this.onDelta(delta)
                 })
             } catch (e: Exception) {
+                Log.error("Agent.run chatStream 异常: ${e}")
                 return "[LLM 调用异常: ${e}]"
             }
             // 累计 token 用量

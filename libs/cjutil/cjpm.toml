@@ -1,7 +1,7 @@
 [package]
   cjc-version = "1.0.5"
-  name = "cjllm"
-  description = "cjllm：仓颉 LLM 客户端库（OpenAI 兼容协议 + SSE 流式 + 工具调用 + mock）"
+  name = "cjutil"
+  description = "cjutil：仓颉通用工具库（日志、UTF-8 安全解码等基础设施），可独立贡献给仓颉生态"
   version = "0.1.0"
   target-dir = ""
   output-type = "static"
@@ -11,7 +11,6 @@
   package-configuration = {}
 
 [dependencies]
-  cjutil = { path = "../cjutil" }
 
 [target.x86_64-unknown-linux-gnu.bin-dependencies]
     path-option = ["/root/.cangjie/stdx/cangjie-stdx-linux-x64-1.0.5.1/dynamic/stdx"]

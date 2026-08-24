@@ -2,6 +2,7 @@ package cjllm
 
 import std.io.*
 import std.collection.*
+import cjutil.*
 
 /**
  * SSE（Server-Sent Events）流解析器

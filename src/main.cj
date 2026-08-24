@@ -12,6 +12,7 @@ import cjllm.*
 import cjh.tui.*
 import cjterm.*
 import cjcfg.*
+import cjutil.*
 
 @C
 foreign func getenv(name: CString): CPointer<UInt8>
@@ -140,7 +141,7 @@ func readLineFromStdIn(): Option<String> {
         if (n <= 0) {
             return None
         }
-        var line = safeFromUtf8Decode(buf[0..n])
+        var line = safeFromUtf8(buf[0..n])
         // 去尾部换行
         while (line.size > 0 && (line[line.size - 1] == 10u8 || line[line.size - 1] == 13u8)) {
             line = line[0..line.size - 1]
@@ -183,7 +184,7 @@ func loadProjectInstructions(): String {
         let p = dir.toString() + "/AGENTS.md"
         if (exists(p)) {
             try {
-                let content = safeFromUtf8Decode(File.readFrom(p))
+                let content = safeFromUtf8(File.readFrom(p))
                 if (content.size > 0) {
                     return content
                 }
@@ -321,7 +322,7 @@ func listSkills(skillsDir: String, enabled: ArrayList<String>, tui: TuiApp): Uni
     tui.appendOutput(Ansi.fg(Ansi.THEME_ACCENT) + "可用技能（settings.json 的 enabled_skills 白名单控制开关，空=全部启用）：" + Ansi.reset())
     for (f in files) {
         try {
-            let content = safeFromUtf8Decode(File.readFrom(skillsDir + "/" + f))
+            let content = safeFromUtf8(File.readFrom(skillsDir + "/" + f))
             var name = f[0..f.size - 3]
             var desc = ""
             var toolCount: Int64 = 0
@@ -390,7 +391,7 @@ func loadSkills(skillsDir: String, enabled: ArrayList<String>): String {
     var count: Int64 = 0
     for (f in files) {
         try {
-            let content = safeFromUtf8Decode(File.readFrom(skillsDir + "/" + f))
+            let content = safeFromUtf8(File.readFrom(skillsDir + "/" + f))
             if (content.size == 0) {
                 continue
             }
@@ -450,7 +451,7 @@ func loadSkillTools(skillsDir: String, registry: ToolRegistry, enabled: ArrayLis
     })
     for (f in files) {
         try {
-            let content = safeFromUtf8Decode(File.readFrom(skillsDir + "/" + f))
+            let content = safeFromUtf8(File.readFrom(skillsDir + "/" + f))
             if (content.size == 0 || !content.startsWith("---")) {
                 continue
             }
@@ -918,6 +919,8 @@ func runTui(sessionId: String): Int64 {
         cjhCfg.compactThreshold,
         cjhCfg.compactKeep)
 
+    var tuiOpt: Option<TuiApp> = None
+
     try {
         let provider: LlmProvider
         if ((readEnv("CJH_MOCK") ?? "") == "1") {
@@ -951,6 +954,7 @@ func runTui(sessionId: String): Int64 {
         ))
         // 线程安全的输出队列（agent 在调用线程运行，输出经队列到 TUI）
         let tui = TuiApp()
+        tuiOpt = Some(tui)
         tui.setModel(cjhCfg.model)
 
         // 会话：恢复历史 / 新会话
@@ -1137,8 +1141,16 @@ func runTui(sessionId: String): Int64 {
         return 0
     } catch (e: Exception) {
         Stderr.restore()
+        Log.fatal("runTui 启动失败: ${e}")
         eprintln("启动失败: ${e}")
         return 1
+    } finally {
+        // 兜底：任何退出路径（含异常崩溃）都恢复终端 raw 模式
+        // 否则 ECHO 被清，回到 shell 后输入不显示
+        match (tuiOpt) {
+            case Some(t) => t.restoreTerminal()
+            case None => ()
+        }
     }
 }
 

@@ -4,6 +4,7 @@ import std.collection.*
 import std.process.*
 import stdx.encoding.json.*
 import cjllm.ToolSpec
+import cjutil.*
 
 /**
  * 工具执行结果
@@ -179,8 +180,8 @@ public class DeclarativeTool <: CjhTool {
             argv[0] = "-c"
             argv[1] = cmd
             let (code, stdoutBytes, stderrBytes) = executeWithOutput("/bin/bash", argv)
-            var out = safeFromUtf8Decode(stdoutBytes)
-            var err = safeFromUtf8Decode(stderrBytes)
+            var out = safeFromUtf8(stdoutBytes)
+            var err = safeFromUtf8(stderrBytes)
             var result = "exit code: ${code}\n"
             if (out.size > 0) {
                 result += "stdout:\n${out}\n"

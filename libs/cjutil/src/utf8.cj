@@ -1,16 +1,15 @@
-package cjh.tools
+package cjutil
 
 /**
- * UTF-8 安全解码（cjh.tools 版）
+ * UTF-8 安全解码：遇到非法字节时用替换字符（U+FFFD �）代替，不抛异常
  *
- * 遇到非法字节时用替换字符（U+FFFD �）代替，不抛异常。
- * 用于工具输出解析（bash stdout/stderr、read_file、grep 等），
- * 避免非法 UTF-8 字节导致 IllegalArgumentException 崩溃 TUI。
+ * 背景：String.fromUtf8() 遇到非法 UTF-8 字节序列时抛
+ * IllegalArgumentException。LLM 流式响应（SSE）、bash 命令输出、
+ * 文件读取等都可能包含非 UTF-8 字节，需要容错解码避免崩溃。
  *
- * 注意：cjllm 包有同名函数 safeFromUtf8，用于 LLM 响应解析。
- * 本包不依赖 cjllm，故独立实现（逻辑一致）。
+ * 本函数为通用基础设施，供 cjllm、cjh.tools 等上层包复用。
  */
-public func safeFromUtf8Decode(bytes: Array<UInt8>): String {
+public func safeFromUtf8(bytes: Array<UInt8>): String {
     var sb = StringBuilder()
     var i = 0
     let n = bytes.size
@@ -60,4 +59,3 @@ public func safeFromUtf8Decode(bytes: Array<UInt8>): String {
     }
     return sb.toString()
 }
-

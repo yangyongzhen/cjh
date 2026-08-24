@@ -211,6 +211,14 @@ public class TuiApp {
             sleep(Duration.millisecond * 5)
         }
 
+        this.restoreTerminal()
+    }
+
+    /**
+     * 恢复终端：关 raw 模式 + 显示光标 + 清屏
+     * 供 run() 正常退出和 main() finally 异常退出兜底调用
+     */
+    public func restoreTerminal(): Unit {
         this.term.disableRaw()
         print(Ansi.showCursor(), flush: true)
         print(Ansi.clearScreen(), flush: true)
