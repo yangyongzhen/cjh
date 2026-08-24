@@ -140,7 +140,7 @@ func readLineFromStdIn(): Option<String> {
         if (n <= 0) {
             return None
         }
-        var line = String.fromUtf8(buf[0..n])
+        var line = safeFromUtf8Decode(buf[0..n])
         // 去尾部换行
         while (line.size > 0 && (line[line.size - 1] == 10u8 || line[line.size - 1] == 13u8)) {
             line = line[0..line.size - 1]
@@ -183,7 +183,7 @@ func loadProjectInstructions(): String {
         let p = dir.toString() + "/AGENTS.md"
         if (exists(p)) {
             try {
-                let content = String.fromUtf8(File.readFrom(p))
+                let content = safeFromUtf8Decode(File.readFrom(p))
                 if (content.size > 0) {
                     return content
                 }
@@ -321,7 +321,7 @@ func listSkills(skillsDir: String, enabled: ArrayList<String>, tui: TuiApp): Uni
     tui.appendOutput(Ansi.fg(Ansi.THEME_ACCENT) + "可用技能（settings.json 的 enabled_skills 白名单控制开关，空=全部启用）：" + Ansi.reset())
     for (f in files) {
         try {
-            let content = String.fromUtf8(File.readFrom(skillsDir + "/" + f))
+            let content = safeFromUtf8Decode(File.readFrom(skillsDir + "/" + f))
             var name = f[0..f.size - 3]
             var desc = ""
             var toolCount: Int64 = 0
@@ -390,7 +390,7 @@ func loadSkills(skillsDir: String, enabled: ArrayList<String>): String {
     var count: Int64 = 0
     for (f in files) {
         try {
-            let content = String.fromUtf8(File.readFrom(skillsDir + "/" + f))
+            let content = safeFromUtf8Decode(File.readFrom(skillsDir + "/" + f))
             if (content.size == 0) {
                 continue
             }
@@ -450,7 +450,7 @@ func loadSkillTools(skillsDir: String, registry: ToolRegistry, enabled: ArrayLis
     })
     for (f in files) {
         try {
-            let content = String.fromUtf8(File.readFrom(skillsDir + "/" + f))
+            let content = safeFromUtf8Decode(File.readFrom(skillsDir + "/" + f))
             if (content.size == 0 || !content.startsWith("---")) {
                 continue
             }
@@ -979,11 +979,15 @@ func runTui(sessionId: String): Int64 {
         TuiBridge.app = tui
         agent.onDelta = { d =>
             if (d.size > 0) {
-                if (!StreamState.active) {
-                    TuiBridge.delta("")
-                    StreamState.active = true
+                try {
+                    if (!StreamState.active) {
+                        TuiBridge.delta("")
+                        StreamState.active = true
+                    }
+                    TuiBridge.delta(StreamState.md.process(d))
+                } catch (e: Exception) {
+                    // 流式增量含非法 UTF-8 字节：跳过本帧，不崩 TUI
                 }
-                TuiBridge.delta(StreamState.md.process(d))
             }
         }
         agent.onToolStart = { name, args =>

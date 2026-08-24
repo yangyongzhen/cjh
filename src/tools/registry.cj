@@ -179,8 +179,8 @@ public class DeclarativeTool <: CjhTool {
             argv[0] = "-c"
             argv[1] = cmd
             let (code, stdoutBytes, stderrBytes) = executeWithOutput("/bin/bash", argv)
-            var out = String.fromUtf8(stdoutBytes)
-            var err = String.fromUtf8(stderrBytes)
+            var out = safeFromUtf8Decode(stdoutBytes)
+            var err = safeFromUtf8Decode(stderrBytes)
             var result = "exit code: ${code}\n"
             if (out.size > 0) {
                 result += "stdout:\n${out}\n"

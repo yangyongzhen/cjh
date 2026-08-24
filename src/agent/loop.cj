@@ -218,9 +218,16 @@ public class Agent {
             iterations += 1
             summary.rounds = iterations
 
-            let response = this.provider.chatStream(this.messages, this.tools.specs(), { delta =>
-                this.onDelta(delta)
-            })
+            // 顶层兜底：LLM 响应解析可能抛 IllegalArgumentException（非法 UTF-8 字节）
+            // 不让它崩 TUI，转成错误消息返回
+            let response: ModelResponse
+            try {
+                response = this.provider.chatStream(this.messages, this.tools.specs(), { delta =>
+                    this.onDelta(delta)
+                })
+            } catch (e: Exception) {
+                return "[LLM 调用异常: ${e}]"
+            }
             // 累计 token 用量
             summary.promptTokens += response.usage.promptTokens
             summary.completionTokens += response.usage.completionTokens
@@ -473,8 +480,12 @@ public class Agent {
                     }
             }
         }
-        // 全部通过：正常执行
-        return this.tools.execute(name, args)
+        // 全部通过：正常执行（兜底异常，避免单工具崩溃带垮整个 Agent 循环）
+        try {
+            return this.tools.execute(name, args)
+        } catch (e: Exception) {
+            return ToolResult("工具执行异常: ${e}", true)
+        }
     }
 
     /**

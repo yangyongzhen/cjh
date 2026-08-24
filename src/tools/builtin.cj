@@ -36,8 +36,8 @@ public class BashTool <: CjhTool {
             args[0] = "-c"
             args[1] = cmd
             let (code, stdoutBytes, stderrBytes) = executeWithOutput("/bin/bash", args)
-            var out = String.fromUtf8(stdoutBytes)
-            var err = String.fromUtf8(stderrBytes)
+            var out = safeFromUtf8Decode(stdoutBytes)
+            var err = safeFromUtf8Decode(stderrBytes)
             var result = "exit code: ${code}\n"
             if (out.size > 0) {
                 result += "stdout:\n${out}\n"
@@ -92,7 +92,7 @@ public class ReadTool <: CjhTool {
         let path = args.get("path").getOrThrow().asString().getValue()
         try {
             let bytes = File.readFrom(path)
-            let content = String.fromUtf8(bytes)
+            let content = safeFromUtf8Decode(bytes)
             let lines = content.split("\n", -1)
 
             // 解析 offset/limit（可选）
@@ -349,7 +349,7 @@ public class GrepTool <: CjhTool {
      */
     private func searchFile(filePath: String, regex: Regex, contextLines: Int64, pattern: String): ToolResult {
         try {
-            let content = String.fromUtf8(File.readFrom(filePath))
+            let content = safeFromUtf8Decode(File.readFrom(filePath))
             let lines = content.split("\n", -1)
             var result = StringBuilder()
             var count: Int64 = 0
@@ -396,7 +396,7 @@ public class GrepTool <: CjhTool {
             if (!fi.isDirectory()) {
                 if (state.isTextFile(name)) {
                     try {
-                        let content = String.fromUtf8(File.readFrom(fi.path))
+                        let content = safeFromUtf8Decode(File.readFrom(fi.path))
                         let lines = content.split("\n", -1)
                         var i: Int64 = 0
                         var hasMatch: Bool = false

@@ -113,7 +113,7 @@ public class OllamaProvider <: LlmProvider {
             var err = ""
             let n = resp.body.read(errBuf)
             if (n > 0) {
-                err = String.fromUtf8(errBuf[0..n])
+                err = safeFromUtf8(errBuf[0..n])
             }
             throw LlmException("Ollama HTTP ${status}: ${err}")
         }

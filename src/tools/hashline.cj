@@ -65,7 +65,7 @@ public class HashlineEditTool <: CjhTool {
         try {
             // 1. 读取原文件
             let originalBytes = File.readFrom(path)
-            let original = String.fromUtf8(originalBytes)
+            let original = safeFromUtf8Decode(originalBytes)
             let lines = original.split("\n", -1)
 
             // 2. 解析 patch
