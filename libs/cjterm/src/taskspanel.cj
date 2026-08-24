@@ -78,6 +78,25 @@ public class TasksPanel {
     }
 
     /**
+     * 预计算面板将占用的高度（不渲染）
+     * 用于在输出区高度计算前确定动态状态行位置
+     * @param outH 输出区高度（限制面板不超过一半）
+     * @return 面板高度（无任务/太窄返回 0）
+     */
+    public func height(outH: Int64): Int64 {
+        this.lock.lock()
+        if (this.snapshots.size == 0) {
+            this.lock.unlock()
+            return 0
+        }
+        let count: Int64 = Int64(this.snapshots.size)
+        this.lock.unlock()
+        let panelH: Int64 = count + 2
+        let maxH: Int64 = if (outH / 2 > 0) { outH / 2 } else { 1 }
+        return if (panelH > maxH) { maxH } else { panelH }
+    }
+
+    /**
      * 渲染面板到 canvas
      * @param canvas 画布
      * @param availRow 面板可用起始行（输出区底部）

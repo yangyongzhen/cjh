@@ -70,11 +70,11 @@ func runMockVerify(): Int64 {
     }
 
     println("=== cjh agent 工具调用链验证（4 段）===")
-    let answer = agent.run("请读取 /tmp/cjh_verify.txt 并统计行数")
+    let summary = agent.run("请读取 /tmp/cjh_verify.txt 并统计行数")
     println("=== 最终答复 ===")
-    println(answer)
+    println(summary.reply)
 
-    if (VerifyState.toolCalls == 3 && answer.contains("验证完成")) {
+    if (VerifyState.toolCalls == 3 && summary.reply.contains("验证完成")) {
         println("\n✅ 验证通过：工具调用链完整（read_file → grep → list_dir → 最终答复）")
         return 0
     } else {
@@ -856,7 +856,7 @@ func runJson(prompt: String, sessionId: String): Int64 {
             return 1
         }
 
-        let reply = agent.run(prompt)
+        let summary = agent.run(prompt)
 
         // 保存会话：新会话用 store.save；恢复的会话更新原文件（删旧建新以更新消息）
         if (curId.size == 0) {
@@ -867,7 +867,7 @@ func runJson(prompt: String, sessionId: String): Int64 {
 
         // 输出 JSON 结果
         var out = JsonObject()
-        out.put("reply", JsonString(reply))
+        out.put("reply", JsonString(summary.reply))
         out.put("session_id", JsonString(curId))
         var tcArr = ArrayList<JsonValue>()
         for (tc in JsonState.toolCalls) {
@@ -997,15 +997,22 @@ func runTui(sessionId: String): Int64 {
                     // 流式增量含非法 UTF-8 字节：跳过本帧，不崩 TUI
                 }
             }
+            tui.setAgentState("Streaming…")
+        }
+        agent.onThinking = { =>
+            tui.setAgentState("Thinking…")
+        }
+        agent.onTokens = { tokens =>
+            tui.addAgentTokens(tokens)
         }
         agent.onToolStart = { name, args =>
             if (StreamState.active) {
                 TuiBridge.delta("")
                 StreamState.active = false
             }
-            // 工具调用提示单独一行开始（不拼到流式文字后面），参数紧凑无大括号
             TuiBridge.ensureNewline()
             TuiBridge.output(Ansi.fg(Ansi.THEME_OK) + "▶ ${name} " + Ansi.reset() + Ansi.fg(Ansi.THEME_MUTED) + formatToolArgs(name, args) + Ansi.reset())
+            tui.setAgentState("Running ${name}…")
         }
         agent.onToolResult = { name, result =>
             var preview = result.content
@@ -1114,8 +1121,9 @@ func runTui(sessionId: String): Int64 {
             // 方案 B：setAgentRunning 锁定输入框提交，执行完自动处理队列下一条
             spawn {
                 tui.setAgentRunning(true)
+                var summary: RunSummary = RunSummary()
                 try {
-                    let _ = agent.run(input)
+                    summary = agent.run(input)
                     if (StreamState.active) {
                         tui.appendOutput(Ansi.reset())
                         StreamState.active = false
@@ -1130,7 +1138,12 @@ func runTui(sessionId: String): Int64 {
                 } catch (e: Exception) {
                     TuiBridge.output(Ansi.fg(Ansi.THEME_ERR) + "错误: ${e}" + Ansi.reset())
                 }
+                // 先关闭 agent 运行态（动态状态栏消失，输出区恢复占满），
+                // 再触发 onRunComplete 渲染回合总结条，避免总结条被收缩的输出区挤压
                 tui.setAgentRunning(false)
+                if (summary.rounds > 0) {
+                    agent.onRunComplete(summary)
+                }
                 // 自动处理队列下一条（如果有）
                 if (let Some(next) <- tui.dequeueInput()) {
                     tui.appendOutput(Ansi.fg(Ansi.THEME_ACCENT) + "❯ " + Ansi.reset() + next)
@@ -1145,7 +1158,7 @@ func runTui(sessionId: String): Int64 {
         return 0
     } catch (e: Exception) {
         Stderr.restore()
-        Log.fatal("runTui 启动失败: ${e}")
+        Log.fatal("runTui 启动失败", e)
         eprintln("启动失败: ${e}")
         return 1
     } finally {

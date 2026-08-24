@@ -77,11 +77,28 @@ public class Log {
     }
 
     /**
+     * FATAL 级别日志，附带异常堆栈（永久写文件）
+     * 堆栈含 fileName:lineNumber @ functionName，便于定位异常源头
+     */
+    public static func fatal(msg: String, e: Exception): Unit {
+        ensureInit()
+        errorLogger.fatal(format("FATAL", msg + "\n" + stackTraceOf(e)))
+    }
+
+    /**
      * ERROR 级别日志（永久写文件）
      */
     public static func error(msg: String): Unit {
         ensureInit()
         errorLogger.error(format("ERROR", msg))
+    }
+
+    /**
+     * ERROR 级别日志，附带异常堆栈（永久写文件）
+     */
+    public static func error(msg: String, e: Exception): Unit {
+        ensureInit()
+        errorLogger.error(format("ERROR", msg + "\n" + stackTraceOf(e)))
     }
 
     /**
@@ -114,5 +131,30 @@ public class Log {
     private static func format(level: String, msg: String): String {
         let now = DateTime.now()
         return "[${now}] [${level}] ${msg}"
+    }
+
+    /**
+     * 提取异常堆栈：fileName:lineNumber @ functionName 逐行拼接
+     * 仓颉 Exception.getStackTrace() 返回 Array<StackTraceElement>，
+     * 每个元素含 declaringClass/fileName/lineNumber/functionName 字段
+     */
+    private static func stackTraceOf(e: Exception): String {
+        var sb = StringBuilder()
+        sb.append("Exception: ${e}\n")
+        let frames = e.getStackTrace()
+        if (frames.size == 0) {
+            sb.append("(no stack trace)")
+            return sb.toString()
+        }
+        var i = 0
+        while (i < frames.size && i < 20) {  // 最多 20 帧，避免日志过长
+            let f = frames[i]
+            sb.append("  at ${f.fileName}:${f.lineNumber} @ ${f.declaringClass}\n")
+            i += 1
+        }
+        if (frames.size > 20) {
+            sb.append("  ... ${frames.size - 20} more frames\n")
+        }
+        return sb.toString()
     }
 }

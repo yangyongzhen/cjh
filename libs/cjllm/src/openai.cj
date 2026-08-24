@@ -101,7 +101,11 @@ public class OpenAiProvider <: LlmProvider {
         var tlsConfig = TlsClientConfig()
         tlsConfig.verifyMode = CertificateVerifyMode.CustomCA(X509Certificate.systemRootCerts())
         tlsConfig.domain = Some(this.sniHost())
-        let client = ClientBuilder().tlsConfig(tlsConfig).build()
+        // SSE 流式响应可能持续很久（DeepSeek 长 completions），读超时设 5 分钟避免 WARN read response timeout
+        let client = ClientBuilder()
+            .tlsConfig(tlsConfig)
+            .readTimeout(Duration.second * 60)
+            .build()
         let req = HttpRequestBuilder()
             .post()
             .url(this.endpointUrl())

@@ -83,6 +83,7 @@ public class RunSummary {
     public var promptTokens: Int64 = 0     // 输入 token 累计
     public var completionTokens: Int64 = 0 // 输出 token 累计
     public var cachedTokens: Int64 = 0     // 缓存命中 token 累计
+    public var reply: String = ""          // 最终文本答复
 
     public init() {}
 
@@ -126,6 +127,9 @@ public class Agent {
     public var onToolStart: (String, JsonObject) -> Unit = { n, a => }
     public var onToolResult: (String, ToolResult) -> Unit = { n, r => }
     public var onAssistantText: (String) -> Unit = { t => }
+    // 状态回调（TUI 实时状态行用）
+    public var onThinking: () -> Unit = { => }
+    public var onTokens: (Int64) -> Unit = { _ => }
     // 审批回调：危险操作需人工确认时调用，返回 true=同意执行（默认拒绝）
     public var onApproval: (String, JsonObject, String) -> Bool = { n, a, r => false }
     // 任务变更回调（TUI Tasks 面板实时刷新）
@@ -204,9 +208,9 @@ public class Agent {
     }
 
     /**
-     * 追加用户消息并运行，返回最终文本答复
+     * 追加用户消息并运行，返回回合统计（含最终文本答复 summary.reply）
      */
-    public func run(userInput: String): String {
+    public func run(userInput: String): RunSummary {
         this.messages.add(ChatMessage("user", userInput))
         // 长会话：超阈值先压缩早期历史（LLM 摘要），避免 token 爆炸
         this.maybeCompact()
@@ -223,17 +227,20 @@ public class Agent {
             // 不让它崩 TUI，转成错误消息返回
             let response: ModelResponse
             try {
+                this.onThinking()
                 response = this.provider.chatStream(this.messages, this.tools.specs(), { delta =>
                     this.onDelta(delta)
                 })
             } catch (e: Exception) {
                 Log.error("Agent.run chatStream 异常: ${e}")
-                return "[LLM 调用异常: ${e}]"
+                summary.reply = "[LLM 调用异常: ${e}]"
+                return summary
             }
             // 累计 token 用量
             summary.promptTokens += response.usage.promptTokens
             summary.completionTokens += response.usage.completionTokens
             summary.cachedTokens += response.usage.cachedTokens
+            this.onTokens(response.usage.promptTokens)
 
             if (response.hasToolCalls()) {
                 // 把 assistant 文本（若有）+ 工具调用加入历史（toolCalls 随消息携带，供 Anthropic 回传）
@@ -334,17 +341,17 @@ public class Agent {
                 this.messages.add(ChatMessage("assistant", response.text))
                 this.onAssistantText(response.text)
             }
-            // 回合结束：计算耗时并触发 onRunComplete
+            // 回合结束：计算耗时，回填 reply，返回 summary（onRunComplete 由调用方在 setAgentRunning(false) 后触发）
             let durationMs = (DateTime.now() - startTime).toMilliseconds()
             summary.durationMs = durationMs
-            this.onRunComplete(summary)
-            return response.text
+            summary.reply = response.text
+            return summary
         }
         // 达最大迭代次数也触发总结
         let durationMsMax = (DateTime.now() - startTime).toMilliseconds()
         summary.durationMs = durationMsMax
-        this.onRunComplete(summary)
-        return "[已达最大迭代次数 ${this.config.maxIterations}]"
+        summary.reply = "[已达最大迭代次数 ${this.config.maxIterations}]"
+        return summary
     }
 
     /**

@@ -3,6 +3,7 @@ package cjh.tui
 import std.env.*
 import std.fs.*
 import std.sync.*
+import std.time.*
 import std.collection.*
 import stdx.log.*
 import stdx.logger.*
@@ -47,6 +48,13 @@ public class TuiApp {
     // Agent 执行状态（方案 B：执行期间输入可编辑，提交时入队 + 提示）
     private var agentRunning: Bool = false
     private var agentRunningLock: Mutex = Mutex()
+    // Agent 执行开始时间（实时状态行计时用）
+    private var agentStartTime: DateTime = DateTime.now()
+    // Agent 执行期间累计输入 token（实时状态行显示用）
+    private var agentPromptTokens: Int64 = 0
+    private var agentTokenLock: Mutex = Mutex()
+    // Agent 当前执行状态（实时状态行显示用：Thinking/Running bash/Streaming 等）
+    private var agentState: String = ""
     // 输入队列：Agent 执行期间提交的消息排队，执行完毕后自动处理
     private var inputQueue: ArrayList<String> = ArrayList<String>()
     private var inputQueueLock: Mutex = Mutex()
@@ -201,9 +209,20 @@ public class TuiApp {
         print(Ansi.hideCursor(), flush: true)
         this.render()
 
+        // 动态状态行计时刷新：agent 执行中时每秒强制 markDirty，
+        // 让 "Thinking… (Ns · ↑ M tokens)" 的计时按秒递增
+        var lastTick: DateTime = DateTime.now()
         while (this.running) {
             if (let Some(key) <- this.term.readKey()) {
                 this.handleKey(key)
+            }
+            // agent 执行中：每 1 秒触发一次重绘（刷新计时/token 计数）
+            if (this.isAgentBusy()) {
+                let now = DateTime.now()
+                if ((now - lastTick).toSeconds() >= 1) {
+                    lastTick = now
+                    this.markDirty()
+                }
             }
             if (this.takeDirty()) {
                 this.render()
@@ -265,6 +284,12 @@ public class TuiApp {
         this.agentRunningLock.lock()
         this.agentRunning = running
         this.agentRunningLock.unlock()
+        if (running) {
+            this.agentStartTime = DateTime.now()
+            this.agentTokenLock.lock()
+            this.agentPromptTokens = 0
+            this.agentTokenLock.unlock()
+        }
         this.markDirty()
     }
 
@@ -276,6 +301,25 @@ public class TuiApp {
         let busy: Bool = this.agentRunning
         this.agentRunningLock.unlock()
         return busy
+    }
+
+    /**
+     * 设置 Agent 当前执行状态（实时状态行显示用）
+     * 调用时机：chatStream 前="Thinking…"；onToolStart="Running <tool>"；onDelta="Streaming…"
+     */
+    public func setAgentState(state: String): Unit {
+        this.agentState = state
+        this.markDirty()
+    }
+
+    /**
+     * 累加 Agent 执行期间的输入 token（实时状态行显示用）
+     */
+    public func addAgentTokens(tokens: Int64): Unit {
+        this.agentTokenLock.lock()
+        this.agentPromptTokens += tokens
+        this.agentTokenLock.unlock()
+        this.markDirty()
     }
 
     /**
@@ -795,8 +839,21 @@ public class TuiApp {
             this.tabBar.render(this.canvas, 6, cols, 1)
             this.canvas.setLine(7, Logo.separator(cols, utf8))
 
-            // 输出区可用高度：8 .. statusRow-1
-            let outH = if (statusRow - 8 > 0) { statusRow - 8 } else { 0 }
+            // 动态状态行（agent 执行中）：渲染在输出区底部，与输出内容间隔 1 行
+            // 布局（从上到下）：输出区(8..agentRow-1) → 空行(agentRow-1) → 动态状态行(agentRow) → Tasks 面板 → statusRow
+            let agentBusy: Bool = this.isAgentBusy()
+            // 预计算输出区全高（无动态状态行时），用于预计算 Tasks 面板高度
+            let outH0: Int64 = if (statusRow - 8 > 0) { statusRow - 8 } else { 0 }
+            // tasksH：Tasks 面板占用行数（无任务时为 0；maxH 用 outH0 限制，误差≤1 行可接受）
+            let tasksH: Int64 = this.tasksPanel.height(outH0)
+            // 动态状态行位置：statusRow - 1(间隔) - tasksH(面板高度) - 1(自身)
+            // 无 agent 运行时，agentRow 不使用，仅用于 outH 计算
+            let agentRow: Int64 = if (agentBusy) { statusRow - 1 - tasksH - 1 } else { -1 }
+
+            // 输出区可用高度：8 .. agentRow-1（agent 执行中时为动态状态行预留空间）
+            // agent 不在执行时 agentRow=-1，输出区占满 8..statusRow-1
+            let outBottom: Int64 = if (agentBusy && agentRow >= 8) { agentRow - 1 } else { statusRow - 1 }
+            let outH: Int64 = if (outBottom - 8 + 1 > 0) { outBottom - 8 + 1 } else { 0 }
 
             // 输出区（对话 / 帮助视图，无边框全宽）
             if (this.viewMode == 1) {
@@ -810,27 +867,21 @@ public class TuiApp {
                 }
                 // Tasks 面板：有任务时在输出区右下角渲染
                 this.tasksPanel.render(this.canvas, statusRow - 1, cols, outH)
+                // 动态状态行：agent 执行中时渲染在 Tasks 面板上方
+                if (agentBusy && agentRow >= 8) {
+                    this.spinner.tick()
+                    this.renderAgentStatus(this.canvas, agentRow, cols)
+                }
             }
         }
 
-        // 底部区域：审批弹窗 / 流式 spinner / 状态行 三选一
-        // （状态行即 omp 上边框 ╭── 内容 ─▶──╮，兼作输出区下分隔线，不再单独画线）
+        // 静态状态栏：始终渲染在 statusRow（+-- # model > [ cwd ] > ready ->）
+        this.statusBar.render(this.canvas, statusRow, cols, 1)
+
+        // 审批弹窗：模态覆盖，弹窗 4 行，紧贴输入区上方渲染
         if (this.confirmDialog.isVisible()) {
-            // 审批弹窗：模态覆盖，弹窗 4 行，紧贴输入区上方渲染
             let dlgRow = if (statusRow - 5 > 0) { statusRow - 5 } else { 0 }
             this.confirmDialog.render(this.canvas, dlgRow, cols, 4)
-        } else {
-            // 流式判定需要 outputLock（agent 线程写流式段，可能竞态）
-            this.outputLock.lock()
-            let streaming = this.outputView.isStreaming()
-            this.outputLock.unlock()
-            if (streaming && this.viewMode == 0) {
-                // 流式回复中：状态行显示加载指示器（每次渲染推进一帧）
-                this.spinner.tick()
-                this.spinner.render(this.canvas, statusRow, cols, 1)
-            } else {
-                this.statusBar.render(this.canvas, statusRow, cols, 1)
-            }
         }
 
         // 输入区（无边框：InputBox 带 ❯ 提示符 / MultiLineEditor 行号栏）
@@ -866,6 +917,28 @@ public class TuiApp {
 
         // 差分渲染：只输出变化行 + 光标定位（InputBox / MultiLineEditor 已设置）
         print(this.canvas.flush(), flush: true)
+    }
+
+    /**
+     * Agent 执行中的实时状态行：⠏ Thinking… (5s · ↑ 102 tokens)
+     * 状态来源：agentState 字段（由 setAgentState 更新）
+     * 计时来源：agentStartTime（由 setAgentRunning(true) 记录）
+     * token 来源：agentPromptTokens（由 addAgentTokens 累加）
+     */
+    private func renderAgentStatus(canvas: TuiCanvas, row: Int64, cols: Int64): Unit {
+        let frame = this.spinner.frame()
+        let elapsed = (DateTime.now() - this.agentStartTime).toSeconds()
+        this.agentTokenLock.lock()
+        let tokens = this.agentPromptTokens
+        this.agentTokenLock.unlock()
+        let stateLabel = if (this.agentState.size > 0) { this.agentState } else { "Working…" }
+        // 配色：spinner 青色动感 · 状态文字亮白醒目 · 计时淡灰辅助 · token 数琥珀金点睛
+        let line = Ansi.fg(Ansi.THEME_ACCENT) + frame + " " + Ansi.reset() +
+            Ansi.fg(Ansi.THEME_OK) + stateLabel + Ansi.reset() +
+            Ansi.fg(Ansi.THEME_MUTED) + " (" + elapsed.toString() + "s · ↑ " + Ansi.reset() +
+            Ansi.fg(Ansi.THEME_WARN) + tokens.toString() + Ansi.reset() +
+            Ansi.fg(Ansi.THEME_MUTED) + " tokens)" + Ansi.reset()
+        canvas.setLine(row, line)
     }
 
     /**
