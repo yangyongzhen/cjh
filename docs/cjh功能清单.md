@@ -1,7 +1,7 @@
 # cjh 功能清单
 
-> 最后更新：2026-08-24
-> 版本：v1.2.1
+> 最后更新：2026-08-25
+> 版本：v1.2.3
 > 性质：cjh 已具备和支持的功能完整列表
 
 ---
@@ -37,10 +37,10 @@
 
 | 功能 | 说明 |
 |------|------|
-| **星霜青主题** | 默认主题，鸿蒙生态同源品牌色，低饱和雾面青 |
-| **经典亮青主题** | 旧版高饱和亮青配色，向后兼容 |
+| **6 套主题** | starfrost（星霜青）/classic（经典亮青）/catppuccin/rose-pine/solarized/monokai |
 | **运行时切换** | `/theme [name]` 切换，持久化到 settings.json |
 | **交互式选择** | `/theme` 无参数时弹出 picker，上下键选择 |
+| **实时预览** | 主题切换即时渲染，无需重启 |
 
 ## 四、工具系统
 
@@ -61,6 +61,7 @@
 | **V2d 并发执行** | Read vs. Write 分类调度，全 read-only 批次 spawn 并发，含 state-modifying 整批串行 |
 | **CjhTool 接口** | `isReadOnly()` 分类，DeclarativeTool 声明式工具 |
 | **ToolRegistry** | 工具注册 + 按名查找 + read-only 分类 |
+| **工具结果截断+落盘+回溯** | 超阈值工具结果保留头尾 + 完整落盘 `~/.cjh/spill/<sessionId>/<toolCallId>.txt` + 省略标记含落盘路径，模型可用 `read_file` 按需读回；工具差异化阈值（bash 8000/list_dir 4000/默认 6000） |
 
 ## 六、记忆与会话管理
 
@@ -73,15 +74,37 @@
 | **手动 Compaction** | `/compact` 命令强制压缩历史 |
 | **项目指令** | `loadProjectInstructions` 逐级查 AGENTS.md |
 
-## 七、技能系统
+## 七、插件系统（V2b）
 
 | 功能 | 说明 |
 |------|------|
-| **V2b 插件系统** | parseFrontmatter 统一解析、DeclarativeTool、`/skills` 命令、示例技能 |
-| **技能白名单** | `enabled_skills` 配置启用技能 |
-| **技能携带工具** | 技能可注册声明式工具 |
+| **plugin.json 元数据** | 插件包根目录声明 name/version/author/tools/hooks |
+| **Shell 工具插件** | 工具实现 = shell 脚本，参数通过 `CJH_TOOL_ARGS` 环境变量传递（JSON），stdout 输出结果 |
+| **PluginManager** | 扫描 `~/.cjh/plugins/*/plugin.json`，路径遍历防护，白名单过滤 |
+| **事件钩子** | `on_tool_result` 钩子：工具结果回填前触发，插件可拦截/改写；事件数据通过 `CJH_HOOK_DATA` 环境变量传递 |
+| **插件白名单** | `enabled_plugins` 配置启用插件 |
+| **示例插件** | `example/plugins/echo-test`（工具插件）+ `log-pruner`（事件钩子插件） |
 
-## 八、安全模型
+## 八、MCP 协议支持（V2b 扩展点）
+
+| 功能 | 说明 |
+|------|------|
+| **MCP 客户端** | `McpClient`：stdio 传输 + JSON-RPC 2.0 + initialize 握手 + tools/list + tools/call |
+| **MCP 工具代理** | `McpTool`：注册到 ToolRegistry，LLM 调用时转发给 MCP 服务器 |
+| **MCP 管理器** | `McpManager`：管理多个 MCP 服务器的连接和工具注册 |
+| **配置** | `settings.json` 的 `mcp_servers` 段配置 MCP 服务器 |
+| **示例 MCP 服务器** | `example/mcp/echo-mcp-server.sh`：最小 stdio MCP 服务器（bash 实现） |
+
+## 九、技能系统
+
+| 功能 | 说明 |
+|------|------|
+| **技能即 Markdown** | `~/.cjh/skills/<name>.md`，frontmatter 声明元数据 + 工具 |
+| **技能白名单** | `enabled_skills` 配置启用技能 |
+| **技能携带工具** | 技能 frontmatter 的 `tools` 段注册声明式工具 |
+| **`/skills` 命令** | 列出技能与启用状态 |
+
+## 十、安全模型
 
 | 功能 | 说明 |
 |------|------|
@@ -89,7 +112,7 @@
 | **审批链** | 危险操作需人工确认，TUI 内嵌 y/n 审批 |
 | **宽松模式** | 未配置 capability 时全部允许 |
 
-## 九、无头模式
+## 十一、无头模式
 
 | 功能 | 说明 |
 |------|------|
@@ -97,16 +120,16 @@
 | **CLI 模式** | `--cli` 命令行交互模式 |
 | **Mock 模式** | `--mock` 验证模式，使用 MockProvider |
 
-## 十、配置系统
+## 十二、配置系统
 
 | 功能 | 说明 |
 |------|------|
-| **settings.json** | base_url / model / max_iterations / system_prompt / temperature / max_tokens / models / capability / compact_threshold / compact_keep / enabled_skills / theme |
+| **settings.json** | base_url / model / max_iterations / system_prompt / temperature / max_tokens / models / capability / compact_threshold / compact_keep / enabled_skills / enabled_plugins / mcp_servers / theme / tool_result_max_chars |
 | **auth.json** | api_key 存储 |
 | **环境变量** | `CJH_CONFIG_DIR` `CJH_MOCK` `CJH_PROVIDER` 等覆盖 |
 | **模型预设** | `/provider deepseek|openai|glm|ollama` 预设 base_url+model |
 
-## 十一、斜杠命令
+## 十三、斜杠命令
 
 | 命令 | 说明 |
 |------|------|
@@ -121,10 +144,10 @@
 | `/fork` | 从当前会话分支新会话 |
 | `/settings` | 查看采样参数（temp/max_tokens） |
 | `/task` | 任务管理（add/done/doing/clear/list） |
-| `/theme [name]` | TUI 主题切换（starfrost|classic） |
+| `/theme [name]` | TUI 主题切换（starfrost|classic|catppuccin|rose-pine|solarized|monokai） |
 | `/quit` | 退出 |
 
-## 十二、Provider 支持
+## 十四、Provider 支持
 
 | Provider | 协议 | 说明 |
 |----------|------|------|
@@ -133,8 +156,9 @@
 | **GLM** | OpenAI 兼容 | glm-4-flash，智谱 AI |
 | **Ollama** | OpenAI 兼容（无 TLS） | 本地模型，apiKey 可空，CJH_PROVIDER=ollama 接入 |
 | **Anthropic** | Anthropic API | Claude 系列，支持 cache_read_input_tokens |
+| **MCP 服务器** | MCP 协议（stdio） | 通过 `mcp_servers` 配置接入，工具自动注册 |
 
-## 十三、版本历史
+## 十五、版本历史
 
 | 版本 | 主要功能 |
 |------|----------|
@@ -142,8 +166,10 @@
 | v1.1.0 | V2c 记忆分层 + V2b 插件系统 + 树形会话 + V3b Ollama 支持 |
 | v1.2.0 | V2d 并发执行引擎 + P0-P2 工具效率提升 + 输入队列方案 B + Tasks 面板 + TodoWriteTool |
 | v1.2.1 | 星霜青主题系统 + /theme 切换 + 回合总结条 + UI 打磨 |
+| v1.2.2 | 回合总结条 + Tasks 面板 + 输入队列方案 B + /compact + /tree + /fork |
+| v1.2.3 | SSE 空闲超时 + token 统计健壮性 + 工具结果截断与回溯 + V2b 插件系统（plugin.json + 事件钩子）+ MCP 协议支持 + 6 套主题 + 主题实时预览 |
 
-## 十四、代码组织原则
+## 十六、代码组织原则
 
 - **高内聚低耦合**：满足软件设计六大原则（单一职责、开闭、里氏替换、接口隔离、依赖倒置、迪米特法则）
 - **单向依赖 + 回调注入**：循环依赖靠单向依赖 + 回调注入解决，禁止"移包打补丁"破坏包内聚性
@@ -151,11 +177,13 @@
 
 ---
 
-## 十五、待推进功能（v2 路线图）
+## 十七、待推进功能（v2 路线图）
 
 | 优先级 | 功能 | 说明 |
 |--------|------|------|
-| P1 | V2e IM 网关 | Channel 抽象 + Web 渠道 + 审批远程化 |
-| P1 | V3 信任链 | 签名信任链 + 编译期类型安全 |
-| P2 | V4 多 Agent | 多 agent 协作 + 鸿蒙原生适配 |
-| P2 | P3-P4 工具效率 | LSP 语义高亮 + DAP 调试栈展示 |
+| ★★★ | V2d 并发引擎完整形态 | DAG 依赖分析 + Provider 连接预热 + 性能基线测量 |
+| ★★★ | V3 信任链 | 插件签名 + 内容校验和 + 发布者信任列表 |
+| ★★★ | V2b 插件系统完整形态 | WASM 工具沙箱 + 中心仓 + `cjh install` |
+| ★★☆ | V2e IM 网关 | Channel 抽象 + Web 渠道 + 审批远程化 |
+| ★★☆ | V3b 协议深化 | Provider Registry + 模型能力描述 |
+| ★☆☆ | V4 多 Agent | 多 agent 协作 + 鸿蒙原生适配 |

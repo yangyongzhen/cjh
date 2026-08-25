@@ -498,6 +498,17 @@ func loadPlugins(pluginsDir: String, registry: ToolRegistry,
 }
 
 /**
+ * 连接所有配置的 MCP 服务器，注册工具到 registry
+ * 返回创建的 McpManager（用于退出时断开连接）
+ */
+func loadMcpServers(servers: ArrayList<McpServerConfig>,
+    registry: ToolRegistry): McpManager {
+    let mgr = McpManager()
+    mgr.connectAll(servers, registry)
+    return mgr
+}
+
+/**
  * 解析 tools JSON 数组并注册声明式工具
  */
 func registerSkillTools(jsonStr: String, registry: ToolRegistry): Unit {
@@ -674,6 +685,8 @@ func runCli(sessionId: String): Int64 {
     loadSkillTools(cjhCfg.skillsDir, registry, cjhCfg.enabledSkills)
     // 加载插件（V2b Step 1：plugin.json + shell 工具）
     let pluginManager = loadPlugins(cjhCfg.pluginsDir, registry, cjhCfg.enabledPlugins)
+    // 连接 MCP 服务器（V2b 扩展点：stdio 传输 + JSON-RPC）
+    let mcpManager = loadMcpServers(cjhCfg.mcpServers, registry)
 
     // 预生成会话 ID（工具结果截断落盘需要会话 ID 隔离）
     let effectiveSessionId = if (sessionId.size > 0) { sessionId } else { SessionStore(cjhCfg.sessionsDir).newSessionId() }
@@ -806,6 +819,8 @@ func runJson(prompt: String, sessionId: String): Int64 {
     loadSkillTools(cjhCfg.skillsDir, registry, cjhCfg.enabledSkills)
     // 加载插件（V2b Step 1：plugin.json + shell 工具）
     let pluginManager = loadPlugins(cjhCfg.pluginsDir, registry, cjhCfg.enabledPlugins)
+    // 连接 MCP 服务器（V2b 扩展点：stdio 传输 + JSON-RPC）
+    let mcpManager = loadMcpServers(cjhCfg.mcpServers, registry)
 
     // 预生成会话 ID（工具结果截断落盘需要会话 ID 隔离）
     let effectiveSessionId = if (sessionId.size > 0) { sessionId } else { SessionStore(cjhCfg.sessionsDir).newSessionId() }
@@ -952,6 +967,8 @@ func runTui(sessionId: String): Int64 {
     loadSkillTools(cjhCfg.skillsDir, registry, cjhCfg.enabledSkills)
     // 加载插件（V2b Step 1：plugin.json + shell 工具）
     let pluginManager = loadPlugins(cjhCfg.pluginsDir, registry, cjhCfg.enabledPlugins)
+    // 连接 MCP 服务器（V2b 扩展点：stdio 传输 + JSON-RPC）
+    let mcpManager = loadMcpServers(cjhCfg.mcpServers, registry)
 
     // 预生成会话 ID（工具结果截断落盘需要会话 ID 隔离）
     let effectiveSessionId = if (sessionId.size > 0) { sessionId } else { SessionStore(cjhCfg.sessionsDir).newSessionId() }

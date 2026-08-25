@@ -17,6 +17,33 @@ public class ModelEntry {
 }
 
 /**
+ * MCP 服务器配置（settings.json "mcp_servers" 段）
+ *
+ * 支持两种传输：
+ *   - stdio：启动子进程，JSON-RPC over stdin/stdout（MUST 支持）
+ *   - sse  ：远程服务器，HTTP+SSE（可选，暂未实现）
+ *
+ * stdio 配置示例：
+ *   "filesystem": {
+ *     "transport": "stdio",
+ *     "command": "npx",
+ *     "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+ *   }
+ */
+public class McpServerConfig {
+    public let name: String               // 服务器名（唯一标识）
+    public var transport: String = "stdio" // "stdio" | "sse"
+    public var command: String = ""        // stdio：可执行命令
+    public var args: ArrayList<String> = ArrayList<String>()  // stdio：命令参数
+    public var url: String = ""            // sse：服务器 URL
+    public var env: HashMap<String, String> = HashMap<String, String>()  // 子进程环境变量
+
+    public init(name: String) {
+        this.name = name
+    }
+}
+
+/**
  * 配置系统（对标成熟 agent 的配置目录设计）
  *
  * 目录结构（~/.cjh/，可用 CJH_CONFIG_DIR 覆盖）：
@@ -66,6 +93,8 @@ public class CjhConfig {
     public let pluginsDir: String
     // 启用的插件白名单（settings.json "enabled_plugins": [...]；空=全部启用）
     public var enabledPlugins: ArrayList<String> = ArrayList<String>()
+    // MCP 服务器配置列表（settings.json "mcp_servers" 段）
+    public var mcpServers: ArrayList<McpServerConfig> = ArrayList<McpServerConfig>()
 
     public init() {
         // 配置目录：环境变量覆盖，默认 ~/.cjh
@@ -343,6 +372,76 @@ public class CjhConfig {
                                                 this.enabledPlugins.add(item.asString().getValue())
                                             case _ => ()
                                         }
+                                    }
+                                }
+                            case _ => ()
+                        }
+                    }
+                    // MCP 服务器配置（mcp_servers 段，object 形态）
+                    if (let Some(v) <- obj.get("mcp_servers")) {
+                        match (v.kind()) {
+                            case JsonKind.JsObject =>
+                                let serversObj = v.asObject()
+                                for ((serverName, serverCfg) in serversObj.getFields()) {
+                                    match (serverCfg.kind()) {
+                                        case JsonKind.JsObject =>
+                                            let cfg = McpServerConfig(serverName)
+                                            let so = serverCfg.asObject()
+                                            // transport（默认 stdio）
+                                            if (let Some(t) <- so.get("transport")) {
+                                                match (t.kind()) {
+                                                    case JsonKind.JsString => cfg.transport = t.asString().getValue()
+                                                    case _ => ()
+                                                }
+                                            }
+                                            // command（stdio 启动命令）
+                                            if (let Some(c) <- so.get("command")) {
+                                                match (c.kind()) {
+                                                    case JsonKind.JsString => cfg.command = c.asString().getValue()
+                                                    case _ => ()
+                                                }
+                                            }
+                                            // args（命令参数数组）
+                                            if (let Some(a) <- so.get("args")) {
+                                                match (a.kind()) {
+                                                    case JsonKind.JsArray =>
+                                                        let argsArr = a.asArray()
+                                                        for (i in 0..argsArr.size()) {
+                                                            if (let Some(argItem) <- argsArr.get(i)) {
+                                                                match (argItem.kind()) {
+                                                                    case JsonKind.JsString =>
+                                                                        cfg.args.add(argItem.asString().getValue())
+                                                                    case _ => ()
+                                                                }
+                                                            }
+                                                        }
+                                                    case _ => ()
+                                                }
+                                            }
+                                            // url（sse 远程服务器）
+                                            if (let Some(u) <- so.get("url")) {
+                                                match (u.kind()) {
+                                                    case JsonKind.JsString => cfg.url = u.asString().getValue()
+                                                    case _ => ()
+                                                }
+                                            }
+                                            // env（子进程环境变量）
+                                            if (let Some(e) <- so.get("env")) {
+                                                match (e.kind()) {
+                                                    case JsonKind.JsObject =>
+                                                        let envObj = e.asObject()
+                                                        for ((k, vv) in envObj.getFields()) {
+                                                            match (vv.kind()) {
+                                                                case JsonKind.JsString =>
+                                                                    cfg.env.add(k, vv.asString().getValue())
+                                                                case _ => ()
+                                                            }
+                                                        }
+                                                    case _ => ()
+                                                }
+                                            }
+                                            this.mcpServers.add(cfg)
+                                        case _ => ()
                                     }
                                 }
                             case _ => ()
