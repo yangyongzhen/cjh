@@ -158,35 +158,45 @@ public class StreamAccumulator {
                 }
             }
             // token 用量（OpenAI 流式最后一帧或非流式响应顶层 usage）
+            // DeepSeek/OpenAI 的 usage 字段在流式最后一帧（stream_options.include_usage=true）
+            // 或非流式响应顶层。数值可能是 JsInt/JsInt64/JsFloat，需全部覆盖。
             if (let Some(u) <- obj.get("usage")) {
                 match (u.kind()) {
                     case JsonKind.JsObject =>
                         let usage = u.asObject()
-                        if (let Some(pt) <- usage.get("prompt_tokens")) {
-                            match (pt.kind()) {
-                                case JsonKind.JsInt => this.promptTokens = pt.asInt().getValue()
-                                case _ => ()
+                        // 提取数值字段的通用辅助：支持 JsInt/JsFloat/JsString
+                        // JsonInt.getValue() 返回 Int64，已覆盖整数；JsFloat 转 Int64 截断
+                        let extractNum = { jv: JsonValue =>
+                            match (jv.kind()) {
+                                case JsonKind.JsInt => jv.asInt().getValue()
+                                case JsonKind.JsFloat => Int64(jv.asFloat().getValue())
+                                case JsonKind.JsString =>
+                                    // 某些网关返回字符串形式的数字
+                                    var n: Int64 = 0
+                                    for (ch in jv.asString().getValue()) {
+                                        if (ch >= 48u8 && ch <= 57u8) {
+                                            n = n * 10 + Int64(ch - 48u8)
+                                        } else {
+                                            return 0
+                                        }
+                                    }
+                                    n
+                                case _ => 0
                             }
                         }
+                        if (let Some(pt) <- usage.get("prompt_tokens")) {
+                            this.promptTokens = extractNum(pt)
+                        }
                         if (let Some(ct) <- usage.get("completion_tokens")) {
-                            match (ct.kind()) {
-                                case JsonKind.JsInt => this.completionTokens = ct.asInt().getValue()
-                                case _ => ()
-                            }
+                            this.completionTokens = extractNum(ct)
                         }
                         // 缓存命中：DeepSeek prompt_cache_hit_tokens / Anthropic cache_read_input_tokens
                         // 对齐 atomcode openai_compat.rs map_usage：单值 fallback，流式 last-wins（= 赋值）
                         if (let Some(ch) <- usage.get("prompt_cache_hit_tokens")) {
-                            match (ch.kind()) {
-                                case JsonKind.JsInt => this.cachedTokens = ch.asInt().getValue()
-                                case _ => ()
-                            }
+                            this.cachedTokens = extractNum(ch)
                         }
                         if (let Some(cr) <- usage.get("cache_read_input_tokens")) {
-                            match (cr.kind()) {
-                                case JsonKind.JsInt => this.cachedTokens = cr.asInt().getValue()
-                                case _ => ()
-                            }
+                            this.cachedTokens = extractNum(cr)
                         }
                     case _ => ()
                 }

@@ -320,6 +320,14 @@ public class TuiApp {
     }
 
     /**
+     * 重置计时器（每轮 LLM 调用前调用，让计时从每轮开始计算）
+     */
+    public func resetAgentTimer(): Unit {
+        this.agentStartTime = DateTime.now()
+        this.markDirty()
+    }
+
+    /**
      * 累加 Agent 执行期间的输入 token（实时状态行显示用）
      */
     public func addAgentTokens(tokens: Int64): Unit {

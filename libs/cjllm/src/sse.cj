@@ -2,6 +2,7 @@ package cjllm
 
 import std.io.*
 import std.collection.*
+import stdx.net.http.HttpTimeoutException
 import cjutil.*
 
 /**
@@ -19,6 +20,8 @@ public class SseParser {
     public var onEvent: (String) -> Unit = { _ => }
     public var onDone: () -> Unit = { => }
     public var onError: (String) -> Unit = { _ => }
+    // 空闲超时（readTimeout 触发）：已收数据保留，但流被切断
+    public var timedOut: Bool = false
 
     public init(input: InputStream) {
         this.input = input
@@ -46,7 +49,15 @@ public class SseParser {
                 this.feed(chunk)
             }
             this.onDone()
+        } catch (e: HttpTimeoutException) {
+            // 空闲超时：DeepSeek 长 completions chunk 持续到达不会触发；
+            // 网络 60s 无新数据 → timeout → 保留已收数据 + 标记 timedOut
+            Log.warn("[SSE] read timeout, flushing pending (size=${this.pending.size})")
+            this.timedOut = true
+            this.flushRemaining()
+            this.onDone()
         } catch (e: Exception) {
+            Log.error("[SSE] run() caught exception", e)
             this.onError(e.toString())
         }
     }

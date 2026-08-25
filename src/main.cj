@@ -1000,6 +1000,7 @@ func runTui(sessionId: String): Int64 {
             tui.setAgentState("Streaming…")
         }
         agent.onThinking = { =>
+            tui.resetAgentTimer()
             tui.setAgentState("Thinking…")
         }
         agent.onTokens = { tokens =>

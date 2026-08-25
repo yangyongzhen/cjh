@@ -242,6 +242,13 @@ public class Agent {
             summary.cachedTokens += response.usage.cachedTokens
             this.onTokens(response.usage.promptTokens)
 
+            // SSE 空闲超时：网络 60s 无新数据，已收文本/tool_calls 保留
+            // 给 LLM 注入提示，让它在下一轮知道发生了超时
+            if (response.timedOut) {
+                this.onAssistantText("\n\n⚠️ 网络空闲超时（60s 无新数据），SSE 流被切断。已收到的内容已保留，但可能不完整。\n")
+                this.messages.add(ChatMessage("user", "[System Notice] The previous SSE stream was cut off due to a 60-second idle timeout (network stall). The received content may be INCOMPLETE. Please check whether the output/tool_calls were fully received, and continue or retry as needed."))
+            }
+
             if (response.hasToolCalls()) {
                 // 把 assistant 文本（若有）+ 工具调用加入历史（toolCalls 随消息携带，供 Anthropic 回传）
                 var asstMsg = ChatMessage("assistant", response.text)

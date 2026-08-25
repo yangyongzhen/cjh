@@ -101,6 +101,49 @@ public class StreamAccumulatorTest {
         @Assert(resp.toolCalls[1].arguments.containsKey("_raw"), false)
     }
 
+    @TestCase
+    public func testUsageJsInt(): Unit {
+        // DeepSeek/OpenAI 流式最后一帧：usage 字段为 JsInt
+        let acc = StreamAccumulator()
+        acc.feed(this.usageFrame(100, 200, 50))
+        let resp = acc.finish()
+        @Assert(resp.usage.promptTokens, 100)
+        @Assert(resp.usage.completionTokens, 200)
+        @Assert(resp.usage.cachedTokens, 50)
+    }
+
+    @TestCase
+    public func testUsageJsFloat(): Unit {
+        // 某些网关返回 float 形态的 token 数
+        let acc = StreamAccumulator()
+        acc.feed(this.usageFrameFloat(100.0, 200.5, 50.0))
+        let resp = acc.finish()
+        @Assert(resp.usage.promptTokens, 100)
+        @Assert(resp.usage.completionTokens, 200)
+        @Assert(resp.usage.cachedTokens, 50)
+    }
+
+    @TestCase
+    public func testUsageJsString(): Unit {
+        // 某些网关返回字符串形式的数字
+        let acc = StreamAccumulator()
+        acc.feed(this.usageFrameString("100", "200", "50"))
+        let resp = acc.finish()
+        @Assert(resp.usage.promptTokens, 100)
+        @Assert(resp.usage.completionTokens, 200)
+        @Assert(resp.usage.cachedTokens, 50)
+    }
+
+    @TestCase
+    public func testUsageNoUsageFrame(): Unit {
+        // 没有收到 usage 帧（流被切断）→ token 应为 0
+        let acc = StreamAccumulator()
+        acc.feed(this.choiceJson("hello"))
+        let resp = acc.finish()
+        @Assert(resp.usage.promptTokens, 0)
+        @Assert(resp.usage.completionTokens, 0)
+    }
+
     /**
      * 构造 {"choices":[{"delta":{"content":X}}]}
      */
@@ -113,6 +156,45 @@ public class StreamAccumulatorTest {
         arr.add(choice)
         var root = JsonObject()
         root.put("choices", JsonArray(arr))
+        return root.toJsonString()
+    }
+
+    /**
+     * 构造带 usage 字段的帧（JsInt 形态）
+     */
+    private func usageFrame(prompt: Int64, completion: Int64, cached: Int64): String {
+        var usage = JsonObject()
+        usage.put("prompt_tokens", JsonInt(prompt))
+        usage.put("completion_tokens", JsonInt(completion))
+        usage.put("prompt_cache_hit_tokens", JsonInt(cached))
+        var root = JsonObject()
+        root.put("usage", usage)
+        return root.toJsonString()
+    }
+
+    /**
+     * 构造带 usage 字段的帧（JsFloat 形态）
+     */
+    private func usageFrameFloat(prompt: Float64, completion: Float64, cached: Float64): String {
+        var usage = JsonObject()
+        usage.put("prompt_tokens", JsonFloat(prompt))
+        usage.put("completion_tokens", JsonFloat(completion))
+        usage.put("prompt_cache_hit_tokens", JsonFloat(cached))
+        var root = JsonObject()
+        root.put("usage", usage)
+        return root.toJsonString()
+    }
+
+    /**
+     * 构造带 usage 字段的帧（JsString 形态）
+     */
+    private func usageFrameString(prompt: String, completion: String, cached: String): String {
+        var usage = JsonObject()
+        usage.put("prompt_tokens", JsonString(prompt))
+        usage.put("completion_tokens", JsonString(completion))
+        usage.put("prompt_cache_hit_tokens", JsonString(cached))
+        var root = JsonObject()
+        root.put("usage", usage)
         return root.toJsonString()
     }
 }
