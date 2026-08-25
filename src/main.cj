@@ -10,6 +10,7 @@ import cjh.agent.*
 import cjh.tools.*
 import cjllm.*
 import cjh.tui.*
+import cjh.web.*
 import cjterm.*
 import cjcfg.*
 import cjutil.*
@@ -655,7 +656,80 @@ main(args: Array<String>): Int64 {
     if (args.size > 0 && args[0] == "--list") {
         return listSessions()
     }
+    // cjh web [--port <n>] [--bind <addr>] [--token <t>]
+    if (args.size > 0 && (args[0] == "web" || args[0] == "--web")) {
+        return runWeb(args)
+    }
     return runTui("")
+}
+
+/**
+ * cjh web 子命令入口
+ *
+ * 解析命令行参数，构造 AgentConfig，启动 WebServer。
+ *
+ * 参数：
+ *   --port <n>      监听端口（默认 8765）
+ *   --bind <addr>   绑定地址（默认 127.0.0.1）
+ *   --token <t>     鉴权 token（默认空=不鉴权）
+ */
+func runWeb(args: Array<String>): Int64 {
+    let cjhCfg = CjhConfig()
+    cjhCfg.loadSettings()
+
+    // 命令行参数覆盖 settings.json
+    var i: Int64 = 1
+    while (i < args.size) {
+        if (args[i] == "--port" && i + 1 < args.size) {
+            try {
+                let portVal = Int64.parse(args[i + 1])
+                if (portVal >= 0 && portVal <= 65535) {
+                    cjhCfg.webPort = UInt16(portVal)
+                }
+            } catch (e: Exception) {
+                // 忽略非法端口参数
+            }
+            i += 2
+        } else if (args[i] == "--bind" && i + 1 < args.size) {
+            cjhCfg.webBindAddr = args[i + 1]
+            i += 2
+        } else if (args[i] == "--token" && i + 1 < args.size) {
+            cjhCfg.webAuthToken = args[i + 1]
+            i += 2
+        } else {
+            i += 1
+        }
+    }
+
+    // 强制启用 Web 模式
+    cjhCfg.webEnabled = true
+
+    // 安全检查：远程绑定但无鉴权 token
+    if (cjhCfg.webBindAddr != "127.0.0.1" && cjhCfg.webBindAddr != "localhost" && cjhCfg.webAuthToken.size == 0) {
+        println("⚠️  安全警告：绑定地址 ${cjhCfg.webBindAddr} 非 127.0.0.1，但未设置鉴权 token")
+        println("   任何人都能访问你的 cjh 实例并执行工具调用")
+        println("   建议：cjh web --bind ${cjhCfg.webBindAddr} --token <your-secret>")
+        println()
+    }
+
+    // 构造 provider + registry（复用 runCli 的构造方式）
+    let registry = ToolRegistry()
+    registry.register(BashTool())
+    registry.register(ReadTool())
+    registry.register(WriteTool())
+    registry.register(AppendFileTool())
+    registry.register(GrepTool())
+    registry.register(ListDirTool())
+    registry.register(HashlineEditTool())
+    loadSkillTools(cjhCfg.skillsDir, registry, cjhCfg.enabledSkills)
+    let pluginManager = loadPlugins(cjhCfg.pluginsDir, registry, cjhCfg.enabledPlugins)
+    let mcpManager = loadMcpServers(cjhCfg.mcpServers, registry)
+
+    let provider = makeProvider(cjhCfg)
+
+    // 启动 Web 服务器
+    let server = WebServer(cjhCfg, provider, registry)
+    return server.serve()
 }
 
 class CliSession {

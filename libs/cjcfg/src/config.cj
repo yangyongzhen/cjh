@@ -95,6 +95,17 @@ public class CjhConfig {
     public var enabledPlugins: ArrayList<String> = ArrayList<String>()
     // MCP 服务器配置列表（settings.json "mcp_servers" 段）
     public var mcpServers: ArrayList<McpServerConfig> = ArrayList<McpServerConfig>()
+    // ===== Web 服务器配置（settings.json "web" 段）=====
+    // 是否启用 Web 服务器（cjh web 子命令强制启用）
+    public var webEnabled: Bool = false
+    // Web 服务器监听端口
+    public var webPort: UInt16 = 8765
+    // Web 服务器绑定地址（默认 127.0.0.1 仅本机访问；0.0.0.0 局域网访问）
+    public var webBindAddr: String = "127.0.0.1"
+    // Web 服务器鉴权 token（空=不鉴权；远程访问强烈建议设置）
+    public var webAuthToken: String = ""
+    // HTTP 请求体最大字节数（防大请求 OOM）
+    public var webMaxRequestSize: Int64 = 1048576
 
     public init() {
         // 配置目录：环境变量覆盖，默认 ~/.cjh
@@ -280,7 +291,7 @@ public class CjhConfig {
         }
     }
 
-    private func loadSettings(): Unit {
+    public func loadSettings(): Unit {
         if (!exists(this.settingsPath)) {
             return
         }
@@ -451,6 +462,63 @@ public class CjhConfig {
                     if (let Some(v) <- obj.get("theme")) {
                         match (v.kind()) {
                             case JsonKind.JsString => this.theme = v.asString().getValue()
+                            case _ => ()
+                        }
+                    }
+                    // Web 服务器配置（settings.json "web" 段，object 形态）
+                    if (let Some(v) <- obj.get("web")) {
+                        match (v.kind()) {
+                            case JsonKind.JsObject =>
+                                let webObj = v.asObject()
+                                // enabled
+                                match (webObj.get("enabled")) {
+                                    case Some(e) =>
+                                        match (e.kind()) {
+                                            case JsonKind.JsBool => this.webEnabled = e.asBool().getValue()
+                                            case _ => ()
+                                        }
+                                    case _ => ()
+                                }
+                                // port
+                                match (webObj.get("port")) {
+                                    case Some(p) =>
+                                        match (p.kind()) {
+                                            case JsonKind.JsInt =>
+                                                let portVal = p.asInt().getValue()
+                                                if (portVal >= 0 && portVal <= 65535) {
+                                                    this.webPort = UInt16(portVal)
+                                                }
+                                            case _ => ()
+                                        }
+                                    case _ => ()
+                                }
+                                // bind_addr
+                                match (webObj.get("bind_addr")) {
+                                    case Some(b) =>
+                                        match (b.kind()) {
+                                            case JsonKind.JsString => this.webBindAddr = b.asString().getValue()
+                                            case _ => ()
+                                        }
+                                    case _ => ()
+                                }
+                                // auth_token
+                                match (webObj.get("auth_token")) {
+                                    case Some(t) =>
+                                        match (t.kind()) {
+                                            case JsonKind.JsString => this.webAuthToken = t.asString().getValue()
+                                            case _ => ()
+                                        }
+                                    case _ => ()
+                                }
+                                // max_request_size
+                                match (webObj.get("max_request_size")) {
+                                    case Some(m) =>
+                                        match (m.kind()) {
+                                            case JsonKind.JsInt => this.webMaxRequestSize = m.asInt().getValue()
+                                            case _ => ()
+                                        }
+                                    case _ => ()
+                                }
                             case _ => ()
                         }
                     }
