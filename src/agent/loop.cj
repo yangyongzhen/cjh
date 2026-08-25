@@ -3,6 +3,7 @@ package cjh.agent
 import std.collection.*
 import stdx.encoding.json.*
 import std.time.*
+import std.fs.*
 import cjllm.*
 import cjh.tools.*
 import cjllm.*
@@ -22,6 +23,12 @@ public class AgentConfig {
     public let compactThreshold: Int64
     // 压缩时保留的最近消息条数
     public let compactKeep: Int64
+    // 工具结果截断阈值（字符数，0 或负数=禁用截断）
+    public let toolResultMaxChars: Int64
+    // 落盘根目录：工具结果超长时完整内容写到此目录下 <sessionId>/<toolCallId>.txt
+    public let spillDir: String
+    // 当前会话 ID（用于落盘文件按会话隔离）
+    public let sessionId: String
 
     public init(systemPrompt: String, maxIterations: Int64) {
         this.systemPrompt = systemPrompt
@@ -29,6 +36,9 @@ public class AgentConfig {
         this.capability = Capability()
         this.compactThreshold = 0
         this.compactKeep = 12
+        this.toolResultMaxChars = 6000
+        this.spillDir = ""
+        this.sessionId = ""
     }
 
     public init(systemPrompt: String, maxIterations: Int64, capability: Capability) {
@@ -37,6 +47,9 @@ public class AgentConfig {
         this.capability = capability
         this.compactThreshold = 0
         this.compactKeep = 12
+        this.toolResultMaxChars = 6000
+        this.spillDir = ""
+        this.sessionId = ""
     }
 
     public init(systemPrompt: String, maxIterations: Int64, capability: Capability,
@@ -46,6 +59,22 @@ public class AgentConfig {
         this.capability = capability
         this.compactThreshold = compactThreshold
         this.compactKeep = compactKeep
+        this.toolResultMaxChars = 6000
+        this.spillDir = ""
+        this.sessionId = ""
+    }
+
+    public init(systemPrompt: String, maxIterations: Int64, capability: Capability,
+        compactThreshold: Int64, compactKeep: Int64,
+        toolResultMaxChars: Int64, spillDir: String, sessionId: String) {
+        this.systemPrompt = systemPrompt
+        this.maxIterations = maxIterations
+        this.capability = capability
+        this.compactThreshold = compactThreshold
+        this.compactKeep = compactKeep
+        this.toolResultMaxChars = toolResultMaxChars
+        this.spillDir = spillDir
+        this.sessionId = sessionId
     }
 }
 
@@ -284,7 +313,7 @@ public class Agent {
                             result = ToolResult(result.content + "\n\n⚠️ 截断警告：本轮 LLM 输出被 max_tokens 强制截断，上面写入的文件内容【不完整】。\n请【立即】按以下步骤修复（不要再用 write_file 重写整个文件，那会再次截断）：\n1. 调用 read_file 读取刚写入的文件，确认截断位置\n2. 调用 edit_file，old_string 填文件末尾最后几个有效字符，new_string 续写剩余部分\n3. 重复 1-2 直到文件完整闭合（HTML 需 </script></body></html>）\n务必分多次小段续写，每段 new_string 控制在 ~1500 字符以内。", true)
                         }
                         this.onToolResult(tc.name, result)
-                        this.messages.add(ChatMessage("tool", truncateToolResult(result.content, tc.name), tc.id, tc.name))
+                        this.messages.add(ChatMessage("tool", truncateToolResult(result.content, tc.name, tc.id), tc.id, tc.name))
                         idx += 1
                     }
                     // 截断打断：检测到被截断的 write_file/edit_file 路径，注入 [System Notice] 绝对指令
@@ -318,7 +347,7 @@ public class Agent {
                         }
                         this.onToolResult(tc.name, result)
                         // tool 结果回填
-                        this.messages.add(ChatMessage("tool", truncateToolResult(result.content, tc.name), tc.id, tc.name))
+                        this.messages.add(ChatMessage("tool", truncateToolResult(result.content, tc.name, tc.id), tc.id, tc.name))
                     }
                     // 截断打断：检测到被截断的 write_file/edit_file 路径，注入 [System Notice] 绝对指令
                     // 斩断 LLM "重新 write_file" 的念头，强行拉入 append_file 续写模式
@@ -432,22 +461,81 @@ public class Agent {
     }
 
     /**
+     * 工具差异化截断阈值（对标 Pi v0.13.2）
+     * bash 输出可能很长；list_dir 目录树过长；grep 搜索结果多
+     */
+    private func toolResultMaxChars(toolName: String): Int64 {
+        // 全局禁用截断（0 或负数）→ 返回一个大数，等价于不截断
+        if (this.config.toolResultMaxChars <= 0) {
+            return Int64.Max
+        }
+        match (toolName) {
+            case "bash" => if (this.config.toolResultMaxChars >= 8000) { this.config.toolResultMaxChars } else { 8000 }
+            case "list_dir" => 4000
+            case _ => this.config.toolResultMaxChars
+        }
+    }
+
+    /**
+     * 落盘文件路径：spillDir/<sessionId>/<toolCallId>.txt
+     */
+    private func spillPath(toolCallId: String): String {
+        return this.config.spillDir + "/" + this.config.sessionId + "/" + toolCallId + ".txt"
+    }
+
+    /**
+     * 落盘写入完整工具结果
+     */
+    private func writeSpill(path: String, content: String): Unit {
+        try {
+            // 从完整路径里取出目录部分（最后一次 "/" 之前）
+            match (path.lastIndexOf("/")) {
+                case Some(dirEnd) =>
+                    let dir = path[0..dirEnd]
+                    if (!exists(dir)) {
+                        Directory.create(dir, recursive: true)
+                    }
+                case None => ()
+            }
+            File.writeTo(path, content.toArray())
+        } catch (e: Exception) {
+            Log.warn("spill 落盘失败: ${e}")
+            // 落盘失败不影响截断本身，只是丢了回溯路径
+        }
+    }
+
+    /**
      * Tool Output 压缩 Hook：tool_result 过长时裁剪成 Head/Tail 摘要，
      * 避免巨大 tool 结果（如 read_file 读了个几千行日志）冲垮前缀缓存或 token 预算。
-     * 对齐 OMP 的 toolResultMaxChars 硬性裁剪。
+     *
+     * 截断 + 落盘 + 回溯钥匙（对标 Pi spill extension）：
+     * - 超过阈值的工具结果保留头尾 + 中间省略标记
+     * - 完整结果落盘到 spillDir/<sessionId>/<toolCallId>.txt
+     * - 省略标记包含落盘文件路径（这把「钥匙」），模型可用 read_file 按需读回
      */
-    private func truncateToolResult(content: String, toolName: String): String {
-        let MAX_CHARS: Int64 = 6000   // 单个 tool_result 存入历史的字符上限
-        if (Int64(content.size) <= MAX_CHARS) {
+    private func truncateToolResult(content: String, toolName: String, toolCallId: String): String {
+        let maxChars = this.toolResultMaxChars(toolName)
+        if (maxChars <= 0 || Int64(content.size) <= maxChars) {
             return content
         }
-        let headLen: Int64 = MAX_CHARS / 2
-        let tailLen: Int64 = MAX_CHARS - headLen
+        let headLen: Int64 = maxChars / 2
+        let tailLen: Int64 = maxChars - headLen
         let head = content[0..Int64(headLen)]
         let tailStart = Int64(content.size) - tailLen
         let tail = content[Int64(tailStart)..Int64(content.size)]
-        let skipped = Int64(content.size) - MAX_CHARS
-        return head + "\n\n…[截断 " + skipped.toString() + " 字符]…\n\n" + tail
+        let skipped = Int64(content.size) - maxChars
+
+        // 落盘完整结果（回溯路径）
+        var spillHint = ""
+        if (this.config.spillDir.size > 0 && this.config.sessionId.size > 0) {
+            let spillPath = this.spillPath(toolCallId)
+            this.writeSpill(spillPath, content)
+            spillHint = "，完整结果已保存：" + spillPath + "，可用 read_file 读取"
+        }
+
+        return head
+            + "\n\n…[已截断 " + skipped.toString() + " 字符" + spillHint + "]…\n\n"
+            + tail
     }
 
     /**

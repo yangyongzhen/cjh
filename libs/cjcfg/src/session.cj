@@ -249,7 +249,11 @@ public class SessionStore {
         }
     }
 
-    private func newSessionId(): String {
+    /**
+     * 生成新会话 ID（时间戳格式 s<秒>.<毫秒>）
+     * 供外部预生成（如工具结果落盘需要会话 ID 时）
+     */
+    public func newSessionId(): String {
         let now = DateTime.now()
         let ts = now.toUnixTimeStamp()
         // 紧凑：秒.毫秒

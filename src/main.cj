@@ -543,6 +543,11 @@ func buildSystemPrompt(base: String, skillsDir: String, enabled: ArrayList<Strin
     if (skills.size > 0) {
         s += "\n\n## 可用技能（Skills，按需使用）\n" + skills
     }
+    // 工具结果截断与回溯（对标 Pi spill extension）
+    s += "\n\n## 工具结果截断\n当工具返回的结果过长时，cjh 会自动截断：保留结果的头部和尾部，"
+    s += "中间被截断的部分会保存到磁盘文件。省略标记里会显示完整结果的保存路径。\n"
+    s += "如果你需要查看被截断的中间部分，请使用 read_file 工具读取省略标记中提到的文件路径。"
+    s += "你可以指定 offset 和 limit 参数来读取特定区段。"
     return s
 }
 
@@ -655,13 +660,19 @@ func runCli(sessionId: String): Int64 {
     // 注册技能携带的声明式工具（Skill 自定义工具）
     loadSkillTools(cjhCfg.skillsDir, registry, cjhCfg.enabledSkills)
 
+    // 预生成会话 ID（工具结果截断落盘需要会话 ID 隔离）
+    let effectiveSessionId = if (sessionId.size > 0) { sessionId } else { SessionStore(cjhCfg.sessionsDir).newSessionId() }
+
     // system prompt：全局配置 + 项目指令（AGENTS.md）+ 技能（Skills）
     let config = AgentConfig(
         buildSystemPrompt(cjhCfg.systemPrompt, cjhCfg.skillsDir, cjhCfg.enabledSkills),
         cjhCfg.maxIterations,
         cjhCfg.capability,
         cjhCfg.compactThreshold,
-        cjhCfg.compactKeep)
+        cjhCfg.compactKeep,
+        cjhCfg.toolResultMaxChars,
+        cjhCfg.spillDir,
+        effectiveSessionId)
 
     try {
         let provider: LlmProvider
@@ -778,12 +789,18 @@ func runJson(prompt: String, sessionId: String): Int64 {
     Theme.apply(cjhCfg.theme)
     loadSkillTools(cjhCfg.skillsDir, registry, cjhCfg.enabledSkills)
 
+    // 预生成会话 ID（工具结果截断落盘需要会话 ID 隔离）
+    let effectiveSessionId = if (sessionId.size > 0) { sessionId } else { SessionStore(cjhCfg.sessionsDir).newSessionId() }
+
     let config = AgentConfig(
         buildSystemPrompt(cjhCfg.systemPrompt, cjhCfg.skillsDir, cjhCfg.enabledSkills),
         cjhCfg.maxIterations,
         cjhCfg.capability,
         cjhCfg.compactThreshold,
-        cjhCfg.compactKeep)
+        cjhCfg.compactKeep,
+        cjhCfg.toolResultMaxChars,
+        cjhCfg.spillDir,
+        effectiveSessionId)
 
     try {
         let provider: LlmProvider
@@ -915,13 +932,19 @@ func runTui(sessionId: String): Int64 {
     // 注册技能携带的声明式工具（Skill 自定义工具）
     loadSkillTools(cjhCfg.skillsDir, registry, cjhCfg.enabledSkills)
 
+    // 预生成会话 ID（工具结果截断落盘需要会话 ID 隔离）
+    let effectiveSessionId = if (sessionId.size > 0) { sessionId } else { SessionStore(cjhCfg.sessionsDir).newSessionId() }
+
     // system prompt：全局配置 + 项目指令（AGENTS.md）+ 技能（Skills）
     let config = AgentConfig(
         buildSystemPrompt(cjhCfg.systemPrompt, cjhCfg.skillsDir, cjhCfg.enabledSkills),
         cjhCfg.maxIterations,
         cjhCfg.capability,
         cjhCfg.compactThreshold,
-        cjhCfg.compactKeep)
+        cjhCfg.compactKeep,
+        cjhCfg.toolResultMaxChars,
+        cjhCfg.spillDir,
+        effectiveSessionId)
 
     var tuiOpt: Option<TuiApp> = None
 
@@ -1379,6 +1402,15 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
             let history = agent.history()
             while (history.size > 1) {
                 history.remove(history.size - 1..history.size)
+            }
+            // 清理当前会话的落盘文件（工具结果截断 spill）
+            if (SessionState.current.size > 0) {
+                let spillSessionDir = cfg.spillDir + "/" + SessionState.current
+                try {
+                    removeIfExists(spillSessionDir)
+                } catch (e: Exception) {
+                    // 清理失败不阻塞新会话
+                }
             }
             SessionState.current = ""
             tui.appendOutput(Ansi.fg(Ansi.THEME_WARN) + "[新会话]" + Ansi.reset())

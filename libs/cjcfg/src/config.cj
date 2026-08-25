@@ -57,6 +57,11 @@ public class CjhConfig {
     public var enabledSkills: ArrayList<String> = ArrayList<String>()
     // TUI 主题（settings.json "theme": "starfrost"|"classic"|...；空=starfrost 默认）
     public var theme: String = "starfrost"
+    // 工具结果截断阈值（字符数，0 或负数=禁用截断）
+    // 超过阈值的工具结果保留头尾 + 中间省略标记，完整结果落盘到 spillDir
+    public var toolResultMaxChars: Int64 = 6000
+    // 落盘根目录：工具结果超长时完整内容写到此目录下 <sessionId>/<toolCallId>.txt
+    public let spillDir: String
 
     public init() {
         // 配置目录：环境变量覆盖，默认 ~/.cjh
@@ -66,6 +71,7 @@ public class CjhConfig {
         this.authPath = this.configDir + "/auth.json"
         this.sessionsDir = this.configDir + "/sessions"
         this.skillsDir = this.configDir + "/skills"
+        this.spillDir = this.configDir + "/spill"
         this.load()
     }
 
@@ -78,6 +84,9 @@ public class CjhConfig {
         }
         if (!exists(this.sessionsDir)) {
             Directory.create(this.sessionsDir, recursive: true)
+        }
+        if (!exists(this.spillDir)) {
+            Directory.create(this.spillDir, recursive: true)
         }
         // 首次运行：自动生成配置文件模板
         this.ensureTemplate(this.settingsPath, this.settingsTemplate())
@@ -318,6 +327,13 @@ public class CjhConfig {
                     if (let Some(v) <- obj.get("theme")) {
                         match (v.kind()) {
                             case JsonKind.JsString => this.theme = v.asString().getValue()
+                            case _ => ()
+                        }
+                    }
+                    // 工具结果截断阈值（字符数，0 或负数=禁用截断）
+                    if (let Some(v) <- obj.get("tool_result_max_chars")) {
+                        match (v.kind()) {
+                            case JsonKind.JsInt => this.toolResultMaxChars = v.asInt().getValue()
                             case _ => ()
                         }
                     }
