@@ -1,0 +1,21 @@
+{
+  "name": "echo-test",
+  "version": "1.0.0",
+  "author": "cjh",
+  "description": "测试插件：回显传入的 message 参数",
+  "tools": [
+    {
+      "name": "echo",
+      "description": "Echo back the message parameter. Used for plugin system testing.",
+      "command": "tools/echo.sh",
+      "is_read_only": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "message": { "type": "string", "description": "Message to echo back" }
+        },
+        "required": ["message"]
+      }
+    }
+  ]
+}

@@ -150,6 +150,8 @@ public class Agent {
     // 内置任务列表（对齐 Claude Code TodoWrite，TUI Tasks 面板数据源）
     private var todos: ArrayList<TodoItem> = ArrayList<TodoItem>()
     private var nextTodoId: Int64 = 1
+    // 插件管理器（V2b Step 2：事件钩子；None 时跳过钩子调用）
+    private var pluginManager: ?PluginManager = None
 
     // 事件回调（供 TUI/CLI 展示）
     public var onDelta: (String) -> Unit = { d => }
@@ -179,6 +181,36 @@ public class Agent {
      */
     public func setProvider(p: LlmProvider): Unit {
         this.provider = p
+    }
+
+    /**
+     * 注入插件管理器（V2b Step 2：事件钩子）
+     * Agent 在工具结果回填前触发 on_tool_result 钩子，允许插件拦截/改写结果。
+     */
+    public func setPluginManager(pm: PluginManager): Unit {
+        this.pluginManager = pm
+    }
+
+    /**
+     * 触发 on_tool_result 事件钩子
+     * 返回改写后的 content；无钩子或钩子失败时返回原 content
+     */
+    private func fireToolResultHook(toolName: String, content: String): String {
+        match (this.pluginManager) {
+            case Some(pm) =>
+                if (!pm.hasHook("on_tool_result")) {
+                    return content
+                }
+                var data = JsonObject()
+                data.put("tool", JsonString(toolName))
+                data.put("content", JsonString(content))
+                let rewritten = pm.fireHook("on_tool_result", data)
+                if (rewritten.size > 0) {
+                    return rewritten
+                }
+                return content
+            case None => return content
+        }
     }
 
     // ==================== 内置任务管理 ====================
@@ -313,7 +345,9 @@ public class Agent {
                             result = ToolResult(result.content + "\n\n⚠️ 截断警告：本轮 LLM 输出被 max_tokens 强制截断，上面写入的文件内容【不完整】。\n请【立即】按以下步骤修复（不要再用 write_file 重写整个文件，那会再次截断）：\n1. 调用 read_file 读取刚写入的文件，确认截断位置\n2. 调用 edit_file，old_string 填文件末尾最后几个有效字符，new_string 续写剩余部分\n3. 重复 1-2 直到文件完整闭合（HTML 需 </script></body></html>）\n务必分多次小段续写，每段 new_string 控制在 ~1500 字符以内。", true)
                         }
                         this.onToolResult(tc.name, result)
-                        this.messages.add(ChatMessage("tool", truncateToolResult(result.content, tc.name, tc.id), tc.id, tc.name))
+                        // V2b Step 2：工具结果回填前触发 on_tool_result 钩子（插件可拦截/改写）
+                        let hookedContent = this.fireToolResultHook(tc.name, result.content)
+                        this.messages.add(ChatMessage("tool", truncateToolResult(hookedContent, tc.name, tc.id), tc.id, tc.name))
                         idx += 1
                     }
                     // 截断打断：检测到被截断的 write_file/edit_file 路径，注入 [System Notice] 绝对指令
@@ -346,8 +380,10 @@ public class Agent {
                             result = ToolResult(result.content + "\n\n⚠️ 截断警告：本轮 LLM 输出被 max_tokens 强制截断，上面写入的文件内容【不完整】。\n请【立即】按以下步骤修复（不要再用 write_file 重写整个文件，那会再次截断）：\n1. 调用 read_file 读取刚写入的文件，确认截断位置\n2. 调用 edit_file，old_string 填文件末尾最后几个有效字符，new_string 续写剩余部分\n3. 重复 1-2 直到文件完整闭合（HTML 需 </script></body></html>）\n务必分多次小段续写，每段 new_string 控制在 ~1500 字符以内。", true)
                         }
                         this.onToolResult(tc.name, result)
+                        // V2b Step 2：工具结果回填前触发 on_tool_result 钩子（插件可拦截/改写）
+                        let hookedContent = this.fireToolResultHook(tc.name, result.content)
                         // tool 结果回填
-                        this.messages.add(ChatMessage("tool", truncateToolResult(result.content, tc.name, tc.id), tc.id, tc.name))
+                        this.messages.add(ChatMessage("tool", truncateToolResult(hookedContent, tc.name, tc.id), tc.id, tc.name))
                     }
                     // 截断打断：检测到被截断的 write_file/edit_file 路径，注入 [System Notice] 绝对指令
                     // 斩断 LLM "重新 write_file" 的念头，强行拉入 append_file 续写模式

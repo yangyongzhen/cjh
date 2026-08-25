@@ -62,6 +62,10 @@ public class CjhConfig {
     public var toolResultMaxChars: Int64 = 6000
     // 落盘根目录：工具结果超长时完整内容写到此目录下 <sessionId>/<toolCallId>.txt
     public let spillDir: String
+    // 插件根目录：~/.cjh/plugins/<plugin-name>/plugin.json
+    public let pluginsDir: String
+    // 启用的插件白名单（settings.json "enabled_plugins": [...]；空=全部启用）
+    public var enabledPlugins: ArrayList<String> = ArrayList<String>()
 
     public init() {
         // 配置目录：环境变量覆盖，默认 ~/.cjh
@@ -72,6 +76,7 @@ public class CjhConfig {
         this.sessionsDir = this.configDir + "/sessions"
         this.skillsDir = this.configDir + "/skills"
         this.spillDir = this.configDir + "/spill"
+        this.pluginsDir = this.configDir + "/plugins"
         this.load()
     }
 
@@ -87,6 +92,9 @@ public class CjhConfig {
         }
         if (!exists(this.spillDir)) {
             Directory.create(this.spillDir, recursive: true)
+        }
+        if (!exists(this.pluginsDir)) {
+            Directory.create(this.pluginsDir, recursive: true)
         }
         // 首次运行：自动生成配置文件模板
         this.ensureTemplate(this.settingsPath, this.settingsTemplate())
@@ -316,6 +324,23 @@ public class CjhConfig {
                                         match (item.kind()) {
                                             case JsonKind.JsString =>
                                                 this.enabledSkills.add(item.asString().getValue())
+                                            case _ => ()
+                                        }
+                                    }
+                                }
+                            case _ => ()
+                        }
+                    }
+                    // 启用插件白名单（空=全部启用）
+                    if (let Some(v) <- obj.get("enabled_plugins")) {
+                        match (v.kind()) {
+                            case JsonKind.JsArray =>
+                                let arr = v.asArray()
+                                for (i in 0..arr.size()) {
+                                    if (let Some(item) <- arr.get(i)) {
+                                        match (item.kind()) {
+                                            case JsonKind.JsString =>
+                                                this.enabledPlugins.add(item.asString().getValue())
                                             case _ => ()
                                         }
                                     }

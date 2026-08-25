@@ -1,0 +1,9 @@
+{
+  "name": "log-pruner",
+  "version": "1.0.0",
+  "author": "cjh",
+  "description": "工具结果裁剪钩子：超 1000 字符的结果截断到头 500 + 尾 500 + 省略标记",
+  "hooks": {
+    "on_tool_result": "hooks/on_tool_result.sh"
+  }
+}

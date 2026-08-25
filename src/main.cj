@@ -485,6 +485,19 @@ func loadSkillTools(skillsDir: String, registry: ToolRegistry, enabled: ArrayLis
 }
 
 /**
+ * 加载插件（V2b Step 1）
+ * 扫描 pluginsDir 下每个子目录的 plugin.json，注册插件工具到 registry。
+ * 白名单 enabled 为空时全部启用。
+ * 返回创建的 PluginManager（供 Agent 事件钩子使用）。
+ */
+func loadPlugins(pluginsDir: String, registry: ToolRegistry,
+    enabled: ArrayList<String>): PluginManager {
+    let pm = PluginManager(pluginsDir)
+    pm.loadAll(registry, enabled)
+    return pm
+}
+
+/**
  * 解析 tools JSON 数组并注册声明式工具
  */
 func registerSkillTools(jsonStr: String, registry: ToolRegistry): Unit {
@@ -659,6 +672,8 @@ func runCli(sessionId: String): Int64 {
     Theme.apply(cjhCfg.theme)
     // 注册技能携带的声明式工具（Skill 自定义工具）
     loadSkillTools(cjhCfg.skillsDir, registry, cjhCfg.enabledSkills)
+    // 加载插件（V2b Step 1：plugin.json + shell 工具）
+    let pluginManager = loadPlugins(cjhCfg.pluginsDir, registry, cjhCfg.enabledPlugins)
 
     // 预生成会话 ID（工具结果截断落盘需要会话 ID 隔离）
     let effectiveSessionId = if (sessionId.size > 0) { sessionId } else { SessionStore(cjhCfg.sessionsDir).newSessionId() }
@@ -682,6 +697,7 @@ func runCli(sessionId: String): Int64 {
             provider = makeProvider(cjhCfg)
         }
         let agent = Agent(provider, registry, config)
+        agent.setPluginManager(pluginManager)
         let store = SessionStore(cjhCfg.sessionsDir)
         CliSession.id = ""
         if (sessionId.size > 0) {
@@ -788,6 +804,8 @@ func runJson(prompt: String, sessionId: String): Int64 {
     // 应用 TUI 主题（settings.json "theme" 字段；默认 starfrost 星霜青）
     Theme.apply(cjhCfg.theme)
     loadSkillTools(cjhCfg.skillsDir, registry, cjhCfg.enabledSkills)
+    // 加载插件（V2b Step 1：plugin.json + shell 工具）
+    let pluginManager = loadPlugins(cjhCfg.pluginsDir, registry, cjhCfg.enabledPlugins)
 
     // 预生成会话 ID（工具结果截断落盘需要会话 ID 隔离）
     let effectiveSessionId = if (sessionId.size > 0) { sessionId } else { SessionStore(cjhCfg.sessionsDir).newSessionId() }
@@ -810,6 +828,7 @@ func runJson(prompt: String, sessionId: String): Int64 {
             provider = makeProvider(cjhCfg)
         }
         let agent = Agent(provider, registry, config)
+        agent.setPluginManager(pluginManager)
         let store = SessionStore(cjhCfg.sessionsDir)
 
         // TodoWriteTool：LLM 通过工具调用管理任务列表（回调绑定到 agent）
@@ -931,6 +950,8 @@ func runTui(sessionId: String): Int64 {
     Theme.apply(cjhCfg.theme)
     // 注册技能携带的声明式工具（Skill 自定义工具）
     loadSkillTools(cjhCfg.skillsDir, registry, cjhCfg.enabledSkills)
+    // 加载插件（V2b Step 1：plugin.json + shell 工具）
+    let pluginManager = loadPlugins(cjhCfg.pluginsDir, registry, cjhCfg.enabledPlugins)
 
     // 预生成会话 ID（工具结果截断落盘需要会话 ID 隔离）
     let effectiveSessionId = if (sessionId.size > 0) { sessionId } else { SessionStore(cjhCfg.sessionsDir).newSessionId() }
@@ -956,6 +977,7 @@ func runTui(sessionId: String): Int64 {
             provider = makeProvider(cjhCfg)
         }
         let agent = Agent(provider, registry, config)
+        agent.setPluginManager(pluginManager)
 
         // TodoWriteTool：LLM 通过工具调用管理任务列表（回调绑定到 agent）
         registry.register(TodoWriteTool(
