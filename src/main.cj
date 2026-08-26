@@ -14,6 +14,7 @@ import cjh.web.*
 import cjterm.*
 import cjcfg.*
 import cjutil.*
+import stdx.log.*
 
 @C
 foreign func getenv(name: CString): CPointer<UInt8>
@@ -640,6 +641,10 @@ func shortArgValue(v: JsonValue): String {
 }
 
 main(args: Array<String>): Int64 {
+    // 禁掉 stdx 库内部日志（如 stdx.net.http 的 read response timeout WARN）
+    // 这些日志走 stdx.log 全局 logger 直接到 stderr，污染 TUI 输入框
+    // 必须在任何 stdx 库调用之前设置，否则早期日志仍会漏出
+    setGlobalLogger(NoopLogger())
     if (args.size > 0 && args[0] == "--mock") {
         return runMockVerify()
     }
