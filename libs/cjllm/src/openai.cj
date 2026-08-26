@@ -29,16 +29,22 @@ public class OpenAiProvider <: LlmProvider {
 
     /**
      * V2d 连接预热：发轻量 GET /v1/models 请求，触发 TLS 握手 + 连接池建立
-     * 失败静默（预热是优化，不是必需）
+     *
+     * 设计要点：
+     *   - 不设 readTimeout：预热是后台优化，让请求慢慢跑即可；
+     *     设了过短超时会触发 stdx.net.http 库内部 read response timeout WARN，
+     *     该 WARN 走 stdx.log 直接到 stderr，污染 TUI 输入框
+     *   - 预热失败完全静默：预热只是优化，不是必需，首次 chatStream 会正常重试
+     *   - 不打任何日志：避免 stdx 日志漏到 stderr 污染 TUI
      */
     public func warmup(): Unit {
         try {
             var tlsConfig = TlsClientConfig()
             tlsConfig.verifyMode = CertificateVerifyMode.CustomCA(X509Certificate.systemRootCerts())
             tlsConfig.domain = Some(this.sniHost())
+            // 不设 readTimeout：预热请求不超时，避免触发 stdx WARN 污染 TUI
             let client = ClientBuilder()
                 .tlsConfig(tlsConfig)
-                .readTimeout(Duration.second * 5)
                 .build()
             // GET /v1/models（OpenAI 兼容端点，轻量，仅需 API key）
             var modelsUrl = this.baseUrl
@@ -56,8 +62,8 @@ public class OpenAiProvider <: LlmProvider {
                 .build()
             let _ = client.send(req)
         } catch (e: Exception) {
-            // 预热失败静默：可能是端点不支持 /v1/models，或网络瞬断
-            // 首次 chatStream 会正常重试
+            // 预热失败完全静默：可能是端点不支持 /v1/models，或网络瞬断
+            // 不打日志，避免污染 TUI；首次 chatStream 会正常重试
         }
     }
 
