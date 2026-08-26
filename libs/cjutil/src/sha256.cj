@@ -272,7 +272,7 @@ private func hexCharToValue(b: UInt8): Int64 {
 /**
  * String 转 UTF-8 字节数组
  */
-private func stringToBytes(s: String): Array<Byte> {
+public func stringToBytes(s: String): Array<Byte> {
     let runes = s.toRuneArray()
     var bytes = ArrayList<Byte>()
     for (r in runes) {

@@ -1,0 +1,30 @@
+{
+  "name": "signed-demo",
+  "version": "1.0.0",
+  "author": "cjh",
+  "description": "带 SM2 签名的插件 demo（V3 信任链 Step 1+2）。运行 gen_signed_demo.cj 生成 checksum/publisher/pubkey/signature 四个字段。",
+  "tools": [
+    {
+      "name": "greet",
+      "description": "Greet someone by name. This tool comes from an SM2-signed plugin demo.",
+      "command": "tools/greet.sh",
+      "is_read_only": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Name of the person to greet"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    }
+  ],
+  "checksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "publisher": "github:cjh-demo",
+  "pubkey": "3059301306072a8648ce3d020106082a811ccf5501822d03420004b15716a497b5610af6810025fb6091a78464fefc7fa16bd049fef0561e06cc2988d5df03fb3a2a275e7852a15d831eb0701c4c0d7802f06397c7cc62227d0125",
+  "signature": "3045022100fe42fa103dbdeed8bc8c8665017583d8aa574878f5d84a1698c77f6ef04dc1df022057c31cd6ce2560e4748a5705e465fe7797e1395100ed1abc8c53f4924d54ae8e"
+}

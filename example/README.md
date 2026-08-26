@@ -140,6 +140,176 @@ SKIPPED=$((LEN - 1000))
 printf '%s\n\n[log-pruner 截断 %d 字符]\n\n%s' "$HEAD" "$SKIPPED" "$TAIL"
 ```
 
+## signed-demo：带 SM2 签名的插件示例（V3 信任链 Step 1+2）
+
+普通插件只声明工具，任何人都能改。`signed-demo` 演示**信任链**：插件带 `checksum`（防篡改）+ `publisher`/`pubkey`/`signature`（防冒充），cjh 加载时用仓颉原生 SM2 验签，零外部依赖。
+
+### 目录结构
+
+```
+example/plugins/signed-demo/
+├── plugin.json              # 带 checksum/publisher/pubkey/signature 四字段
+├── tools/
+│   └── greet.sh            # 工具实现
+├── src/
+│   └── gen_signed_demo.cj  # 签名生成小程序（演示如何签发插件）
+└── cjpm.toml               # 独立 cjpm 工程配置
+```
+
+### plugin.json（带签名字段）
+
+```json
+{
+  "name": "signed-demo",
+  "version": "1.0.0",
+  "description": "带 SM2 签名的插件 demo（V3 信任链 Step 1+2）。",
+  "tools": [
+    {
+      "name": "greet",
+      "description": "Greet someone by name.",
+      "command": "tools/greet.sh",
+      "is_read_only": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "description": "Name of the person to greet" }
+        },
+        "required": ["name"]
+      }
+    }
+  ],
+  "checksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "publisher": "github:cjh-demo",
+  "pubkey": "3059301306072a8648ce3d020106082a811ccf5501822d03420004...",
+  "signature": "3045022100fe42fa103dbdeed8bc8c8665017583d8aa574878..."
+}
+```
+
+**字段说明**：
+
+| 字段 | 含义 | 由谁填写 |
+|------|------|----------|
+| `checksum` | 插件目录（除 plugin.json 外）的 SHA256 指纹 | 签名工具自动计算 |
+| `publisher` | 发布者 ID（如 `github:alice`） | 插件作者 |
+| `pubkey` | 发布者 SM2 公钥（DER 编码的 hex） | 签名工具从密钥对导出 |
+| `signature` | 对 `checksum` 字段值的 SM2 签名 | 签名工具用私钥签 |
+
+**cjh 加载时的验证流程**：
+
+1. 算 `sha256DirExcluding(pluginDir, "plugin.json")` → 对比 `checksum` 字段（检测文件被篡改）
+2. `verifySm2(pubkey, signature, checksum)` → 用公钥验签（防供应链投毒：攻击者改完文件重算 checksum 也没用，他没有私钥签不出合法 signature）
+3. 任一步骤失败 → `Log.warn` + 拒绝加载
+
+### 签名操作步骤
+
+本 demo 提供了签名生成小程序 `src/gen_signed_demo.cj`。完整流程：
+
+#### 步骤 1：编写插件（无签名）
+
+先按普通插件编写 `plugin.json` 和 `tools/greet.sh`，此时不带任何签名字段。
+
+#### 步骤 2：编译签名工具
+
+签名工具是个独立的 cjpm 工程，依赖 `cjutil`（提供 SM2 签名/验签 API）：
+
+```bash
+cd example/plugins/signed-demo
+cjpm build
+```
+
+产物在 `target/release/bin/main`。
+
+#### 步骤 3：运行签名工具，生成 plugin.json 签名字段
+
+**必须从工程根目录运行**（小程序用相对路径 `example/plugins/signed-demo` 定位插件）：
+
+```bash
+cd /path/to/cjh   # 工程根目录
+./example/plugins/signed-demo/target/release/bin/main
+```
+
+输出示例：
+
+```
+checksum = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+pubkey   = 3059301306072a8648ce3d020106082a811ccf5501822d03420004...
+signature= 3045022100fe42fa103dbdeed8bc8c8665017583d8aa574878...
+self-verify: OK
+Done! plugin.json updated with SM2 signature.
+```
+
+小程序做的事：
+
+1. `sha256DirExcluding(pluginDir, "plugin.json")` 算 checksum
+2. `SM2PrivateKey()` 生成 SM2 密钥对（**演示用**；真实场景私钥离线保管，不进插件包）
+3. `SM2PublicKey.encodeToDer()` → hex 得到 `pubkey` 字段
+4. `signSm2(privateKey, hexToBytes(checksum))` → hex 得到 `signature` 字段
+5. `verifySm2(...)` 自验通过
+6. 把 `checksum`/`publisher`/`pubkey`/`signature` 四个字段写回 `plugin.json`
+
+> **注意**：本 demo 每次运行都生成新的密钥对，所以 `pubkey`/`signature` 每次不同。真实发布流程中，私钥应当持久化保管、复用同一个密钥对签发多个插件。详见[插件签名与贡献指南](../docs/插件签名与贡献指南.md) 第 4.6 节。
+
+### 安装与使用
+
+#### 安装
+
+把 `signed-demo` 目录复制到 `~/.cjh/plugins/`：
+
+```bash
+cp -r example/plugins/signed-demo ~/.cjh/plugins/
+chmod +x ~/.cjh/plugins/signed-demo/tools/greet.sh
+```
+
+> 复制时**不要带** `src/`、`cjpm.toml`、`target/`——那些只是签名工具的工程文件，不是插件本体：
+> ```bash
+> rsync -a --exclude='src' --exclude='cjpm.toml' --exclude='target' \
+>   example/plugins/signed-demo/ ~/.cjh/plugins/signed-demo/
+> ```
+
+#### 验证加载
+
+启动 cjh，带 `--debug` 可看到签名验证日志：
+
+```bash
+cjh --debug
+```
+
+日志应出现：
+
+```
+[PLUGIN] 校验和验证通过: signed-demo
+[PLUGIN] SM2 签名验证通过: signed-demo publisher=github:cjh-demo
+[PLUGIN] 注册工具: greet
+```
+
+#### 使用工具
+
+在 cjh 会话里让 LLM 调用 `greet` 工具：
+
+```
+❯ 用 greet 工具向 Alice 问好
+▶ greet name: Alice
+  ↳ greet: [signed-demo] Hello, Alice! This plugin is SM2-signed.
+✓ 2 rounds · 1 tools · ...
+```
+
+#### 篡改检测演示
+
+修改插件脚本（模拟攻击者篡改）：
+
+```bash
+echo "echo 'tampered'" >> ~/.cjh/plugins/signed-demo/tools/greet.sh
+cjh --debug
+```
+
+日志会出现校验和不匹配，插件被拒绝加载：
+
+```
+[PLUGIN] 校验和不匹配，拒绝加载: signed-demo (expected=e3b0..., actual=...)
+```
+
+恢复脚本后即可正常加载。
+
 ## 编写自己的插件
 
 ### 1. 创建插件目录

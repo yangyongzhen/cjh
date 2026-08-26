@@ -1,0 +1,17 @@
+[package]
+  cjc-version = "1.0.5"
+  name = "gen_signed_demo"
+  description = "给 signed-demo 插件生成 SM2 签名（V3 信任链 Step 2 演示）"
+  version = "0.1.0"
+  target-dir = ""
+  output-type = "executable"
+  compile-option = ""
+  override-compile-option = ""
+  link-option = "--disable-new-dtags -rpath /root/.cangjie/stdx/cangjie-stdx-linux-x64-1.0.5.1/dynamic/stdx -rpath /opt/cangjie/cangjie/runtime/lib/linux_x86_64_cjnative -rpath /opt/cangjie/cangjie/third_party/llvm/lib -rpath /opt/cangjie/cangjie/lib/linux_x86_64_cjnative"
+  package-configuration = {}
+
+[dependencies]
+  cjutil = { path = "../../../libs/cjutil" }
+
+[target.x86_64-unknown-linux-gnu.bin-dependencies]
+    path-option = ["/root/.cangjie/stdx/cangjie-stdx-linux-x64-1.0.5.1/dynamic/stdx"]
