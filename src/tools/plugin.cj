@@ -19,6 +19,7 @@ package cjh.tools
  */
 
 import std.collection.*
+import std.env.*
 import std.process.*
 import std.fs.*
 import stdx.encoding.json.*
@@ -137,6 +138,17 @@ public class PluginManager {
         if (!exists(this.pluginsDir)) {
             return
         }
+        // 临时启动计时（与 main.cj 的 CJH_STARTUP_PROF 联动）
+        let profiling = (getVariable("CJH_STARTUP_PROF") ?? "") == "1"
+        func tmark(label: String): Unit {
+            if (!profiling) { return }
+            try {
+                let f = File("/tmp/cjh_startup.log", OpenMode.Append)
+                f.write(stringToBytes("  [PLUGIN] ${label}\n"))
+                f.close()
+            } catch (e: Exception) {}
+        }
+        tmark("loadAll enter, scanning ${this.pluginsDir}")
         // 扫描 pluginsDir 下的一级子目录
         let entries = ArrayList<String>()
         Directory.walk(this.pluginsDir, { fi =>
@@ -146,17 +158,21 @@ public class PluginManager {
             }
             return true
         })
+        tmark("Directory.walk done, ${entries.size} entries")
         for (pluginDir in entries) {
             let pluginJsonPath = pluginDir + "/plugin.json"
             if (!exists(pluginJsonPath)) {
                 continue
             }
+            tmark("loading ${pluginDir}")
             try {
                 this.loadPlugin(pluginDir, pluginJsonPath, registry, enabled, requireSignature)
             } catch (e: Exception) {
                 Log.warn("加载插件失败: ${pluginDir} - ${e}")
             }
+            tmark("loaded ${pluginDir}")
         }
+        tmark("loadAll done")
         if (this.loadedPlugins.size > 0) {
             Log.info("[PLUGIN] 已加载插件: ${this.loadedPlugins}")
         }

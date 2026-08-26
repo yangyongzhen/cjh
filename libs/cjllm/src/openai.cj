@@ -6,6 +6,9 @@ import stdx.net.tls.*
 import stdx.crypto.x509.X509Certificate
 import std.collection.*
 import std.io.*
+import std.env.*
+import std.fs.*
+import std.time.*
 import cjutil.*
 
 /**
@@ -22,31 +25,31 @@ public class OpenAiProvider <: LlmProvider {
         this.baseUrl = baseUrl
         this.apiKey = apiKey
         this.model = model
-        // V2d 连接预热：构造时 spawn 后台请求 /v1/models，
-        // 触发 TLS 握手 + 连接池建立，首次 chatStream 不再付 TLS 冷启动开销
-        spawn { this.warmup() }
+        // 预热已移除：stdx.net.http 的 ClientBuilder.send 会启动 readTimer 后台线程，
+        // 即使请求已完成、client 实例被回收，readTimer 仍会在约 15 秒后超时触发
+        // sendRequestTimeout WARN，该 WARN 写到 /dev/tty，绕过 Stderr.suppress()
+        // 和 setGlobalLogger(NoopLogger())，污染 TUI 输入框。
+        // warmup 只是省首次 TLS 冷启动的优化，不值得引入 WARN 污染。
+        // 首次 chatStream 会正常建连，TLS 冷启动开销用户感知不明显。
     }
 
     /**
-     * V2d 连接预热：发轻量 GET /v1/models 请求，触发 TLS 握手 + 连接池建立
+     * V2d 连接预热（已禁用）
      *
-     * 设计要点：
-     *   - 不设 readTimeout：预热是后台优化，让请求慢慢跑即可；
-     *     设了过短超时会触发 stdx.net.http 库内部 read response timeout WARN，
-     *     该 WARN 走 stdx.log 直接到 stderr，污染 TUI 输入框
-     *   - 预热失败完全静默：预热只是优化，不是必需，首次 chatStream 会正常重试
-     *   - 不打任何日志：避免 stdx 日志漏到 stderr 污染 TUI
+     * 保留函数体供未来可能的替代预热方案复用，但 init 不再调用。
+     * 原因：stdx.net.http 的 ClientBuilder.send 会启动 readTimer 后台线程，
+     * 即使请求已完成、client 实例被回收，readTimer 仍会超时触发
+     * sendRequestTimeout WARN，该 WARN 写到 /dev/tty，绕过所有 fd 重定向，
+     * 污染 TUI 输入框。
      */
     public func warmup(): Unit {
         try {
             var tlsConfig = TlsClientConfig()
             tlsConfig.verifyMode = CertificateVerifyMode.CustomCA(X509Certificate.systemRootCerts())
             tlsConfig.domain = Some(this.sniHost())
-            // 不设 readTimeout：预热请求不超时，避免触发 stdx WARN 污染 TUI
             let client = ClientBuilder()
                 .tlsConfig(tlsConfig)
                 .build()
-            // GET /v1/models（OpenAI 兼容端点，轻量，仅需 API key）
             var modelsUrl = this.baseUrl
             if (modelsUrl.endsWith("/")) {
                 modelsUrl = modelsUrl[0..modelsUrl.size - 1]
@@ -62,8 +65,7 @@ public class OpenAiProvider <: LlmProvider {
                 .build()
             let _ = client.send(req)
         } catch (e: Exception) {
-            // 预热失败完全静默：可能是端点不支持 /v1/models，或网络瞬断
-            // 不打日志，避免污染 TUI；首次 chatStream 会正常重试
+            // 预热失败静默
         }
     }
 
@@ -145,9 +147,10 @@ public class OpenAiProvider <: LlmProvider {
         tlsConfig.verifyMode = CertificateVerifyMode.CustomCA(X509Certificate.systemRootCerts())
         tlsConfig.domain = Some(this.sniHost())
         // SSE 流式响应：readTimeout 是"读取一个响应的最大时长"——绝对超时
-        // （CangjieSkills 文档确认：ClientBuilder.readTimeout 设定读取一个响应的最大时长）
         // DeepSeek 长 completions 思考阶段可能 >60s 才到第一个 chunk，
         // 故放宽到 10 分钟，避免长任务被切断导致最后一帧 usage 丢失（token=0）
+        // 注：readTimer 在请求正常完成后会被取消，不会触发 WARN；
+        // 只有 warmup 那种"fire and forget"的请求才会让 readTimer 跑到超时
         let client = ClientBuilder()
             .tlsConfig(tlsConfig)
             .readTimeout(Duration.second * 600)

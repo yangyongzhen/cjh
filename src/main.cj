@@ -4,6 +4,7 @@ import std.collection.*
 import std.env.*
 import std.fs.*
 import std.convert.Parsable
+import std.time.*
 import stdx.encoding.json.*
 import cjllm.*
 import cjh.agent.*
@@ -501,26 +502,27 @@ func loadPlugins(pluginsDir: String, registry: ToolRegistry,
 }
 
 /**
- * 连接所有配置的 MCP 服务器，注册工具到 registry
- * 返回创建的 McpManager（用于退出时断开连接）
+ * 异步加载 MCP 服务器
  *
- * 用 spawn + Future.get(timeout) 隔离：单个 MCP 服务器卡住（recv 阻塞）
- * 不阻塞 main web 启动。超时 5s，超时则跳过 MCP 继续。
+ * 纯异步：spawn 后台 connectAll，主线程不等待，TUI 立即启动。
+ * MCP 连上后 connectAll 自然把工具 register 到 registry
+ * （registry 已加锁，后台 register 与主线程读并发安全）。
+ *
+ * 返回创建的 McpManager（用于退出时断开连接）。
  */
 func loadMcpServers(servers: ArrayList<McpServerConfig>,
     registry: ToolRegistry): McpManager {
     let mgr = McpManager()
-    // spawn 隔离 connectAll，避免 recv() 永久阻塞卡死启动
-    let future = spawn {
-        mgr.connectAll(servers, registry)
+    if (servers.size == 0) {
+        return mgr
     }
-    // 等待 5 秒，超时则放弃 MCP（web server 仍能启动）
-    try {
-        future.get(Duration.second * 5)
-    } catch (e: TimeoutException) {
-        Log.warn("[MCP] connectAll 超时（5s），跳过 MCP 继续")
-    } catch (e: Exception) {
-        Log.warn("[MCP] connectAll 异常: ${e}")
+    // 后台异步连接，不阻塞主线程
+    spawn {
+        try {
+            mgr.connectAll(servers, registry)
+        } catch (e: Exception) {
+            Log.warn("[MCP] connectAll 异常: ${e}")
+        }
     }
     return mgr
 }
@@ -1039,10 +1041,24 @@ func runJson(prompt: String, sessionId: String): Int64 {
  * TUI 交互模式（默认）
  */
 func runTui(sessionId: String): Int64 {
+    // 临时启动计时（CJH_STARTUP_PROF=1 开启）
+    let profiling = (readEnv("CJH_STARTUP_PROF") ?? "") == "1"
+    let t0 = MonoTime.now()
+    func mark(label: String): Unit {
+        if (!profiling) { return }
+        let elapsed = MonoTime.now() - t0
+        try {
+            let f = File("/tmp/cjh_startup.log", OpenMode.Append)
+            f.write(stringToBytes("${elapsed}\t${label}\n"))
+            f.close()
+        } catch (e: Exception) {}
+    }
+    mark("runTui enter")
     // 在屏蔽 stderr 前先缓存终端尺寸（suppress 后 ioctl(STDERR) 失效）
     let (initRows, initCols) = TermSize.get()
     // TUI 全屏模式：立即屏蔽 stderr（配置生成等提示不污染屏幕）
     Stderr.suppress()
+    mark("stderr suppressed")
     let registry = ToolRegistry()
     registry.register(BashTool())
     registry.register(ReadTool())
@@ -1051,21 +1067,28 @@ func runTui(sessionId: String): Int64 {
     registry.register(GrepTool())
     registry.register(ListDirTool())
     registry.register(HashlineEditTool())
+    mark("builtin tools registered")
 
     // 配置加载
     let cjhCfg = CjhConfig()
     cjhCfg.ensureDirs()
+    mark("CjhConfig loaded")
     // 应用 TUI 主题（settings.json "theme" 字段；默认 starfrost 星霜青）
     Theme.apply(cjhCfg.theme)
+    mark("theme applied")
     // 注册技能携带的声明式工具（Skill 自定义工具）
     loadSkillTools(cjhCfg.skillsDir, registry, cjhCfg.enabledSkills)
+    mark("skill tools loaded")
     // 加载插件（V2b Step 1：plugin.json + shell 工具）
     let pluginManager = loadPlugins(cjhCfg.pluginsDir, registry, cjhCfg.enabledPlugins, cjhCfg.requireSignature)
+    mark("plugins loaded")
     // 连接 MCP 服务器（V2b 扩展点：stdio 传输 + JSON-RPC）
     let mcpManager = loadMcpServers(cjhCfg.mcpServers, registry)
+    mark("mcp servers loaded")
 
     // 预生成会话 ID（工具结果截断落盘需要会话 ID 隔离）
     let effectiveSessionId = if (sessionId.size > 0) { sessionId } else { SessionStore(cjhCfg.sessionsDir).newSessionId() }
+    mark("session id generated")
 
     // system prompt：全局配置 + 项目指令（AGENTS.md）+ 技能（Skills）
     let config = AgentConfig(
@@ -1077,6 +1100,7 @@ func runTui(sessionId: String): Int64 {
         cjhCfg.toolResultMaxChars,
         cjhCfg.spillDir,
         effectiveSessionId)
+    mark("AgentConfig built")
 
     var tuiOpt: Option<TuiApp> = None
 
@@ -1087,6 +1111,7 @@ func runTui(sessionId: String): Int64 {
         } else {
             provider = makeProvider(cjhCfg)
         }
+        mark("provider created (warmup spawned)")
         let agent = Agent(provider, registry, config)
         agent.setPluginManager(pluginManager)
 
@@ -1315,7 +1340,9 @@ func runTui(sessionId: String): Int64 {
             }
         }
 
+        mark("TUI ready, entering event loop")
         tui.run()
+        mark("TUI exited")
         Stderr.restore()
         return 0
     } catch (e: Exception) {

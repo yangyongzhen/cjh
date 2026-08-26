@@ -2,6 +2,7 @@ package cjh.tools
 
 import std.collection.*
 import std.process.*
+import std.sync.*
 import stdx.encoding.json.*
 import cjllm.ToolSpec
 import cjutil.*
@@ -49,23 +50,40 @@ public interface CjhTool {
  */
 public class ToolRegistry {
     private var tools: HashMap<String, CjhTool> = HashMap<String, CjhTool>()
+    // 异步 MCP 加载会在后台协程 register，主线程同时 specs/execute → 加锁保护
+    private let lock: ReentrantMutex = ReentrantMutex()
 
     public init() {}
 
     public func register(tool: CjhTool): Unit {
-        this.tools.add(tool.spec().name, tool)
+        lock.lock()
+        try {
+            this.tools.add(tool.spec().name, tool)
+        } finally {
+            lock.unlock()
+        }
     }
 
     public func specs(): ArrayList<ToolSpec> {
-        var list = ArrayList<ToolSpec>()
-        for ((_, t) in this.tools) {
-            list.add(t.spec())
+        lock.lock()
+        try {
+            var list = ArrayList<ToolSpec>()
+            for ((_, t) in this.tools) {
+                list.add(t.spec())
+            }
+            return list
+        } finally {
+            lock.unlock()
         }
-        return list
     }
 
     public func has(name: String): Bool {
-        return this.tools.contains(name)
+        lock.lock()
+        try {
+            return this.tools.contains(name)
+        } finally {
+            lock.unlock()
+        }
     }
 
     /**
@@ -73,21 +91,34 @@ public class ToolRegistry {
      * 工具不存在时返回 false（保守：未知工具不并发）
      */
     public func isReadOnly(name: String): Bool {
-        if (!this.tools.contains(name)) {
-            return false
+        lock.lock()
+        try {
+            if (!this.tools.contains(name)) {
+                return false
+            }
+            return this.tools.get(name).getOrThrow().isReadOnly()
+        } finally {
+            lock.unlock()
         }
-        return this.tools.get(name).getOrThrow().isReadOnly()
     }
 
     public func execute(name: String, args: JsonObject): ToolResult {
-        if (!this.tools.contains(name)) {
-            return ToolResult("unknown tool: ${name}", true)
+        lock.lock()
+        let toolOpt: ?CjhTool = if (this.tools.contains(name)) {
+            this.tools.get(name)
+        } else {
+            None
         }
-        try {
-            let tool = this.tools.get(name).getOrThrow()
-            return tool.execute(args)
-        } catch (e: Exception) {
-            return ToolResult("tool ${name} failed: ${e}", true)
+        lock.unlock()
+        match (toolOpt) {
+            case Some(tool) =>
+                try {
+                    return tool.execute(args)
+                } catch (e: Exception) {
+                    return ToolResult("tool ${name} failed: ${e}", true)
+                }
+            case None =>
+                return ToolResult("unknown tool: ${name}", true)
         }
     }
 }
