@@ -186,6 +186,56 @@ public class PluginManager {
                     return
                 }
 
+                // V3 Step 1：校验和验证（plugin.json 可选 checksum 字段）
+                // checksum = SHA256(插件目录除 plugin.json 外所有文件)
+                // 存在则强制验证，不匹配则拒绝加载（检测篡改）
+                var expectedChecksum = ""
+                if (let Some(cs) <- obj.get("checksum")) {
+                    match (cs.kind()) {
+                        case JsonKind.JsString => expectedChecksum = cs.asString().getValue()
+                        case _ => ()
+                    }
+                }
+                if (expectedChecksum.size > 0) {
+                    let actualChecksum = sha256DirExcluding(pluginDir, "plugin.json")
+                    if (actualChecksum != expectedChecksum) {
+                        Log.warn("[PLUGIN] 校验和不匹配，拒绝加载: ${pluginName} (expected=${expectedChecksum}, actual=${actualChecksum})")
+                        return
+                    }
+                    Log.debug("[PLUGIN] 校验和验证通过: ${pluginName}")
+                }
+
+                // V3 Step 2 预留：Ed25519 签名位（plugin.json 可选字段）
+                //   publisher : 发布者 ID（如 "github:alice"）
+                //   pubkey    : 发布者 Ed25519 公钥（hex，64 字节）
+                //   signature : 对 checksum 的 Ed25519 签名（hex，64 字节）
+                // 当前仅解析记录，签名验证逻辑在 V3 Step 2 实现
+                var publisher = ""
+                if (let Some(p) <- obj.get("publisher")) {
+                    match (p.kind()) {
+                        case JsonKind.JsString => publisher = p.asString().getValue()
+                        case _ => ()
+                    }
+                }
+                var pubkeyHex = ""
+                if (let Some(pk) <- obj.get("pubkey")) {
+                    match (pk.kind()) {
+                        case JsonKind.JsString => pubkeyHex = pk.asString().getValue()
+                        case _ => ()
+                    }
+                }
+                var signatureHex = ""
+                if (let Some(sig) <- obj.get("signature")) {
+                    match (sig.kind()) {
+                        case JsonKind.JsString => signatureHex = sig.asString().getValue()
+                        case _ => ()
+                    }
+                }
+                // 记录签名元数据（V3 Step 2 将用此做信任链验证）
+                if (publisher.size > 0 || pubkeyHex.size > 0 || signatureHex.size > 0) {
+                    Log.debug("[PLUGIN] 签名元数据: ${pluginName} publisher=${publisher} pubkey=${pubkeyHex} sig=${signatureHex}")
+                }
+
                 // 白名单过滤（空=全部启用）
                 if (enabled.size > 0 && !enabled.contains(pluginName)) {
                     return
