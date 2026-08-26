@@ -22,6 +22,43 @@ public class OpenAiProvider <: LlmProvider {
         this.baseUrl = baseUrl
         this.apiKey = apiKey
         this.model = model
+        // V2d 连接预热：构造时 spawn 后台请求 /v1/models，
+        // 触发 TLS 握手 + 连接池建立，首次 chatStream 不再付 TLS 冷启动开销
+        spawn { this.warmup() }
+    }
+
+    /**
+     * V2d 连接预热：发轻量 GET /v1/models 请求，触发 TLS 握手 + 连接池建立
+     * 失败静默（预热是优化，不是必需）
+     */
+    public func warmup(): Unit {
+        try {
+            var tlsConfig = TlsClientConfig()
+            tlsConfig.verifyMode = CertificateVerifyMode.CustomCA(X509Certificate.systemRootCerts())
+            tlsConfig.domain = Some(this.sniHost())
+            let client = ClientBuilder()
+                .tlsConfig(tlsConfig)
+                .readTimeout(Duration.second * 5)
+                .build()
+            // GET /v1/models（OpenAI 兼容端点，轻量，仅需 API key）
+            var modelsUrl = this.baseUrl
+            if (modelsUrl.endsWith("/")) {
+                modelsUrl = modelsUrl[0..modelsUrl.size - 1]
+            }
+            if (!modelsUrl.endsWith("/v1")) {
+                modelsUrl += "/v1"
+            }
+            modelsUrl += "/models"
+            let req = HttpRequestBuilder()
+                .get()
+                .url(modelsUrl)
+                .header("Authorization", "Bearer ${this.apiKey}")
+                .build()
+            let _ = client.send(req)
+        } catch (e: Exception) {
+            // 预热失败静默：可能是端点不支持 /v1/models，或网络瞬断
+            // 首次 chatStream 会正常重试
+        }
     }
 
     /**

@@ -113,6 +113,10 @@ public class RunSummary {
     public var completionTokens: Int64 = 0 // 输出 token 累计
     public var cachedTokens: Int64 = 0     // 缓存命中 token 累计
     public var reply: String = ""          // 最终文本答复
+    // V2d 并发性能基线
+    public var parallelBatches: Int64 = 0  // 并发执行的批次数
+    public var parallelSavedMs: Int64 = 0  // 并发相比串行节省的毫秒数
+    public var maxParallelism: Int64 = 0   // 最大并发度（单组最多工具数）
 
     public init() {}
 
@@ -321,91 +325,105 @@ public class Agent {
                     this.onAssistantText(response.text)
                 }
                 summary.toolCalls += Int64(response.toolCalls.size)
-                // V2d 并发执行引擎：Read vs. Write 分类调度（对齐 pi/omp/anon-kode）
-                // - 全 read-only → spawn 并发执行，结果按 LLM 原始顺序重排
-                // - 含 state-modifying → 整批串行（避免并发写竞态）
-                let allReadOnly = this.allReadOnly(response.toolCalls)
-                if (allReadOnly && response.toolCalls.size > 1) {
-                    // 并发执行：每个 tool_call 独立 spawn，Future 按原始顺序 get()
-                    var futures = ArrayList<Future<ToolResult>>()
-                    for (tc in response.toolCalls) {
-                        this.onToolStart(tc.name, tc.arguments)
-                        let localName = tc.name
-                        let localArgs = tc.arguments
-                        futures.add(spawn {
-                            this.executeGuarded(localName, localArgs)
-                        })
-                    }
-                    // 按原始顺序 get 结果，回填消息历史
-                    var idx: Int64 = 0
-                    for (tc in response.toolCalls) {
-                        var result = futures[idx].get()
-                        // 输出被 max_tokens 截断：write_file/edit_file 的 content 不完整
-                        if (response.truncated && (tc.name == "write_file" || tc.name == "edit_file")) {
-                            result = ToolResult(result.content + "\n\n⚠️ 截断警告：本轮 LLM 输出被 max_tokens 强制截断，上面写入的文件内容【不完整】。\n请【立即】按以下步骤修复（不要再用 write_file 重写整个文件，那会再次截断）：\n1. 调用 read_file 读取刚写入的文件，确认截断位置\n2. 调用 edit_file，old_string 填文件末尾最后几个有效字符，new_string 续写剩余部分\n3. 重复 1-2 直到文件完整闭合（HTML 需 </script></body></html>）\n务必分多次小段续写，每段 new_string 控制在 ~1500 字符以内。", true)
-                        }
-                        this.onToolResult(tc.name, result)
-                        // V2b Step 2：工具结果回填前触发 on_tool_result 钩子（插件可拦截/改写）
-                        let hookedContent = this.fireToolResultHook(tc.name, result.content)
-                        this.messages.add(ChatMessage("tool", truncateToolResult(hookedContent, tc.name, tc.id), tc.id, tc.name))
-                        idx += 1
-                    }
-                    // 截断打断：检测到被截断的 write_file/edit_file 路径，注入 [System Notice] 绝对指令
-                    // 斩断 LLM "重新 write_file" 的念头，强行拉入 append_file 续写模式
-                    if (response.truncatedPaths.size > 0) {
-                        var notice = "\n[System Notice - ABSOLUTE DIRECTIVE, MUST EXECUTE]\n"
-                        notice += "The previous write_file was truncated by the model's max_tokens. The file has been saved to disk but is INCOMPLETE.\n"
-                        notice += "Truncated files:\n"
-                        for (i in 0..response.truncatedPaths.size) {
-                            notice += "  - ${response.truncatedPaths[i]}\n"
-                        }
-                        notice += "\n[FORBIDDEN] Absolutely DO NOT call write_file again to rewrite these files -- it will truncate again and fall into an infinite loop.\n"
-                        notice += "[MANDATORY] For each truncated file, execute immediately:\n"
-                        notice += "  1. read_file <path> to confirm the current end of the file\n"
-                        notice += "  2. append_file <path> \"<next chunk of remaining content>\" (each chunk <= 1500 chars)\n"
-                        notice += "  3. Repeat step 2; the final chunk MUST append the closing tags </script></body></html>\n"
-                        notice += "  4. read_file <path> to verify the file is complete and properly closed\n"
-                        notice += "Do NOT perform any other action until the above steps are complete."
-                        this.messages.add(ChatMessage("user", notice))
-                        this.onAssistantText("\n[System] Truncation detected, forced continuation directive injected\n")
-                    }
-                } else {
-                    // 串行执行：含 state-modifying 工具或单工具调用
-                    for (tc in response.toolCalls) {
+                // V2d 并发执行引擎：DAG 依赖分析 + 拓扑分组调度
+                // - 同一 path 且至少一个 write → 串行依赖（避免并发写竞态）
+                // - 不同 path → 可并发（即使都是 write）
+                // - 无依赖关系的 read-only → 全并发
+                // 组内 spawn 并发，组间串行；结果按 LLM 原始顺序回填
+                let toolCalls = response.toolCalls
+                let n = Int64(toolCalls.size)
+                let deps = this.buildDependencyGraph(toolCalls)
+                let groups = this.topologicalGroups(deps, n)
+
+                // 按拓扑分组执行：组内 spawn 并发，组间串行
+                // 结果暂存到 results 数组（按原始索引），全部完成后按原始顺序回填
+                var results = ArrayList<ToolResult>()
+                for (_ in 0..n) {
+                    results.add(ToolResult("", false))
+                }
+                for (g in 0..groups.size) {
+                    let group = groups[g]
+                    // 单元素组直接串行执行（避免 spawn 开销）
+                    if (group.size == 1) {
+                        let i = group[0]
+                        let tc = toolCalls[i]
                         this.onToolStart(tc.name, tc.arguments)
                         var result = this.executeGuarded(tc.name, tc.arguments)
-                        // 输出被 max_tokens 截断：write_file 的 content 不完整
-                        // 给 LLM 明确信号——已写入部分需用 edit_file 续写
                         if (response.truncated && (tc.name == "write_file" || tc.name == "edit_file")) {
                             result = ToolResult(result.content + "\n\n⚠️ 截断警告：本轮 LLM 输出被 max_tokens 强制截断，上面写入的文件内容【不完整】。\n请【立即】按以下步骤修复（不要再用 write_file 重写整个文件，那会再次截断）：\n1. 调用 read_file 读取刚写入的文件，确认截断位置\n2. 调用 edit_file，old_string 填文件末尾最后几个有效字符，new_string 续写剩余部分\n3. 重复 1-2 直到文件完整闭合（HTML 需 </script></body></html>）\n务必分多次小段续写，每段 new_string 控制在 ~1500 字符以内。", true)
                         }
-                        this.onToolResult(tc.name, result)
-                        // V2b Step 2：工具结果回填前触发 on_tool_result 钩子（插件可拦截/改写）
-                        let hookedContent = this.fireToolResultHook(tc.name, result.content)
-                        // tool 结果回填
-                        this.messages.add(ChatMessage("tool", truncateToolResult(hookedContent, tc.name, tc.id), tc.id, tc.name))
-                    }
-                    // 截断打断：检测到被截断的 write_file/edit_file 路径，注入 [System Notice] 绝对指令
-                    // 斩断 LLM "重新 write_file" 的念头，强行拉入 append_file 续写模式
-                    if (response.truncatedPaths.size > 0) {
-                        var notice = "\n[System Notice - ABSOLUTE DIRECTIVE, MUST EXECUTE]\n"
-                        notice += "The previous write_file was truncated by the model's max_tokens. The file has been saved to disk but is INCOMPLETE.\n"
-                        notice += "Truncated files:\n"
-                        for (i in 0..response.truncatedPaths.size) {
-                            notice += "  - ${response.truncatedPaths[i]}\n"
+                        results[i] = result
+                    } else {
+                        // 多元素组：spawn 并发执行
+                        // V2d 性能基线：记录并发实际耗时 vs 假设串行耗时
+                        let batchStart = DateTime.now()
+                        var futures = ArrayList<Future<(Int64, ToolResult, Int64)>>()
+                        for (k in 0..group.size) {
+                            let i = group[k]
+                            let tc = toolCalls[i]
+                            this.onToolStart(tc.name, tc.arguments)
+                            let localName = tc.name
+                            let localArgs = tc.arguments
+                            let localIdx = i
+                            futures.add(spawn {
+                                let t0 = DateTime.now()
+                                let r = this.executeGuarded(localName, localArgs)
+                                let dur = (DateTime.now() - t0).toMilliseconds()
+                                (localIdx, r, dur)
+                            })
                         }
-                        notice += "\n[FORBIDDEN] Absolutely DO NOT call write_file again to rewrite these files -- it will truncate again and fall into an infinite loop.\n"
-                        notice += "[MANDATORY] For each truncated file, execute immediately:\n"
-                        notice += "  1. read_file <path> to confirm the current end of the file\n"
-                        notice += "  2. append_file <path> \"<next chunk of remaining content>\" (each chunk <= 1500 chars)\n"
-                        notice += "  3. Repeat step 2; the final chunk MUST append the closing tags </script></body></html>\n"
-                        notice += "  4. read_file <path> to verify the file is complete and properly closed\n"
-                        notice += "Do NOT perform any other action until the above steps are complete."
-                        this.messages.add(ChatMessage("user", notice))
-                        this.onAssistantText("\n[System] Truncation detected, forced continuation directive injected\n")
+                        // 收集组内结果，累加假设串行耗时
+                        var serialMs: Int64 = 0
+                        for (k in 0..group.size) {
+                            let (idx, result, dur) = futures[k].get()
+                            serialMs += dur
+                            let tc = toolCalls[idx]
+                            var r = result
+                            if (response.truncated && (tc.name == "write_file" || tc.name == "edit_file")) {
+                                r = ToolResult(r.content + "\n\n⚠️ 截断警告：本轮 LLM 输出被 max_tokens 强制截断，上面写入的文件内容【不完整】。\n请【立即】按以下步骤修复（不要再用 write_file 重写整个文件，那会再次截断）：\n1. 调用 read_file 读取刚写入的文件，确认截断位置\n2. 调用 edit_file，old_string 填文件末尾最后几个有效字符，new_string 续写剩余部分\n3. 重复 1-2 直到文件完整闭合（HTML 需 </script></body></html>）\n务必分多次小段续写，每段 new_string 控制在 ~1500 字符以内。", true)
+                            }
+                            results[idx] = r
+                        }
+                        // 并发实际耗时
+                        let parallelMs = (DateTime.now() - batchStart).toMilliseconds()
+                        // 节省 = 假设串行 - 并发实际
+                        if (serialMs > parallelMs) {
+                            summary.parallelSavedMs += (serialMs - parallelMs)
+                        }
+                        summary.parallelBatches += 1
+                        if (Int64(group.size) > summary.maxParallelism) {
+                            summary.maxParallelism = Int64(group.size)
+                        }
                     }
                 }
-                continue
+
+                // 按原始顺序回填结果到消息历史
+                for (i in 0..n) {
+                    let tc = toolCalls[i]
+                    let result = results[i]
+                    this.onToolResult(tc.name, result)
+                    let hookedContent = this.fireToolResultHook(tc.name, result.content)
+                    this.messages.add(ChatMessage("tool", truncateToolResult(hookedContent, tc.name, tc.id), tc.id, tc.name))
+                }
+
+                // 截断打断：检测到被截断的 write_file/edit_file 路径，注入 [System Notice] 绝对指令
+                if (response.truncatedPaths.size > 0) {
+                    var notice = "\n[System Notice - ABSOLUTE DIRECTIVE, MUST EXECUTE]\n"
+                    notice += "The previous write_file was truncated by the model's max_tokens. The file has been saved to disk but is INCOMPLETE.\n"
+                    notice += "Truncated files:\n"
+                    for (i in 0..response.truncatedPaths.size) {
+                        notice += "  - ${response.truncatedPaths[i]}\n"
+                    }
+                    notice += "\n[FORBIDDEN] Absolutely DO NOT call write_file again to rewrite these files -- it will truncate again and fall into an infinite loop.\n"
+                    notice += "[MANDATORY] For each truncated file, execute immediately:\n"
+                    notice += "  1. read_file <path> to confirm the current end of the file\n"
+                    notice += "  2. append_file <path> \"<next chunk of remaining content>\" (each chunk <= 1500 chars)\n"
+                    notice += "  3. Repeat step 2; the final chunk MUST append the closing tags </script></body></html>\n"
+                    notice += "  4. read_file <path> to verify the file is complete and properly closed\n"
+                    notice += "Do NOT perform any other action until the above steps are complete."
+                    this.messages.add(ChatMessage("user", notice))
+                    this.onAssistantText("\n[System] Truncation detected, forced continuation directive injected\n")
+                }
             }
 
             // 纯文本答复
@@ -637,6 +655,146 @@ public class Agent {
             }
         }
         return true
+    }
+
+    /**
+     * V2d DAG 依赖分析：从 ToolCall 提取资源访问 (path, isWrite)
+     *
+     * 资源识别规则（对齐 builtin.cj 工具参数）：
+     *   - read_file/grep/list_dir → path, read
+     *   - write_file/append_file/edit_file → path, write
+     *   - bash → command, write（保守：bash 可能改任意状态）
+     *   - 其他工具 → "", write（保守：未知工具当写处理）
+     *
+     * @return (resourcePath, isWrite)；path 为空表示无文件资源
+     */
+    private func extractResourceAccess(tc: ToolCall): (String, Bool) {
+        match (tc.name) {
+            case "read_file" | "grep" | "list_dir" =>
+                match (tc.arguments.get("path")) {
+                    case Some(p) => return (p.asString().getValue(), false)
+                    case None => return ("", false)
+                }
+            case "write_file" | "append_file" | "edit_file" =>
+                match (tc.arguments.get("path")) {
+                    case Some(p) => return (p.asString().getValue(), true)
+                    case None => return ("", true)
+                }
+            case "bash" =>
+                match (tc.arguments.get("command")) {
+                    case Some(c) => return (c.asString().getValue(), true)
+                    case None => return ("", true)
+                }
+            case _ =>
+                return ("", true)
+        }
+    }
+
+    /**
+     * V2d DAG 依赖分析：构建工具调用之间的依赖图
+     *
+     * 依赖规则（文件资源级别）：
+     *   - 同一 path 且至少一个 isWrite → 必须串行（写→读、写→写、读→写）
+     *   - 不同 path → 可并发
+     *   - bash 工具的 command 当 path 处理（不同 bash 命令可并发）
+     *
+     * @return deps[i] = 依赖 i 的工具调用索引列表（i 必须在 deps[i] 之后执行）
+     */
+    private func buildDependencyGraph(toolCalls: ArrayList<ToolCall>): ArrayList<ArrayList<Int64>> {
+        let n = toolCalls.size
+        // deps[i] = i 依赖的工具调用索引列表（这些必须先完成，i 才能开始）
+        var deps = ArrayList<ArrayList<Int64>>()
+        for (_ in 0..n) {
+            deps.add(ArrayList<Int64>())
+        }
+
+        // 提取每个工具调用的资源访问
+        var accesses = ArrayList<(String, Bool)>()
+        for (_ in 0..n) {
+            accesses.add(("", false))
+        }
+        for (i in 0..n) {
+            accesses[i] = this.extractResourceAccess(toolCalls[i])
+        }
+
+        // 构建依赖边：同 path 且至少一个 write → 串行依赖
+        for (i in 0..n) {
+            let (pathI, writeI) = accesses[i]
+            if (pathI.size == 0) {
+                continue  // 无资源路径，不建依赖
+            }
+            for (j in 0..n) {
+                if (i == j) {
+                    continue
+                }
+                let (pathJ, writeJ) = accesses[j]
+                if (pathJ.size == 0) {
+                    continue
+                }
+                // 同一路径 + 至少一个写 → 串行依赖
+                if (pathI == pathJ && (writeI || writeJ)) {
+                    // 保留 LLM 原始顺序：j < i 时 i 依赖 j
+                    if (j < i) {
+                        deps[i].add(Int64(j))
+                    }
+                }
+            }
+        }
+        return deps
+    }
+
+    /**
+     * V2d DAG 拓扑排序：按依赖关系分组执行
+     *
+     * 同一组的工具调用可并发执行；下一组必须等当前组全部完成。
+     * 组内顺序保持 LLM 原始顺序（结果回填顺序）。
+     *
+     * @return 每组包含可并发执行的工具调用索引
+     */
+    private func topologicalGroups(deps: ArrayList<ArrayList<Int64>>,
+        n: Int64): ArrayList<ArrayList<Int64>> {
+        // 入度：依赖的工具调用数量
+        var inDegree = ArrayList<Int64>()
+        for (_ in 0..n) {
+            inDegree.add(0)
+        }
+        for (i in 0..n) {
+            inDegree[i] = Int64(deps[i].size)
+        }
+
+        var groups = ArrayList<ArrayList<Int64>>()
+        var completed = HashSet<Int64>()  // 已完成的工具调用索引
+
+        // 迭代：每轮找入度为 0 的节点（无未完成依赖）作为一组
+        var remaining = n
+        while (remaining > 0) {
+            var group = ArrayList<Int64>()
+            for (i in 0..n) {
+                if (completed.contains(Int64(i))) {
+                    continue
+                }
+                // 检查所有依赖是否已完成
+                var allDepsDone = true
+                for (d in deps[i]) {
+                    if (!completed.contains(d)) {
+                        allDepsDone = false
+                        break
+                    }
+                }
+                if (allDepsDone) {
+                    group.add(Int64(i))
+                }
+            }
+            if (group.size == 0) {
+                break  // 无可执行节点（可能有环），退出
+            }
+            groups.add(group)
+            for (idx in group) {
+                completed.add(idx)
+                remaining -= 1
+            }
+        }
+        return groups
     }
 
     /**
