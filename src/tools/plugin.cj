@@ -130,8 +130,10 @@ public class PluginManager {
      *
      * @param registry  工具注册中心
      * @param enabled   白名单（空=全部启用）
+     * @param requireSignature  是否强制插件必须带签名（true=无签名拒绝加载）
      */
-    public func loadAll(registry: ToolRegistry, enabled: ArrayList<String>): Unit {
+    public func loadAll(registry: ToolRegistry, enabled: ArrayList<String>,
+        requireSignature: Bool): Unit {
         if (!exists(this.pluginsDir)) {
             return
         }
@@ -150,7 +152,7 @@ public class PluginManager {
                 continue
             }
             try {
-                this.loadPlugin(pluginDir, pluginJsonPath, registry, enabled)
+                this.loadPlugin(pluginDir, pluginJsonPath, registry, enabled, requireSignature)
             } catch (e: Exception) {
                 Log.warn("加载插件失败: ${pluginDir} - ${e}")
             }
@@ -164,7 +166,8 @@ public class PluginManager {
      * 加载单个插件
      */
     private func loadPlugin(pluginDir: String, pluginJsonPath: String,
-        registry: ToolRegistry, enabled: ArrayList<String>): Unit {
+        registry: ToolRegistry, enabled: ArrayList<String>,
+        requireSignature: Bool): Unit {
 
         let content = safeFromUtf8(File.readFrom(pluginJsonPath))
         let v = JsonValue.fromStr(content)
@@ -252,6 +255,16 @@ public class PluginManager {
                 } else if (pubkeyHex.size > 0 || signatureHex.size > 0) {
                     // 部分字段存在但不全，记录警告但不拒绝（兼容过渡）
                     Log.warn("[PLUGIN] 签名字段不完整，跳过验签: ${pluginName} (pubkey=${pubkeyHex.size > 0}, sig=${signatureHex.size > 0}, checksum=${expectedChecksum.size > 0})")
+                }
+
+                // require_signature 强制模式：无 checksum 或无 pubkey/signature → 拒绝
+                if (requireSignature) {
+                    let hasChecksum = expectedChecksum.size > 0
+                    let hasSig = pubkeyHex.size > 0 && signatureHex.size > 0
+                    if (!hasChecksum || !hasSig) {
+                        Log.warn("[PLUGIN] require_signature=true，插件缺少完整签名，拒绝加载: ${pluginName} (checksum=${hasChecksum}, sig=${hasSig})")
+                        return
+                    }
                 }
 
                 // 白名单过滤（空=全部启用）

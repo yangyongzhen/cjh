@@ -93,6 +93,10 @@ public class CjhConfig {
     public let pluginsDir: String
     // 启用的插件白名单（settings.json "enabled_plugins": [...]；空=全部启用）
     public var enabledPlugins: ArrayList<String> = ArrayList<String>()
+    // 是否强制插件必须带签名（settings.json "require_signature": true）
+    // 默认 false：无签名插件照常加载
+    // 开启 true：无 checksum 或无 pubkey/signature 的插件拒绝加载
+    public var requireSignature: Bool = false
     // MCP 服务器配置列表（settings.json "mcp_servers" 段）
     public var mcpServers: ArrayList<McpServerConfig> = ArrayList<McpServerConfig>()
     // ===== Web 服务器配置（settings.json "web" 段）=====
@@ -385,6 +389,13 @@ public class CjhConfig {
                                         }
                                     }
                                 }
+                            case _ => ()
+                        }
+                    }
+                    // 是否强制插件必须带签名（默认 false）
+                    if (let Some(v) <- obj.get("require_signature")) {
+                        match (v.kind()) {
+                            case JsonKind.JsBool => this.requireSignature = v.asBool().getValue()
                             case _ => ()
                         }
                     }

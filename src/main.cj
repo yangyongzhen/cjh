@@ -489,12 +489,13 @@ func loadSkillTools(skillsDir: String, registry: ToolRegistry, enabled: ArrayLis
  * 加载插件（V2b Step 1）
  * 扫描 pluginsDir 下每个子目录的 plugin.json，注册插件工具到 registry。
  * 白名单 enabled 为空时全部启用。
+ * requireSignature=true 时强制插件必须带完整签名。
  * 返回创建的 PluginManager（供 Agent 事件钩子使用）。
  */
 func loadPlugins(pluginsDir: String, registry: ToolRegistry,
-    enabled: ArrayList<String>): PluginManager {
+    enabled: ArrayList<String>, requireSignature: Bool): PluginManager {
     let pm = PluginManager(pluginsDir)
-    pm.loadAll(registry, enabled)
+    pm.loadAll(registry, enabled, requireSignature)
     return pm
 }
 
@@ -736,7 +737,7 @@ func runWeb(args: Array<String>): Int64 {
     registry.register(ListDirTool())
     registry.register(HashlineEditTool())
     loadSkillTools(cjhCfg.skillsDir, registry, cjhCfg.enabledSkills)
-    let pluginManager = loadPlugins(cjhCfg.pluginsDir, registry, cjhCfg.enabledPlugins)
+    let pluginManager = loadPlugins(cjhCfg.pluginsDir, registry, cjhCfg.enabledPlugins, cjhCfg.requireSignature)
     let mcpManager = loadMcpServers(cjhCfg.mcpServers, registry)
 
     let provider = makeProvider(cjhCfg)
@@ -772,7 +773,7 @@ func runCli(sessionId: String): Int64 {
     // 注册技能携带的声明式工具（Skill 自定义工具）
     loadSkillTools(cjhCfg.skillsDir, registry, cjhCfg.enabledSkills)
     // 加载插件（V2b Step 1：plugin.json + shell 工具）
-    let pluginManager = loadPlugins(cjhCfg.pluginsDir, registry, cjhCfg.enabledPlugins)
+    let pluginManager = loadPlugins(cjhCfg.pluginsDir, registry, cjhCfg.enabledPlugins, cjhCfg.requireSignature)
     // 连接 MCP 服务器（V2b 扩展点：stdio 传输 + JSON-RPC）
     let mcpManager = loadMcpServers(cjhCfg.mcpServers, registry)
 
@@ -906,7 +907,7 @@ func runJson(prompt: String, sessionId: String): Int64 {
     Theme.apply(cjhCfg.theme)
     loadSkillTools(cjhCfg.skillsDir, registry, cjhCfg.enabledSkills)
     // 加载插件（V2b Step 1：plugin.json + shell 工具）
-    let pluginManager = loadPlugins(cjhCfg.pluginsDir, registry, cjhCfg.enabledPlugins)
+    let pluginManager = loadPlugins(cjhCfg.pluginsDir, registry, cjhCfg.enabledPlugins, cjhCfg.requireSignature)
     // 连接 MCP 服务器（V2b 扩展点：stdio 传输 + JSON-RPC）
     let mcpManager = loadMcpServers(cjhCfg.mcpServers, registry)
 
@@ -1054,7 +1055,7 @@ func runTui(sessionId: String): Int64 {
     // 注册技能携带的声明式工具（Skill 自定义工具）
     loadSkillTools(cjhCfg.skillsDir, registry, cjhCfg.enabledSkills)
     // 加载插件（V2b Step 1：plugin.json + shell 工具）
-    let pluginManager = loadPlugins(cjhCfg.pluginsDir, registry, cjhCfg.enabledPlugins)
+    let pluginManager = loadPlugins(cjhCfg.pluginsDir, registry, cjhCfg.enabledPlugins, cjhCfg.requireSignature)
     // 连接 MCP 服务器（V2b 扩展点：stdio 传输 + JSON-RPC）
     let mcpManager = loadMcpServers(cjhCfg.mcpServers, registry)
 

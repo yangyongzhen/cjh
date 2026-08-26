@@ -143,6 +143,8 @@ printf '%s\n\n[log-pruner 截断 %d 字符]\n\n%s' "$HEAD" "$SKIPPED" "$TAIL"
 ## signed-demo：带 SM2 签名的插件示例（V3 信任链 Step 1+2）
 
 > **签名是可选的**。不带 `checksum`/`publisher`/`pubkey`/`signature` 任一字段的插件照常加载注册工具，签名只是信任链加固，不强推。`echo-test`、`log-pruner` 等已有无签名插件可平滑过渡。
+>
+> **强制签名模式**：在 `~/.cjh/settings.json` 里设 `"require_signature": true`，则无 `checksum` 或无 `pubkey`/`signature` 的插件会被拒绝加载。默认 `false`（不强制）。适合高安全场景（如生产环境只允许带签名插件运行）。
 
 普通插件只声明工具，任何人都能改。`signed-demo` 演示**信任链**：插件带 `checksum`（防篡改）+ `publisher`/`pubkey`/`signature`（防冒充），cjh 加载时用仓颉原生 SM2 验签，零外部依赖。
 
