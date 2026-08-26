@@ -1,7 +1,7 @@
 # cjh 功能清单
 
 > 最后更新：2026-08-25
-> 版本：v1.2.3
+> 版本：v1.3.0
 > 性质：cjh 已具备和支持的功能完整列表
 
 ---
@@ -168,6 +168,7 @@
 | v1.2.1 | 星霜青主题系统 + /theme 切换 + 回合总结条 + UI 打磨 |
 | v1.2.2 | 回合总结条 + Tasks 面板 + 输入队列方案 B + /compact + /tree + /fork |
 | v1.2.3 | SSE 空闲超时 + token 统计健壮性 + 工具结果截断与回溯 + V2b 插件系统（plugin.json + 事件钩子）+ MCP 协议支持 + 6 套主题 + 主题实时预览 |
+| v1.3.0 | Web 支持实现方案 Step 1-5：HTTP server + WebSocket 流式对话 + 前端 app.js + REST API + Markdown 渲染（marked.js + DOMPurify + highlight.js）+ 代码块复制按钮 + auth_token 鉴权中间件 + 启动安全审计日志 |
 
 ## 十六、代码组织原则
 

@@ -64,6 +64,9 @@ public class WebServer {
         println("  按 Ctrl+C 停止服务器")
         println()
 
+        // Step 5：启动安全审计日志
+        SecurityAudit.logStartup(this.config)
+
         server.serve()
         return 0
     }
@@ -79,53 +82,43 @@ public class WebDistributor <: HttpRequestDistributor {
     private let config: CjhConfig
     private let provider: LlmProvider
     private let registry: ToolRegistry
-    private let routes: HashMap<String, HttpRequestHandler> = HashMap<String, HttpRequestHandler>()
+    private let wsHandler: WsHandler
+    private let webHandler: WebHandler
 
     public init(config: CjhConfig, provider: LlmProvider, registry: ToolRegistry) {
         this.config = config
         this.provider = provider
         this.registry = registry
-        // 注册路由（WebHandler 统一处理 HTTP，WsHandler 处理 WebSocket）
-        this.routes.add("/", WebHandler(this.config))
-        this.routes.add("/assets/app.js", WebHandler(this.config))
-        this.routes.add("/assets/styles.css", WebHandler(this.config))
-        this.routes.add("/api/health", WebHandler(this.config))
-        // WebSocket 端点
-        this.routes.add("/ws", WsHandler(this.config, this.provider, this.registry))
+        // WsHandler 实例（WebSocket 端点）
+        this.wsHandler = WsHandler(this.config, this.provider, this.registry)
+        // WebHandler 实例（统一 HTTP 处理）
+        this.webHandler = WebHandler(this.config)
     }
-
     /**
      * 分发请求：按 path 查路由表，未找到返回 404
+     *
+     * 用 match 语句直接分发，避免 HashMap 在 5+ 路由时的注册问题。
      */
     public func distribute(path: String): HttpRequestHandler {
-        // 精确匹配
-        match (this.routes.get(path)) {
-            case Some(handler) => return handler
-            case None => ()
+        match (path) {
+            case "/" => return this.webHandler
+            case "/assets/app.js" => return this.webHandler
+            case "/assets/styles.css" => return this.webHandler
+            case "/api/health" => return this.webHandler
+            case "/ws" => return this.wsHandler
+            case _ => return NotFoundHandler()
         }
-        // 前缀匹配：/ws 开头（含 /ws?token=... 等变体）→ WsHandler
-        if (path.startsWith("/ws")) {
-            match (this.routes.get("/ws")) {
-                case Some(handler) => return handler
-                case None => ()
-            }
-        }
-        return NotFoundHandler()
     }
 
     /**
-     * 注册请求处理器（接口契约要求）
+     * 注册请求处理器（接口契约要求，当前实现为空操作）
      */
-    public func register(path: String, handler: HttpRequestHandler): Unit {
-        this.routes.add(path, handler)
-    }
+    public func register(path: String, handler: HttpRequestHandler): Unit {}
 
     /**
-     * 注册请求处理器（lambda 重载，接口契约要求）
+     * 注册请求处理器（lambda 重载，接口契约要求，当前实现为空操作）
      */
-    public func register(path: String, handler: (HttpContext) -> Unit): Unit {
-        this.routes.add(path, FuncHandler(handler))
-    }
+    public func register(path: String, handler: (HttpContext) -> Unit): Unit {}
 }
 
 /**
@@ -139,6 +132,10 @@ public class WebHandler <: HttpRequestHandler {
     }
 
     public func handle(ctx: HttpContext): Unit {
+        // Step 5：auth_token 鉴权中间件
+        if (!Auth.check(ctx, this.config)) {
+            return
+        }
         let path = ctx.request.url.path
         match (path) {
             case "/" => this.handleIndex(ctx)
@@ -182,7 +179,7 @@ public class WebHandler <: HttpRequestHandler {
     private func handleHealth(ctx: HttpContext): Unit {
         var health = JsonObject()
         health.put("status", JsonString("ok"))
-        health.put("version", JsonString("1.2.3"))
+        health.put("version", JsonString("1.3.0"))
         health.put("web_port", JsonInt(Int64(this.config.webPort)))
         let body = health.toJsonString()
         let res = ctx.responseBuilder

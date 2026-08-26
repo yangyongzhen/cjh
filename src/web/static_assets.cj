@@ -26,6 +26,11 @@ public class StaticAssets {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>cjh · Web</title>
     <link rel="stylesheet" href="/assets/styles.css">
+    <!-- Markdown 渲染：marked.js + highlight.js + DOMPurify（CDN，离线降级为纯文本） -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11/styles/github-dark.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11/lib/common.min.js"></script>
 </head>
 <body data-theme="starfrost">
     <div class="app-container">
@@ -189,6 +194,7 @@ function appendDelta(text) {
         msgDiv.className = 'message message-assistant';
         msgDiv.innerHTML = renderMarkdown(text);
         messages.appendChild(msgDiv);
+        enhanceCodeBlocks(msgDiv);
     } else {
         // 追加到现有消息（简化：直接拼接纯文本）
         let content = lastMsg.querySelector('.message-content');
@@ -243,8 +249,63 @@ function escapeHtml(text) {
 }
 
 function renderMarkdown(text) {
-    // 简化：Step 4 引入 marked.js 做完整 Markdown 渲染
+    // 优先用 marked.js + DOMPurify 做完整 Markdown 渲染
+    if (typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {
+        marked.setOptions({
+            breaks: true,
+            gfm: true,
+            highlight: function(code, lang) {
+                if (typeof hljs !== 'undefined' && lang && hljs.getLanguage(lang)) {
+                    try { return hljs.highlight(code, {language: lang}).value; } catch (e) {}
+                }
+                return code;
+            }
+        });
+        var raw = marked.parse(text);
+        var clean = DOMPurify.sanitize(raw);
+        return '<div class=\"message-content\">' + clean + '</div>';
+    }
+    // 离线降级：纯文本 + 转义
     return '<div class=\"message-content\">' + escapeHtml(text) + '</div>';
+}
+
+/**
+ * 给所有 <pre><code> 块添加复制按钮
+ * 在 renderMarkdown 之后调用
+ */
+function enhanceCodeBlocks(container) {
+    var pres = container.querySelectorAll('pre');
+    for (var i = 0; i < pres.length; i++) {
+        var pre = pres[i];
+        // 已添加过按钮则跳过
+        if (pre.querySelector('.copy-btn')) continue;
+        var btn = document.createElement('button');
+        btn.className = 'copy-btn';
+        btn.textContent = '复制';
+        btn.addEventListener('click', function(e) {
+            var code = e.target.parentElement.querySelector('code');
+            if (!code) return;
+            var text = code.textContent;
+            // 用 navigator.clipboard 写入剪贴板
+            if (navigator.clipboard) {
+                navigator.clipboard.writeText(text).then(function() {
+                    e.target.textContent = '已复制';
+                    setTimeout(function() { e.target.textContent = '复制'; }, 1500);
+                });
+            } else {
+                // 降级：用 execCommand
+                var ta = document.createElement('textarea');
+                ta.value = text;
+                document.body.appendChild(ta);
+                ta.select();
+                try { document.execCommand('copy'); } catch (err) {}
+                document.body.removeChild(ta);
+                e.target.textContent = '已复制';
+                setTimeout(function() { e.target.textContent = '复制'; }, 1500);
+            }
+        });
+        pre.appendChild(btn);
+    }
 }
 
 function scrollToBottom() {
@@ -613,6 +674,52 @@ body {
 .message-content {
     white-space: pre-wrap;
     word-wrap: break-word;
+}
+
+/* ====== Markdown 代码块 + 复制按钮 ====== */
+.message-content pre {
+    position: relative;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 12px 12px 12px;
+    overflow-x: auto;
+    margin: 8px 0;
+}
+
+.message-content code {
+    font-family: 'SF Mono', Menlo, Consolas, monospace;
+    font-size: 13px;
+}
+
+.message-content pre code {
+    background: none;
+    padding: 0;
+}
+
+.message-content :not(pre) > code {
+    background: var(--bg-tertiary);
+    padding: 2px 4px;
+    border-radius: 3px;
+}
+
+.copy-btn {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: 11px;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+
+.message-content pre:hover .copy-btn {
+    opacity: 1;
 }
 
 .tool-call, .tool-result {
