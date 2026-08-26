@@ -1,27 +1,113 @@
 <div align="center">
 
-# cjh · 仓颉 Coding Agent
+# cjh · 仓颉语言实现的 Harness
 
-**用华为仓颉语言从零实现的交互式编码代理**
+**用华为仓颉语言从零实现的交互式编码代理（coding agent harness）。**
 
 终端里用自然语言描述任务 → Agent 理解意图、自主规划、调用工具、观察结果、迭代直至完成。全流程在 TUI 中实时呈现，亦可通过 Web 远程驱动。
 
-[功能](#-功能一览) · [快速开始](#-快速开始) · [架构](#-架构) · [插件生态](#-插件生态与信任链) · [文档](#-文档) · [路线图](#-路线图)
+cjh 不是简单的 LLM 套壳，而是借鉴 [Pi](docs/pi agent的核心卖点.md)（省 token 工程化）与 [OMP](docs/omp agent的核心卖点.md)（hashline 文件改写）的设计精髓，用仓颉语言原生实现的 **省 token + 高执行效率** 双硬性指标优化的 coding agent harness。
+
+[立项初衷](#-立项初衷不是再造一个-agent) · [功能](#-功能一览) · [两大硬性指标](#-两大硬性指标) · [快速开始](#-快速开始) · [架构](#-架构) · [插件生态](#-插件生态与信任链) · [文档](#-文档) · [路线图](#-路线图)
 
 </div>
 
 ---
 
+## 🎯 立项初衷：不是再造一个 agent
+
+> 当下的 agent 方案有很多，如 codex、claude、deepseek 的 dsh，pi 和 omp 等等。
+> 不能只是用仓颉实现个就算是创新吧？那样并没有太多新意。
+> 要做就抱着做最好的态度，要体现出仓颉独有的优势和做出自己的特点来。
+
+立项核心命题：**主流 agent 已证明功能可行，功能堆砌无意义；仓颉独有优势才是立身之本。** 三个硬约束贯穿全部设计：
+
+1. **不重复造轮子**：功能层面主流 agent 已证明可行，功能堆砌无意义；
+2. **仓颉独有优势是前提**：别的语言能轻易做到的，不构成竞争力；取长补短，好的当然可以借鉴，但仓颉语言特性带来的差异化更值得做；
+3. **生态贡献是目标**：像 dsh 的插件生态一样，让社区愿意为 cjh 贡献——这要求插件门槛足够低、分发足够顺、信任机制足够完善。
+
+### 仓颉语言特性如何命中痛点
+
+仓颉语言的特性恰好命中上述痛点中的 4 个。这是"为什么是仓颉"而非"顺便用仓颉"：
+
+| 仓颉特性 | 解决的痛点 | 差异化优势 |
+|---|---|---|
+| **静态编译单二进制**（cjnative） | 运行时包袱、分发成本 | 无 Node/Bun/npm 依赖树，`一个文件 = 一个 agent`，<10MB |
+| **强安全语言设计**（安全 DNA） | 安全模型 | 插件/技能编译期类型检查，内存安全，恶意代码风险结构性降低 |
+| **多后端编译**（cjnative/cjvm + 鸿蒙位） | 平台覆盖 | 未来可原生跑鸿蒙（华为生态位），跨端同构 |
+| **M:N 轻量线程 + 高性能** | 上下文管理、并发 | 原生并发处理流式/多 agent，低开销 |
+| **国产根技术** | 信创/自主可控 | 政企、金融等敏感场景无涉外运行时依赖 |
+
+### cjh 的差异化回答
+
+面对"dsh 的插件机制很强大，那么你的优势呢？"这个问题，cjh 的回答是：
+
+**1. 仓颉单二进制 → 插件零依赖、分发即用**
+
+dsh 的插件生态强大，但 Node/npm 依赖树是隐形门槛。cjh 用仓颉单二进制：插件 = 一个 shell 脚本或一个仓颉包，无运行时环境配置，`git clone` 即用。门槛降到最低，社区贡献意愿才最高。
+
+**2. 仓颉强安全 DNA → 插件安全结构性提升**
+
+主流 agent 的插件安全靠沙箱+审批（运行时拦截），cjh 借助仓颉编译期类型检查+内存安全，从语言层面降低恶意代码风险。叠加 SHA256 校验和 + SM2 国密签名验证（仓颉 `stdx.crypto` 原生），形成"语言层安全 + 信任链安全"双保险。
+
+**3. 省 token + 高执行效率 → 双硬性指标全面优化**
+
+这是 cjh 区别于"功能堆砌"的核心。借鉴 Pi 的省 token 工程化与 OMP 的 hashline 文件改写，两大硬性指标系统性优化。详见下方[两大硬性指标](#-两大硬性指标)章节。
+
 ## 🌟 为什么是 cjh
 
 | | |
 |---|---|
-| **仓颉原生的 Coding Agent** | 从 Agent 核心、工具系统、TUI 渲染到 Web Server，全部用仓颉语言实现，是仓颉生态在 AI 编程领域的旗舰实践。 |
+| **仓颉原生的 Coding Agent Harness** | 从 Agent 核心、工具系统、TUI 渲染到 Web Server，全部用仓颉语言实现，是仓颉生态在 AI 编程领域的旗舰实践。 |
 | **单二进制 · 零运行时依赖** | 仓颉 `cjnative` 静态编译，一个二进制跑起来，无需 Python/Node 环境。 |
+| **省 token + 高执行效率** | 借鉴 Pi 的省 token 工程化（工具结果截断与回溯、自动 Compaction、prompt cache 利用），借鉴 OMP 的 hashline 文件改写（精确行级编辑、避免整文件重写），两大硬性指标全面优化。 |
 | **多 Provider 开箱即用** | OpenAI / DeepSeek / GLM / Anthropic / Ollama 全兼容，`/provider` 热切换。 |
 | **插件信任链** | SHA256 校验和 + SM2 国密签名验证（仓颉 `stdx.crypto` 原生），防供应链投毒。 |
-| **并发执行引擎** | DAG 依赖分析 + 拓扑分组调度，LLM 并行工具调用自动并发执行。 |
 | **Web 原生支持** | 内置 HTTP Server + WebSocket 流式对话 + REST API + 前端 SPA，远程驱动 Agent。 |
+
+## 🎯 两大硬性指标
+
+cjh 的核心设计目标是两大硬性指标：**省 token** + **高执行效率**。这两点直接决定 coding agent 的实用价值与成本。
+
+### 指标一：省 token
+
+LLM API 按 token 计费，coding agent 多轮工具调用累积 token 消耗惊人。cjh 借鉴 Pi agent 的省 token 工程化，从四个维度系统优化：
+
+| 优化手段 | 实现方式 | 效果 |
+|---|---|---|
+| **工具结果截断与回溯** | 超阈值工具结果保留头尾 + **完整落盘** `~/.cjh/spill/<sessionId>/<toolCallId>.txt` + 省略标记含落盘路径，模型可用 `read_file` 按需读回 | 避免像某些 agent（如 d'sh）只取开头和结尾丢失中间信息；落盘回溯既省 token 又不丢信息 |
+| **自动 Compaction** | 消息条数超阈值触发 LLM 摘要压缩早期历史，`compactThreshold` / `compactKeep` 可配 | 长会话不爆上下文窗口，省 token 又防溢出 |
+| **prompt cache 利用** | DeepSeek `prompt_cache_hit_tokens` + Anthropic `cache_read_input_tokens` 统计与展示 | 利用 Provider 的 prompt 缓存，重复前缀不重复计费 |
+| **回合总结条** | 每轮结束显示 `✓ 2 rounds · 3 tools · 42.6s · 1.53K tokens · 99% cached` | token 消耗实时可见，便于人工干预 |
+
+**工具结果截断与回溯的精妙设计**：不同于简单截断（只保留前 N 行），cjh 采用 **头尾保留 + 中间落盘** 策略。模型看到结果的开头和结尾（保留上下文连贯性），中间完整内容落盘到 `~/.cjh/spill/`，省略标记中包含落盘路径。当模型需要中间信息时，可用 `read_file` 按需读回。这样既大幅省 token，又不丢失任何信息——**这是 cjh 区别于简单截断 agent 的核心设计**。
+
+工具差异化阈值（避免一刀切）：
+- `bash`：8000 字符
+- `list_dir`：4000 字符
+- 默认：6000 字符
+
+### 指标二：高执行效率
+
+coding agent 的执行效率直接决定用户等待时间。cjh 从三个维度优化：
+
+| 优化手段 | 实现方式 | 效果 |
+|---|---|---|
+| **V2d 并发执行引擎** | DAG 依赖分析（从 `ToolCall` 提取资源访问 `(path, isWrite)`）+ 拓扑分组调度（同组 spawn 并发，组间串行） | LLM 并行工具调用自动并发执行，`parallelSavedMs` 实时统计节省时间 |
+| **hashline 文件改写**（借鉴 OMP） | 行号锚点 `@@N` + 内容验证编辑，避免 read 整文件 + write 整文件的开销 | 大文件精确行级编辑，省 token 又快 |
+| **Provider 连接预热** | 构造时后台建连，首次 `chatStream` 不付 TLS 冷启动开销 | 首次响应更快 |
+
+**V2d 并发引擎的 DAG 依赖分析**：每个工具调用提取资源访问 `(path, isWrite)`，自动构建依赖图。规则：
+- 同一 path 且至少一个 isWrite → 串行依赖边
+- 不同 path → 可并发（即使都是 write）
+- `bash` 的 command 当 path 处理（不同 bash 命令可并发）
+
+拓扑分组调度：按依赖关系分组，同一组的工具调用可并发执行；下一组必须等当前组全部完成。组内顺序保持 LLM 原始顺序（结果回填顺序）。单元素组直接串行执行（避免 spawn 开销）；多元素组 spawn 并发。
+
+性能基线测量三维统计：
+- `parallelBatches`：并发执行的批次数
+- `parallelSavedMs`：并发相比串行节省的毫秒数
+- `maxParallelism`：最大并发度（单组最多工具数）
 
 ## 🚀 功能一览
 
@@ -39,16 +125,10 @@
 | `bash` | 执行 shell 命令，捕获 stdout/stderr |
 | `read_file` | 读取文件，大文件返回符号摘要，offset/limit 按需展开 |
 | `write_file` | 写入文件（创建/覆盖） |
-| `hashline_edit` | 行号锚点 `@@N` + 内容验证编辑 |
+| `hashline_edit` | 行号锚点 `@@N` + 内容验证编辑（借鉴 OMP） |
 | `grep` | 目录树递归搜索，gitignore 感知 |
 | `list_dir` | 列出目录树 |
 | `todo_write` | LLM 通过工具调用管理任务列表 |
-
-### 并发执行引擎（V2d）
-
-- **DAG 依赖分析**：从 `ToolCall` 提取资源访问 `(path, isWrite)`，自动构建依赖图
-- **拓扑分组调度**：同组工具 spawn 并发，组间串行，保持 LLM 原始回填顺序
-- **性能基线测量**：`parallelBatches` / `parallelSavedMs` / `maxParallelism` 三维统计
 
 ### LLM Provider 层
 
@@ -67,7 +147,7 @@
 
 ### TUI 终端界面
 
-- **全屏 TUI**：差分渲染 + ANSI 转义，termios 原始模式（纯 libc FFI）
+- **全屏 TUI**：差分渲染 + ANSI 转义，termios 原始模式（纯 libc FFI，自实现非依赖第三方库）
 - **Markdown 渲染**：标题 / 列表 / 代码块 / 表格 / 链接
 - **6 套主题**：starfrost（星霜青）/ classic / catppuccin / rose-pine / solarized / monokai，`/theme` 实时切换
 - **多行编辑器**：Ctrl+E 进入，Alt+Enter 提交
@@ -119,7 +199,7 @@
 # 激活仓颉环境
 source /path/to/cj-env.sh
 
-# 构建
+# 构建（产物为 cjh）
 cjpm build
 ```
 
@@ -141,22 +221,22 @@ export CJH_MODEL=deepseek-chat
 
 ```bash
 # TUI 模式（默认）
-./target/release/bin/main
+./target/release/bin/cjh
 
 # CLI 模式（纯文本交互）
-./target/release/bin/main --cli
+./target/release/bin/cjh --cli
 
 # JSON 无头模式（脚本集成）
-./target/release/bin/main --mode json "用 grep 搜索 TODO"
+./target/release/bin/cjh --mode json "用 grep 搜索 TODO"
 
 # 恢复历史会话
-./target/release/bin/main --resume <session-id>
+./target/release/bin/cjh --resume <session-id>
 
 # Mock 模式（无 API Key 演示）
-CJH_MOCK=1 ./target/release/bin/main
+CJH_MOCK=1 ./target/release/bin/cjh
 
 # Web 模式（远程驱动 Agent）
-./target/release/bin/main web --port 8765 --token my-secret
+./target/release/bin/cjh web --port 8765 --token my-secret
 ```
 
 ### 环境变量
@@ -201,7 +281,7 @@ CJH_MOCK=1 ./target/release/bin/main
 | `cjh.tools` | 工具接口、注册中心、内置工具、插件系统、MCP 客户端 |
 | `cjh.tui` | TUI 应用层（对话界面、Markdown 渲染） |
 | `cjh.web` | Web Server（HTTP + WebSocket + REST API + 前端 SPA） |
-| `cjterm`（libs/） | **独立终端 UI 库**：ANSI / 差分渲染 / termios / 6 套主题（纯 libc FFI，可复用） |
+| `cjterm`（libs/） | **独立终端 UI 库**：ANSI / 差分渲染 / termios / 6 套主题（纯 libc FFI 自实现，可复用） |
 | `cjllm`（libs/） | **独立 LLM 协议库**：OpenAI / Anthropic / Ollama / SSE / Mock |
 | `cjcfg`（libs/） | **独立配置库**：settings.json / auth.json / 环境变量 / 会话管理 |
 | `cjutil`（libs/） | **独立工具库**：SHA256 / SM2 签名 / UTF-8 / JSON 修复 / 日志 |
@@ -331,6 +411,10 @@ cjh 内置 MCP 客户端，支持 stdio 传输 + JSON-RPC 2.0。配置 `mcp_serv
 - [Web 支持实现方案](docs/Web支持实现方案.md) — Web Server 设计
 - [进度记录](docs/进度记录.md) — 开发进度与状态追踪
 - [开发文档与踩坑记录](docs/开发文档与踩坑记录.md) — 仓颉工程踩坑经验
+- [Pi agent 的核心卖点](docs/pi agent的核心卖点.md) — 省 token 设计借鉴
+- [OMP agent 的核心卖点](docs/omp agent的核心卖点.md) — hashline 改写借鉴
+- [工具结果截断与回溯方案](docs/工具结果截断与回溯方案.md) — 省 token 核心设计
+- [工具执行效率差距分析](docs/工具执行效率差距分析.md) — 执行效率优化
 
 ## 🤝 仓颉生态价值
 
@@ -338,7 +422,7 @@ cjh 是仓颉语言在 **AI 编程代理**领域的完整实践，为仓颉生�
 
 | 贡献 | 说明 |
 |---|---|
-| **cjterm** | 独立终端 UI 库（ANSI / 差分渲染 / termios / 6 套主题），纯 libc FFI，任何仓颉终端项目可复用 |
+| **cjterm** | 独立终端 UI 库（ANSI / 差分渲染 / termios / 6 套主题），纯 libc FFI 自实现，任何仓颉终端项目可复用 |
 | **cjllm** | 独立 LLM 协议库（OpenAI / Anthropic / Ollama / SSE / Mock），任何仓颉 AI 项目可复用 |
 | **cjutil** | 独立工具库（SHA256 / SM2 签名 / UTF-8 / JSON 修复 / 日志），仓颉生态通用基础设施 |
 | **MCP 协议实现** | 仓颉语言首个 MCP 客户端实现，为仓颉生态接入 MCP 工具网络铺路 |

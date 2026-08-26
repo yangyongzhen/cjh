@@ -1,27 +1,113 @@
 <div align="center">
 
-# cjh · Cangjie Coding Agent
+# cjh · Cangjie Coding Agent Harness
 
-**An interactive coding agent built from scratch in Huawei's Cangjie language.**
+**An interactive coding agent harness built from scratch in Huawei's Cangjie language.**
 
 Describe tasks in natural language → the Agent understands intent, plans autonomously, calls tools, observes results, and iterates until done. The entire workflow is rendered live in a TUI, and can also be driven remotely via Web.
 
-[Features](#-features) · [Quick Start](#-quick-start) · [Architecture](#-architecture) · [Plugin Ecosystem](#-plugin-ecosystem--trust-chain) · [Docs](#-docs) · [Roadmap](#-roadmap)
+cjh is not a simple LLM wrapper. It draws on the design essence of [Pi](docs/pi agent的核心卖点.md) (token-saving engineering) and [OMP](docs/omp agent的核心卖点.md) (hashline file rewriting), natively implemented in Cangjie as a coding agent harness optimized for two hard metrics: **token efficiency** + **execution speed**.
+
+[Project Intent](#-project-intent-not-just-another-agent) · [Features](#-features) · [Two Hard Metrics](#-two-hard-metrics) · [Quick Start](#-quick-start) · [Architecture](#-architecture) · [Plugin Ecosystem](#-plugin-ecosystem--trust-chain) · [Docs](#-docs) · [Roadmap](#-roadmap)
 
 </div>
 
 ---
 
+## 🎯 Project Intent: Not Just Another Agent
+
+> There are many agent solutions today — codex, claude, deepseek's dsh, pi, omp, etc.
+> Just implementing one in Cangjie isn't really innovation; that wouldn't be very novel.
+> If we're going to do this, let's do it with the attitude of making the best — to embody Cangjie's unique advantages and build our own distinctive character.
+
+The core thesis: **mainstream agents have already proven features viable; piling on features is meaningless. Cangjie's unique advantages are the foundation.** Three hard constraints permeate all design:
+
+1. **Don't reinvent the wheel**: features that mainstream agents have already proven viable — piling on features is meaningless;
+2. **Cangjie's unique advantages are a prerequisite**: what other languages can easily do does not constitute competitiveness; learn from others' strengths, but the differentiation brought by Cangjie's language characteristics is more worth doing;
+3. **Ecosystem contribution is the goal**: like dsh's plugin ecosystem, make the community willing to contribute to cjh — this requires plugin barriers to be low enough, distribution smooth enough, and trust mechanisms complete enough.
+
+### How Cangjie Language Characteristics Hit Pain Points
+
+Cangjie's characteristics happen to hit 4 of the above pain points. This is "why Cangjie" not "happened to use Cangjie":
+
+| Cangjie Characteristic | Pain Point Solved | Differentiated Advantage |
+|---|---|---|
+| **Static compilation single binary** (cjnative) | Runtime baggage, distribution cost | No Node/Bun/npm dependency tree, `one file = one agent`, <10MB |
+| **Strong safety language design** (safety DNA) | Security model | Plugin/skill compile-time type checking, memory safety, structurally reduced malicious code risk |
+| **Multi-backend compilation** (cjnative/cjvm + HarmonyOS slot) | Platform coverage | Future native HarmonyOS (Huawei ecosystem slot), cross-end isomorphic |
+| **M:N lightweight threads + high performance** | Context management, concurrency | Native concurrent processing of streaming/multi-agent, low overhead |
+| **Domestic root technology** | Xinchu/self-controllable | Government, finance and other sensitive scenarios with no foreign runtime dependencies |
+
+### cjh's Differentiated Answer
+
+Facing the question "dsh's plugin mechanism is very powerful, so what are your advantages?", cjh's answer is:
+
+**1. Cangjie single binary → plugins with zero dependency, distribute and use**
+
+dsh's plugin ecosystem is powerful, but the Node/npm dependency tree is an invisible barrier. cjh uses Cangjie's single binary: plugin = a shell script or a Cangjie package, no runtime environment configuration, `git clone` and use. Barriers are lowered to the minimum, community contribution willingness is highest.
+
+**2. Cangjie strong safety DNA → structural improvement in plugin security**
+
+Mainstream agents rely on sandbox + approval (runtime interception) for plugin security. cjh leverages Cangjie's compile-time type checking + memory safety to reduce malicious code risk at the language level. Combined with SHA256 checksum + SM2 national cryptography signature verification (Cangjie native `stdx.crypto`), forming a "language-level security + trust chain security" double insurance.
+
+**3. Token efficiency + execution speed → comprehensive optimization of two hard metrics**
+
+This is cjh's core distinguishing it from "feature piling". Drawing on Pi's token-saving engineering and OMP's hashline file rewriting, two hard metrics are systematically optimized. See the [Two Hard Metrics](#-two-hard-metrics) section below.
+
 ## 🌟 Why cjh
 
 | | |
 |---|---|
-| **Cangjie-native Coding Agent** | From Agent core, tool system, TUI rendering to Web Server — all implemented in Cangjie, a flagship AI coding practice in the Cangjie ecosystem. |
+| **Cangjie-native Coding Agent Harness** | From Agent core, tool system, TUI rendering to Web Server — all implemented in Cangjie, a flagship AI coding practice in the Cangjie ecosystem. |
 | **Single Binary · Zero Runtime Deps** | Cangjie `cjnative` static compilation. One binary, no Python/Node environment needed. |
+| **Token Efficiency + Execution Speed** | Drawing on Pi's token-saving engineering (tool result truncation & backtrack, auto compaction, prompt cache utilization), and OMP's hashline file rewriting (precise line-level editing, avoiding full file rewrites), comprehensive optimization of two hard metrics. |
 | **Multi-Provider Out of the Box** | OpenAI / DeepSeek / GLM / Anthropic / Ollama all compatible, `/provider` hot-swap. |
 | **Plugin Trust Chain** | SHA256 checksum + SM2 national cryptography signature verification (Cangjie native `stdx.crypto`), preventing supply chain poisoning. |
-| **Concurrent Execution Engine** | DAG dependency analysis + topological group scheduling. LLM parallel tool calls are automatically executed concurrently. |
 | **Web Native Support** | Built-in HTTP Server + WebSocket streaming conversation + REST API + frontend SPA, remotely driving the Agent. |
+
+## 🎯 Two Hard Metrics
+
+cjh's core design goal is two hard metrics: **token efficiency** + **execution speed**. These directly determine a coding agent's practical value and cost.
+
+### Metric 1: Token Efficiency
+
+LLM APIs charge per token, and coding agents' multi-turn tool calls accumulate staggering token costs. cjh draws on Pi agent's token-saving engineering, systematically optimizing from four dimensions:
+
+| Optimization | Implementation | Effect |
+|---|---|---|
+| **Tool result truncation & backtrack** | Results exceeding threshold keep head+tail + **full spill** to `~/.cjh/spill/<sessionId>/<toolCallId>.txt` + ellipsis marker contains spill path, model can use `read_file` to read back on demand | Avoids losing middle information like some agents (e.g., d'sh) that only keep head and tail; spill-backtrack saves tokens without losing info |
+| **Auto Compaction** | Message count exceeding threshold triggers LLM summary compression of early history, `compactThreshold` / `compactKeep` configurable | Long sessions don't blow context window, saves tokens and prevents overflow |
+| **Prompt cache utilization** | DeepSeek `prompt_cache_hit_tokens` + Anthropic `cache_read_input_tokens` stats and display | Leverages Provider's prompt cache, repeated prefixes not repeatedly billed |
+| **Round summary bar** | End of each round shows `✓ 2 rounds · 3 tools · 42.6s · 1.53K tokens · 99% cached` | Token consumption visible in real time,便于人工干预 |
+
+**The exquisite design of tool result truncation & backtrack**: Unlike simple truncation (only keeping first N lines), cjh adopts a **head+tail retention + middle spill** strategy. The model sees the beginning and end of the result (preserving context coherence), while the complete middle content spills to `~/.cjh/spill/`, with the ellipsis marker containing the spill path. When the model needs middle info, it can use `read_file` to read it back on demand. This both drastically saves tokens and loses no information — **this is cjh's core design distinguishing it from simple truncation agents**.
+
+Tool-specific thresholds (avoiding one-size-fits-all):
+- `bash`: 8000 chars
+- `list_dir`: 4000 chars
+- default: 6000 chars
+
+### Metric 2: Execution Speed
+
+A coding agent's execution speed directly determines user wait time. cjh optimizes from three dimensions:
+
+| Optimization | Implementation | Effect |
+|---|---|---|
+| **V2d concurrent execution engine** | DAG dependency analysis (extracting resource access `(path, isWrite)` from `ToolCall`) + topological group scheduling (same group spawns concurrently, groups execute serially) | LLM parallel tool calls automatically execute concurrently, `parallelSavedMs` stats time saved in real time |
+| **hashline file rewriting** (drawing on OMP) | Line number anchor `@@N` + content verification editing, avoiding the overhead of reading + writing entire files | Precise line-level editing of large files, saves tokens and is fast |
+| **Provider connection warmup** | Background connection establishment at construction time, first `chatStream` doesn't pay TLS cold start overhead | Faster first response |
+
+**V2d concurrent engine's DAG dependency analysis**: Each tool call extracts resource access `(path, isWrite)`, automatically building a dependency graph. Rules:
+- Same path and at least one isWrite → serial dependency edge
+- Different paths → can be concurrent (even if all writes)
+- `bash`'s command treated as path (different bash commands can be concurrent)
+
+Topological group scheduling: Groups by dependency relationships; tools in the same group can execute concurrently; the next group must wait for the current group to complete. Order within a group maintains LLM's original order (result feedback order). Single-element groups execute serially directly (avoiding spawn overhead); multi-element groups spawn concurrently.
+
+Performance baseline measurement 3D stats:
+- `parallelBatches`: number of concurrently executed batches
+- `parallelSavedMs`: milliseconds saved by concurrency vs serial
+- `maxParallelism`: maximum concurrency (most tools in a single group)
 
 ## 🚀 Features
 
