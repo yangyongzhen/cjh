@@ -205,11 +205,11 @@ public class PluginManager {
                     Log.debug("[PLUGIN] 校验和验证通过: ${pluginName}")
                 }
 
-                // V3 Step 2 预留：Ed25519 签名位（plugin.json 可选字段）
+                // V3 Step 2：SM2 签名验证（plugin.json 可选字段）
                 //   publisher : 发布者 ID（如 "github:alice"）
-                //   pubkey    : 发布者 Ed25519 公钥（hex，64 字节）
-                //   signature : 对 checksum 的 Ed25519 签名（hex，64 字节）
-                // 当前仅解析记录，签名验证逻辑在 V3 Step 2 实现
+                //   pubkey    : 发布者 SM2 公钥（DER 编码的 hex）
+                //   signature : 对 checksum 值的 SM2 签名（DER 编码的 hex）
+                // 三个字段同时存在时强制验签；任一缺失则跳过（兼容无签名插件）
                 var publisher = ""
                 if (let Some(p) <- obj.get("publisher")) {
                     match (p.kind()) {
@@ -231,9 +231,27 @@ public class PluginManager {
                         case _ => ()
                     }
                 }
-                // 记录签名元数据（V3 Step 2 将用此做信任链验证）
-                if (publisher.size > 0 || pubkeyHex.size > 0 || signatureHex.size > 0) {
-                    Log.debug("[PLUGIN] 签名元数据: ${pluginName} publisher=${publisher} pubkey=${pubkeyHex} sig=${signatureHex}")
+                // 三字段齐全才验签
+                if (pubkeyHex.size > 0 && signatureHex.size > 0 && expectedChecksum.size > 0) {
+                    match (verifySm2(pubkeyHex, signatureHex, expectedChecksum)) {
+                        case Sm2VerifyResult.Verified =>
+                            Log.debug("[PLUGIN] SM2 签名验证通过: ${pluginName} publisher=${publisher}")
+                        case Sm2VerifyResult.Invalid =>
+                            Log.warn("[PLUGIN] SM2 签名不匹配，拒绝加载: ${pluginName}")
+                            return
+                        case Sm2VerifyResult.BadKey =>
+                            Log.warn("[PLUGIN] SM2 公钥格式错误，拒绝加载: ${pluginName}")
+                            return
+                        case Sm2VerifyResult.BadSignature =>
+                            Log.warn("[PLUGIN] SM2 签名格式错误，拒绝加载: ${pluginName}")
+                            return
+                        case Sm2VerifyResult.Error =>
+                            Log.warn("[PLUGIN] SM2 验签内部错误，拒绝加载: ${pluginName}")
+                            return
+                    }
+                } else if (pubkeyHex.size > 0 || signatureHex.size > 0) {
+                    // 部分字段存在但不全，记录警告但不拒绝（兼容过渡）
+                    Log.warn("[PLUGIN] 签名字段不完整，跳过验签: ${pluginName} (pubkey=${pubkeyHex.size > 0}, sig=${signatureHex.size > 0}, checksum=${expectedChecksum.size > 0})")
                 }
 
                 // 白名单过滤（空=全部启用）
