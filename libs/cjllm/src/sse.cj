@@ -20,7 +20,7 @@ public class SseParser {
     public var onEvent: (String) -> Unit = { _ => }
     public var onDone: () -> Unit = { => }
     public var onError: (String) -> Unit = { _ => }
-    // 空闲超时（readTimeout 触发）：已收数据保留，但流被切断
+    // readTimeout 绝对超时触发：已收数据保留，但流被切断
     public var timedOut: Bool = false
 
     public init(input: InputStream) {
@@ -50,9 +50,10 @@ public class SseParser {
             }
             this.onDone()
         } catch (e: HttpTimeoutException) {
-            // 空闲超时：DeepSeek 长 completions chunk 持续到达不会触发；
-            // 网络 60s 无新数据 → timeout → 保留已收数据 + 标记 timedOut
-            Log.warn("[SSE] read timeout, flushing pending (size=${this.pending.size})")
+            // readTimeout 绝对超时：长任务思考阶段超过 readTimeout 设定值
+            // → HttpTimeoutException → 保留已收数据 + 标记 timedOut
+            // 注：openai.cj 已把 readTimeout 放宽到 10min，正常长任务不会触发
+            Log.warn("[SSE] read timeout (absolute), flushing pending (size=${this.pending.size})")
             this.timedOut = true
             this.flushRemaining()
             this.onDone()

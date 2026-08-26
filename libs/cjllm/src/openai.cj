@@ -101,12 +101,13 @@ public class OpenAiProvider <: LlmProvider {
         var tlsConfig = TlsClientConfig()
         tlsConfig.verifyMode = CertificateVerifyMode.CustomCA(X509Certificate.systemRootCerts())
         tlsConfig.domain = Some(this.sniHost())
-        // SSE 流式响应：readTimeout 是每次 read 的空闲超时（非绝对超时）
-        // DeepSeek 长 completions chunk 持续到达，不会触发空闲超时
-        // 网络卡住 60s 无新数据 → HttpTimeoutException → 保留已收数据
+        // SSE 流式响应：readTimeout 是"读取一个响应的最大时长"——绝对超时
+        // （CangjieSkills 文档确认：ClientBuilder.readTimeout 设定读取一个响应的最大时长）
+        // DeepSeek 长 completions 思考阶段可能 >60s 才到第一个 chunk，
+        // 故放宽到 10 分钟，避免长任务被切断导致最后一帧 usage 丢失（token=0）
         let client = ClientBuilder()
             .tlsConfig(tlsConfig)
-            .readTimeout(Duration.second * 60)
+            .readTimeout(Duration.second * 600)
             .build()
         let req = HttpRequestBuilder()
             .post()
