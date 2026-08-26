@@ -53,7 +53,6 @@ public class WebServer {
             .addr(bindAddr)
             .port(port)
             .distributor(distributor)
-            .maxRequestBodySize(this.config.webMaxRequestSize)
             .build()
 
         println("╭─── cjh · Web Server ────────────────────────")

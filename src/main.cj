@@ -501,11 +501,25 @@ func loadPlugins(pluginsDir: String, registry: ToolRegistry,
 /**
  * 连接所有配置的 MCP 服务器，注册工具到 registry
  * 返回创建的 McpManager（用于退出时断开连接）
+ *
+ * 用 spawn + Future.get(timeout) 隔离：单个 MCP 服务器卡住（recv 阻塞）
+ * 不阻塞 main web 启动。超时 5s，超时则跳过 MCP 继续。
  */
 func loadMcpServers(servers: ArrayList<McpServerConfig>,
     registry: ToolRegistry): McpManager {
     let mgr = McpManager()
-    mgr.connectAll(servers, registry)
+    // spawn 隔离 connectAll，避免 recv() 永久阻塞卡死启动
+    let future = spawn {
+        mgr.connectAll(servers, registry)
+    }
+    // 等待 5 秒，超时则放弃 MCP（web server 仍能启动）
+    try {
+        future.get(Duration.second * 5)
+    } catch (e: TimeoutException) {
+        Log.warn("[MCP] connectAll 超时（5s），跳过 MCP 继续")
+    } catch (e: Exception) {
+        Log.warn("[MCP] connectAll 异常: ${e}")
+    }
     return mgr
 }
 
