@@ -54,6 +54,8 @@ func runMockVerify(): Int64 {
     registry.register(GrepTool())
     registry.register(ListDirTool())
     registry.register(HashlineEditTool())
+    // 注册 web_search + web_fetch（mock 模式也需验证工具出现在 LLM 工具列表）
+    registerWebTools(CjhConfig(), registry)
 
     let provider = MockProvider(testPath)
     let config = AgentConfig("你是测试代理。", 5)

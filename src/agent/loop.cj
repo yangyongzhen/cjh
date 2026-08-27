@@ -200,6 +200,12 @@ public class Agent {
      * 返回改写后的 content；无钩子或钩子失败时返回原 content
      */
     private func fireToolResultHook(toolName: String, content: String): String {
+        // web_fetch/web_search 等结构化抓取工具的结果不应被 log-pruner 裁剪：
+        // log-pruner 设计意图是裁剪冗长 bash 日志（>1000 字符截断），
+        // 但 web_fetch 返回的正文需要完整传给 LLM 才能总结。
+        if (toolName == "web_fetch" || toolName == "web_search") {
+            return content
+        }
         match (this.pluginManager) {
             case Some(pm) =>
                 if (!pm.hasHook("on_tool_result")) {
@@ -424,9 +430,12 @@ public class Agent {
                     this.messages.add(ChatMessage("user", notice))
                     this.onAssistantText("\n[System] Truncation detected, forced continuation directive injected\n")
                 }
+                // tool 执行完毕，回到 while 顶部发起下一轮 LLM 请求
+                // （让 LLM 看到 tool result 后继续总结/调用）
+                continue
             }
 
-            // 纯文本答复
+            // 纯文本答复（无 tool 调用分支才会走到这里）
             if (response.text.size > 0) {
                 this.messages.add(ChatMessage("assistant", response.text))
                 this.onAssistantText(response.text)
@@ -569,15 +578,24 @@ public class Agent {
      */
     private func truncateToolResult(content: String, toolName: String, toolCallId: String): String {
         let maxChars = this.toolResultMaxChars(toolName)
-        if (maxChars <= 0 || Int64(content.size) <= maxChars) {
+        // 按 Rune（字符）计数，避免按字节切片截断在多字节 UTF-8 中间
+        let runes = content.toRuneArray()
+        let charCount = Int64(runes.size)
+        if (maxChars <= 0 || charCount <= maxChars) {
             return content
         }
         let headLen: Int64 = maxChars / 2
         let tailLen: Int64 = maxChars - headLen
-        let head = content[0..Int64(headLen)]
-        let tailStart = Int64(content.size) - tailLen
-        let tail = content[Int64(tailStart)..Int64(content.size)]
-        let skipped = Int64(content.size) - maxChars
+        var headSb = StringBuilder()
+        for (i in 0..Int64(headLen)) {
+            headSb.append(String(runes[i]))
+        }
+        let tailStart = charCount - tailLen
+        var tailSb = StringBuilder()
+        for (i in Int64(tailStart)..charCount) {
+            tailSb.append(String(runes[i]))
+        }
+        let skipped = charCount - maxChars
 
         // 落盘完整结果（回溯路径）
         var spillHint = ""
@@ -587,9 +605,9 @@ public class Agent {
             spillHint = "，完整结果已保存：" + spillPath + "，可用 read_file 读取"
         }
 
-        return head
+        return headSb.toString()
             + "\n\n…[已截断 " + skipped.toString() + " 字符" + spillHint + "]…\n\n"
-            + tail
+            + tailSb.toString()
     }
 
     /**

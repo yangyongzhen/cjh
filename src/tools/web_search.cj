@@ -3,6 +3,7 @@ package cjh.tools
 import std.collection.*
 import std.convert.Parsable
 import std.io.*
+import std.process.*
 import stdx.net.http.*
 import stdx.net.tls.*
 import stdx.crypto.x509.X509Certificate

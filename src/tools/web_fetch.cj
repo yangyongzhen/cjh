@@ -80,8 +80,8 @@ public class WebFetchTool <: CjhTool {
         if (effectiveMaxChars > 128000) { effectiveMaxChars = 128000 }
 
         // 会话级预算检查（防 prompt injection 烧流量）
-        // 预估本次下载字节数 = maxDownloadBytes（5MB），实际可能更少
-        match (budget.tryFetch(maxDownloadBytes)) {
+        // 只记次数，不预扣字节（实际下载量在调用时未知）
+        match (budget.tryFetch(0)) {
             case Some(reason) => return ToolResult(reason, true)
             case None => ()
         }
@@ -235,11 +235,18 @@ public class WebFetchTool <: CjhTool {
 
     /**
      * 格式化输出结果
+     * maxChars 按 Rune（字符）数计算，避免多字节 UTF-8 截断产生乱码
      */
     private func formatResult(url: String, content: String, maxChars: Int64): String {
         var result = "URL: ${url}\n\n---\n\n"
-        if (content.size > maxChars) {
-            result += content[0..maxChars]
+        let runes = content.toRuneArray()
+        if (runes.size > maxChars) {
+            // 按 Rune 截断，避免截断在多字节字符中间
+            var sb = StringBuilder()
+            for (i in 0..maxChars) {
+                sb.append(String(runes[i]))
+            }
+            result += sb.toString()
             result += "\n\n...(truncated at ${maxChars} chars)"
         } else {
             result += content
