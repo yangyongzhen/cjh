@@ -129,6 +129,8 @@ coding agent 的执行效率直接决定用户等待时间。cjh 从三个维度
 | `grep` | 目录树递归搜索，gitignore 感知 |
 | `list_dir` | 列出目录树 |
 | `todo_write` | LLM 通过工具调用管理任务列表 |
+| `web_search` | 联网搜索，多后端路由（Tavily/Exa/SearXNG/DDG）+ per-engine key rotation |
+| `web_fetch` | 抓取网页，三级降级链（仓颉 HTTP → curl → Firecrawl）+ SSRF 防护 |
 
 ### LLM Provider 层
 

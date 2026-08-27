@@ -129,6 +129,8 @@ Performance baseline measurement 3D stats:
 | `grep` | Recursive directory tree search, gitignore-aware |
 | `list_dir` | List directory tree |
 | `todo_write` | LLM manages task list via tool calls |
+| `web_search` | Web search, multi-backend routing (Tavily/Exa/SearXNG/DDG) + per-engine key rotation |
+| `web_fetch` | Fetch web page, 3-tier degradation chain (Cangjie HTTP → curl → Firecrawl) + SSRF guard |
 
 ### Concurrent Execution Engine (V2d)
 

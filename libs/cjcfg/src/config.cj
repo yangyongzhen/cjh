@@ -111,6 +111,21 @@ public class CjhConfig {
     // HTTP 请求体最大字节数（防大请求 OOM）
     public var webMaxRequestSize: Int64 = 1048576
 
+    // ===== Web 搜索配置（settings.json "web_search" 段）=====
+    public var webSearchEnabled: Bool = true
+    public var webSearchProvider: String = "auto"  // auto|tavily|exa|searxng|ddg
+    public var webSearchTavilyKeys: String = ""     // 逗号分隔多 key
+    public var webSearchExaKeys: String = ""        // 逗号分隔多 key
+    public var webSearchSearxngUrl: String = ""
+    public var webSearchMaxResults: Int64 = 5
+    public var webSearchTimeoutSeconds: Int64 = 8
+
+    // ===== Web 抓取配置（settings.json "web_fetch" 段）=====
+    public var webFetchEnabled: Bool = true
+    public var webFetchAllowInternal: Bool = false  // 是否允许抓 localhost 开发服务器
+    public var webFetchMaxChars: Int64 = 32000      // ~8K token
+    public var webFetchTimeoutSeconds: Int64 = 30
+
     public init() {
         // 配置目录：环境变量覆盖，默认 ~/.cjh
         let home = readEnv("HOME") ?? "/root"
@@ -537,6 +552,110 @@ public class CjhConfig {
                     if (let Some(v) <- obj.get("tool_result_max_chars")) {
                         match (v.kind()) {
                             case JsonKind.JsInt => this.toolResultMaxChars = v.asInt().getValue()
+                            case _ => ()
+                        }
+                    }
+                    // ===== web_search 段 =====
+                    if (let Some(v) <- obj.get("web_search")) {
+                        match (v.kind()) {
+                            case JsonKind.JsObject =>
+                                let ws = v.asObject()
+                                match (ws.get("enabled")) {
+                                    case Some(e) =>
+                                        match (e.kind()) {
+                                            case JsonKind.JsBool => this.webSearchEnabled = e.asBool().getValue()
+                                            case _ => ()
+                                        }
+                                    case _ => ()
+                                }
+                                match (ws.get("provider")) {
+                                    case Some(p) =>
+                                        match (p.kind()) {
+                                            case JsonKind.JsString => this.webSearchProvider = p.asString().getValue()
+                                            case _ => ()
+                                        }
+                                    case _ => ()
+                                }
+                                match (ws.get("tavily_api_keys")) {
+                                    case Some(k) =>
+                                        match (k.kind()) {
+                                            case JsonKind.JsString => this.webSearchTavilyKeys = k.asString().getValue()
+                                            case _ => ()
+                                        }
+                                    case _ => ()
+                                }
+                                match (ws.get("exa_api_keys")) {
+                                    case Some(k) =>
+                                        match (k.kind()) {
+                                            case JsonKind.JsString => this.webSearchExaKeys = k.asString().getValue()
+                                            case _ => ()
+                                        }
+                                    case _ => ()
+                                }
+                                match (ws.get("searxng_url")) {
+                                    case Some(u) =>
+                                        match (u.kind()) {
+                                            case JsonKind.JsString => this.webSearchSearxngUrl = u.asString().getValue()
+                                            case _ => ()
+                                        }
+                                    case _ => ()
+                                }
+                                match (ws.get("max_results")) {
+                                    case Some(m) =>
+                                        match (m.kind()) {
+                                            case JsonKind.JsInt => this.webSearchMaxResults = m.asInt().getValue()
+                                            case _ => ()
+                                        }
+                                    case _ => ()
+                                }
+                                match (ws.get("timeout_seconds")) {
+                                    case Some(t) =>
+                                        match (t.kind()) {
+                                            case JsonKind.JsInt => this.webSearchTimeoutSeconds = t.asInt().getValue()
+                                            case _ => ()
+                                        }
+                                    case _ => ()
+                                }
+                            case _ => ()
+                        }
+                    }
+                    // ===== web_fetch 段 =====
+                    if (let Some(v) <- obj.get("web_fetch")) {
+                        match (v.kind()) {
+                            case JsonKind.JsObject =>
+                                let wf = v.asObject()
+                                match (wf.get("enabled")) {
+                                    case Some(e) =>
+                                        match (e.kind()) {
+                                            case JsonKind.JsBool => this.webFetchEnabled = e.asBool().getValue()
+                                            case _ => ()
+                                        }
+                                    case _ => ()
+                                }
+                                match (wf.get("allow_internal_hosts")) {
+                                    case Some(a) =>
+                                        match (a.kind()) {
+                                            case JsonKind.JsBool => this.webFetchAllowInternal = a.asBool().getValue()
+                                            case _ => ()
+                                        }
+                                    case _ => ()
+                                }
+                                match (wf.get("max_chars")) {
+                                    case Some(m) =>
+                                        match (m.kind()) {
+                                            case JsonKind.JsInt => this.webFetchMaxChars = m.asInt().getValue()
+                                            case _ => ()
+                                        }
+                                    case _ => ()
+                                }
+                                match (wf.get("timeout_seconds")) {
+                                    case Some(t) =>
+                                        match (t.kind()) {
+                                            case JsonKind.JsInt => this.webFetchTimeoutSeconds = t.asInt().getValue()
+                                            case _ => ()
+                                        }
+                                    case _ => ()
+                                }
                             case _ => ()
                         }
                     }

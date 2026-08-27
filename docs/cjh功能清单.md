@@ -53,6 +53,57 @@
 | **grep** | 目录树递归搜索，gitignore 感知，上下文行参数 |
 | **list_dir** | 列出目录树 |
 | **todo_write** | LLM 通过工具调用管理任务列表（add/doing/done/update/clear/list） |
+| **web_search** | 联网搜索，多后端路由（Tavily/Exa/SearXNG/DDG）+ per-engine key rotation，snippet 截断 500 字符 |
+| **web_fetch** | 抓取网页，三级降级链（仓颉 HTTP GET → curl → Firecrawl）+ SSRF 防护 + HTML 清洗 → Markdown，截断 ~32KB |
+
+### web_search + web_fetch 详细设计
+
+详见 [Web 搜索与抓取工具设计](Web搜索与抓取工具设计.md)。
+
+**web_search（信息检索）**：
+- SearchProvider 接口 + SearchRouter 多后端路由（Auto fallback）
+- TavilyProvider：主力，1000 req/月免费不绑卡，per-engine key rotation
+- ExaProvider：语义搜索，长尾查询强，per-engine key rotation
+- SearXNGProvider：自建零成本，聚合 70+ 后端
+- DDGProvider：零 key 兜底，永远 enable
+- snippet 截断到 500 字符，默认返回 5 条（最多 10 条）
+
+**web_fetch（信息获取）**：
+- 三级降级链：
+  1. 仓颉 stdx.net.http GET（第一层，~50% 站点）
+  2. exec curl + 浏览器头（第二层，~70% 站点，数组式 exec 防注入）
+  3. Firecrawl API（第三层，~96% 站点，Keyless 1000 credits/month）
+- SSRF 防护：协议白名单 + IP 段拦截（loopback/link-local/RFC1918/云元数据 169.254.169.254）+ DNS 解析校验 + 重定向逐跳重校
+- HTML 清洗 → Markdown（去 script/style/nav + 标签剥离 + HTML 实体解码）
+- 截断到 ~32KB（~8K token），硬下载上限 5MB
+
+**会话级预算（防 prompt injection 烧流量）**：
+- WebBudget 计数器：20 fetches · 30 searches · 1MB download（默认）
+- 超出预算拒绝后续调用
+- 线程安全（ReentrantMutex），V2d 并发引擎可安全调用
+
+**配置**（settings.json）：
+```json
+{
+  "web_search": {
+    "enabled": true,
+    "provider": "auto",
+    "tavily_api_keys": "",
+    "exa_api_keys": "",
+    "searxng_url": "",
+    "max_results": 5,
+    "timeout_seconds": 8
+  },
+  "web_fetch": {
+    "enabled": true,
+    "allow_internal_hosts": false,
+    "max_chars": 32000,
+    "timeout_seconds": 30
+  }
+}
+```
+
+环境变量：`TAVILY_API_KEYS` · `EXA_API_KEYS` · `SEARXNG_URL` · `FIRECRAWL_API_KEY` · `CJH_WEB_SEARCH_PROVIDER`
 
 ## 五、工具执行引擎
 

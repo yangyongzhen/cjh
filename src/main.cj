@@ -437,6 +437,55 @@ func loadSkills(skillsDir: String, enabled: ArrayList<String>): String {
 }
 
 /**
+ * 注册 web_search + web_fetch 工具到 registry
+ *
+ * web_search：SearchProvider 多后端路由 + per-engine key rotation
+ * web_fetch：三级降级链（仓颉 HTTP GET + curl + Firecrawl）+ SSRF 防护
+ *
+ * 配置来自 cjhCfg.webSearch* / cjhCfg.webFetch*
+ */
+func registerWebTools(cjhCfg: CjhConfig, registry: ToolRegistry): Unit {
+    // 会话级预算（防 prompt injection 烧流量/API key）
+    // 默认：20 fetches · 30 searches · 1MB download
+    let budget = WebBudget(20, 30, 1048576)
+
+    // web_search
+    if (cjhCfg.webSearchEnabled) {
+        let providers = ArrayList<SearchProvider>()
+        let providerMode = cjhCfg.webSearchProvider
+        // Auto 模式：Tavily → Exa → SearXNG → DDG 兜底
+        let needTavily = (providerMode == "auto" || providerMode == "tavily") && cjhCfg.webSearchTavilyKeys.size > 0
+        let needExa = (providerMode == "auto" || providerMode == "exa") && cjhCfg.webSearchExaKeys.size > 0
+        let needSearXNG = (providerMode == "auto" || providerMode == "searxng") && cjhCfg.webSearchSearxngUrl.size > 0
+        let needDDG = (providerMode == "auto" || providerMode == "ddg")
+        if (needTavily) {
+            providers.add(TavilyProvider(cjhCfg.webSearchTavilyKeys, cjhCfg.webSearchTimeoutSeconds))
+        }
+        if (needExa) {
+            providers.add(ExaProvider(cjhCfg.webSearchExaKeys, cjhCfg.webSearchTimeoutSeconds))
+        }
+        if (needSearXNG) {
+            providers.add(SearXNGProvider(cjhCfg.webSearchSearxngUrl, cjhCfg.webSearchTimeoutSeconds))
+        }
+        if (needDDG) {
+            providers.add(DDGProvider(cjhCfg.webSearchTimeoutSeconds))
+        }
+        // 没有任何 provider，兜底用 DDG
+        if (providers.size == 0) {
+            providers.add(DDGProvider(cjhCfg.webSearchTimeoutSeconds))
+        }
+        let router = SearchRouter(providers)
+        registry.register(WebSearchTool(router, cjhCfg.webSearchMaxResults, budget))
+    }
+
+    // web_fetch
+    if (cjhCfg.webFetchEnabled) {
+        let tool = WebFetchTool(cjhCfg.webFetchAllowInternal, cjhCfg.webFetchMaxChars, cjhCfg.webFetchTimeoutSeconds, budget)
+        registry.register(tool)
+    }
+}
+
+/**
  * 加载技能携带的声明式工具（对齐 v2 4.3b 声明式形态）：
  * 技能 frontmatter 的 tools 段为 JSON 数组，每项 {name, description, command, args?}，
  * 注册为 DeclarativeTool（shell 模板 + 参数 schema，低门槛）。
@@ -743,6 +792,7 @@ func runWeb(args: Array<String>): Int64 {
     registry.register(GrepTool())
     registry.register(ListDirTool())
     registry.register(HashlineEditTool())
+    registerWebTools(cjhCfg, registry)
     loadSkillTools(cjhCfg.skillsDir, registry, cjhCfg.enabledSkills)
     let pluginManager = loadPlugins(cjhCfg.pluginsDir, registry, cjhCfg.enabledPlugins, cjhCfg.requireSignature)
     let mcpManager = loadMcpServers(cjhCfg.mcpServers, registry)
@@ -777,6 +827,8 @@ func runCli(sessionId: String): Int64 {
     cjhCfg.ensureDirs()
     // 应用 TUI 主题（settings.json "theme" 字段；默认 starfrost 星霜青）
     Theme.apply(cjhCfg.theme)
+    // 注册 web_search + web_fetch 工具
+    registerWebTools(cjhCfg, registry)
     // 注册技能携带的声明式工具（Skill 自定义工具）
     loadSkillTools(cjhCfg.skillsDir, registry, cjhCfg.enabledSkills)
     // 加载插件（V2b Step 1：plugin.json + shell 工具）
@@ -912,6 +964,8 @@ func runJson(prompt: String, sessionId: String): Int64 {
     cjhCfg.ensureDirs()
     // 应用 TUI 主题（settings.json "theme" 字段；默认 starfrost 星霜青）
     Theme.apply(cjhCfg.theme)
+    // 注册 web_search + web_fetch 工具
+    registerWebTools(cjhCfg, registry)
     loadSkillTools(cjhCfg.skillsDir, registry, cjhCfg.enabledSkills)
     // 加载插件（V2b Step 1：plugin.json + shell 工具）
     let pluginManager = loadPlugins(cjhCfg.pluginsDir, registry, cjhCfg.enabledPlugins, cjhCfg.requireSignature)
@@ -1076,6 +1130,8 @@ func runTui(sessionId: String): Int64 {
     // 应用 TUI 主题（settings.json "theme" 字段；默认 starfrost 星霜青）
     Theme.apply(cjhCfg.theme)
     mark("theme applied")
+    // 注册 web_search + web_fetch 工具
+    registerWebTools(cjhCfg, registry)
     // 注册技能携带的声明式工具（Skill 自定义工具）
     loadSkillTools(cjhCfg.skillsDir, registry, cjhCfg.enabledSkills)
     mark("skill tools loaded")
