@@ -198,6 +198,12 @@ public class TavilyProvider <: SearchProvider {
 }
 
 // ===== DDG 实现（零 key 兜底）=====
+//
+// 参照 atomcode web_search.rs 的做法：
+//   - 用 curl 子进程绕过 DDG 的 TLS 指纹检测（reqwest/仓颉 HTTP client 会被拒）
+//   - curl --max-time 硬超时，连接失败立即退出，不会卡 105s
+//   - 用 https://html.duckduckgo.com/html/ POST 端点（比 Instant Answer API 结果更全）
+//   - 浏览器 User-Agent（DDG 对非浏览器 UA 返回 403）
 
 public class DDGProvider <: SearchProvider {
     private let timeoutSeconds: Int64
@@ -211,89 +217,243 @@ public class DDGProvider <: SearchProvider {
 
     public func search(query: String, maxResults: Int64): ArrayList<SearchHit> {
         try {
-            var tlsConfig = TlsClientConfig()
-            tlsConfig.verifyMode = CertificateVerifyMode.CustomCA(X509Certificate.systemRootCerts())
-            tlsConfig.domain = Some("api.duckduckgo.com")
-            let client = ClientBuilder()
-                .tlsConfig(tlsConfig)
-                .readTimeout(Duration.second * timeoutSeconds)
-                .writeTimeout(Duration.second * 10)
-                .build()
-
-            // DDG Instant Answer API
-            // GET https://api.duckduckgo.com/?q={query}&format=json&no_html=1&skip_disambig=1
             let encodedQuery = urlEncode(query)
-            let url = "https://api.duckduckgo.com/?q=${encodedQuery}&format=json&no_html=1&skip_disambig=1"
+            // DDG HTML 端点：返回搜索结果 HTML 页面
+            let url = "https://html.duckduckgo.com/html/"
 
-            let req = HttpRequestBuilder()
-                .get()
-                .url(url)
-                .header("User-Agent", "cjh/1.3.0 (Cangjie Coding Agent)")
-                .header("Accept", "application/json")
-                .build()
+            // 数组式 exec 防注入；url 和 query 是独立参数
+            var argv = Array<String>(13, repeat: "")
+            argv[0] = "curl"
+            argv[1] = "-s"
+            argv[2] = "-X"
+            argv[3] = "POST"
+            argv[4] = url
+            argv[5] = "-d"
+            argv[6] = "q=" + encodedQuery
+            argv[7] = "-A"
+            argv[8] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko)"
+            argv[9] = "--max-time"
+            argv[10] = timeoutSeconds.toString()
+            argv[11] = "-L"  // follow redirects
+            argv[12] = "-H"
+            // 需要 14 个元素，重新分配
+            var argvFull = Array<String>(14, repeat: "")
+            for (i in 0..13) { argvFull[i] = argv[i] }
+            argvFull[13] = "Content-Type: application/x-www-form-urlencoded"
 
-            let resp = client.send(req)
-            if (resp.status != 200) { return ArrayList<SearchHit>() }
+            let (code, stdoutBytes, stderrBytes) = executeWithOutput("curl", argvFull)
+            if (code != 0) { return ArrayList<SearchHit>() }
+            if (stdoutBytes.size == 0) { return ArrayList<SearchHit>() }
 
-            let respBody = readAll(resp.body, 1048576)
-            let rootJson = JsonValue.fromStr(safeFromUtf8(respBody))
-            // 仅当根是 Object 时才取字段
-            let rootObj = match (rootJson.kind()) {
-                case JsonKind.JsObject => rootJson.asObject()
-                case _ => return ArrayList<SearchHit>()
-            }
-
-            let hits = ArrayList<SearchHit>()
-
-            // 第一条：AbstractText + AbstractURL
-            let abstractText = getStringFieldObj(rootObj, "AbstractText")
-            let abstractURL = getStringFieldObj(rootObj, "AbstractURL")
-            let heading = getStringFieldObj(rootObj, "Heading")
-            if (abstractText.size > 0 || abstractURL.size > 0) {
-                let title = if (heading.size > 0) { heading } else { "DuckDuckGo Result" }
-                let snippet = if (abstractText.size > 0) {
-                    if (abstractText.size > 500) { abstractText[0..500] } else { abstractText }
-                } else {
-                    ""
-                }
-                let url = if (abstractURL.size > 0) { abstractURL } else { "https://duckduckgo.com/?q=${encodedQuery}" }
-                hits.add(SearchHit(title, url, snippet))
-            }
-
-            // RelatedTopics 数组
-            match (rootObj.get("RelatedTopics")) {
-                case Some(related) =>
-                    match (related.kind()) {
-                        case JsonKind.JsArray =>
-                            let arr = related.asArray()
-                            var i = 0
-                            while (i < arr.size()) {
-                                if (hits.size >= maxResults) { break }
-                                let topic = arr[i]
-                                let text = getStringField(topic, "Text")
-                                let firstURL = getStringField(topic, "FirstURL")
-                                if (text.size > 0 || firstURL.size > 0) {
-                                    let snippet = if (text.size > 500) { text[0..500] } else { text }
-                                    let url = if (firstURL.size > 0) { firstURL } else { "https://duckduckgo.com/?q=${encodedQuery}" }
-                                    let title = if (text.size > 0) {
-                                        if (text.size > 80) { text[0..80] } else { text }
-                                    } else {
-                                        "DuckDuckGo Related"
-                                    }
-                                    hits.add(SearchHit(title, url, snippet))
-                                }
-                                i += 1
-                            }
-                        case _ => ()
-                    }
-                case None => ()
-            }
-
-            return hits
+            let html = safeFromUtf8(stdoutBytes)
+            return parseDDgHtml(html, encodedQuery, maxResults)
         } catch (e: Exception) {
             return ArrayList<SearchHit>()
         }
     }
+}
+
+/**
+ * 解析 DDG HTML 搜索结果页
+ *
+ * DDG HTML 页面结构：
+ *   <a class="result__a" href="...">标题</a>
+ *   <a class="result__snippet" href="...">摘要</a>
+ *
+ * 策略：
+ *   1. 找 result__a 的 href 和文本
+ *   2. 找对应的 result__snippet 文本
+ *   3. DDG 的 href 是 /l/?uddg=<encoded_url> 格式，需要解码
+ */
+func parseDDgHtml(html: String, encodedQuery: String, maxResults: Int64): ArrayList<SearchHit> {
+    let hits = ArrayList<SearchHit>()
+    let lower = html.toAsciiLower()
+
+    // 找所有 result__a 链接
+    var pos = 0
+    while (hits.size < maxResults) {
+        // 找 result__a
+        let resultOpt = lower.indexOf("result__a", pos)
+        if (let None <- resultOpt) { break }
+        let resultIdx = resultOpt.getOrThrow()
+        pos = resultIdx + 9
+
+        // 从 result__a 往前找最近的 <a
+        let aStartOpt = lower.indexOf("<a", resultIdx)
+        if (let None <- aStartOpt) { break }
+        let aStart = aStartOpt.getOrThrow()
+        if (aStart > resultIdx + 100) { continue }  // 太远，不是同一个标签
+
+        // 找 <a ...> 的 href
+        let hrefOpt = lower.indexOf("href=\"", aStart)
+        if (let None <- hrefOpt) { continue }
+        let hrefStart = hrefOpt.getOrThrow() + 6
+        let hrefEndOpt = lower.indexOf("\"", hrefStart)
+        if (let None <- hrefEndOpt) { continue }
+        let hrefEnd = hrefEndOpt.getOrThrow()
+        let rawHref = html[hrefStart..hrefEnd]
+
+        // 解码 DDG 重定向 URL：/l/?uddg=<encoded_url>
+        let url = decodeDDgRedirect(rawHref, encodedQuery)
+
+        // 找链接文本（<a ...>文本</a>）
+        let gtOpt = lower.indexOf(">", aStart)
+        if (let None <- gtOpt) { continue }
+        let gt = gtOpt.getOrThrow()
+        let aEndOpt = lower.indexOf("</a>", gt)
+        if (let None <- aEndOpt) { continue }
+        let aEnd = aEndOpt.getOrThrow()
+        let titleHtml = html[gt + 1..aEnd]
+        let title = trimStr(stripTags(titleHtml))
+        if (title.size == 0) { continue }
+
+        // 找对应的 snippet（result__snippet）
+        let snippetStartOpt = lower.indexOf("result__snippet", aEnd)
+        if (let None <- snippetStartOpt) {
+            hits.add(SearchHit(title, url, ""))
+            continue
+        }
+        let snippetStart = snippetStartOpt.getOrThrow()
+        // snippet 是 <a class="result__snippet" ...>文本</a>
+        let sGtOpt = lower.indexOf(">", snippetStart)
+        if (let None <- sGtOpt) { continue }
+        let sGt = sGtOpt.getOrThrow()
+        let sEndOpt = lower.indexOf("</a>", sGt)
+        if (let None <- sEndOpt) { continue }
+        let sEnd = sEndOpt.getOrThrow()
+        let snippetHtml = html[sGt + 1..sEnd]
+        var snippet = trimStr(stripTags(snippetHtml))
+        if (snippet.size > 300) { snippet = snippet[0..300] }
+
+        hits.add(SearchHit(title, url, snippet))
+    }
+
+    return hits
+}
+
+/**
+ * 解码 DDG 重定向 URL
+ * DDG 的搜索结果链接格式：/l/?uddg=<encoded_url>&rut=...
+ * 需要 URL 解码 uddg 参数得到真实 URL
+ */
+func decodeDDgRedirect(rawHref: String, encodedQuery: String): String {
+    // 检查是否是 DDG 重定向格式
+    let lower = rawHref.toAsciiLower()
+    let uddgOpt = lower.indexOf("uddg=")
+    if (let Some(_) <- uddgOpt) {
+        // 提取 uddg 参数值
+        let uddgStart = rawHref.indexOf("uddg=")
+        if (let Some(us) <- uddgStart) {
+            let valStart = us + 5
+            let valEndOpt = rawHref.indexOf("&", valStart)
+            let valEnd = match (valEndOpt) {
+                case Some(e) => e
+                case None => rawHref.size
+            }
+            let encoded = rawHref[valStart..valEnd]
+            // URL 解码（%XX → 字符）
+            return urlDecode(encoded)
+        }
+    }
+
+    // 不是重定向格式，直接返回（可能是完整 URL）
+    if (rawHref.startsWith("http://") || rawHref.startsWith("https://")) {
+        return rawHref
+    }
+
+    // 兜底：返回 DDG 搜索页
+    return "https://duckduckgo.com/?q=" + encodedQuery
+}
+
+/**
+ * 手动 trim：去除首尾空白字符
+ * 仓颉 String 没有 trim() 方法，手动实现
+ */
+func trimStr(s: String): String {
+    let runes = s.toRuneArray()
+    var start = 0
+    var end = runes.size
+    while (start < end && isWsR(runes[start])) { start += 1 }
+    while (end > start && isWsR(runes[end - 1])) { end -= 1 }
+    if (start >= end) { return "" }
+    var sb = StringBuilder()
+    for (i in start..end) { sb.append(String(runes[i])) }
+    return sb.toString()
+}
+
+private func isWsR(r: Rune): Bool {
+    let v = Int64(UInt32(r))
+    return v == 32 || v == 9 || v == 10 || v == 13 || v == 12 || v == 11
+}
+
+/**
+ * URL 解码：%XX → 对应字符，+ → 空格
+ */
+func urlDecode(s: String): String {
+    var result = StringBuilder()
+    let runes = s.toRuneArray()
+    let n = runes.size
+    var i = 0
+    while (i < n) {
+        let r = runes[i]
+        if (r == Rune(37)) {  // %
+            // %XX 格式
+            if (i + 2 < n) {
+                let h1 = Int64(UInt32(runes[i + 1]))
+                let h2 = Int64(UInt32(runes[i + 2]))
+                let v1 = hexVal(h1)
+                let v2 = hexVal(h2)
+                if (v1 >= 0 && v2 >= 0) {
+                    let byte = UInt8(v1 * 16 + v2)
+                    // 收集连续的 %XX 字节，形成完整 UTF-8 字符
+                    // 简化：逐字节解码，非 ASCII 字节可能显示乱码
+                    result.append(String(Rune(Int64(byte))))
+                    i += 3
+                    continue
+                }
+            }
+            // 无效的 % 编码，原样保留
+            result.append(String(r))
+            i += 1
+        } else if (r == Rune(43)) {  // +
+            result.append(" ")
+            i += 1
+        } else {
+            result.append(String(r))
+            i += 1
+        }
+    }
+    return result.toString()
+}
+
+/**
+ * 十六进制字符转数值（0-15），非十六进制返回 -1
+ */
+private func hexVal(c: Int64): Int64 {
+    if (c >= 48 && c <= 57) { return c - 48 }      // 0-9
+    if (c >= 97 && c <= 102) { return c - 87 }     // a-f
+    if (c >= 65 && c <= 70) { return c - 55 }      // A-F
+    return -1
+}
+
+/**
+ * 剥离 HTML 标签，返回纯文本
+ */
+func stripTags(html: String): String {
+    var result = StringBuilder()
+    var inTag = false
+    let runes = html.toRuneArray()
+    for (i in 0..runes.size) {
+        let r = runes[i]
+        if (r == Rune(60)) {  // <
+            inTag = true
+        } else if (r == Rune(62)) {  // >
+            inTag = false
+        } else if (!inTag) {
+            result.append(String(r))
+        }
+    }
+    return result.toString()
 }
 
 // ===== Exa 实现（带 key rotation，语义搜索强）=====

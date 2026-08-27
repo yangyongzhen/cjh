@@ -47,6 +47,7 @@ public class WebFetchTool <: CjhTool {
         var props = HashMap<String, JsonValue>()
         props.add("url", JsonSchema.str("The URL to fetch (must be http:// or https://)"))
         props.add("max_chars", JsonSchema.str("Maximum characters to return (default 32000, max 128000)"))
+        props.add("query", JsonSchema.str("Search query for BM25 compression of long articles (>10K chars). Pass the user's question or key terms so the most relevant paragraphs are kept. Optional but recommended for long pages."))
         let schema = JsonSchema.object(props, ArrayList<String>(["url"]))
         return ToolSpec("web_fetch",
             "Fetch the content of a web page and return it as clean Markdown text. " +
@@ -79,6 +80,15 @@ public class WebFetchTool <: CjhTool {
         // 硬上限 128KB
         if (effectiveMaxChars > 128000) { effectiveMaxChars = 128000 }
 
+        // 解析可选 query：用于 BM25 检索压缩长文章
+        var query = ""
+        if (let Some(qVal) <- args.get("query")) {
+            match (qVal.kind()) {
+                case JsonKind.JsString => query = qVal.asString().getValue()
+                case _ => ()
+            }
+        }
+
         // 会话级预算检查（防 prompt injection 烧流量）
         // 只记次数，不预扣字节（实际下载量在调用时未知）
         match (budget.tryFetch(0)) {
@@ -96,7 +106,7 @@ public class WebFetchTool <: CjhTool {
         match (cangjieResult) {
             case Some(content) =>
                 let cleaned = HtmlCleaner.toMarkdown(content)
-                return ToolResult(formatResult(url, cleaned, effectiveMaxChars), false)
+                return ToolResult(compressIfNeeded(url, cleaned, query, effectiveMaxChars), false)
             case None => ()  // 进入降级链
         }
 
@@ -105,7 +115,7 @@ public class WebFetchTool <: CjhTool {
         match (curlResult) {
             case Some(content) =>
                 let cleaned = HtmlCleaner.toMarkdown(content)
-                return ToolResult(formatResult(url, cleaned, effectiveMaxChars), false)
+                return ToolResult(compressIfNeeded(url, cleaned, query, effectiveMaxChars), false)
             case None => ()  // curl 也失败，进入第三层
         }
 
@@ -114,12 +124,41 @@ public class WebFetchTool <: CjhTool {
         match (firecrawlResult) {
             case Some(markdown) =>
                 // Firecrawl 返回的已经是清洗后的 Markdown，无需再清洗
-                return ToolResult(formatResult(url, markdown, effectiveMaxChars), false)
+                return ToolResult(compressIfNeeded(url, markdown, query, effectiveMaxChars), false)
             case None => ()  // Firecrawl 也失败
         }
 
         // 6. 三层全失败，返回错误
         return ToolResult("Failed to fetch ${url} (cangjie HTTP + curl + Firecrawl all failed)", true)
+    }
+
+    /**
+     * 长文章压缩：文章超过阈值时用 BM25 检索 query 相关的 top-k 块
+     *
+     * 策略：
+     *   - 文章 <= 阈值：直接 formatResult 返回
+     *   - 文章 > 阈值且有 query：BM25 检索 top-3 块拼接，压缩比约 10:1
+     *   - 文章 > 阈值但无 query：按 maxChars 截断（保留头部）
+     */
+    private func compressIfNeeded(url: String, content: String, query: String, maxChars: Int64): String {
+        let compressThreshold: Int64 = 10000  // >10K 字符才压缩
+        let runes = content.toRuneArray()
+        let charCount = Int64(runes.size)
+
+        if (charCount <= compressThreshold) {
+            // 短文章，直接返回
+            return formatResult(url, content, maxChars)
+        }
+
+        if (query.size == 0) {
+            // 长文章但无 query，按 maxChars 截断
+            return formatResult(url, content, maxChars)
+        }
+
+        // 长文章 + 有 query：BM25 压缩
+        let topK: Int64 = 3
+        let compressed = ArticleCompressor.compress(content, query, topK, maxChars)
+        return formatResult(url, compressed, maxChars)
     }
 
     /**
