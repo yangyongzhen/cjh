@@ -300,19 +300,79 @@ public interface SearchProvider {
     func search(query: String, maxResults: Int64): ArrayList<SearchHit>
 }
 
-// ===== Tavily 实现 =====
+// ===== per-engine key rotation =====
+//
+// 借鉴 ModSearch：给 Tavily/Exa/Firecrawl 配多个逗号分隔 key，
+// 认证/限流/配额失败时轮换到下一个 key，全部 key 耗尽再降级到引擎链。
+//
+// 场景：用户有多个免费账号 key，单 key 触发 429 配额墙时，
+// 不直接降级引擎，而是先试同引擎的下一个 key，最大化单引擎可用性。
+
+public class KeyRotator {
+    private let keys: ArrayList<String>
+    private var currentIdx: Int64 = 0
+    private var exhausted: Bool = false
+
+    public init(keysCsv: String) {
+        this.keys = ArrayList<String>()
+        if (keysCsv.size > 0) {
+            for (k in keysCsv.split(",")) {
+                let trimmed = k.trim()
+                if (trimmed.size > 0) { this.keys.add(trimmed) }
+            }
+        }
+    }
+
+    // 当前 key（无 key 返回空串）
+    public func current(): String {
+        if (keys.size == 0) { return "" }
+        if (currentIdx >= keys.size) { return "" }
+        return keys[currentIdx]
+    }
+
+    public func hasKeys(): Bool { keys.size > 0 }
+
+    // 当前 key 判定为认证/限流/配额失败时调用
+    // 返回 true=已轮换到下一个 key；false=所有 key 耗尽
+    public func rotate(): Bool {
+        currentIdx += 1
+        if (currentIdx >= keys.size) {
+            exhausted = true
+            return false
+        }
+        return true
+    }
+
+    public func isExhausted(): Bool { exhausted }
+}
+
+// ===== Tavily 实现（带 key rotation）=====
 
 public class TavilyProvider <: SearchProvider {
-    private let apiKey: String
-    public init(apiKey: String) { this.apiKey = apiKey }
+    private let rotator: KeyRotator
+    public init(keysCsv: String) { this.rotator = KeyRotator(keysCsv) }
     public func name(): String { "tavily" }
-    public func enabled(): Bool { apiKey.size > 0 }
+    public func enabled(): Bool { rotator.hasKeys() }
+
     public func search(query: String, maxResults: Int64): ArrayList<SearchHit> {
+        while (!rotator.isExhausted()) {
+            let key = rotator.current()
+            let result = doTavilySearch(key, query, maxResults)
+            match (result) {
+                case Some(hits) => return hits           // 成功
+                case None =>
+                    // 当前 key 失败（认证/限流/配额）→ 轮换
+                    if (!rotator.rotate()) { break }     // 所有 key 耗尽
+            }
+        }
+        return ArrayList<SearchHit>()  // 引擎链降级
+    }
+
+    private func doTavilySearch(key: String, query: String, maxResults: Int64): ?ArrayList<SearchHit> {
         // POST https://api.tavily.com/search
-        // body: { api_key, query, max_results, search_depth: "basic" }
-        // 解析 results[].title/url/content
-        // content 截断到 500 字符
-        // 失败返回空列表（让路由跳下一个）
+        // body: { api_key: key, query, max_results, search_depth: "basic" }
+        // 返回 Some(hits) 成功 / None 认证或限流失败
+        // 注意：空结果列表是合法成功（Some([])），不是认证失败
         ...
     }
 }
@@ -332,6 +392,11 @@ public class DDGProvider <: SearchProvider {
 }
 
 // ===== 路由器 =====
+//
+// 两层降级：
+//   1. 引擎内 key rotation：Tavily/Exa 单 key 失败 → 同引擎下一个 key
+//   2. 引擎链降级：引擎所有 key 耗尽 → 路由跳下一个引擎
+// DDG 永远兜底（无 key），保证零配置也能搜。
 
 public class SearchRouter {
     private let providers: ArrayList<SearchProvider>
@@ -341,9 +406,11 @@ public class SearchRouter {
         for (i in 0..providers.size) {
             let p = providers[i]
             if (!p.enabled()) { continue }
+            // provider 内部已处理 key rotation，
+            // search() 返回即代表该引擎（含所有 key）已尽力
             let hits = p.search(query, maxResults)
             if (hits.size > 0) { return hits }  // 命中就回
-            // 空结果/超时 → 退避后跳下一个
+            // 空结果/超时 → 引擎链降级，跳下一个引擎
         }
         return ArrayList<SearchHit>()  // 全部失败返回空
     }
@@ -380,8 +447,8 @@ public class WebSearchTool <: CjhTool {
   "web_search": {
     "enabled": true,
     "provider": "auto",
-    "tavily_api_key": "",
-    "exa_api_key": "",
+    "tavily_api_keys": "",
+    "exa_api_keys": "",
     "searxng_url": "",
     "max_results": 5,
     "timeout_seconds": 8
@@ -393,20 +460,35 @@ public class WebSearchTool <: CjhTool {
 |---|---|---|
 | `enabled` | 是否启用 web_search | true |
 | `provider` | 搜索后端：`auto` / `tavily` / `exa` / `searxng` / `ddg` | auto |
-| `tavily_api_key` | Tavily API Key（空则跳过） | "" |
-| `exa_api_key` | Exa API Key（空则跳过） | "" |
+| `tavily_api_keys` | Tavily API Key，**逗号分隔多 key**（空则跳过） | "" |
+| `exa_api_keys` | Exa API Key，**逗号分隔多 key**（空则跳过） | "" |
 | `searxng_url` | 自建 SearXNG URL（空则跳过） | "" |
 | `max_results` | 最大返回结果数 | 5 |
 | `timeout_seconds` | 单次搜索超时 | 8 |
 
-环境变量覆盖：
+**per-engine key rotation 配置示例**：
+
+```json
+{
+  "web_search": {
+    "tavily_api_keys": "tvly-key1,tvly-key2,tvly-key3",
+    "exa_api_keys": "exa-keyA,exa-keyB"
+  }
+}
+```
+
+行为：Tavily 引擎先用 `tvly-key1`，触发 401/429/配额耗尽 → 轮换到 `tvly-key2`，以此类推；所有 Tavily key 耗尽 → 引擎链降级到 Exa（同理 key rotation），最终落到 DDG 兜底。
+
+环境变量覆盖（环境变量同样支持逗号分隔多 key）：
 
 | 变量 | 说明 |
 |---|---|
-| `TAVILY_API_KEY` | Tavily API Key |
-| `EXA_API_KEY` | Exa API Key |
+| `TAVILY_API_KEYS` | Tavily API Key（逗号分隔多 key） |
+| `EXA_API_KEYS` | Exa API Key（逗号分隔多 key） |
 | `SEARXNG_URL` | SearXNG URL |
 | `CJH_WEB_SEARCH_PROVIDER` | 强制指定 provider |
+
+> **向后兼容**：单 key 场景下 `tavily_api_keys: "tvly-xxx"` 等价于旧字段 `tavily_api_key: "tvly-xxx"`。若同时配置了旧单 key 字段和新多 key 字段，以新字段为准。
 
 ## 四、web_fetch 工具设计
 
