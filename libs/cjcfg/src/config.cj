@@ -203,12 +203,7 @@ public class CjhConfig {
     { "id": "deepseek-chat", "name": "DeepSeek V3", "base_url": "https://api.deepseek.com/v1/chat/completions", "temperature": 1.0 }
   ],
 
-  "capability": {
-    "_说明": "三域安全白名单。配置后未声明即拒绝；不配置=宽松模式。详见 docs/进度记录 V2a。",
-    "commands": [],
-    "tools": [],
-    "resources": []
-  },
+  "_capability_说明": "三域安全白名单（可选，默认宽松模式全部放行）。不配置 capability 字段 = 宽松模式，所有工具/命令/路径全部放行。配置后 = 严格模式，未声明即拒绝。想启用时在下方添加 capability 字段，包含 identifier/commands/tools/resources/approval 子字段。示例见 docs/进度记录 V2a。",
 
   "mcp_servers": {
     "_说明": "MCP 服务器配置。每个 key 是服务器名，value 含 transport/command/args/url/env。示例见 docs/MCP设计.md。",
