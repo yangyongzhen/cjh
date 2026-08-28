@@ -19,6 +19,7 @@ import std.console.*
 import std.fs.*
 import stdx.encoding.json.*
 import stdx.net.http.*
+import cjh.gateway.*
 import cjcfg.CjhConfig
 import cjllm.LlmProvider
 import cjh.tools.ToolRegistry

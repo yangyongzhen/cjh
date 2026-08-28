@@ -17,6 +17,7 @@ import stdx.encoding.json.*
 import stdx.net.http.*
 import cjh.agent.*
 import cjh.tools.*
+import cjh.gateway.*
 import cjllm.*
 import cjcfg.*
 
@@ -68,7 +69,7 @@ public class WsHandler <: HttpRequestHandler {
 
         // WS 断开，注销渠道 + 销毁会话
         this.gateway.unregisterChannel(wsId)
-        this.gateway.destroySession("web", wsId)
+        this.gateway.destroySession(wsId, wsId)
     }
 
     /**
@@ -116,16 +117,15 @@ public class WsHandler <: HttpRequestHandler {
                     case JsonKind.JsObject =>
                         let req = ChatRequest.fromJson(v.asObject())
                         if (req.message.size > 0) {
-                            // 交由 Gateway 处理：Gateway 调 agent.run，
-                            // Agent 回调 → Channel 事件 → WebSocket 推送
-                            this.gateway.handleUserMessage("web", wsId, req.message)
+                            // 交由 Gateway 处理：channelId = wsId（每个 WS 连接一个 channel）
+                            this.gateway.handleUserMessage(wsId, wsId, req.message)
                         }
                     case _ => ()
                 }
             case WsMsgType.NewSession =>
                 // 新建会话：销毁旧会话，创建新会话
-                this.gateway.destroySession("web", wsId)
-                this.gateway.createSession("web", wsId)
+                this.gateway.destroySession(wsId, wsId)
+                this.gateway.createSession(wsId, wsId)
             case WsMsgType.ResumeSession =>
                 // 恢复历史会话：加载消息历史，推回前端渲染
                 this.handleResumeSession(wsId, jsonStr)
@@ -165,7 +165,7 @@ public class WsHandler <: HttpRequestHandler {
         }
 
         // 交由 Gateway 处理：Gateway 加载历史消息，通过 Channel 推回前端
-        this.gateway.handleResumeSession("web", wsId, sessionId)
+        this.gateway.handleResumeSession(wsId, wsId, sessionId)
     }
 
     /**
