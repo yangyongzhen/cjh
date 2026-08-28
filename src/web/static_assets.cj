@@ -34,7 +34,7 @@ public class StaticAssets {
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
     <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
 </head>
-<body data-theme="starfrost">
+<body data-theme="light">
     <div class="app-container">
         <!-- 顶部栏 -->
         <header class="app-header">
@@ -47,6 +47,7 @@ public class StaticAssets {
                     <option value="">加载中...</option>
                 </select>
                 <select id="theme-selector" class="theme-selector">
+                    <option value="light" selected>浅色白</option>
                     <option value="starfrost">星霜青</option>
                     <option value="classic">经典亮青</option>
                     <option value="catppuccin">Catppuccin</option>
@@ -148,9 +149,26 @@ function sendMessage(text) {
         showError('WebSocket 未连接');
         return;
     }
+    // 首次发送：移除欢迎页
+    let welcome = document.querySelector('.welcome');
+    if (welcome) { welcome.remove(); }
+    // 先在页面上渲染用户消息
+    appendUserMessage(text);
     const msg = { type: 'chat', message: text };
     ws.send(JSON.stringify(msg));
     setExecuting(true);
+}
+
+/**
+ * 渲染用户消息气泡（右对齐）
+ */
+function appendUserMessage(text) {
+    let messages = document.getElementById('messages');
+    let msgDiv = document.createElement('div');
+    msgDiv.className = 'message message-user';
+    msgDiv.innerHTML = '<div class="message-content">' + escapeHtml(text) + '</div>';
+    messages.appendChild(msgDiv);
+    scrollToBottom();
 }
 
 function sendAbort() {
@@ -423,7 +441,21 @@ document.addEventListener('DOMContentLoaded', function() {
      */
     public static let stylesCss: String = #"""
 /* ====== 主题 CSS 变量 ====== */
-:root, [data-theme="starfrost"] {
+:root, [data-theme="light"] {
+    --bg-primary: #ffffff;
+    --bg-secondary: #f7f7f8;
+    --bg-tertiary: #ececf1;
+    --text-primary: #1a1a1a;
+    --text-secondary: #6b6b6b;
+    --accent: #2563eb;
+    --accent-dim: #93c5fd;
+    --border: #e5e5e5;
+    --success: #16a34a;
+    --error: #dc2626;
+    --warning: #d97706;
+}
+
+[data-theme="starfrost"] {
     --bg-primary: #0a1628;
     --bg-secondary: #111d33;
     --bg-tertiary: #1a2942;
