@@ -81,6 +81,7 @@ public class WebDistributor <: HttpRequestDistributor {
     private let config: CjhConfig
     private let provider: LlmProvider
     private let registry: ToolRegistry
+    private let gateway: ChannelGateway
     private let wsHandler: WsHandler
     private let webHandler: WebHandler
     private let restApi: RestApi
@@ -89,8 +90,10 @@ public class WebDistributor <: HttpRequestDistributor {
         this.config = config
         this.provider = provider
         this.registry = registry
-        // WsHandler 实例（WebSocket 端点）
-        this.wsHandler = WsHandler(this.config, this.provider, this.registry)
+        // ChannelGateway：渠道网关，负责会话路由 + Agent 生命周期 + 事件分发
+        this.gateway = ChannelGateway(this.config, this.provider, this.registry)
+        // WsHandler 实例（WebSocket 端点，只负责帧读写 + JSON 解析）
+        this.wsHandler = WsHandler(this.config, this.gateway)
         // WebHandler 实例（统一 HTTP 处理）
         this.webHandler = WebHandler(this.config)
         // RestApi 实例（/api/* 路由）

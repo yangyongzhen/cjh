@@ -30,21 +30,20 @@ import cjcfg.*
  */
 public class WsHandler <: HttpRequestHandler {
     private let config: CjhConfig
-    private let provider: LlmProvider
-    private let registry: ToolRegistry
-    private let sessionMgr: WebSessionManager
+    private let gateway: ChannelGateway
     // WS 连接 ID 自增计数器
     static var nextId: Int64 = 1
 
-    public init(config: CjhConfig, provider: LlmProvider, registry: ToolRegistry) {
+    public init(config: CjhConfig, gateway: ChannelGateway) {
         this.config = config
-        this.provider = provider
-        this.registry = registry
-        this.sessionMgr = WebSessionManager(config, provider, registry)
+        this.gateway = gateway
     }
 
     /**
      * 处理 HTTP 请求：升级为 WebSocket
+     *
+     * 重构后 WsHandler 只负责 WebSocket 帧读写 + JSON 解析。
+     * 业务逻辑（Agent 执行 + 事件分发）全部下沉到 ChannelGateway。
      */
     public func handle(ctx: HttpContext): Unit {
         // WebSocket 握手
@@ -54,61 +53,28 @@ public class WsHandler <: HttpRequestHandler {
         let wsId = "ws_${WsHandler.nextId}"
         WsHandler.nextId += 1
 
-        // 创建新会话
-        let agent = this.sessionMgr.createSession(wsId)
-
-        // 挂接 Agent 三回调 → WS 推送
-        // WebSocket write 非线程安全，Agent.run 可能在不同协程触发回调
-        // 用 Mutex 保护 write
+        // WebSocket write 非线程安全，用 Mutex 保护
         let wsMutex = Mutex()
 
-        agent.onDelta = { delta: String =>
-            try {
-                wsMutex.lock()
-                let event = DeltaEvent(delta)
-                let json = event.toJson()
-                this.sendWsText(ws, json)
-            } finally {
-                wsMutex.unlock()
-            }
-        }
+        // 创建 WebChannel（Channel 抽象的 Web 实现）
+        // WebChannel 把 Channel 接口方法桥接到 WebSocket 事件 JSON
+        let channel = WebChannel(ws, wsMutex)
 
-        agent.onToolStart = { name: String, args: JsonObject =>
-            try {
-                wsMutex.lock()
-                let event = ToolStartEvent(name, args)
-                let json = event.toJson()
-                this.sendWsText(ws, json)
-            } finally {
-                wsMutex.unlock()
-            }
-        }
+        // 注册到 ChannelGateway：gateway 负责会话路由 + Agent 生命周期
+        this.gateway.registerChannel(wsId, channel)
 
-        agent.onToolResult = { name: String, result: ToolResult =>
-            try {
-                wsMutex.lock()
-                let event = ToolResultEvent(name, result.content, result.isError)
-                let json = event.toJson()
-                this.sendWsText(ws, json)
-            } finally {
-                wsMutex.unlock()
-            }
-        }
+        // 消息接收循环：阻塞读取 WebSocket 帧，解析 JSON 消息，分发到 Gateway
+        this.messageLoop(ws, wsId, wsMutex)
 
-        // 消息接收循环
-        this.messageLoop(ws, wsId, agent, wsMutex)
-
-        // WS 断开，销毁会话
-        this.sessionMgr.destroySession(wsId)
+        // WS 断开，注销渠道 + 销毁会话
+        this.gateway.unregisterChannel(wsId)
+        this.gateway.destroySession("web", wsId)
     }
 
     /**
      * 消息接收循环
-     *
-     * 阻塞读取 WebSocket 帧，解析 JSON 消息，分发到 Agent。
-     * 收到 Close 帧或读取异常时退出循环。
      */
-    private func messageLoop(ws: WebSocket, wsId: String, agent: Agent,
+    private func messageLoop(ws: WebSocket, wsId: String,
         wsMutex: Mutex): Unit {
         var running = true
         while (running) {
@@ -116,36 +82,31 @@ public class WsHandler <: HttpRequestHandler {
                 let frame = ws.read()
                 match (frame.frameType) {
                     case WebSocketFrameType.TextWebFrame =>
-                        // 解析文本帧
                         let text = this.frameToText(frame)
-                        this.handleWsMessage(ws, wsId, agent, wsMutex, text)
+                        this.handleWsMessage(wsId, wsMutex, text)
                     case WebSocketFrameType.BinaryWebFrame =>
-                        // 忽略二进制帧
                         ()
                     case WebSocketFrameType.CloseWebFrame =>
-                        // 收到 Close 帧，退出循环
                         running = false
                     case WebSocketFrameType.PingWebFrame =>
-                        // 回复 Pong
                         ws.writePongFrame(frame.payload)
                     case WebSocketFrameType.PongWebFrame =>
-                        // 忽略 Pong
                         ()
                     case _ =>
                         ()
                 }
             } catch (e: Exception) {
-                // 读取异常，退出循环
                 running = false
             }
         }
     }
 
     /**
-     * 处理单条 WebSocket 消息
+     * 处理单条 WebSocket 消息：解析 JSON，分发到 ChannelGateway
+     *
+     * 重构后此方法只做消息路由，业务逻辑下沉到 Gateway。
      */
-    private func handleWsMessage(ws: WebSocket, wsId: String, agent: Agent,
-        wsMutex: Mutex, jsonStr: String): Unit {
+    private func handleWsMessage(wsId: String, wsMutex: Mutex, jsonStr: String): Unit {
         let msgType = parseMsgType(jsonStr)
         match (msgType) {
             case WsMsgType.Chat =>
@@ -155,34 +116,19 @@ public class WsHandler <: HttpRequestHandler {
                     case JsonKind.JsObject =>
                         let req = ChatRequest.fromJson(v.asObject())
                         if (req.message.size > 0) {
-                            // 执行 Agent 循环（阻塞）
-                            let summary = agent.run(req.message)
-                            // 发送 DoneEvent
-                            try {
-                                wsMutex.lock()
-                                let event = DoneEvent(
-                                    summary.rounds,
-                                    summary.toolCalls,
-                                    summary.durationMs,
-                                    summary.totalTokens(),
-                                    summary.cachedTokens)
-                                this.sendWsText(ws, event.toJson())
-                            } finally {
-                                wsMutex.unlock()
-                            }
+                            // 交由 Gateway 处理：Gateway 调 agent.run，
+                            // Agent 回调 → Channel 事件 → WebSocket 推送
+                            this.gateway.handleUserMessage("web", wsId, req.message)
                         }
                     case _ => ()
                 }
             case WsMsgType.NewSession =>
                 // 新建会话：销毁旧会话，创建新会话
-                this.sessionMgr.destroySession(wsId)
-                let newAgent = this.sessionMgr.createSession(wsId)
-                // 重新挂接回调（简化：复用原 agent 的回调闭包）
-                // 实际需要重新设置回调，这里简化处理
-                ()
+                this.gateway.destroySession("web", wsId)
+                this.gateway.createSession("web", wsId)
             case WsMsgType.ResumeSession =>
                 // 恢复历史会话：加载消息历史，推回前端渲染
-                this.handleResumeSession(ws, wsId, wsMutex, jsonStr)
+                this.handleResumeSession(wsId, jsonStr)
             case WsMsgType.Abort =>
                 // 中断当前执行（简化：暂不实现中断）
                 ()
@@ -195,12 +141,11 @@ public class WsHandler <: HttpRequestHandler {
     /**
      * 处理 resume_session 请求：
      * 1. 解析 session_id
-     * 2. 从 SessionStore 加载历史消息
-     * 3. 把历史消息序列化为 JSON 推回前端
-     *    前端收到 history_messages 后渲染对话区
+     * 2. 销毁当前会话，恢复历史会话
+     * 3. 加载历史消息，通过 Channel 推回前端
      */
-    private func handleResumeSession(ws: WebSocket, wsId: String, wsMutex: Mutex, jsonStr: String): Unit {
-        // 解析请求
+    private func handleResumeSession(wsId: String, jsonStr: String): Unit {
+        // 解析 session_id
         let sessionId = match (JsonValue.fromStr(jsonStr).kind()) {
             case JsonKind.JsObject =>
                 let obj = JsonValue.fromStr(jsonStr).asObject()
@@ -219,42 +164,8 @@ public class WsHandler <: HttpRequestHandler {
             return
         }
 
-        // 从 SessionStore 加载历史消息
-        let store = SessionStore(this.config.sessionsDir)
-        let messages = store.load(sessionId)
-
-        // 销毁当前会话，创建新会话并加载历史
-        this.sessionMgr.destroySession(wsId)
-        let newAgent = this.sessionMgr.resumeSession(wsId, sessionId)
-
-        // 序列化历史消息为 JSON
-        var msgArr = JsonArray()
-        for (i in 0..messages.size) {
-            let m = messages[i]
-            var msgObj = JsonObject()
-            msgObj.put("role", JsonString(m.role))
-            msgObj.put("content", JsonString(m.content))
-            if (m.toolCallId.size > 0) {
-                msgObj.put("tool_call_id", JsonString(m.toolCallId))
-            }
-            if (m.name.size > 0) {
-                msgObj.put("name", JsonString(m.name))
-            }
-            msgArr.add(msgObj)
-        }
-
-        var respObj = JsonObject()
-        respObj.put("type", JsonString("history_messages"))
-        respObj.put("session_id", JsonString(sessionId))
-        respObj.put("messages", msgArr)
-
-        // 推回前端
-        try {
-            wsMutex.lock()
-            this.sendWsText(ws, respObj.toJsonString())
-        } finally {
-            wsMutex.unlock()
-        }
+        // 交由 Gateway 处理：Gateway 加载历史消息，通过 Channel 推回前端
+        this.gateway.handleResumeSession("web", wsId, sessionId)
     }
 
     /**
