@@ -180,12 +180,80 @@ public class WsHandler <: HttpRequestHandler {
                 // 重新挂接回调（简化：复用原 agent 的回调闭包）
                 // 实际需要重新设置回调，这里简化处理
                 ()
+            case WsMsgType.ResumeSession =>
+                // 恢复历史会话：加载消息历史，推回前端渲染
+                this.handleResumeSession(ws, wsId, wsMutex, jsonStr)
             case WsMsgType.Abort =>
                 // 中断当前执行（简化：暂不实现中断）
                 ()
             case _ =>
                 // 未知消息类型，忽略
                 ()
+        }
+    }
+
+    /**
+     * 处理 resume_session 请求：
+     * 1. 解析 session_id
+     * 2. 从 SessionStore 加载历史消息
+     * 3. 把历史消息序列化为 JSON 推回前端
+     *    前端收到 history_messages 后渲染对话区
+     */
+    private func handleResumeSession(ws: WebSocket, wsId: String, wsMutex: Mutex, jsonStr: String): Unit {
+        // 解析请求
+        let sessionId = match (JsonValue.fromStr(jsonStr).kind()) {
+            case JsonKind.JsObject =>
+                let obj = JsonValue.fromStr(jsonStr).asObject()
+                match (obj.get("session_id")) {
+                    case Some(s) =>
+                        match (s.kind()) {
+                            case JsonKind.JsString => s.asString().getValue()
+                            case _ => ""
+                        }
+                    case None => ""
+                }
+            case _ => ""
+        }
+
+        if (sessionId.size == 0) {
+            return
+        }
+
+        // 从 SessionStore 加载历史消息
+        let store = SessionStore(this.config.sessionsDir)
+        let messages = store.load(sessionId)
+
+        // 销毁当前会话，创建新会话并加载历史
+        this.sessionMgr.destroySession(wsId)
+        let newAgent = this.sessionMgr.resumeSession(wsId, sessionId)
+
+        // 序列化历史消息为 JSON
+        var msgArr = JsonArray()
+        for (i in 0..messages.size) {
+            let m = messages[i]
+            var msgObj = JsonObject()
+            msgObj.put("role", JsonString(m.role))
+            msgObj.put("content", JsonString(m.content))
+            if (m.toolCallId.size > 0) {
+                msgObj.put("tool_call_id", JsonString(m.toolCallId))
+            }
+            if (m.name.size > 0) {
+                msgObj.put("name", JsonString(m.name))
+            }
+            msgArr.add(msgObj)
+        }
+
+        var respObj = JsonObject()
+        respObj.put("type", JsonString("history_messages"))
+        respObj.put("session_id", JsonString(sessionId))
+        respObj.put("messages", msgArr)
+
+        // 推回前端
+        try {
+            wsMutex.lock()
+            this.sendWsText(ws, respObj.toJsonString())
+        } finally {
+            wsMutex.unlock()
         }
     }
 

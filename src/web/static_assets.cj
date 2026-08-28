@@ -280,9 +280,56 @@ function handleServerMessage(msg) {
         case 'tasks':
             renderTaskList(msg.tasks);
             break;
+        case 'history_messages':
+            renderHistoryMessages(msg.messages, msg.session_id);
+            break;
         default:
             console.warn('[WS] 未知消息类型:', msg.type);
     }
+}
+
+/**
+ * 渲染历史消息列表（切换会话时调用）
+ * messages: [{role, content, tool_call_id?, name?}, ...]
+ */
+function renderHistoryMessages(messages, sessionId) {
+    currentSessionId = sessionId;
+    finalizeAssistantMessage();
+
+    let messagesEl = document.getElementById('messages');
+    messagesEl.innerHTML = '';
+
+    if (!messages || messages.length === 0) {
+        messagesEl.innerHTML = '<div class="welcome"><h2>👋</h2><p>空会话</p></div>';
+        return;
+    }
+
+    for (let i = 0; i < messages.length; i++) {
+        let m = messages[i];
+        if (m.role === 'user') {
+            appendUserMessage(m.content);
+        } else if (m.role === 'assistant') {
+            currentAssistantDiv = document.createElement('div');
+            currentAssistantDiv.className = 'message message-assistant';
+            currentAssistantDiv.innerHTML = '<div class="message-content">' + renderMarkdownInline(m.content) + '</div>';
+            messagesEl.appendChild(currentAssistantDiv);
+            enhanceCodeBlocks(currentAssistantDiv);
+            currentAssistantDiv = null;
+        } else if (m.role === 'tool') {
+            appendToolResult(m.name || 'tool', m.content, false);
+        }
+    }
+
+    // 更新侧边栏高亮
+    document.querySelectorAll('.session-item').forEach(function(item) {
+        if (item.dataset.sessionId === sessionId) {
+            item.classList.add('active');
+        } else {
+            item.classList.remove('active');
+        }
+    });
+
+    scrollToBottom();
 }
 
 // ====== 对话渲染 ======
