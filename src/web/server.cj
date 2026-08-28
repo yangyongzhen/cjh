@@ -147,11 +147,14 @@ public class WebHandler <: HttpRequestHandler {
 
     /**
      * GET / → 返回聊天界面 HTML
+     *
+     * 仓颉 #""" 多行字符串有 bug：首行会多出 ""（两个双引号）。
+     * 这里截掉前缀，保证浏览器拿到干净的 HTML。
      */
     private func handleIndex(ctx: HttpContext): Unit {
         let res = ctx.responseBuilder
         res.header("Content-Type", "text/html; charset=utf-8")
-        res.body(StaticAssets.indexHtml.toArray())
+        res.body(stripRawPrefix(StaticAssets.indexHtml).toArray())
     }
 
     /**
@@ -160,7 +163,7 @@ public class WebHandler <: HttpRequestHandler {
     private func handleStaticJs(ctx: HttpContext): Unit {
         let res = ctx.responseBuilder
         res.header("Content-Type", "application/javascript; charset=utf-8")
-        res.body(StaticAssets.appJs.toArray())
+        res.body(stripRawPrefix(StaticAssets.appJs).toArray())
     }
 
     /**
@@ -169,7 +172,26 @@ public class WebHandler <: HttpRequestHandler {
     private func handleStaticCss(ctx: HttpContext): Unit {
         let res = ctx.responseBuilder
         res.header("Content-Type", "text/css; charset=utf-8")
-        res.body(StaticAssets.stylesCss.toArray())
+        res.body(stripRawPrefix(StaticAssets.stylesCss).toArray())
+    }
+
+    /**
+     * 截掉仓颉 #""" 多行字符串首行多余的 "" 前缀
+     *
+     * 仓颉编译器 bug：#"""\n<!DOCTYPE... 解析后首行变成 ""（两个双引号被当成内容）。
+     * 前端拿到 ""\n<!DOCTYPE... 会导致：
+     *   - app.js 第一行 "" 被浏览器执行，后续 'use strict' 报 Unexpected token
+     *   - index.html 第一行 "" 导致浏览器 quirks mode
+     *
+     * 修复：如果字符串以 "\"\"\n" 开头，截掉前 3 字节。
+     */
+    private static func stripRawPrefix(s: String): String {
+        if (s.size >= 3) {
+            if (s[0] == UInt8(34) && s[1] == UInt8(34) && s[2] == UInt8(10)) {
+                return s[3..s.size]
+            }
+        }
+        return s
     }
 
     /**
