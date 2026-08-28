@@ -55,6 +55,7 @@ public class StaticAssets {
                     <option value="solarized">Solarized</option>
                     <option value="monokai">Monokai</option>
                 </select>
+                <button id="config-btn" class="btn-icon" title="配置">⚙</button>
             </div>
         </header>
 
@@ -67,7 +68,7 @@ public class StaticAssets {
                     <button class="sidebar-tab active" data-tab="sessions">会话</button>
                     <button class="sidebar-tab" data-tab="skills">技能</button>
                     <button class="sidebar-tab" data-tab="mcp">MCP</button>
-                    <button class="sidebar-tab" data-tab="config" title="配置">⚙</button>
+                    <button class="sidebar-tab" data-tab="workspaces">工作区</button>
                 </div>
 
                 <!-- 会话分区 -->
@@ -101,12 +102,13 @@ public class StaticAssets {
                     </div>
                 </div>
 
-                <!-- 配置分区 -->
-                <div id="tab-config" class="sidebar-panel">
+                <!-- 工作区分区 -->
+                <div id="tab-workspaces" class="sidebar-panel">
                     <div class="sidebar-header">
-                        <span>配置</span>
+                        <span>工作区</span>
+                        <button id="add-workspace-btn" class="btn-icon" title="添加工作区">+</button>
                     </div>
-                    <div id="config-form" class="config-form">
+                    <div id="workspace-list" class="workspace-list">
                         <div class="loading">加载中...</div>
                     </div>
                 </div>
@@ -144,6 +146,42 @@ public class StaticAssets {
                 <div id="round-summary" class="round-summary hidden"></div>
             </section>
         </main>
+    </div>
+
+    <!-- 配置模态对话框 -->
+    <div id="config-modal" class="modal-overlay hidden">
+        <div class="modal-dialog config-dialog">
+            <div class="modal-header">
+                <span>配置</span>
+                <button class="modal-close" onclick="closeConfigModal()">×</button>
+            </div>
+            <div class="modal-body">
+                <div id="config-form" class="config-form">
+                    <div class="loading">加载中...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 工作区添加模态对话框 -->
+    <div id="workspace-modal" class="modal-overlay hidden">
+        <div class="modal-dialog">
+            <div class="modal-header">
+                <span>添加工作区</span>
+                <button class="modal-close" onclick="closeWorkspaceModal()">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="config-row">
+                    <label>路径（绝对路径）</label>
+                    <input type="text" id="workspace-path-input" placeholder="/home/user/project">
+                </div>
+                <div class="config-row">
+                    <label>名称（可选）</label>
+                    <input type="text" id="workspace-name-input" placeholder="my-project">
+                </div>
+                <button class="config-save-btn" onclick="addWorkspace()">添加</button>
+            </div>
+        </div>
     </div>
 
     <script src="/assets/app.js"></script>
@@ -314,71 +352,258 @@ function loadMcp() {
 }
 
 /**
- * 从 /api/settings 加载配置，渲染到配置分区表单
+ * 从 /api/workspaces 加载工作区列表，渲染到侧边栏工作区分区
  */
-function loadConfig() {
-    fetch('/api/settings')
+function loadWorkspaces() {
+    fetch('/api/workspaces')
         .then(r => r.json())
         .then(data => {
-            let form = document.getElementById('config-form');
-            form.innerHTML = '';
-            // 分组渲染
-            let groups = [
-                { title: 'Provider', fields: [
-                    { key: 'baseUrl', label: 'API 端点', type: 'text' },
-                    { key: 'model', label: '模型', type: 'text' },
-                    { key: 'apiKey', label: 'API Key', type: 'password' }
-                ]},
-                { title: '行为参数', fields: [
-                    { key: 'maxIterations', label: '最大迭代', type: 'number' },
-                    { key: 'temperature', label: '温度', type: 'number' },
-                    { key: 'maxTokens', label: '最大 token', type: 'number' },
-                    { key: 'compactThreshold', label: '压缩阈值', type: 'number' },
-                    { key: 'compactKeep', label: '压缩保留', type: 'number' },
-                    { key: 'toolResultMaxChars', label: '工具结果上限', type: 'number' }
-                ]},
-                { title: 'Web 配置', fields: [
-                    { key: 'webPort', label: '端口', type: 'number' },
-                    { key: 'webBindAddr', label: '绑定地址', type: 'text' },
-                    { key: 'webAuthToken', label: '鉴权 token', type: 'text' }
-                ]}
-            ];
-            groups.forEach(function(g) {
-                let groupDiv = document.createElement('div');
-                groupDiv.className = 'config-group';
-                groupDiv.innerHTML = '<div class="config-group-title">' + escapeHtml(g.title) + '</div>';
-                g.fields.forEach(function(f) {
-                    let row = document.createElement('div');
-                    row.className = 'config-row';
-                    let val = data[f.key] !== undefined ? data[f.key] : '';
-                    row.innerHTML = '<label>' + escapeHtml(f.label) + '</label>' +
-                                   '<input type="' + f.type + '" data-key="' + f.key + '" value="' + escapeHtml(String(val)) + '">';
-                    groupDiv.appendChild(row);
+            let list = document.getElementById('workspace-list');
+            if (!data.workspaces || data.workspaces.length === 0) {
+                list.innerHTML = '<div class="empty">暂无工作区<br>点 + 添加</div>';
+                return;
+            }
+            list.innerHTML = '';
+            data.workspaces.forEach(function(w) {
+                let item = document.createElement('div');
+                item.className = 'workspace-item';
+                item.dataset.path = w.path;
+                item.innerHTML = '<div class="workspace-name">' + escapeHtml(w.name) + '</div>' +
+                                 '<div class="workspace-path">' + escapeHtml(w.path) + '</div>' +
+                                 '<button class="workspace-del" title="删除">×</button>';
+                // 切换工作区
+                item.addEventListener('click', function(e) {
+                    if (e.target.classList.contains('workspace-del')) { return; }
+                    switchWorkspace(w.path, w.name);
                 });
-                form.appendChild(groupDiv);
+                // 删除工作区
+                item.querySelector('.workspace-del').addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    removeWorkspace(w.path);
+                });
+                list.appendChild(item);
             });
-            // 保存按钮
-            let saveBtn = document.createElement('button');
-            saveBtn.className = 'config-save-btn';
-            saveBtn.textContent = '保存配置';
-            saveBtn.addEventListener('click', saveConfig);
-            form.appendChild(saveBtn);
         })
         .catch(function(e) {
-            console.error('[Config] 加载失败:', e);
-            document.getElementById('config-form').innerHTML = '<div class="empty">加载失败</div>';
+            console.error('[Workspaces] 加载失败:', e);
+            document.getElementById('workspace-list').innerHTML = '<div class="empty">加载失败</div>';
         });
+}
+
+/**
+ * 切换工作区：POST /api/workspaces 更新访问时间 + 提示
+ * 注意：cjh web 启动后 cwd 已固定，切换工作区仅记录意图，
+ * 需重启 cjh web --bind 在新 cwd 才真正生效（受限于仓颉进程模型）。
+ */
+function switchWorkspace(path, name) {
+    fetch('/api/workspaces', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: path, name: name })
+    }).then(function() {
+        // 刷新列表（排序可能变化）
+        loadWorkspaces();
+        document.getElementById('workspace-list').dataset.loaded = '1';
+        // 提示用户重启
+        let list = document.getElementById('workspace-list');
+        let tip = document.createElement('div');
+        tip.className = 'workspace-tip';
+        tip.textContent = '已选择「' + name + '」\n重启 cjh web 在该目录生效';
+        list.insertBefore(tip, list.firstChild);
+    });
+}
+
+/**
+ * 删除工作区：DELETE /api/workspaces
+ */
+function removeWorkspace(path) {
+    fetch('/api/workspaces', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: path })
+    }).then(function() {
+        loadWorkspaces();
+    });
+}
+
+/**
+ * 打开工作区添加模态框
+ */
+function openWorkspaceModal() {
+    document.getElementById('workspace-path-input').value = '';
+    document.getElementById('workspace-name-input').value = '';
+    document.getElementById('workspace-modal').classList.remove('hidden');
+}
+
+/**
+ * 关闭工作区添加模态框
+ */
+function closeWorkspaceModal() {
+    document.getElementById('workspace-modal').classList.add('hidden');
+}
+
+/**
+ * 添加工作区：POST /api/workspaces
+ */
+function addWorkspace() {
+    let path = document.getElementById('workspace-path-input').value.trim();
+    let name = document.getElementById('workspace-name-input').value.trim();
+    if (!path) { return; }
+    fetch('/api/workspaces', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: path, name: name })
+    }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.ok) {
+            closeWorkspaceModal();
+            // 刷新工作区列表
+            loadWorkspaces();
+            document.getElementById('workspace-list').dataset.loaded = '1';
+        } else {
+            alert('添加失败: ' + (data.error || '未知错误'));
+        }
+    });
+}
+
+/**
+ * 打开配置模态框：拉取配置数据 + 显示
+ */
+function openConfigModal() {
+    loadConfig();
+    document.getElementById('config-modal').classList.remove('hidden');
+}
+
+/**
+ * 关闭配置模态框
+ */
+function closeConfigModal() {
+    document.getElementById('config-modal').classList.add('hidden');
+}
+
+/**
+ * 从 /api/settings 加载配置，渲染到配置模态框表单。
+ * 模型字段渲染为下拉框，选项来自 /api/models。
+ */
+function loadConfig() {
+    // 并行拉取 settings 和 models
+    Promise.all([
+        fetch('/api/settings').then(r => r.json()),
+        fetch('/api/models').then(r => r.json()).catch(() => ({ models: [], current: '' }))
+    ]).then(function(results) {
+        let data = results[0];
+        let modelsData = results[1];
+        let form = document.getElementById('config-form');
+        form.innerHTML = '';
+        // 分组渲染
+        let groups = [
+            { title: 'Provider', fields: [
+                { key: 'baseUrl', label: 'API 端点', type: 'text' },
+                { key: 'model', label: '模型', type: 'select' },
+                { key: 'apiKey', label: 'API Key', type: 'password' }
+            ]},
+            { title: '行为参数', fields: [
+                { key: 'maxIterations', label: '最大迭代', type: 'number' },
+                { key: 'temperature', label: '温度', type: 'number' },
+                { key: 'maxTokens', label: '最大 token', type: 'number' },
+                { key: 'compactThreshold', label: '压缩阈值', type: 'number' },
+                { key: 'compactKeep', label: '压缩保留', type: 'number' },
+                { key: 'toolResultMaxChars', label: '工具结果上限', type: 'number' }
+            ]},
+            { title: 'Web 配置', fields: [
+                { key: 'webPort', label: '端口', type: 'number' },
+                { key: 'webBindAddr', label: '绑定地址', type: 'text' },
+                { key: 'webAuthToken', label: '鉴权 token', type: 'text' }
+            ]}
+        ];
+        // 构建模型选项数组
+        let modelOptions = [];
+        if (modelsData.models && modelsData.models.length > 0) {
+            modelsData.models.forEach(function(m) {
+                modelOptions.push({ value: m.id, label: m.name || m.id });
+            });
+        }
+        // 确保当前模型在选项里
+        let currentModel = data.model || modelsData.current || '';
+        if (currentModel && !modelOptions.some(function(o) { return o.value === currentModel; })) {
+            modelOptions.unshift({ value: currentModel, label: currentModel + '（当前）' });
+        }
+        groups.forEach(function(g) {
+            let groupDiv = document.createElement('div');
+            groupDiv.className = 'config-group';
+            groupDiv.innerHTML = '<div class="config-group-title">' + escapeHtml(g.title) + '</div>';
+            g.fields.forEach(function(f) {
+                let row = document.createElement('div');
+                row.className = 'config-row';
+                let val = data[f.key] !== undefined ? data[f.key] : '';
+                if (f.type === 'select') {
+                    // 下拉框渲染
+                    let optsHtml = '';
+                    modelOptions.forEach(function(o) {
+                        let selected = (o.value === val) ? ' selected' : '';
+                        optsHtml += '<option value="' + escapeHtml(o.value) + '"' + selected + '>' +
+                                    escapeHtml(o.label) + '</option>';
+                    });
+                    // 空模型列表 → 降级为 text 输入
+                    if (modelOptions.length === 0) {
+                        row.innerHTML = '<label>' + escapeHtml(f.label) + '</label>' +
+                                       '<input type="text" data-key="' + f.key + '" value="' + escapeHtml(String(val)) + '">';
+                    } else {
+                        // 允许输入自定义模型：在 select 旁加一个 text 输入（onchange 回填）
+                        row.innerHTML = '<label>' + escapeHtml(f.label) + '</label>' +
+                                       '<select data-key="' + f.key + '">' + optsHtml + '</select>' +
+                                       '<input type="text" class="config-custom-input" placeholder="或输入自定义模型" value="">';
+                    }
+                } else {
+                    row.innerHTML = '<label>' + escapeHtml(f.label) + '</label>' +
+                                   '<input type="' + f.type + '" data-key="' + f.key + '" value="' + escapeHtml(String(val)) + '">';
+                }
+                groupDiv.appendChild(row);
+            });
+            form.appendChild(groupDiv);
+        });
+        // 自定义模型输入联动：select 改变时清空 custom；custom 输入时覆盖 select
+        let modelSelect = form.querySelector('select[data-key="model"]');
+        let modelCustom = form.querySelector('.config-custom-input');
+        if (modelSelect && modelCustom) {
+            modelSelect.addEventListener('change', function() {
+                modelCustom.value = '';
+            });
+            modelCustom.addEventListener('input', function() {
+                // 把自定义值写回 select 的 dataset，saveConfig 时优先取 custom
+            });
+        }
+        // 保存按钮
+        let saveBtn = document.createElement('button');
+        saveBtn.className = 'config-save-btn';
+        saveBtn.textContent = '保存配置';
+        saveBtn.addEventListener('click', saveConfig);
+        form.appendChild(saveBtn);
+    }).catch(function(e) {
+        console.error('[Config] 加载失败:', e);
+        document.getElementById('config-form').innerHTML = '<div class="empty">加载失败</div>';
+    });
 }
 
 /**
  * POST /api/settings 保存配置
  */
 function saveConfig() {
-    let inputs = document.querySelectorAll('#config-form input[data-key]');
     let payload = {};
-    inputs.forEach(function(inp) {
-        let key = inp.dataset.key;
-        let val = inp.value;
+    // 读取所有带 data-key 的 input 和 select
+    let dataEls = document.querySelectorAll('#config-form [data-key]');
+    dataEls.forEach(function(el) {
+        let key = el.dataset.key;
+        // select[data-key="model"] 和 custom text 输入同名，custom 非空时优先
+        if (key === 'model') {
+            let custom = document.querySelector('#config-form .config-custom-input');
+            if (custom && custom.value.trim().length > 0) {
+                payload[key] = custom.value.trim();
+            } else {
+                payload[key] = el.value;
+            }
+            return;
+        }
+        let val = el.value;
         if (key === 'maxIterations' || key === 'maxTokens' || key === 'compactThreshold' ||
             key === 'compactKeep' || key === 'toolResultMaxChars' || key === 'webPort') {
             payload[key] = parseInt(val) || 0;
@@ -433,16 +658,16 @@ function switchSidebarTab(tabName) {
             panel.classList.remove('active');
         }
     });
-    // 懒加载：首次切到技能/MCP/配置时拉取数据
+    // 懒加载：首次切到技能/MCP/工作区时拉取数据
     if (tabName === 'skills' && !document.getElementById('skill-list').dataset.loaded) {
         loadSkills();
         document.getElementById('skill-list').dataset.loaded = '1';
     } else if (tabName === 'mcp' && !document.getElementById('mcp-list').dataset.loaded) {
         loadMcp();
         document.getElementById('mcp-list').dataset.loaded = '1';
-    } else if (tabName === 'config' && !document.getElementById('config-form').dataset.loaded) {
-        loadConfig();
-        document.getElementById('config-form').dataset.loaded = '1';
+    } else if (tabName === 'workspaces' && !document.getElementById('workspace-list').dataset.loaded) {
+        loadWorkspaces();
+        document.getElementById('workspace-list').dataset.loaded = '1';
     }
 }
 
@@ -820,6 +1045,12 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     });
 
+    // 配置按钮：打开配置模态框
+    document.getElementById('config-btn').addEventListener('click', openConfigModal);
+
+    // 添加工作区按钮
+    document.getElementById('add-workspace-btn').addEventListener('click', openWorkspaceModal);
+
     // 发送按钮
     document.getElementById('send-btn').addEventListener('click', function() {
         let input = document.getElementById('message-input');
@@ -1053,7 +1284,7 @@ body {
 
 /* ====== 侧边栏 ====== */
 .sidebar {
-    width: 240px;
+    width: 280px;
     background: var(--bg-secondary);
     border-right: 1px solid var(--border);
     display: flex;
@@ -1200,6 +1431,59 @@ body {
     text-overflow: ellipsis;
 }
 
+/* ====== 工作区列表 ====== */
+.workspace-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 0;
+}
+.workspace-list .empty {
+    padding: 16px;
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.6;
+}
+.workspace-item {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    position: relative;
+    transition: background 0.15s;
+}
+.workspace-item:hover { background: var(--bg-tertiary); }
+.workspace-name { font-size: 13px; font-weight: 500; margin-bottom: 4px; }
+.workspace-path {
+    font-size: 11px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-family: monospace;
+}
+.workspace-del {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 16px;
+    cursor: pointer;
+    padding: 0 4px;
+    line-height: 1;
+}
+.workspace-del:hover { color: var(--error); }
+.workspace-tip {
+    padding: 12px 14px;
+    background: var(--bg-tertiary);
+    color: var(--accent);
+    font-size: 12px;
+    white-space: pre-line;
+    line-height: 1.5;
+    border-bottom: 1px solid var(--border);
+}
+
 /* ====== 配置表单 ====== */
 .config-form {
     flex: 1;
@@ -1263,6 +1547,56 @@ body {
 }
 .config-save-btn:hover { opacity: 0.9; }
 .config-save-btn.saved { background: var(--success); }
+
+/* ====== 模态对话框 ====== */
+.modal-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+.modal-overlay.hidden { display: none; }
+.modal-dialog {
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    width: 480px;
+    max-width: 90vw;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+}
+.config-dialog { width: 560px; }
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+    font-weight: bold;
+    font-size: 15px;
+}
+.modal-close {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 20px;
+    cursor: pointer;
+    padding: 0 4px;
+    line-height: 1;
+}
+.modal-close:hover { color: var(--error); }
+.modal-body {
+    padding: 16px 18px;
+    overflow-y: auto;
+    flex: 1;
+}
+/* 模态框内的配置表单复用 .config-group/.config-row 样式 */
+.modal-body .config-form { padding: 0; }
 
 /* ====== 对话区 ====== */
 .chat-area {

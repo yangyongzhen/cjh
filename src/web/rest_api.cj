@@ -41,6 +41,7 @@ public class RestApi <: HttpRequestHandler {
             case "/api/skills" => this.handleListSkills(ctx)
             case "/api/mcp" => this.handleListMcp(ctx)
             case "/api/settings" => this.handleSettings(ctx)
+            case "/api/workspaces" => this.handleWorkspaces(ctx)
             case _ => this.handleNotFound(ctx)
         }
     }
@@ -404,6 +405,123 @@ public class RestApi <: HttpRequestHandler {
             }
         }
     }
+
+    /**
+     * GET /api/workspaces → 列出工作区（按最近访问倒序）
+     * POST /api/workspaces → 添加/更新工作区（body: {path, name?}）
+     * DELETE /api/workspaces → 删除工作区（body: {path}）
+     */
+    private func handleWorkspaces(ctx: HttpContext): Unit {
+        let res = ctx.responseBuilder
+        res.header("Content-Type", "application/json; charset=utf-8")
+        let mgr = WorkspaceManager(this.config.configDir)
+        let method = ctx.request.method
+        if (method == "GET") {
+            let list = mgr.list()
+            var arr = JsonArray()
+            for (i in 0..list.size) {
+                let w = list[i]
+                var obj = JsonObject()
+                obj.put("path", JsonString(w.path))
+                obj.put("name", JsonString(w.name))
+                obj.put("lastAccess", JsonInt(w.lastAccess))
+                arr.add(obj)
+            }
+            var root = JsonObject()
+            root.put("workspaces", arr)
+            res.body(root.toJsonString().toArray())
+        } else if (method == "POST") {
+            // 读取请求体
+            let bodyStr = readBody(ctx)
+            if (bodyStr.size == 0) {
+                res.body("{\"ok\":false,\"error\":\"empty body\"}".toArray())
+                return
+            }
+            try {
+                let parsed = JsonValue.fromStr(bodyStr)
+                if (!isObj(parsed)) {
+                    res.body("{\"ok\":false,\"error\":\"body must be object\"}".toArray())
+                    return
+                }
+                let obj = parsed.asObject()
+                var path = ""
+                var name = ""
+                if (let Some(v) <- obj.get("path")) {
+                    if (isStr(v)) { path = v.asString().getValue() }
+                }
+                if (let Some(v) <- obj.get("name")) {
+                    if (isStr(v)) { name = v.asString().getValue() }
+                }
+                if (path.size == 0) {
+                    res.body("{\"ok\":false,\"error\":\"path required\"}".toArray())
+                    return
+                }
+                mgr.add(path, name)
+                mgr.save()
+                res.body("{\"ok\":true}".toArray())
+            } catch (e: Exception) {
+                res.body("{\"ok\":false,\"error\":\"parse failed\"}".toArray())
+            }
+        } else if (method == "DELETE") {
+            let bodyStr = readBody(ctx)
+            if (bodyStr.size == 0) {
+                res.body("{\"ok\":false,\"error\":\"empty body\"}".toArray())
+                return
+            }
+            try {
+                let parsed = JsonValue.fromStr(bodyStr)
+                if (!isObj(parsed)) {
+                    res.body("{\"ok\":false,\"error\":\"body must be object\"}".toArray())
+                    return
+                }
+                let obj = parsed.asObject()
+                var path = ""
+                if (let Some(v) <- obj.get("path")) {
+                    if (isStr(v)) { path = v.asString().getValue() }
+                }
+                if (path.size == 0) {
+                    res.body("{\"ok\":false,\"error\":\"path required\"}".toArray())
+                    return
+                }
+                let removed = mgr.remove(path)
+                if (removed) {
+                    mgr.save()
+                    res.body("{\"ok\":true}".toArray())
+                } else {
+                    res.body("{\"ok\":false,\"error\":\"not found\"}".toArray())
+                }
+            } catch (e: Exception) {
+                res.body("{\"ok\":false,\"error\":\"parse failed\"}".toArray())
+            }
+        } else {
+            res.body("{\"error\":\"method not allowed\"}".toArray())
+        }
+    }
+
+    /**
+     * 读取 HTTP 请求体为 String
+     */
+    private func readBody(ctx: HttpContext): String {
+        var bytes = ArrayList<UInt8>()
+        try {
+            let stream = ctx.request.body
+            var buf = Array<Byte>(4096, repeat: 0)
+            while (true) {
+                let n = stream.read(buf)
+                if (n <= 0) { break }
+                for (i in 0..n) {
+                    bytes.add(UInt8(buf[i]))
+                }
+            }
+        } catch (e: Exception) {
+            return ""
+        }
+        var arr = Array<UInt8>(bytes.size, repeat: 0u8)
+        for (i in 0..bytes.size) {
+            arr[i] = bytes[i]
+        }
+        return safeFromUtf8(arr)
+    }
 }
 
 /**
@@ -413,6 +531,14 @@ public class RestApi <: HttpRequestHandler {
 /**
  * JsonKind 判断辅助（仓颉 enum 不能直接 ==）
  */
+func isObj(v: JsonValue): Bool {
+    match (v.kind()) {
+        case JsonKind.JsObject => return true
+        case _ => ()
+    }
+    return false
+}
+
 func isStr(v: JsonValue): Bool {
     match (v.kind()) {
         case JsonKind.JsString => return true

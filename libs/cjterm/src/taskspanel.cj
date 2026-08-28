@@ -3,6 +3,7 @@ package cjterm
 import std.collection.*
 import std.sync.*
 import std.io.*
+import cjutil.*
 
 /**
  * 任务项数据（TUI 层的轻量副本，从 Agent.todos 拷贝）
@@ -202,11 +203,11 @@ public class TasksPanel {
                     marker = "☐"
                     markerColor = muted
             }
-            // 截断 content 到面板宽度
-            let maxContentW: Int64 = panelW - 12  // │ + 空格 + marker + 空格 + #id + 空格 + 内容 + 空格 + │
+            // 截断 content 到面板宽度（UTF-8 安全：避免落在多字节字符中间）
+            let maxContentW: Int64 = panelW - 12
             var content: String = item.content
             if (Int64(content.size) > maxContentW) {
-                content = content[0..maxContentW]
+                content = truncateUtf8(content, maxContentW)
             }
             let line: String = muted + "│" + reset + "  " + markerColor + marker + reset + " " +
                 muted + "#${item.id}" + reset + "  " + content +
