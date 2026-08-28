@@ -1035,42 +1035,77 @@ func parseExaMcpSse(sse: String, maxResults: Int64): ArrayList<SearchHit> {
         }
     }
 
-    // Exa MCP 返回的是 LLM-ready text，不是结构化结果
-    // 解析 text 里的 URL 和标题
+    // Exa MCP 返回的是 LLM-ready text，格式：
+    //   Title: Rust Programming Language
+    //   URL: https://rust-lang.org/
+    //   Published: N/A
+    //   Author: N/A
+    //   Highlights:
+    //   Rust is blazingly fast...
+    //
+    //   ---
+    //
+    //   Title: The Rust Programming Language
+    //   URL: https://doc.rust-lang.org/stable/book/
+    //   ...
+    //
+    // 策略：按行扫描，Title: 行设标题，URL: 行设 URL，--- 分隔结果块
     let text = combinedText.toString()
     if (text.size == 0) { return hits }
 
-    // 尝试按行解析 URL
     let textLines = text.split('\n')
     var currentTitle = ""
     var currentUrl = ""
-    var currentSnippet = ""
+    var currentSnippet = StringBuilder()
 
     for (textLine in textLines) {
-        let t = textLine.trimStart()
-        if (t.startsWith("http://") || t.startsWith("https://")) {
-            // 保存上一个结果
+        let trimmed = textLine.trimStart().trimEnd()
+        if (trimmed.size == 0) { continue }
+
+        // --- 分隔符：保存上一个结果，开始新结果
+        if (trimmed.startsWith("---")) {
             if (currentUrl.size > 0) {
-                hits.add(SearchHit(currentTitle, currentUrl, currentSnippet))
+                hits.add(SearchHit(currentTitle, currentUrl, currentSnippet.toString().trimEnd()))
                 if (hits.size >= maxResults) { return hits }
-                currentTitle = ""
-                currentUrl = ""
-                currentSnippet = ""
             }
-            currentUrl = t.trimEnd()
-        } else if (t.size > 0) {
-            if (currentTitle.size == 0) {
-                currentTitle = t
-            } else {
-                if (currentSnippet.size > 0) { currentSnippet += " " }
-                currentSnippet += t
-            }
+            currentTitle = ""
+            currentUrl = ""
+            currentSnippet = StringBuilder()
+            continue
         }
+
+        // Title: 行
+        if (trimmed.startsWith("Title:")) {
+            currentTitle = trimmed[6..].trimStart()
+            continue
+        }
+
+        // URL: 行
+        if (trimmed.startsWith("URL:")) {
+            currentUrl = trimmed[4..].trimStart()
+            continue
+        }
+
+        // Published: / Author: 行跳过
+        if (trimmed.startsWith("Published:") || trimmed.startsWith("Author:")) {
+            continue
+        }
+
+        // Highlights: 标记开始摘要
+        if (trimmed.startsWith("Highlights:")) {
+            continue
+        }
+
+        // 其他行作为摘要内容
+        if (currentSnippet.size > 0) {
+            currentSnippet.append(" ")
+        }
+        currentSnippet.append(trimmed)
     }
 
     // 保存最后一个结果
     if (currentUrl.size > 0) {
-        hits.add(SearchHit(currentTitle, currentUrl, currentSnippet))
+        hits.add(SearchHit(currentTitle, currentUrl, currentSnippet.toString().trimEnd()))
     }
 
     return hits
