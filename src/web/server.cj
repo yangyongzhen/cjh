@@ -83,6 +83,7 @@ public class WebDistributor <: HttpRequestDistributor {
     private let registry: ToolRegistry
     private let wsHandler: WsHandler
     private let webHandler: WebHandler
+    private let restApi: RestApi
 
     public init(config: CjhConfig, provider: LlmProvider, registry: ToolRegistry) {
         this.config = config
@@ -92,6 +93,8 @@ public class WebDistributor <: HttpRequestDistributor {
         this.wsHandler = WsHandler(this.config, this.provider, this.registry)
         // WebHandler 实例（统一 HTTP 处理）
         this.webHandler = WebHandler(this.config)
+        // RestApi 实例（/api/* 路由）
+        this.restApi = RestApi(this.config)
     }
     /**
      * 分发请求：按 path 查路由表，未找到返回 404
@@ -103,9 +106,13 @@ public class WebDistributor <: HttpRequestDistributor {
             case "/" => return this.webHandler
             case "/assets/app.js" => return this.webHandler
             case "/assets/styles.css" => return this.webHandler
-            case "/api/health" => return this.webHandler
             case "/ws" => return this.wsHandler
-            case _ => return NotFoundHandler()
+            case _ =>
+                // 所有 /api/* 路由分发给 RestApi
+                if (path.startsWith("/api/")) {
+                    return this.restApi
+                }
+                return NotFoundHandler()
         }
     }
 

@@ -129,6 +129,7 @@ function connectWebSocket() {
     ws = new WebSocket(wsUrl);
     ws.onopen = function() {
         console.log('[WS] 连接已建立');
+        loadSessions();
     };
     ws.onmessage = function(event) {
         handleServerMessage(JSON.parse(event.data));
@@ -176,6 +177,83 @@ function sendAbort() {
     ws.send(JSON.stringify({ type: 'abort' }));
 }
 
+// ====== 会话管理 ======
+
+/**
+ * 从 /api/sessions 加载会话列表，渲染到侧边栏
+ */
+function loadSessions() {
+    fetch('/api/sessions')
+        .then(r => r.json())
+        .then(data => {
+            let list = document.getElementById('session-list');
+            if (!data.sessions || data.sessions.length === 0) {
+                list.innerHTML = '<div class="empty">暂无历史会话</div>';
+                return;
+            }
+            list.innerHTML = '';
+            data.sessions.forEach(function(s) {
+                let item = document.createElement('div');
+                item.className = 'session-item';
+                item.dataset.sessionId = s.id;
+                let time = formatTime(s.created_at);
+                item.innerHTML = '<div class="session-title">' + escapeHtml(s.title || '新会话') + '</div>' +
+                                 '<div class="session-time">' + time + '</div>';
+                item.addEventListener('click', function() {
+                    switchSession(s.id);
+                });
+                if (s.id === currentSessionId) {
+                    item.classList.add('active');
+                }
+                list.appendChild(item);
+            });
+        })
+        .catch(function(e) {
+            console.error('[Sessions] 加载失败:', e);
+        });
+}
+
+/**
+ * 切换到指定会话：发 resume_session WebSocket 消息 + 清空消息区
+ */
+function switchSession(sessionId) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (sessionId === currentSessionId) return;
+
+    // 清空消息区
+    let messages = document.getElementById('messages');
+    messages.innerHTML = '<div class="loading">加载历史消息...</div>';
+
+    // 发送 resume_session 请求
+    ws.send(JSON.stringify({ type: 'resume_session', session_id: sessionId }));
+
+    currentSessionId = sessionId;
+
+    // 更新侧边栏高亮
+    document.querySelectorAll('.session-item').forEach(function(item) {
+        if (item.dataset.sessionId === sessionId) {
+            item.classList.add('active');
+        } else {
+            item.classList.remove('active');
+        }
+    });
+}
+
+/**
+ * 格式化时间戳为相对时间
+ */
+function formatTime(ts) {
+    if (!ts) return '';
+    let now = Math.floor(Date.now() / 1000);
+    let diff = now - ts;
+    if (diff < 60) return '刚刚';
+    if (diff < 3600) return Math.floor(diff / 60) + ' 分钟前';
+    if (diff < 86400) return Math.floor(diff / 3600) + ' 小时前';
+    if (diff < 604800) return Math.floor(diff / 86400) + ' 天前';
+    let d = new Date(ts * 1000);
+    return (d.getMonth() + 1) + '/' + d.getDate();
+}
+
 // ====== 服务器消息处理 ======
 function handleServerMessage(msg) {
     switch (msg.type) {
@@ -183,15 +261,19 @@ function handleServerMessage(msg) {
             appendDelta(msg.text);
             break;
         case 'tool_start':
+            // assistant 消息定型，再渲染 tool
+            finalizeAssistantMessage();
             appendToolStart(msg.name, msg.args);
             break;
         case 'tool_result':
             appendToolResult(msg.name, msg.content, msg.is_error);
             break;
         case 'done':
+            finalizeAssistantMessage();
             handleDone(msg.summary);
             break;
         case 'error':
+            finalizeAssistantMessage();
             showError(msg.message);
             setExecuting(false);
             break;
@@ -204,25 +286,93 @@ function handleServerMessage(msg) {
 }
 
 // ====== 对话渲染 ======
+
+// 流式渲染状态
+var currentAssistantDiv = null;   // 当前 assistant 消息 div
+var deltaBuffer = '';             // 累积的 delta 文本
+var rafScheduled = false;         // requestAnimationFrame 节流标志
+
 function appendDelta(text) {
     let messages = document.getElementById('messages');
-    let lastMsg = messages.lastElementChild;
 
     // 如果最后一条消息不是 assistant 类型，创建新的
-    if (!lastMsg || !lastMsg.classList.contains('message-assistant')) {
-        let msgDiv = document.createElement('div');
-        msgDiv.className = 'message message-assistant';
-        msgDiv.innerHTML = renderMarkdown(text);
-        messages.appendChild(msgDiv);
-        enhanceCodeBlocks(msgDiv);
-    } else {
-        // 追加到现有消息（简化：直接拼接纯文本）
-        let content = lastMsg.querySelector('.message-content');
+    if (!currentAssistantDiv || !currentAssistantDiv.parentElement) {
+        currentAssistantDiv = document.createElement('div');
+        currentAssistantDiv.className = 'message message-assistant';
+        currentAssistantDiv.innerHTML = '<div class="message-content"></div>';
+        messages.appendChild(currentAssistantDiv);
+        deltaBuffer = '';
+    }
+
+    // 累积 delta
+    deltaBuffer += text;
+
+    // 用 requestAnimationFrame 节流，每帧最多渲染一次
+    if (!rafScheduled) {
+        rafScheduled = true;
+        requestAnimationFrame(flushDelta);
+    }
+}
+
+/**
+ * 渲染累积的 delta buffer
+ * requestAnimationFrame 节流，避免每条 delta 都触发 marked.parse
+ */
+function flushDelta() {
+    rafScheduled = false;
+    if (!currentAssistantDiv) { return; }
+    let content = currentAssistantDiv.querySelector('.message-content');
+    if (!content) { return; }
+
+    // 重新渲染整个 buffer 的 Markdown
+    content.innerHTML = renderMarkdownInline(deltaBuffer);
+
+    // 代码块增强（复制按钮等）
+    enhanceCodeBlocks(currentAssistantDiv);
+    scrollToBottom();
+}
+
+/**
+ * 完成 assistant 消息：最终渲染 + 高亮代码块
+ */
+function finalizeAssistantMessage() {
+    if (currentAssistantDiv && deltaBuffer.length > 0) {
+        let content = currentAssistantDiv.querySelector('.message-content');
         if (content) {
-            content.innerHTML += escapeHtml(text);
+            content.innerHTML = renderMarkdownInline(deltaBuffer);
+        }
+        enhanceCodeBlocks(currentAssistantDiv);
+    }
+    currentAssistantDiv = null;
+    deltaBuffer = '';
+    rafScheduled = false;
+}
+
+/**
+ * Markdown 渲染（流式 + 最终）
+ * 优先 marked.js + DOMPurify，离线降级为纯文本
+ */
+function renderMarkdownInline(text) {
+    if (typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {
+        try {
+            marked.setOptions({
+                breaks: true,
+                gfm: true,
+                highlight: function(code, lang) {
+                    if (typeof hljs !== 'undefined' && lang && hljs.getLanguage(lang)) {
+                        try { return hljs.highlight(code, {language: lang}).value; } catch (e) {}
+                    }
+                    return code;
+                }
+            });
+            var raw = marked.parse(text);
+            return DOMPurify.sanitize(raw);
+        } catch (e) {
+            return escapeHtml(text);
         }
     }
-    scrollToBottom();
+    // 离线降级：纯文本 + 转义
+    return escapeHtml(text);
 }
 
 function appendToolStart(name, args) {
@@ -655,6 +805,37 @@ body {
 .session-list .empty {
     padding: 16px;
     text-align: center;
+    color: var(--text-secondary);
+    font-size: 13px;
+}
+
+.session-item {
+    padding: 10px 14px;
+    cursor: pointer;
+    border-left: 3px solid transparent;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.session-item:hover {
+    background: var(--bg-tertiary);
+}
+
+.session-item.active {
+    background: var(--bg-tertiary);
+    border-left-color: var(--accent);
+}
+
+.session-title {
+    font-size: 13px;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-bottom: 2px;
+}
+
+.session-time {
+    font-size: 11px;
     color: var(--text-secondary);
 }
 
