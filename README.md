@@ -109,6 +109,22 @@ coding agent 的执行效率直接决定用户等待时间。cjh 从三个维度
 - `parallelSavedMs`：并发相比串行节省的毫秒数
 - `maxParallelism`：最大并发度（单组最多工具数）
 
+## 📸 界面预览
+
+### TUI 终端界面
+
+![cjh TUI](docs/imgs/cjh.png)
+
+全屏 TUI：彩色 logo + 标题栏 + 对话/帮助视图标签 + 可滚动输出区（Markdown 渲染、流式增量、工具调用提示、回合总结条）+ 状态栏 + 输入框（`/` 命令下拉补全、Ctrl+E 多行编辑）。
+
+### Web 远程界面
+
+![cjh Web](docs/imgs/web.png)
+
+内置 HTTP Server + WebSocket 流式对话 + REST API + 前端 SPA，浏览器远程驱动 Agent，与 TUI 共享同一套工具/插件/MCP 体系。
+
+---
+
 ## 🚀 功能一览
 
 ### Agent 核心

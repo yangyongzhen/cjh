@@ -109,6 +109,22 @@ Performance baseline measurement 3D stats:
 - `parallelSavedMs`: milliseconds saved by concurrency vs serial
 - `maxParallelism`: maximum concurrency (most tools in a single group)
 
+## 📸 Interface Preview
+
+### TUI Terminal Interface
+
+![cjh TUI](docs/imgs/cjh.png)
+
+Full-screen TUI: colorful logo + title bar + conversation/help view tabs + scrollable output area (Markdown rendering, streaming deltas, tool call hints, round summary bar) + status bar + input box (`/` command dropdown completion, Ctrl+E multi-line editing).
+
+### Web Remote Interface
+
+![cjh Web](docs/imgs/web.png)
+
+Built-in HTTP Server + WebSocket streaming conversation + REST API + frontend SPA. Drive the Agent remotely from a browser, sharing the same tool/plugin/MCP system as the TUI.
+
+---
+
 ## 🚀 Features
 
 ### Agent Core
