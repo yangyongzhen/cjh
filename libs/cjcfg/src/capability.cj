@@ -58,13 +58,21 @@ public class Capability {
     public static func fromJson(json: Option<JsonValue>): Capability {
         let cap = Capability()
         if (json.isNone()) {
+            // 未配置 capability 字段：宽松模式，全部放行
             return cap
         }
-        cap.enabled = true
         let v = json.getOrThrow()
         match (v.kind()) {
             case JsonKind.JsObject =>
                 let obj = v.asObject()
+                // enabled 开关：默认 false（宽松模式全部放行）
+                // 用户设 true 才启用严格模式（未声明即拒绝）
+                if (let Some(en) <- obj.get("enabled")) {
+                    match (en.kind()) {
+                        case JsonKind.JsBool => cap.enabled = en.asBool().getValue()
+                        case _ => ()
+                    }
+                }
                 if (let Some(id) <- obj.get("identifier")) {
                     match (id.kind()) {
                         case JsonKind.JsString => cap.identifier = id.asString().getValue()
