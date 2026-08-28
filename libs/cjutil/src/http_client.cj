@@ -34,26 +34,33 @@ import stdx.net.tls.*
 import stdx.crypto.x509.X509Certificate
 
 /**
- * 通用 HTTP GET：spawn 子线程 + future.get(timeout) 超时保护
+ * 通用 HTTP 请求：spawn 子线程 + future.get(timeout) 超时保护
+ *
+ * 支持 GET/POST/任意 method + body + 自定义 headers。
+ * 统一的超时保护：超时后显式 client.close()，readTimer 随 close 被取消，不触发 WARN。
  *
  * 参数：
+ *   - method: HTTP 方法（"GET" / "POST" 等）
  *   - url: 目标 URL（必须 http:// 或 https://，调用方负责 SSRF 校验）
  *   - timeoutSeconds: 整体超时秒数
  *   - maxDownloadBytes: 响应体最大字节数（防 OOM）
  *   - userAgent: User-Agent 头
  *   - acceptLanguage: Accept-Language 头
+ *   - body: 请求体（None 表示无请求体）
+ *   - extraHeaders: 额外 headers（如 Content-Type / Accept）
  *
- * 返回：响应体字符串（UTF-8 安全解码）
- * 异常：
- *   - TimeoutException: 超时
- *   - Exception: 其他网络/HTTP 错误
+ * 返回：响应体字符串（空字符串表示 HTTP 错误或读响应失败）
+ * 异常：TimeoutException 超时
  */
-public func httpClientGet(
+public func httpClientRequest(
+    method: String,
     url: String,
     timeoutSeconds: Int64,
     maxDownloadBytes: Int64,
     userAgent: String,
-    acceptLanguage: String
+    acceptLanguage: String,
+    body: ?String,
+    extraHeaders: ?Map<String, String>
 ): String {
     // 配置 TLS
     var tlsConfig = TlsClientConfig()
@@ -64,7 +71,6 @@ public func httpClientGet(
     }
 
     // 构建客户端
-    // 设 readTimeout：让 readTimer 正常工作（readTimer 随 client.close() 被取消）
     let client = ClientBuilder()
         .tlsConfig(tlsConfig)
         .readTimeout(Duration.second * timeoutSeconds)
@@ -72,34 +78,56 @@ public func httpClientGet(
         .build()
 
     // 构建请求
-    let req = HttpRequestBuilder()
-        .get()
-        .url(url)
-        .header("User-Agent", userAgent)
-        .header("Accept", "text/html,application/xhtml+xml,text/plain,*/*")
-        .header("Accept-Language", acceptLanguage)
-        .build()
+    let builder = HttpRequestBuilder()
+    // 设置 method
+    if (method == "GET") {
+        builder.get()
+    } else if (method == "POST") {
+        builder.post()
+    } else if (method == "PUT") {
+        builder.put()
+    } else if (method == "DELETE") {
+        builder.delete()
+    } else {
+        builder.get()  // 默认 GET
+    }
+    builder.url(url)
+    builder.header("User-Agent", userAgent)
+    builder.header("Accept", "text/html,application/xhtml+xml,text/plain,*/*")
+    builder.header("Accept-Language", acceptLanguage)
 
-    // spawn 子线程发送请求，主线程 future.get(timeout) 带超时等待
-    // 子线程不抛异常：仓颉 spawn 子线程抛异常时 runtime 会把堆栈打印到 stderr，污染 TUI。
-    // 改为返回 ?String：None 表示 HTTP 错误或读响应失败，主线程拿到 None 后返回空字符串。
+    // 添加额外 headers
+    match (extraHeaders) {
+        case Some(hdrs) =>
+            for ((k, v) in hdrs) {
+                builder.header(k, v)
+            }
+        case None => ()
+    }
+
+    // 设置请求体
+    match (body) {
+        case Some(b) => builder.body(b)
+        case None => ()
+    }
+
+    let req = builder.build()
+
+    // spawn 子线程发送请求
     let future: Future<?String> = spawn {
         try {
             let resp = client.send(req)
             if (resp.status < 200 || resp.status >= 300) {
                 return None
             }
-            // 读取响应体（最多 maxDownloadBytes 字节）
-            let body = readResponseBody(resp.body, maxDownloadBytes)
-            return Some(safeFromUtf8(body))
+            let respBody = readResponseBody(resp.body, maxDownloadBytes)
+            return Some(safeFromUtf8(respBody))
         } catch (_: Exception) {
             return None
         }
     }
 
     // 带超时等待结果
-    // 超时处理：显式 client.close() 关闭底层连接，让子线程的 client.send() 抛 IOException 退出，
-    // 避免 zombie 线程泄漏；readTimer 随 client.close() 被取消，不触发 sendRequestTimeout WARN
     try {
         match (future.get(Duration.second * timeoutSeconds)) {
             case Some(html) => return html
@@ -109,6 +137,28 @@ public func httpClientGet(
         try { client.close() } catch (_: Exception) {}
         throw e
     }
+}
+
+/**
+ * 通用 HTTP GET（保留向后兼容）
+ */
+public func httpClientGet(
+    url: String,
+    timeoutSeconds: Int64,
+    maxDownloadBytes: Int64,
+    userAgent: String,
+    acceptLanguage: String
+): String {
+    return httpClientRequest(
+        "GET",
+        url,
+        timeoutSeconds,
+        maxDownloadBytes,
+        userAgent,
+        acceptLanguage,
+        None,
+        None
+    )
 }
 
 /**

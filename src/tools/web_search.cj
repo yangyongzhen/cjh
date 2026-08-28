@@ -887,6 +887,195 @@ public class SearXNGProvider <: SearchProvider {
     }
 }
 
+// ===== Exa MCP 实现（零 key，借鉴 atomcode）=====
+//
+// atomcode 的主力 web_search provider：
+//   POST https://mcp.exa.ai/mcp
+//   JSON-RPC tools/call web_search_exa
+//   响应是 SSE，解析 data: 行里的 JSON result.content[].text
+//
+// 无 key 也能用（atomcode 默认无 key），有 key 则带 exaApiKey 参数。
+// 这比 cjh 现有的 ExaProvider（REST API + Bearer key）更优：
+//   - 无 key 即可用
+//   - 返回 LLM-ready text，不需要再清洗
+
+public class ExaMcpProvider <: SearchProvider {
+    private let timeoutSeconds: Int64
+
+    public init(timeoutSeconds: Int64) {
+        this.timeoutSeconds = timeoutSeconds
+    }
+
+    public func name(): String { "exa-mcp" }
+    public func enabled(): Bool { true }  // 无 key 也能用，永远 enable
+
+    public func search(query: String, maxResults: Int64): ArrayList<SearchHit> {
+        try {
+            let sse = doExaMcpSearch(query, maxResults)
+            if (sse.size == 0) { return ArrayList<SearchHit>() }
+            return parseExaMcpSse(sse, maxResults)
+        } catch (e: Exception) {
+            return ArrayList<SearchHit>()
+        }
+    }
+
+    /**
+     * POST https://mcp.exa.ai/mcp
+     * JSON-RPC tools/call web_search_exa
+     * 用 httpClientRequest 统一超时保护（超时后 client.close() 取消 readTimer，不触发 WARN）
+     * 返回 SSE body
+     */
+    private func doExaMcpSearch(query: String, maxResults: Int64): String {
+        let url = "https://mcp.exa.ai/mcp"
+
+        // 构造 JSON-RPC 请求体
+        var argsObj = JsonObject()
+        argsObj.put("query", JsonString(query))
+        argsObj.put("numResults", JsonInt(maxResults))
+
+        var paramsObj = JsonObject()
+        paramsObj.put("name", JsonString("web_search_exa"))
+        paramsObj.put("arguments", argsObj)
+
+        var bodyObj = JsonObject()
+        bodyObj.put("jsonrpc", JsonString("2.0"))
+        bodyObj.put("id", JsonInt(1))
+        bodyObj.put("method", JsonString("tools/call"))
+        bodyObj.put("params", paramsObj)
+
+        // extraHeaders: Content-Type + Accept
+        var hdrs = HashMap<String, String>()
+        hdrs["Content-Type"] = "application/json"
+        hdrs["Accept"] = "application/json, text/event-stream"
+
+        return httpClientRequest(
+            "POST",
+            url,
+            timeoutSeconds,
+            1048576,
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko)",
+            "en-US,en;q=0.9",
+            Some(bodyObj.toJsonString()),
+            Some(hdrs)
+        )
+    }
+}
+
+/**
+ * 解析 Exa MCP SSE 响应
+ *
+ * SSE 格式：
+ *   data: {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"..."}]}}
+ *
+ * 策略：
+ *   1. 扫描 data: 行
+ *   2. 解析 JSON，提取 result.content[].text
+ *   3. 合并所有 text，按双换行分隔
+ */
+func parseExaMcpSse(sse: String, maxResults: Int64): ArrayList<SearchHit> {
+    let hits = ArrayList<SearchHit>()
+    let lines = sse.split('\n')
+    var combinedText = StringBuilder()
+
+    for (line in lines) {
+        let trimmed = line.trimStart()
+        if (!trimmed.startsWith("data:")) { continue }
+        let payload = trimmed[5..].trimStart()
+        if (payload.size == 0) { continue }
+
+        try {
+            let json = JsonValue.fromStr(payload)
+            match (json.kind()) {
+                case JsonKind.JsObject =>
+                    let contentOpt = json.asObject().get("result")
+                    match (contentOpt) {
+                        case Some(resultVal) =>
+                            match (resultVal.kind()) {
+                                case JsonKind.JsObject =>
+                                    let contentArrOpt = resultVal.asObject().get("content")
+                                    match (contentArrOpt) {
+                                        case Some(contentArr) =>
+                                            match (contentArr.kind()) {
+                                                case JsonKind.JsArray =>
+                                                    let arr = contentArr.asArray()
+                                                    var i = 0
+                                                    while (i < arr.size()) {
+                                                        let item = arr[i]
+                                                        match (item.kind()) {
+                                                            case JsonKind.JsObject =>
+                                                                let textOpt = item.asObject().get("text")
+                                                                match (textOpt) {
+                                                                    case Some(t) =>
+                                                                        match (t.kind()) {
+                                                                            case JsonKind.JsString =>
+                                                                                if (combinedText.size > 0) {
+                                                                                    combinedText.append("\n\n")
+                                                                                }
+                                                                                combinedText.append(t.asString().getValue())
+                                                                            case _ => ()
+                                                                        }
+                                                                    case None => ()
+                                                                }
+                                                            case _ => ()
+                                                        }
+                                                        i += 1
+                                                    }
+                                                case _ => ()
+                                            }
+                                        case None => ()
+                                    }
+                                case _ => ()
+                            }
+                        case None => ()
+                    }
+                case _ => ()
+            }
+        } catch (e: Exception) {
+            continue
+        }
+    }
+
+    // Exa MCP 返回的是 LLM-ready text，不是结构化结果
+    // 解析 text 里的 URL 和标题
+    let text = combinedText.toString()
+    if (text.size == 0) { return hits }
+
+    // 尝试按行解析 URL
+    let textLines = text.split('\n')
+    var currentTitle = ""
+    var currentUrl = ""
+    var currentSnippet = ""
+
+    for (textLine in textLines) {
+        let t = textLine.trimStart()
+        if (t.startsWith("http://") || t.startsWith("https://")) {
+            // 保存上一个结果
+            if (currentUrl.size > 0) {
+                hits.add(SearchHit(currentTitle, currentUrl, currentSnippet))
+                if (hits.size >= maxResults) { return hits }
+                currentTitle = ""
+                currentUrl = ""
+                currentSnippet = ""
+            }
+            currentUrl = t.trimEnd()
+        } else if (t.size > 0) {
+            if (currentTitle.size == 0) {
+                currentTitle = t
+            } else {
+                if (currentSnippet.size > 0) { currentSnippet += " " }
+                currentSnippet += t
+            }
+        }
+    }
+
+    // 保存最后一个结果
+    if (currentUrl.size > 0) {
+        hits.add(SearchHit(currentTitle, currentUrl, currentSnippet))
+    }
+
+    return hits
+}
+
 public class SearchRouter {
     private let providers: ArrayList<SearchProvider>
 

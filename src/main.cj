@@ -455,11 +455,16 @@ func registerWebTools(cjhCfg: CjhConfig, registry: ToolRegistry): Unit {
     if (cjhCfg.webSearchEnabled) {
         let providers = ArrayList<SearchProvider>()
         let providerMode = cjhCfg.webSearchProvider
-        // Auto 模式：Tavily → Exa → SearXNG → DDG 兜底
+        // Auto 模式：Exa MCP（零 key 主力）→ Tavily → Exa REST → SearXNG → 搜狗/Bing 兜底
+        // 借鉴 atomcode：Exa MCP 是主力 provider，无 key 也能用
+        let needExaMcp = (providerMode == "auto" || providerMode == "exa-mcp")
         let needTavily = (providerMode == "auto" || providerMode == "tavily") && cjhCfg.webSearchTavilyKeys.size > 0
         let needExa = (providerMode == "auto" || providerMode == "exa") && cjhCfg.webSearchExaKeys.size > 0
         let needSearXNG = (providerMode == "auto" || providerMode == "searxng") && cjhCfg.webSearchSearxngUrl.size > 0
         let needDDG = (providerMode == "auto" || providerMode == "ddg")
+        if (needExaMcp) {
+            providers.add(ExaMcpProvider(cjhCfg.webSearchTimeoutSeconds))
+        }
         if (needTavily) {
             providers.add(TavilyProvider(cjhCfg.webSearchTavilyKeys, cjhCfg.webSearchTimeoutSeconds))
         }
@@ -473,8 +478,9 @@ func registerWebTools(cjhCfg: CjhConfig, registry: ToolRegistry): Unit {
             providers.add(SogouProvider(cjhCfg.webSearchTimeoutSeconds))
             providers.add(BingProvider(cjhCfg.webSearchTimeoutSeconds))
         }
-        // 没有任何 provider，兜底用搜狗 + Bing
+        // 没有任何 provider，兜底用 Exa MCP + 搜狗 + Bing
         if (providers.size == 0) {
+            providers.add(ExaMcpProvider(cjhCfg.webSearchTimeoutSeconds))
             providers.add(SogouProvider(cjhCfg.webSearchTimeoutSeconds))
             providers.add(BingProvider(cjhCfg.webSearchTimeoutSeconds))
         }
