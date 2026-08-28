@@ -163,6 +163,12 @@ public class WebFetchTool <: CjhTool {
 
     /**
      * 第一层：仓颉 stdx.net.http GET
+     *
+     * 仓颉 ClientBuilder 没有 connectTimeout，目标不可达时卡在 TCP connect，
+     * readTimeout 不触发。用 spawn 子线程 + 主线程 join 超时的方式做整体超时保护：
+     *   - spawn 子线程执行 client.send(req)
+     *   - 主线程等待 future，超时则放弃（子线程自然终止）
+     *
      * 成功返回 HTML 内容，失败返回 None
      */
     private func fetchWithCangjie(url: String): ?String {
@@ -186,46 +192,41 @@ public class WebFetchTool <: CjhTool {
                 .header("Accept-Language", "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7")
                 .build()
 
-            let resp = client.send(req)
-            if (resp.status < 200 || resp.status >= 300) { return None }
+            // spawn 子线程发送请求，主线程 get(timeout) 超时保护
+            // 超时抛 TimeoutException，catch 后返回 None 进入降级链
+            let future: Future<?String> = spawn {
+                let resp = client.send(req)
+                if (resp.status < 200 || resp.status >= 300) {
+                    return None
+                }
+                let body = readBody(resp.body, maxDownloadBytes)
+                return Some(safeFromUtf8(body))
+            }
 
-            // 读取 body（最多 maxDownloadBytes）
-            let body = readBody(resp.body, maxDownloadBytes)
-            return Some(safeFromUtf8(body))
+            // 带超时等待结果；超时抛 TimeoutException
+            return future.get(Duration.second * timeoutSeconds)
         } catch (e: Exception) {
             return None
         }
     }
 
     /**
-     * 第二层：exec curl 降级（带浏览器头）
-     * 安全封装：数组式 exec 防注入
+     * 第二层：仓颉原生 HTTP client（带浏览器头 + spawn 超时保护）
+     *
+     * 第一层 fetchWithCangjie 用 cjh UA，部分站点返回 403。
+     * 第二层换浏览器 UA 重试，仍用仓颉原生 ClientBuilder + spawn 超时保护。
      */
     private func fetchWithCurl(url: String): ?String {
         try {
-            // 构造数组式 exec 参数（不经过 shell）
-            var argv = Array<String>(15, repeat: "")
-            argv[0] = "curl"
-            argv[1] = "-sL"                              // 静默 + 跟重定向
-            argv[2] = "--max-time"
-            argv[3] = timeoutSeconds.toString()
-            argv[4] = "--connect-timeout"
-            argv[5] = "5"
-            argv[6] = "-A"                               // 浏览器 UA
-            argv[7] = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            argv[8] = "-H"                               // 浏览器头
-            argv[9] = "Accept: text/html,application/xhtml+xml,text/plain,*/*"
-            argv[10] = "-H"
-            argv[11] = "Accept-Language: en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7"
-            argv[12] = "--max-filesize"
-            argv[13] = maxDownloadBytes.toString()
-            // url 必须是最后一个参数
-            argv[14] = url
-
-            let (code, stdoutBytes, stderrBytes) = executeWithOutput("curl", argv)
-            if (code != 0) { return None }
-            if (stdoutBytes.size == 0) { return None }
-            return Some(safeFromUtf8(stdoutBytes))
+            let html = httpClientGet(
+                url,
+                timeoutSeconds,
+                maxDownloadBytes,
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7"
+            )
+            if (html.size == 0) { return None }
+            return Some(html)
         } catch (e: Exception) {
             return None
         }

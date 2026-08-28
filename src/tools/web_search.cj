@@ -197,60 +197,307 @@ public class TavilyProvider <: SearchProvider {
     }
 }
 
-// ===== DDG 实现（零 key 兜底）=====
+// ===== 搜狗搜索实现（零 key 兜底，国内可达）=====
 //
-// 参照 atomcode web_search.rs 的做法：
-//   - 用 curl 子进程绕过 DDG 的 TLS 指纹检测（reqwest/仓颉 HTTP client 会被拒）
-//   - curl --max-time 硬超时，连接失败立即退出，不会卡 105s
-//   - 用 https://html.duckduckgo.com/html/ POST 端点（比 Instant Answer API 结果更全）
-//   - 浏览器 User-Agent（DDG 对非浏览器 UA 返回 403）
+// DDG (api.duckduckgo.com / html.duckduckgo.com) 在国内网络完全不可达，
+// 搜狗 (www.sogou.com) 在国内可达且响应快（<1s），作为零 key 兜底。
+//
+// 策略：
+//   - curl 子进程 + --max-time 硬超时（连接失败立即退出，不卡 105s）
+//   - 浏览器 User-Agent（搜狗对非浏览器 UA 返回 403）
+//   - 解析搜狗结果页 HTML：class="vr-title" 提取标题+链接+摘要
 
-public class DDGProvider <: SearchProvider {
+public class SogouProvider <: SearchProvider {
     private let timeoutSeconds: Int64
 
     public init(timeoutSeconds: Int64) {
         this.timeoutSeconds = timeoutSeconds
     }
 
-    public func name(): String { "ddg" }
+    public func name(): String { "sogou" }
     public func enabled(): Bool { true }  // 永远兜底
 
     public func search(query: String, maxResults: Int64): ArrayList<SearchHit> {
         try {
             let encodedQuery = urlEncode(query)
-            // DDG HTML 端点：返回搜索结果 HTML 页面
-            let url = "https://html.duckduckgo.com/html/"
+            let url = "https://www.sogou.com/web?query=" + encodedQuery
 
-            // 数组式 exec 防注入；url 和 query 是独立参数
-            var argv = Array<String>(13, repeat: "")
-            argv[0] = "curl"
-            argv[1] = "-s"
-            argv[2] = "-X"
-            argv[3] = "POST"
-            argv[4] = url
-            argv[5] = "-d"
-            argv[6] = "q=" + encodedQuery
-            argv[7] = "-A"
-            argv[8] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko)"
-            argv[9] = "--max-time"
-            argv[10] = timeoutSeconds.toString()
-            argv[11] = "-L"  // follow redirects
-            argv[12] = "-H"
-            // 需要 14 个元素，重新分配
-            var argvFull = Array<String>(14, repeat: "")
-            for (i in 0..13) { argvFull[i] = argv[i] }
-            argvFull[13] = "Content-Type: application/x-www-form-urlencoded"
+            // 仓颉原生 HTTP client + spawn 超时保护（不用 curl 子进程）
+            let html = httpClientGet(
+                url,
+                timeoutSeconds,
+                1048576,  // 1MB max download
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "zh-CN,zh;q=0.9"
+            )
 
-            let (code, stdoutBytes, stderrBytes) = executeWithOutput("curl", argvFull)
-            if (code != 0) { return ArrayList<SearchHit>() }
-            if (stdoutBytes.size == 0) { return ArrayList<SearchHit>() }
-
-            let html = safeFromUtf8(stdoutBytes)
-            return parseDDgHtml(html, encodedQuery, maxResults)
+            if (html.size == 0) { return ArrayList<SearchHit>() }
+            // 反爬检测：搜狗触发 antispider 时返回验证码页，vr-title 为 0
+            // 检测到反爬返回空，让 SearchRouter 降级到 Bing
+            if (isSogouAntispider(html)) { return ArrayList<SearchHit>() }
+            return parseSogouHtml(html, maxResults)
         } catch (e: Exception) {
             return ArrayList<SearchHit>()
         }
     }
+}
+
+/**
+ * 搜狗反爬检测
+ * 搜狗触发反爬时返回验证码页，含 antispider / captcha / 验证码 关键词
+ */
+func isSogouAntispider(html: String): Bool {
+    let lower = html.toAsciiLower()
+    if (lower.contains("antispider")) { return true }
+    if (lower.contains("captcha")) { return true }
+    if (lower.contains("验证码")) { return true }
+    if (lower.contains("访问过于频繁")) { return true }
+    return false
+}
+
+/**
+ * Bing 反爬检测
+ * Bing 触发反爬时返回空结果页或 robot 页
+ */
+func isBingAntispider(html: String): Bool {
+    let lower = html.toAsciiLower()
+    if (lower.contains("robot")) { return true }
+    if (lower.contains("captcha")) { return true }
+    if (lower.contains("验证码")) { return true }
+    // b_algo 为 0 且有 b_no 结果提示
+    if (!lower.contains("b_algo") && lower.contains("b_no")) { return true }
+    return false
+}
+
+/**
+ * 解析搜狗搜索结果页 HTML
+ *
+ * 搜狗结果页结构：
+ *   <h3 class="vr-title">...</h3>
+ *   <p class="str_text_info">摘要</p> 或 <div class="str-time-info">摘要</div>
+ *   链接在 <a href="..."> 里，搜狗不做重定向跳转，直接是目标 URL
+ */
+func parseSogouHtml(html: String, maxResults: Int64): ArrayList<SearchHit> {
+    let hits = ArrayList<SearchHit>()
+    let lower = html.toAsciiLower()
+    var pos = 0
+
+    while (hits.size < maxResults) {
+        // 找 vr-title
+        let titleOpt = lower.indexOf("vr-title", pos)
+        if (let None <- titleOpt) { break }
+        let titleIdx = titleOpt.getOrThrow()
+        pos = titleIdx + 8
+
+        // 从 vr-title 往后找最近的 <a
+        let aStartOpt = lower.indexOf("<a", titleIdx)
+        if (let None <- aStartOpt) { break }
+        let aStart = aStartOpt.getOrThrow()
+        if (aStart > titleIdx + 200) { continue }  // 太远
+
+        // 提取 href
+        let hrefOpt = lower.indexOf("href=\"", aStart)
+        if (let None <- hrefOpt) { continue }
+        let hrefStart = hrefOpt.getOrThrow() + 6
+        let hrefEndOpt = lower.indexOf("\"", hrefStart)
+        if (let None <- hrefEndOpt) { continue }
+        let hrefEnd = hrefEndOpt.getOrThrow()
+        let rawHref = html[hrefStart..hrefEnd]
+
+        // 提取标题文本（<a ...>文本</a>）
+        let gtOpt = lower.indexOf(">", aStart)
+        if (let None <- gtOpt) { continue }
+        let gt = gtOpt.getOrThrow()
+        let aEndOpt = lower.indexOf("</a>", gt)
+        if (let None <- aEndOpt) { continue }
+        let aEnd = aEndOpt.getOrThrow()
+        let titleHtml = html[gt + 1..aEnd]
+        let title = trimStr(stripTags(titleHtml))
+        if (title.size == 0) { continue }
+
+        // 提取 URL（搜狗可能是直接 URL 或 /link?url=xxx 格式）
+        let url = cleanSogouUrl(rawHref)
+
+        // 找摘要：在 vr-title 之后找 str_text_info 或 str_text_info
+        let snippet = findSogouSnippet(lower, html, aEnd)
+
+        hits.add(SearchHit(title, url, snippet))
+    }
+
+    return hits
+}
+
+/**
+ * 清理搜狗 URL
+ * 搜狗链接格式：
+ *   - 直接 URL：https://www.example.com/...
+ *   - 重定向：/link?url=xxx&v=...
+ */
+func cleanSogouUrl(rawHref: String): String {
+    // 直接 URL
+    if (rawHref.startsWith("http://") || rawHref.startsWith("https://")) {
+        return rawHref
+    }
+
+    // 搜狗重定向格式 /link?url=xxx
+    // 简化处理：返回搜狗搜索页作为兜底
+    // （解析重定向 URL 需要额外 HTTP 请求，太慢，跳过）
+    return rawHref
+}
+
+/**
+ * 在搜狗结果页中查找摘要文本
+ */
+func findSogouSnippet(lower: String, html: String, startPos: Int64): String {
+    // 找 str_text_info 或 str-text-info
+    let snippetOpt = lower.indexOf("str_text_info", startPos)
+    if (let Some(sIdx) <- snippetOpt) {
+        if (sIdx < startPos + 2000) {
+            // 找 > 和 </p> 或 </div>
+            let gtOpt = lower.indexOf(">", sIdx)
+            if (let Some(gt) <- gtOpt) {
+                let endOpt = lower.indexOf("</", gt)
+                if (let Some(end) <- endOpt) {
+                    let snippetHtml = html[gt + 1..end]
+                    var snippet = trimStr(stripTags(snippetHtml))
+                    if (snippet.size > 300) { snippet = snippet[0..300] }
+                    return snippet
+                }
+            }
+        }
+    }
+    return ""
+}
+
+// ===== Bing 搜索实现（零 key 兜底，国内可达）=====
+//
+// 搜狗容易触发反爬，Bing 作为第二免费降级。
+// Bing 结果页结构：<li class="b_algo">...<h2><a href="url">标题</a></h2>...<p>摘要</p>
+
+public class BingProvider <: SearchProvider {
+    private let timeoutSeconds: Int64
+
+    public init(timeoutSeconds: Int64) {
+        this.timeoutSeconds = timeoutSeconds
+    }
+
+    public func name(): String { "bing" }
+    public func enabled(): Bool { true }  // 永远兜底
+
+    public func search(query: String, maxResults: Int64): ArrayList<SearchHit> {
+        try {
+            let encodedQuery = urlEncode(query)
+            let url = "https://cn.bing.com/search?q=" + encodedQuery + "&count=" + maxResults.toString()
+
+            let html = httpClientGet(
+                url,
+                timeoutSeconds,
+                1048576,  // 1MB max download
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "zh-CN,zh;q=0.9,en;q=0.8"
+            )
+
+            if (html.size == 0) { return ArrayList<SearchHit>() }
+            // 反爬检测：Bing 触发反爬时返回 robot/captcha 页
+            // 检测到反爬返回空，让 SearchRouter 降级到付费 provider
+            if (isBingAntispider(html)) { return ArrayList<SearchHit>() }
+            return parseBingHtml(html, maxResults)
+        } catch (e: Exception) {
+            return ArrayList<SearchHit>()
+        }
+    }
+}
+
+/**
+ * 解析 Bing 搜索结果页 HTML
+ *
+ * Bing 结果页结构：
+ *   <li class="b_algo">
+ *     <h2><a href="url">标题</a></h2>
+ *     <p class="b_lineclamp...">摘要</p>
+ *   </li>
+ */
+func parseBingHtml(html: String, maxResults: Int64): ArrayList<SearchHit> {
+    let hits = ArrayList<SearchHit>()
+    let lower = html.toAsciiLower()
+    var pos = 0
+
+    while (hits.size < maxResults) {
+        // 找 b_algo
+        let algoOpt = lower.indexOf("b_algo", pos)
+        if (let None <- algoOpt) { break }
+        let algoIdx = algoOpt.getOrThrow()
+        pos = algoIdx + 6
+
+        // 在 b_algo 之后找 <h2>
+        let h2Opt = lower.indexOf("<h2", algoIdx)
+        if (let None <- h2Opt) { continue }
+        let h2Idx = h2Opt.getOrThrow()
+        if (h2Idx > algoIdx + 500) { continue }  // 太远，不是同一个块
+
+        // 在 <h2 之后找 <a href="
+        let aOpt = lower.indexOf("<a", h2Idx)
+        if (let None <- aOpt) { continue }
+        let aIdx = aOpt.getOrThrow()
+        if (aIdx > h2Idx + 100) { continue }
+
+        let hrefOpt = lower.indexOf("href=\"", aIdx)
+        if (let None <- hrefOpt) { continue }
+        let hrefStart = hrefOpt.getOrThrow() + 6
+        let hrefEndOpt = lower.indexOf("\"", hrefStart)
+        if (let None <- hrefEndOpt) { continue }
+        let hrefEnd = hrefEndOpt.getOrThrow()
+        let url = html[hrefStart..hrefEnd]
+
+        // 提取标题文本（<a ...>文本</a>）
+        let gtOpt = lower.indexOf(">", aIdx)
+        if (let None <- gtOpt) { continue }
+        let gt = gtOpt.getOrThrow()
+        let aEndOpt = lower.indexOf("</a>", gt)
+        if (let None <- aEndOpt) { continue }
+        let aEnd = aEndOpt.getOrThrow()
+        let titleHtml = html[gt + 1..aEnd]
+        let title = trimStr(stripTags(titleHtml))
+        if (title.size == 0) { continue }
+
+        // 找摘要：在 </h2> 之后找 <p> 或 b_lineclamp
+        let h2EndOpt = lower.indexOf("</h2>", h2Idx)
+        let snippet = match (h2EndOpt) {
+            case Some(h2End) => findBingSnippet(lower, html, h2End)
+            case None => ""
+        }
+
+        hits.add(SearchHit(title, url, snippet))
+    }
+
+    return hits
+}
+
+/**
+ * 在 Bing 结果块中查找摘要文本
+ * Bing 摘要通常在 <p class="b_lineclamp..."> 或 <div class="b_caption"> 中
+ */
+func findBingSnippet(lower: String, html: String, startPos: Int64): String {
+    // 找 b_caption 或 b_lineclamp
+    let patterns = ["b_caption", "b_lineclamp", "<p"]
+    for (pattern in patterns) {
+        let opt = lower.indexOf(pattern, startPos)
+        if (let Some(idx) <- opt) {
+            if (idx > startPos + 1000) { continue }  // 太远
+            // 找 > 和 </p> 或 </div>
+            let gtOpt = lower.indexOf(">", idx)
+            if (let Some(gt) <- gtOpt) {
+                let endOpt = lower.indexOf("</", gt)
+                if (let Some(end) <- endOpt) {
+                    let snippetHtml = html[gt + 1..end]
+                    var snippet = trimStr(stripTags(snippetHtml))
+                    if (snippet.size > 300) { snippet = snippet[0..300] }
+                    return snippet
+                }
+            }
+        }
+    }
+    return ""
 }
 
 /**

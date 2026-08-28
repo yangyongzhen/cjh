@@ -470,11 +470,13 @@ func registerWebTools(cjhCfg: CjhConfig, registry: ToolRegistry): Unit {
             providers.add(SearXNGProvider(cjhCfg.webSearchSearxngUrl, cjhCfg.webSearchTimeoutSeconds))
         }
         if (needDDG) {
-            providers.add(DDGProvider(cjhCfg.webSearchTimeoutSeconds))
+            providers.add(SogouProvider(cjhCfg.webSearchTimeoutSeconds))
+            providers.add(BingProvider(cjhCfg.webSearchTimeoutSeconds))
         }
-        // 没有任何 provider，兜底用 DDG
+        // 没有任何 provider，兜底用搜狗 + Bing
         if (providers.size == 0) {
-            providers.add(DDGProvider(cjhCfg.webSearchTimeoutSeconds))
+            providers.add(SogouProvider(cjhCfg.webSearchTimeoutSeconds))
+            providers.add(BingProvider(cjhCfg.webSearchTimeoutSeconds))
         }
         let router = SearchRouter(providers)
         registry.register(WebSearchTool(router, cjhCfg.webSearchMaxResults, budget))
