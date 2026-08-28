@@ -29,8 +29,10 @@ public class StaticAssets {
     <!-- Markdown 渲染：marked.js + highlight.js + DOMPurify（CDN，离线降级为纯文本） -->
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11/styles/github-dark.min.css">
-    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11/lib/common.min.js"></script>
+    <!-- highlight.js 必须用 cdn-release 的 UMD bundle（build/highlight.min.js），
+         /lib/common.js 是 CommonJS 模块（含 require），浏览器无法加载 -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
+    <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
 </head>
 <body data-theme="starfrost">
     <div class="app-container">
