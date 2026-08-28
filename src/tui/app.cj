@@ -76,6 +76,9 @@ public class TuiApp {
     private var themePickerMode: Bool = false
     // 主题预览：picker 移动时即时预览，Esc 恢复原主题，Enter 持久化
     private var themePreviewOriginal: String = ""  // 进入预览前的主题名（Esc 恢复用）
+    // /resume 交互式会话选择：委托 cjterm.ListSelect 组件（按键+滚动+渲染全封装）
+    private var sessionSelect: ListSelect = ListSelect()
+    private var sessionSelectList: ArrayList<(String, String)> = ArrayList<(String, String)>()  // (id, summary) 映射，供 chosenId 查询
     // 当前视图：0=对话 1=帮助
     private var viewMode: Int64 = 0
     // 多行编辑模式（Ctrl+E 切换；Alt+Enter 提交，Esc 退出）
@@ -101,6 +104,9 @@ public class TuiApp {
 
     // 主题确认回调（外部接线；参数：主题名）—— Enter 确认时触发，写回 settings.json
     public var onThemeApply: (String) -> Unit = { _ => }
+
+    // /resume 会话选择确认回调（外部接线；参数：session id）—— Enter 选中时触发
+    public var onSessionResume: (String) -> Unit = { _ => }
 
     public init() {
         this.term = Term()
@@ -561,8 +567,69 @@ public class TuiApp {
     }
 
     /**
-     * 标记需要渲染（线程安全：spawn 线程调用）
+     * /resume 交互式会话选择：进入选择模式
+     * @param sessions (id, summary) 列表，按时间倒序
      */
+    public func showSessionList(sessions: ArrayList<(String, String)>): Unit {
+        this.sessionSelectList = sessions
+        // 构造显示文本列表委托 ListSelect 渲染/按键
+        let displayItems: ArrayList<String> = ArrayList<String>()
+        for ((id, summary) in sessions) {
+            displayItems.add("${id}  |  ${summary}")
+        }
+        this.sessionSelect.onSelect = { idx =>
+            // Enter 选中：查 sessionSelectList 拿 id，转发外部 onSessionResume
+            if (idx >= 0 && idx < this.sessionSelectList.size) {
+                let id = this.sessionSelectList[idx][0]
+                this.hideSessionList()
+                this.onSessionResume(id)
+            }
+        }
+        this.sessionSelect.onCancel = { =>
+            this.hideSessionList()
+        }
+        this.sessionSelect.show(displayItems, "选择会话（上下箭头切换，Enter 恢复，Esc 取消）", 0)
+        this.markDirty()
+    }
+
+    /**
+     * 退出会话选择模式
+     */
+    public func hideSessionList(): Unit {
+        this.sessionSelect.hide()
+        this.sessionSelectList = ArrayList<(String, String)>()
+        this.markDirty()
+    }
+
+    /**
+     * 会话选择模式当前选中的 session id
+     */
+    public func sessionSelectChosenId(): ?String {
+        if (!this.sessionSelect.visible) { return None }
+        let idx = this.sessionSelect.selectedIndex
+        if (this.sessionSelectList.size == 0) { return None }
+        if (idx < 0 || idx >= this.sessionSelectList.size) { return None }
+        return this.sessionSelectList[idx][0]
+    }
+
+    /**
+     * 会话选择模式当前选中的 session summary（标题）
+     */
+    public func sessionSelectChosenSummary(): ?String {
+        if (!this.sessionSelect.visible) { return None }
+        let idx = this.sessionSelect.selectedIndex
+        if (this.sessionSelectList.size == 0) { return None }
+        if (idx < 0 || idx >= this.sessionSelectList.size) { return None }
+        return this.sessionSelectList[idx][1]
+    }
+
+    /**
+     * 是否处于会话选择模式
+     */
+    public func isSessionSelectMode(): Bool {
+        return this.sessionSelect.visible
+    }
+
     public func markDirty(): Unit {
         this.dirtyLock.lock()
         try {
@@ -608,6 +675,22 @@ public class TuiApp {
             // （y/n/Esc/Enter 命中时触发 onResult 写回审批结果）
             if (this.confirmDialog.handleKey(key)) {
                 this.markDirty()
+            }
+            return
+        }
+        // /resume 会话选择模式：按键全委托 ListSelect 组件
+        if (this.sessionSelect.visible) {
+            let r = this.sessionSelect.handleKey(key)
+            match (r) {
+                case ListSelectResult.Moved =>
+                    this.markDirty()
+                case ListSelectResult.Selected =>
+                    // 由 main.cj runTui 轮询 sessionSelectChosenId 执行 resume
+                    this.markDirty()
+                case ListSelectResult.Cancelled =>
+                    this.hideSessionList()
+                case ListSelectResult.Ignored =>
+                    ()   // 其他键吞掉，避免穿透到输入框
             }
             return
         }
@@ -890,6 +973,9 @@ public class TuiApp {
             // 输出区（对话 / 帮助视图，无边框全宽）
             if (this.viewMode == 1) {
                 this.renderHelp(this.canvas, 8, cols, outH)
+            } else if (this.sessionSelect.visible) {
+                // /resume 会话选择：委托 ListSelect 组件渲染到输出区
+                this.sessionSelect.paintCanvas(this.canvas, 8, cols, outH)
             } else {
                 this.outputLock.lock()
                 try {
