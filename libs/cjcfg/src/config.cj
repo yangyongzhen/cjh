@@ -316,6 +316,59 @@ public class CjhConfig {
     }
 
     /**
+     * 保存全部可编辑字段到 settings.json（读-改-写，保留未知字段）。
+     * 供 Web 配置页面 POST /api/settings 调用。
+     */
+    public func saveAll(): Unit {
+        this.ensureDir(this.configDir)
+        var root = JsonObject()
+        if (exists(this.settingsPath)) {
+            try {
+                let json = JsonValue.fromStr(String.fromUtf8(File.readFrom(this.settingsPath)))
+                match (json.kind()) {
+                    case JsonKind.JsObject => root = json.asObject()
+                    case _ => ()
+                }
+            } catch (e: Exception) {
+                eprintln("[cjh] settings.json 解析失败，重建: ${e}")
+            }
+        }
+        // 写入所有可编辑字段
+        root.put("base_url", JsonString(this.baseUrl))
+        root.put("model", JsonString(this.model))
+        root.put("max_iterations", JsonInt(this.maxIterations))
+        root.put("system_prompt", JsonString(this.systemPrompt))
+        root.put("temperature", JsonFloat(this.temperature))
+        root.put("max_tokens", JsonInt(this.maxTokens))
+        root.put("compact_threshold", JsonInt(this.compactThreshold))
+        root.put("compact_keep", JsonInt(this.compactKeep))
+        root.put("tool_result_max_chars", JsonInt(this.toolResultMaxChars))
+        root.put("theme", JsonString(this.theme))
+        // enabled_skills / enabled_plugins
+        let skillsArr = JsonArray()
+        for (i in 0..this.enabledSkills.size) {
+            skillsArr.add(JsonString(this.enabledSkills[i]))
+        }
+        root.put("enabled_skills", skillsArr)
+        let pluginsArr = JsonArray()
+        for (i in 0..this.enabledPlugins.size) {
+            pluginsArr.add(JsonString(this.enabledPlugins[i]))
+        }
+        root.put("enabled_plugins", pluginsArr)
+        // web 配置
+        root.put("web_port", JsonInt(Int64(this.webPort)))
+        root.put("web_bind_addr", JsonString(this.webBindAddr))
+        root.put("web_auth_token", JsonString(this.webAuthToken))
+        // web search
+        root.put("web_search_enabled", JsonBool(this.webSearchEnabled))
+        root.put("web_search_provider", JsonString(this.webSearchProvider))
+        root.put("web_search_max_results", JsonInt(this.webSearchMaxResults))
+        root.put("web_fetch_enabled", JsonBool(this.webFetchEnabled))
+        root.put("web_fetch_max_chars", JsonInt(this.webFetchMaxChars))
+        File.writeTo(this.settingsPath, root.toJsonString().toArray())
+    }
+
+    /**
      * 确保目录存在（save 系列写文件前调用）
      */
     private func ensureDir(dir: String): Unit {

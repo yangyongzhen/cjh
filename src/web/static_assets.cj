@@ -62,12 +62,53 @@ public class StaticAssets {
         <main class="app-main">
             <!-- 会话侧边栏 -->
             <aside class="sidebar">
-                <div class="sidebar-header">
-                    <span>会话</span>
-                    <button id="new-session-btn" class="btn-icon" title="新建会话">+</button>
+                <!-- 分区切换 tab -->
+                <div class="sidebar-tabs">
+                    <button class="sidebar-tab active" data-tab="sessions">会话</button>
+                    <button class="sidebar-tab" data-tab="skills">技能</button>
+                    <button class="sidebar-tab" data-tab="mcp">MCP</button>
+                    <button class="sidebar-tab" data-tab="config" title="配置">⚙</button>
                 </div>
-                <div id="session-list" class="session-list">
-                    <div class="loading">加载中...</div>
+
+                <!-- 会话分区 -->
+                <div id="tab-sessions" class="sidebar-panel active">
+                    <div class="sidebar-header">
+                        <span>历史会话</span>
+                        <button id="new-session-btn" class="btn-icon" title="新建会话">+</button>
+                    </div>
+                    <div id="session-list" class="session-list">
+                        <div class="loading">加载中...</div>
+                    </div>
+                </div>
+
+                <!-- 技能分区 -->
+                <div id="tab-skills" class="sidebar-panel">
+                    <div class="sidebar-header">
+                        <span>已加载技能</span>
+                    </div>
+                    <div id="skill-list" class="skill-list">
+                        <div class="loading">加载中...</div>
+                    </div>
+                </div>
+
+                <!-- MCP 分区 -->
+                <div id="tab-mcp" class="sidebar-panel">
+                    <div class="sidebar-header">
+                        <span>MCP 服务器</span>
+                    </div>
+                    <div id="mcp-list" class="mcp-list">
+                        <div class="loading">加载中...</div>
+                    </div>
+                </div>
+
+                <!-- 配置分区 -->
+                <div id="tab-config" class="sidebar-panel">
+                    <div class="sidebar-header">
+                        <span>配置</span>
+                    </div>
+                    <div id="config-form" class="config-form">
+                        <div class="loading">加载中...</div>
+                    </div>
                 </div>
             </aside>
 
@@ -211,6 +252,198 @@ function loadSessions() {
         .catch(function(e) {
             console.error('[Sessions] 加载失败:', e);
         });
+}
+
+/**
+ * 从 /api/skills 加载技能列表，渲染到侧边栏技能分区
+ */
+function loadSkills() {
+    fetch('/api/skills')
+        .then(r => r.json())
+        .then(data => {
+            let list = document.getElementById('skill-list');
+            if (!data.skills || data.skills.length === 0) {
+                list.innerHTML = '<div class="empty">暂无技能<br>创建 ~/.cjh/skills/&lt;name&gt;.md</div>';
+                return;
+            }
+            list.innerHTML = '';
+            data.skills.forEach(function(s) {
+                let item = document.createElement('div');
+                item.className = 'skill-item' + (s.enabled ? ' skill-enabled' : ' skill-disabled');
+                let badge = s.enabled ? '●' : '○';
+                let toolsLabel = s.tools > 0 ? (' · ' + s.tools + ' 工具') : '';
+                item.innerHTML = '<div class="skill-name">' + badge + ' ' + escapeHtml(s.name) + '</div>' +
+                                 '<div class="skill-desc">' + escapeHtml(s.description || '') + '</div>' +
+                                 '<div class="skill-meta">' + (s.enabled ? '启用' : '禁用') + toolsLabel + '</div>';
+                list.appendChild(item);
+            });
+        })
+        .catch(function(e) {
+            console.error('[Skills] 加载失败:', e);
+            document.getElementById('skill-list').innerHTML = '<div class="empty">加载失败</div>';
+        });
+}
+
+/**
+ * 从 /api/mcp 加载 MCP 服务器列表，渲染到侧边栏 MCP 分区
+ */
+function loadMcp() {
+    fetch('/api/mcp')
+        .then(r => r.json())
+        .then(data => {
+            let list = document.getElementById('mcp-list');
+            if (!data.servers || data.servers.length === 0) {
+                list.innerHTML = '<div class="empty">暂无 MCP 服务器<br>在 settings.json 配置 mcp_servers</div>';
+                return;
+            }
+            list.innerHTML = '';
+            data.servers.forEach(function(s) {
+                let item = document.createElement('div');
+                item.className = 'mcp-item';
+                let connIcon = s.connected ? '🟢' : '⚪';
+                let transport = s.transport === 'sse' ? 'SSE: ' + escapeHtml(s.url || '') : 'stdio: ' + escapeHtml(s.command || '');
+                item.innerHTML = '<div class="mcp-name">' + connIcon + ' ' + escapeHtml(s.name) + '</div>' +
+                                 '<div class="mcp-transport">' + transport + '</div>';
+                list.appendChild(item);
+            });
+        })
+        .catch(function(e) {
+            console.error('[MCP] 加载失败:', e);
+            document.getElementById('mcp-list').innerHTML = '<div class="empty">加载失败</div>';
+        });
+}
+
+/**
+ * 从 /api/settings 加载配置，渲染到配置分区表单
+ */
+function loadConfig() {
+    fetch('/api/settings')
+        .then(r => r.json())
+        .then(data => {
+            let form = document.getElementById('config-form');
+            form.innerHTML = '';
+            // 分组渲染
+            let groups = [
+                { title: 'Provider', fields: [
+                    { key: 'baseUrl', label: 'API 端点', type: 'text' },
+                    { key: 'model', label: '模型', type: 'text' },
+                    { key: 'apiKey', label: 'API Key', type: 'password' }
+                ]},
+                { title: '行为参数', fields: [
+                    { key: 'maxIterations', label: '最大迭代', type: 'number' },
+                    { key: 'temperature', label: '温度', type: 'number' },
+                    { key: 'maxTokens', label: '最大 token', type: 'number' },
+                    { key: 'compactThreshold', label: '压缩阈值', type: 'number' },
+                    { key: 'compactKeep', label: '压缩保留', type: 'number' },
+                    { key: 'toolResultMaxChars', label: '工具结果上限', type: 'number' }
+                ]},
+                { title: 'Web 配置', fields: [
+                    { key: 'webPort', label: '端口', type: 'number' },
+                    { key: 'webBindAddr', label: '绑定地址', type: 'text' },
+                    { key: 'webAuthToken', label: '鉴权 token', type: 'text' }
+                ]}
+            ];
+            groups.forEach(function(g) {
+                let groupDiv = document.createElement('div');
+                groupDiv.className = 'config-group';
+                groupDiv.innerHTML = '<div class="config-group-title">' + escapeHtml(g.title) + '</div>';
+                g.fields.forEach(function(f) {
+                    let row = document.createElement('div');
+                    row.className = 'config-row';
+                    let val = data[f.key] !== undefined ? data[f.key] : '';
+                    row.innerHTML = '<label>' + escapeHtml(f.label) + '</label>' +
+                                   '<input type="' + f.type + '" data-key="' + f.key + '" value="' + escapeHtml(String(val)) + '">';
+                    groupDiv.appendChild(row);
+                });
+                form.appendChild(groupDiv);
+            });
+            // 保存按钮
+            let saveBtn = document.createElement('button');
+            saveBtn.className = 'config-save-btn';
+            saveBtn.textContent = '保存配置';
+            saveBtn.addEventListener('click', saveConfig);
+            form.appendChild(saveBtn);
+        })
+        .catch(function(e) {
+            console.error('[Config] 加载失败:', e);
+            document.getElementById('config-form').innerHTML = '<div class="empty">加载失败</div>';
+        });
+}
+
+/**
+ * POST /api/settings 保存配置
+ */
+function saveConfig() {
+    let inputs = document.querySelectorAll('#config-form input[data-key]');
+    let payload = {};
+    inputs.forEach(function(inp) {
+        let key = inp.dataset.key;
+        let val = inp.value;
+        if (key === 'maxIterations' || key === 'maxTokens' || key === 'compactThreshold' ||
+            key === 'compactKeep' || key === 'toolResultMaxChars' || key === 'webPort') {
+            payload[key] = parseInt(val) || 0;
+        } else if (key === 'temperature') {
+            payload[key] = parseFloat(val) || 0.7;
+        } else {
+            payload[key] = val;
+        }
+    });
+    fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    })
+    .then(r => r.json())
+    .then(data => {
+        let btn = document.querySelector('.config-save-btn');
+        if (data.ok) {
+            btn.textContent = '✓ 已保存';
+            btn.classList.add('saved');
+            setTimeout(function() {
+                btn.textContent = '保存配置';
+                btn.classList.remove('saved');
+            }, 1500);
+        } else {
+            btn.textContent = '❌ 保存失败';
+            console.error('[Config] 保存失败:', data.error);
+        }
+    })
+    .catch(function(e) {
+        console.error('[Config] 保存请求失败:', e);
+    });
+}
+
+/**
+ * 侧边栏 tab 切换
+ */
+function switchSidebarTab(tabName) {
+    // 更新 tab 按钮高亮
+    document.querySelectorAll('.sidebar-tab').forEach(function(btn) {
+        if (btn.dataset.tab === tabName) {
+            btn.classList.add('active');
+        } else {
+            btn.classList.remove('active');
+        }
+    });
+    // 显示对应面板
+    document.querySelectorAll('.sidebar-panel').forEach(function(panel) {
+        if (panel.id === 'tab-' + tabName) {
+            panel.classList.add('active');
+        } else {
+            panel.classList.remove('active');
+        }
+    });
+    // 懒加载：首次切到技能/MCP/配置时拉取数据
+    if (tabName === 'skills' && !document.getElementById('skill-list').dataset.loaded) {
+        loadSkills();
+        document.getElementById('skill-list').dataset.loaded = '1';
+    } else if (tabName === 'mcp' && !document.getElementById('mcp-list').dataset.loaded) {
+        loadMcp();
+        document.getElementById('mcp-list').dataset.loaded = '1';
+    } else if (tabName === 'config' && !document.getElementById('config-form').dataset.loaded) {
+        loadConfig();
+        document.getElementById('config-form').dataset.loaded = '1';
+    }
 }
 
 /**
@@ -580,6 +813,13 @@ function toggleTaskPanel() {
 document.addEventListener('DOMContentLoaded', function() {
     connectWebSocket();
 
+    // 侧边栏 tab 切换
+    document.querySelectorAll('.sidebar-tab').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            switchSidebarTab(this.dataset.tab);
+        });
+    });
+
     // 发送按钮
     document.getElementById('send-btn').addEventListener('click', function() {
         let input = document.getElementById('message-input');
@@ -821,6 +1061,38 @@ body {
     flex-shrink: 0;
 }
 
+/* 分区切换 tab */
+.sidebar-tabs {
+    display: flex;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+}
+.sidebar-tab {
+    flex: 1;
+    padding: 8px 4px;
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 12px;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: color 0.15s, border-color 0.15s;
+}
+.sidebar-tab:hover { color: var(--text-primary); }
+.sidebar-tab.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+}
+
+/* 分区面板 */
+.sidebar-panel {
+    display: none;
+    flex: 1;
+    flex-direction: column;
+    overflow: hidden;
+}
+.sidebar-panel.active { display: flex; }
+
 .sidebar-header {
     display: flex;
     justify-content: space-between;
@@ -885,6 +1157,112 @@ body {
     font-size: 11px;
     color: var(--text-secondary);
 }
+
+/* ====== 技能列表 ====== */
+.skill-list, .mcp-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 0;
+}
+.skill-list .empty, .mcp-list .empty {
+    padding: 16px;
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.6;
+}
+.skill-item {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+}
+.skill-item.skill-enabled .skill-name { color: var(--success); }
+.skill-item.skill-disabled .skill-name { color: var(--text-secondary); }
+.skill-name { font-size: 13px; font-weight: 500; margin-bottom: 4px; }
+.skill-desc {
+    font-size: 11px;
+    color: var(--text-secondary);
+    line-height: 1.4;
+    margin-bottom: 4px;
+}
+.skill-meta { font-size: 10px; color: var(--text-secondary); }
+
+/* ====== MCP 列表 ====== */
+.mcp-item {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+}
+.mcp-name { font-size: 13px; font-weight: 500; margin-bottom: 4px; }
+.mcp-transport {
+    font-size: 11px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* ====== 配置表单 ====== */
+.config-form {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 0;
+}
+.config-form .empty {
+    padding: 16px;
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+.config-group {
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--border);
+}
+.config-group-title {
+    font-size: 11px;
+    font-weight: bold;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    margin-bottom: 8px;
+    letter-spacing: 0.5px;
+}
+.config-row {
+    display: flex;
+    flex-direction: column;
+    margin-bottom: 10px;
+}
+.config-row label {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-bottom: 4px;
+}
+.config-row input {
+    padding: 6px 8px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 12px;
+    font-family: monospace;
+}
+.config-row input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+.config-save-btn {
+    display: block;
+    width: calc(100% - 28px);
+    margin: 12px 14px;
+    padding: 8px;
+    background: var(--accent);
+    color: var(--bg-primary);
+    border: none;
+    border-radius: 4px;
+    font-size: 13px;
+    font-weight: bold;
+    cursor: pointer;
+    transition: opacity 0.15s;
+}
+.config-save-btn:hover { opacity: 0.9; }
+.config-save-btn.saved { background: var(--success); }
 
 /* ====== 对话区 ====== */
 .chat-area {
