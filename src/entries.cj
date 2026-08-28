@@ -541,6 +541,8 @@ func runTui(sessionId: String): Int64 {
         TuiBridge.app = tui
         agent.onDelta = { d =>
             if (d.size > 0) {
+                // 正式 content 开始：清空思考窗口，让它消失
+                tui.clearReasoning()
                 try {
                     if (!StreamState.active) {
                         TuiBridge.delta("")
@@ -552,6 +554,11 @@ func runTui(sessionId: String): Int64 {
                 }
             }
             tui.setAgentState("Streaming…")
+        }
+        agent.onReasoning = { r =>
+            if (r.size > 0) {
+                tui.appendReasoning(r)
+            }
         }
         agent.onThinking = { =>
             tui.resetAgentTimer()

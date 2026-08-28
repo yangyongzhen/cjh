@@ -20,7 +20,7 @@ public class MockProvider <: LlmProvider {
     }
 
     public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
-        onDelta: (String) -> Unit): ModelResponse {
+        onDelta: (String) -> Unit, onReasoning: (String) -> Unit): ModelResponse {
         this.callCount += 1
         match (this.callCount) {
             case 1 =>

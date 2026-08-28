@@ -9,6 +9,7 @@ import stdx.log.*
 import stdx.logger.*
 import cjterm.*
 import cjh.agent.*
+import cjutil.*
 
 /**
  * TUI 应用：对话界面（组件化编排）
@@ -55,6 +56,10 @@ public class TuiApp {
     private var agentTokenLock: Mutex = Mutex()
     // Agent 当前执行状态（实时状态行显示用：Thinking/Running bash/Streaming 等）
     private var agentState: String = ""
+    // 思考窗口缓冲：reasoning_content 实时累积，渲染为 1-2 行滚动窗口
+    // 正式 content 开始时清空，窗口消失
+    private var reasoningBuffer: String = ""
+    private var reasoningLock: Mutex = Mutex()
     // 输入队列：Agent 执行期间提交的消息排队，执行完毕后自动处理
     private var inputQueue: ArrayList<String> = ArrayList<String>()
     private var inputQueueLock: Mutex = Mutex()
@@ -323,6 +328,51 @@ public class TuiApp {
     public func setAgentState(state: String): Unit {
         this.agentState = state
         this.markDirty()
+    }
+
+    /**
+     * 追加思考内容到缓冲（reasoning_content 增量回调）
+     *
+     * 缓冲区按显示宽度限制：超过 2 行 × (cols-2) 时清空重新展示，
+     * 避免缓冲无限增长导致内存膨胀和溢出。
+     */
+    public func appendReasoning(text: String): Unit {
+        if (text.size == 0) { return }
+        this.reasoningLock.lock()
+        this.reasoningBuffer += text
+        // 计算当前缓冲的显示行数：用换行符分割，每段按显示宽度折算行数
+        let (cols, _) = TermSize.get()
+        let contentW: Int64 = if (cols > 2) { cols - 2 } else { 10 }
+        var totalLines: Int64 = 0
+        for (seg in this.reasoningBuffer.split("\n", -1)) {
+            let w: Int64 = TuiCanvas.displayWidth(seg)
+            // 每段占 ceil(w / contentW) 行，至少 1 行
+            var lines: Int64 = if (contentW > 0) { w / contentW } else { 1 }
+            if (w % contentW != 0 || w == 0) {
+                lines += 1
+            }
+            totalLines += lines
+        }
+        // 超过 4 行（2 行展示 × 2 倍缓冲）时清空重新展示
+        if (totalLines > 4) {
+            this.reasoningBuffer = text  // 清空，只保留最新增量
+        }
+        this.reasoningLock.unlock()
+        this.markDirty()
+    }
+
+    /**
+     * 清空思考缓冲（正式 content 开始时调用，窗口消失）
+     */
+    public func clearReasoning(): Unit {
+        this.reasoningLock.lock()
+        if (this.reasoningBuffer.size > 0) {
+            this.reasoningBuffer = ""
+            this.reasoningLock.unlock()
+            this.markDirty()
+        } else {
+            this.reasoningLock.unlock()
+        }
     }
 
     /**
@@ -965,6 +1015,14 @@ public class TuiApp {
             // 无 agent 运行时，agentRow 不使用，仅用于 outH 计算
             let agentRow: Int64 = if (agentBusy) { statusRow - 1 - tasksH - 1 } else { -1 }
 
+            // 思考窗口：reasoningBuffer 非空时占 3 行（1 行内容 + 1 行边框 + 1 行空行间隔），
+            // 插在动态状态行上方，与动态状态栏空一行
+            this.reasoningLock.lock()
+            let hasReasoning: Bool = this.reasoningBuffer.size > 0
+            this.reasoningLock.unlock()
+            let reasoningH: Int64 = if (hasReasoning) { 3 } else { 0 }
+            let reasoningRow: Int64 = if (agentBusy && hasReasoning) { agentRow - reasoningH } else { -1 }
+
             // 输出区可用高度：8 .. agentRow-1（agent 执行中时为动态状态行预留空间）
             // agent 不在执行时 agentRow=-1，输出区占满 8..statusRow-1
             let outBottom: Int64 = if (agentBusy && agentRow >= 8) { agentRow - 1 } else { statusRow - 1 }
@@ -989,6 +1047,10 @@ public class TuiApp {
                 if (agentBusy && agentRow >= 8) {
                     this.spinner.tick()
                     this.renderAgentStatus(this.canvas, agentRow, cols)
+                }
+                // 思考窗口：reasoningBuffer 非空时，在动态状态行上方渲染 1-2 行
+                if (agentBusy && hasReasoning && reasoningRow >= 8) {
+                    this.renderReasoningWindow(this.canvas, reasoningRow, cols)
                 }
             }
         }
@@ -1057,6 +1119,74 @@ public class TuiApp {
             Ansi.fg(Ansi.THEME_WARN) + tokens.toString() + Ansi.reset() +
             Ansi.fg(Ansi.THEME_MUTED) + " tokens)" + Ansi.reset()
         canvas.setLine(row, line)
+    }
+
+    /**
+     * 思考窗口：最多 2 行滚动展示 reasoning_content
+     *
+     * 布局（占 3 行，从上到下）：
+     *   row+0: 内容行 1（灰色，按显示宽度截断）
+     *   row+1: 内容行 2（灰色，按显示宽度截断）+ 底边框
+     *   row+2: 空行（与动态状态栏间隔）
+     *
+     * 截断策略：按显示宽度（displayWidth）计算，CJK/emoji 占 2 列；
+     * 超出 2 行 × (cols-2) 时只显示最后 2 行。
+     */
+    private func renderReasoningWindow(canvas: TuiCanvas, row: Int64, cols: Int64): Unit {
+        this.reasoningLock.lock()
+        let buf: String = this.reasoningBuffer
+        this.reasoningLock.unlock()
+        if (buf.size == 0) { return }
+
+        // 可用内容宽度（留 2 字符给 "› " 前缀）
+        let contentW: Int64 = if (cols > 2) { cols - 2 } else { 10 }
+
+        // 按换行符分割，每段按显示宽度折算行数，收集最多 2 行
+        var displayLines: ArrayList<String> = ArrayList<String>()
+        var curLine: String = ""
+        var curWidth: Int64 = 0
+        for (r in buf.toRuneArray()) {
+            let ch = r.toString()
+            if (ch == "\n") {
+                // 换行：当前行结束
+                displayLines.add(curLine)
+                curLine = ""
+                curWidth = 0
+                if (displayLines.size >= 2) {
+                    break
+                }
+                continue
+            }
+            let chW: Int64 = TuiCanvas.displayWidth(ch)
+            if (curWidth + chW > contentW) {
+                // 当前行满，结束
+                displayLines.add(curLine)
+                curLine = ch
+                curWidth = chW
+                if (displayLines.size >= 2) {
+                    break
+                }
+            } else {
+                curLine += ch
+                curWidth += chW
+            }
+        }
+        // 添加最后一行（如果有内容且未满 2 行）
+        if (curLine.size > 0 && displayLines.size < 2) {
+            displayLines.add(curLine)
+        }
+
+        // 渲染最多 2 行
+        var rIdx: Int64 = 0
+        for (line in displayLines) {
+            if (rIdx >= 2) { break }
+            canvas.setLine(row + rIdx, Ansi.fg(Ansi.THEME_MUTED) + "› " + line + Ansi.reset())
+            rIdx += 1
+        }
+        // 如果只有 1 行，第 2 行留空
+        if (displayLines.size < 2) {
+            canvas.setLine(row + 1, "")
+        }
     }
 
     /**

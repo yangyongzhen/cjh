@@ -80,3 +80,24 @@ public func truncateUtf8(text: String, maxBytes: Int64): String {
     }
     return ""
 }
+
+/**
+ * 取末尾 maxBytes 字节的安全截断
+ *
+ * 用于"只显示最新 N 字符"的滚动窗口场景。
+ * 从 text.size - maxBytes 开始，向前找到合法 UTF-8 字符边界再切片。
+ */
+public func tailUtf8(text: String, maxBytes: Int64): String {
+    if (text.size <= maxBytes) {
+        return text
+    }
+    var start = text.size - maxBytes
+    while (start < text.size) {
+        try {
+            return text[start..text.size]
+        } catch (e: Exception) {
+            start += 1
+        }
+    }
+    return ""
+}

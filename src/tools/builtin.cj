@@ -90,34 +90,41 @@ public class ReadTool <: CjhTool {
             return ToolResult("缺少参数: path", true)
         }
         let path = args.get("path").getOrThrow().asString().getValue()
+        // 解析 offset/limit（可选）
+        var offset: Int64 = 0
+        var limit: Int64 = 0
+        if (let Some(o) <- args.get("offset")) {
+            match (o.kind()) {
+                case JsonKind.JsString => offset = parseInt(o.asString().getValue())
+                case JsonKind.JsInt => offset = o.asInt().getValue()
+                case _ => ()
+            }
+        }
+        if (let Some(l) <- args.get("limit")) {
+            match (l.kind()) {
+                case JsonKind.JsString => limit = parseInt(l.asString().getValue())
+                case JsonKind.JsInt => limit = l.asInt().getValue()
+                case _ => ()
+            }
+        }
         try {
+            // 大文件优化：用 FileInfo.size 判断，避免 File.readFrom 全文加载
+            let fi = FileInfo(path)
+            let fileSize = fi.size
+            // 大文件阈值：256KB（约 5000-8000 行源码）
+            let largeThreshold: Int64 = 262144
+            if (fileSize > largeThreshold) {
+                // 大文件：流式逐行读取，不加载全文到 Array<String>
+                return readLargeFile(path, offset, limit)
+            }
+            // 小文件：一次读完
             let bytes = File.readFrom(path)
             let content = safeFromUtf8(bytes)
             let lines = content.split("\n", -1)
-
-            // 解析 offset/limit（可选）
-            var offset: Int64 = 0
-            var limit: Int64 = 0
-            if (let Some(o) <- args.get("offset")) {
-                match (o.kind()) {
-                    case JsonKind.JsString => offset = parseInt(o.asString().getValue())
-                    case JsonKind.JsInt => offset = o.asInt().getValue()
-                    case _ => ()
-                }
-            }
-            if (let Some(l) <- args.get("limit")) {
-                match (l.kind()) {
-                    case JsonKind.JsString => limit = parseInt(l.asString().getValue())
-                    case JsonKind.JsInt => limit = l.asInt().getValue()
-                    case _ => ()
-                }
-            }
-
             // 有 offset 或 limit → 按需展开行段
             if (offset > 0 || limit > 0) {
                 return readRange(lines, offset, limit)
             }
-
             // 无 offset/limit：大文件返回摘要，小文件返回全文
             if (lines.size > 200) {
                 return readSummary(lines)
@@ -125,6 +132,85 @@ public class ReadTool <: CjhTool {
             return ToolResult(content, false)
         } catch (e: Exception) {
             return ToolResult("读取失败: ${e}", true)
+        }
+    }
+
+    /**
+     * 大文件流式读取：逐行扫描，不加载全文到内存
+     *
+     * 三种模式：
+     *   1. 有 offset+limit → 只读 offset..offset+limit 行段
+     *   2. 有 offset 无 limit → 从 offset 读到文件末尾
+     *   3. 无 offset 无 limit → 流式扫描生成结构化摘要
+     */
+    private func readLargeFile(path: String, offset: Int64, limit: Int64): ToolResult {
+        let f = File(path, OpenMode.Read)
+        // 逐字节读取，遇 \n 切行
+        var lineBuf = ArrayList<Byte>()
+        var lineNum: Int64 = 0
+        var result = StringBuilder()
+        var collecting: Bool = false
+        // 确定起始/结束行
+        let startLine = if (offset > 0) { offset - 1 } else { 0 }  // 0-based
+        let endLine = if (limit > 0) { startLine + limit } else { Int64(9223372036854775807) }  // Int64.MAX
+        // 摘要模式标志
+        let summaryMode = (offset == 0 && limit == 0)
+        if (summaryMode) {
+            result.append("[结构化摘要：大文件流式扫描]\n")
+        }
+        let readBuf = Array<Byte>(8192, repeat: 0)
+        var done: Bool = false
+        while (!done) {
+            let n = f.read(readBuf)
+            if (n <= 0) {
+                // EOF：处理最后一行
+                if (lineBuf.size > 0) {
+                    this.processLine(lineBuf, lineNum, startLine, endLine, summaryMode, result)
+                }
+                done = true
+                break
+            }
+            for (i in 0..n) {
+                let b = readBuf[i]
+                if (b == 10u8) {  // \n
+                    this.processLine(lineBuf, lineNum, startLine, endLine, summaryMode, result)
+                    lineBuf = ArrayList<Byte>()
+                    lineNum += 1
+                    // 行段模式：超过 endLine 提前结束
+                    if (!summaryMode && lineNum >= endLine) {
+                        done = true
+                        break
+                    }
+                } else {
+                    lineBuf.add(b)
+                }
+            }
+        }
+        f.close()
+        return ToolResult(result.toString(), false)
+    }
+
+    /**
+     * 处理单行：根据模式决定收集或跳过
+     */
+    private func processLine(lineBuf: ArrayList<Byte>, lineNum: Int64,
+        startLine: Int64, endLine: Int64, summaryMode: Bool, result: StringBuilder): Unit {
+        if (summaryMode) {
+            // 摘要模式：提取符号定义行 + 重要注释
+            let line = safeFromUtf8(lineBuf.toArray())
+            let trimmed = line.trimAscii()
+            if (trimmed.size == 0) { return }
+            if (isSymbolDefinition(trimmed)) {
+                result.append("${lineNum + 1}\t${line}\n")
+            } else if (trimmed.startsWith("///") || isImportantComment(trimmed)) {
+                result.append("${lineNum + 1}\t${line}\n")
+            }
+        } else {
+            // 行段模式：startLine <= lineNum < endLine 时收集
+            if (lineNum >= startLine && lineNum < endLine) {
+                let line = safeFromUtf8(lineBuf.toArray())
+                result.append("${lineNum + 1}\t${line}\n")
+            }
         }
     }
 
@@ -313,13 +399,14 @@ public class AppendFileTool <: CjhTool {
         let path = args.get("path").getOrThrow().asString().getValue()
         let content = args.get("content").getOrThrow().asString().getValue()
         try {
-            // 检查文件是否存在（读取失败说明不存在）
-            let existing = String.fromUtf8(File.readFrom(path))
-            let newContent = existing + content
-            File.writeTo(path, newContent.toArray())
-            return ToolResult("Appended ${content.size} chars to ${path} (now ${newContent.size} chars total)", false)
+            // 增量写：OpenMode.Append 只写新增内容，O(1) 每次调用
+            // 不再读全文→拼接→写全文（旧实现 O(n)，大文件极慢）
+            let f = File(path, OpenMode.Append)
+            f.write(stringToBytes(content))
+            f.close()
+            return ToolResult("Appended ${content.size} chars to ${path}", false)
         } catch (e: Exception) {
-            // 文件不存在或读取失败
+            // 文件不存在或打开失败
             return ToolResult("Error: cannot append to ${path} (file may not exist). Create the skeleton with write_file first. Detail: ${e}", true)
         }
     }
@@ -377,14 +464,9 @@ public class GrepTool <: CjhTool {
             let regex = Regex(pattern)
             // 判断 path 是文件还是目录
             if (exists(path)) {
-                // 尝试作为文件读取；失败则按目录处理
-                var isFile: Bool = true
-                try {
-                    let _ = File.readFrom(path)
-                } catch (e: Exception) {
-                    isFile = false
-                }
-                if (isFile) {
+                // 用 FileInfo.isDirectory 判断，不预读全文（旧实现 File.readFrom 大文件读两遍）
+                let fi = FileInfo(path)
+                if (!fi.isDirectory()) {
                     return searchFile(path, regex, contextLines, pattern)
                 } else {
                     return searchDirectory(path, regex, contextLines, pattern)

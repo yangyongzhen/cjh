@@ -77,7 +77,7 @@ public class AnthropicProvider <: LlmProvider {
     }
 
     public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
-        onDelta: (String) -> Unit): ModelResponse {
+        onDelta: (String) -> Unit, onReasoning: (String) -> Unit): ModelResponse {
         // 请求体
         var body = JsonObject()
         body.put("model", JsonString(this.model))

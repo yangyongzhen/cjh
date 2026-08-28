@@ -159,6 +159,7 @@ public class Agent {
 
     // 事件回调（供 TUI/CLI 展示）
     public var onDelta: (String) -> Unit = { d => }
+    public var onReasoning: (String) -> Unit = { r => }
     public var onToolStart: (String, JsonObject) -> Unit = { n, a => }
     public var onToolResult: (String, ToolResult) -> Unit = { n, r => }
     public var onAssistantText: (String) -> Unit = { t => }
@@ -301,6 +302,8 @@ public class Agent {
                 this.onThinking()
                 response = this.provider.chatStream(this.messages, this.tools.specs(), { delta =>
                     this.onDelta(delta)
+                }, { r =>
+                    this.onReasoning(r)
                 })
             } catch (e: Exception) {
                 Log.error("Agent.run chatStream 异常: ${e}")
@@ -503,7 +506,7 @@ public class Agent {
         summaryMsgs.add(ChatMessage("user", sb.toString()))
         var summary = ""
         try {
-            let resp = this.provider.chatStream(summaryMsgs, ArrayList<ToolSpec>(), { _ => })
+            let resp = this.provider.chatStream(summaryMsgs, ArrayList<ToolSpec>(), { _ => }, { _ => })
             summary = resp.text
         } catch (e: Exception) {
             return
@@ -640,7 +643,7 @@ public class Agent {
         summaryMsgs.add(ChatMessage("user", sb.toString()))
         var summary = ""
         try {
-            let resp = this.provider.chatStream(summaryMsgs, ArrayList<ToolSpec>(), { _ => })
+            let resp = this.provider.chatStream(summaryMsgs, ArrayList<ToolSpec>(), { _ => }, { _ => })
             summary = resp.text
         } catch (e: Exception) {
             // 摘要失败不阻塞主流程（保持原历史继续）

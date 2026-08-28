@@ -73,7 +73,7 @@ public class OllamaProvider <: LlmProvider {
     }
 
     public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
-        onDelta: (String) -> Unit): ModelResponse {
+        onDelta: (String) -> Unit, onReasoning: (String) -> Unit): ModelResponse {
         // 构造请求体（与 OpenAiProvider 一致）
         var body = JsonObject()
         body.put("model", JsonString(this.model))

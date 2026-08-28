@@ -187,6 +187,15 @@ public class HashlineEditParser {
 
     /**
      * 收集紧跟锚点的 +/- 操作，返回下一个待处理行索引
+     *
+     * 上下文行（无 +/-/@@ 前缀）被跳过，不中断收集。
+     * 这允许模型在 patch 里放上下文行做可读性辅助：
+     * ```
+     * @@135
+     *     type, x: rand(...), ...cfg,    ← 上下文行（跳过）
+     * +    maxHp: cfg.hp,                ← 插入（收集）
+     *     vx: rand(-1, 1), fireCd: ...   ← 上下文行（跳过）
+     * ```
      */
     private static func collectOps(lines: Array<String>, start: Int64, ops: ArrayList<PatchOp>): Int64 {
         var i = start
@@ -214,8 +223,10 @@ public class HashlineEditParser {
                 i += 1
             } else if (opLine.startsWith("@@")) {
                 break  // 遇到下一个锚点，结束当前块
+            } else if (opLine.trimAscii().size == 0) {
+                i += 1  // 空行：跳过，不中断收集
             } else {
-                break  // 非操作行，结束当前锚点块
+                i += 1  // 上下文行（无 +/-/@@ 前缀）：跳过，不中断收集
             }
         }
         // 处理末尾未配对的 Delete

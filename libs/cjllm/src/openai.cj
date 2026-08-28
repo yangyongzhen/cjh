@@ -118,7 +118,7 @@ public class OpenAiProvider <: LlmProvider {
     }
 
     public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
-        onDelta: (String) -> Unit): ModelResponse {
+        onDelta: (String) -> Unit, onReasoning: (String) -> Unit): ModelResponse {
         // 构造请求体
         var body = JsonObject()
         body.put("model", JsonString(this.model))
@@ -151,6 +151,8 @@ public class OpenAiProvider <: LlmProvider {
         // 故放宽到 10 分钟，避免长任务被切断导致最后一帧 usage 丢失（token=0）
         // 注：readTimer 在请求正常完成后会被取消，不会触发 WARN；
         // 只有 warmup 那种"fire and forget"的请求才会让 readTimer 跑到超时
+        // Client 不能缓存复用：stdx.net.http 的 Client 在 send 完成后会被关闭，
+        // 复用已关闭的 Client 会报 "send body failed, since closed"
         let client = ClientBuilder()
             .tlsConfig(tlsConfig)
             .readTimeout(Duration.second * 600)
@@ -186,6 +188,11 @@ public class OpenAiProvider <: LlmProvider {
             if (delta.size > 0) {
                 onDelta(delta)
             }
+        }
+        // 思考增量回调：reasoning_content 实时推给调用方
+        // glm-5.3-flash 等模型先输出大量 reasoning_content，不显示会让用户干等
+        acc.onReasoningDelta = { r =>
+            onReasoning(r)
         }
         parser.run()
         let modelResp = acc.finish()

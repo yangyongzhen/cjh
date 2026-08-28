@@ -45,10 +45,11 @@ public interface LlmProvider {
      * @param messages 消息历史
      * @param tools    工具 schema（可为空）
      * @param onDelta  文本增量回调
+     * @param onReasoning  思考增量回调（reasoning_content，glm-5.3-flash 等模型会先输出思考过程）
      * @return 完整响应（含工具调用）
      */
     public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
-        onDelta: (String) -> Unit): ModelResponse
+        onDelta: (String) -> Unit, onReasoning: (String) -> Unit): ModelResponse
 }
 
 /**
@@ -56,9 +57,14 @@ public interface LlmProvider {
  */
 public class StreamAccumulator {
     public var text: String = ""
+    public var reasoningContent: String = ""  // 思考过程（reasoning_content）
     public var toolCalls: ArrayList<ToolCall> = ArrayList<ToolCall>()
     // 上次已回调的文本长度（供增量回调）
     private var lastSentText: String = ""
+    // 上次已回调的思考文本长度
+    private var lastSentReasoning: String = ""
+    // 思考增量回调：实时把 reasoning_content 流推给 TUI 显示
+    public var onReasoningDelta: (String) -> Unit = { _ => }
     // 并行工具调用按 index 分别累积（OpenAI 流式 tool_calls 数组元素带 index；
     // 旧实现单一 curToolArgs 会把多个调用参数拼成非法 JSON → _raw 透传 → "缺少参数"）
     private var pendingToolIds: ArrayList<String> = ArrayList<String>()
@@ -119,6 +125,34 @@ public class StreamAccumulator {
                                                                     // 只累积原始文本：mojibake 修复必须在完整串上做，
                                                                     // 逐 chunk 修复在分片切碎 mojibake 串时会失败（finish 时整体修复）
                                                                     this.text += s
+                                                                }
+                                                            case _ => ()
+                                                        }
+                                                    }
+                                                    // 思考增量（reasoning_content）：实时回调给 TUI
+                                                    if (let Some(rc) <- delta.asObject().get("reasoning_content")) {
+                                                        match (rc.kind()) {
+                                                            case JsonKind.JsString =>
+                                                                let s = rc.asString().getValue()
+                                                                if (s.size > 0) {
+                                                                    this.reasoningContent += s
+                                                                    // 增量回调
+                                                                    if (this.reasoningContent.size > this.lastSentReasoning.size) {
+                                                                        var cut = this.lastSentReasoning.size
+                                                                        var deltaR = ""
+                                                                        while (cut <= this.reasoningContent.size) {
+                                                                            try {
+                                                                                deltaR = this.reasoningContent[cut..this.reasoningContent.size]
+                                                                                break
+                                                                            } catch (e: Exception) {
+                                                                                cut -= 1
+                                                                            }
+                                                                        }
+                                                                        this.lastSentReasoning = this.reasoningContent
+                                                                        if (deltaR.size > 0) {
+                                                                            this.onReasoningDelta(deltaR)
+                                                                        }
+                                                                    }
                                                                 }
                                                             case _ => ()
                                                         }
