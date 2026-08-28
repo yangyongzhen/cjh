@@ -175,21 +175,76 @@ public class CjhConfig {
     }
 
     /**
-     * settings.json 模板（未知字段被忽略，_说明 仅为提示）
+     * settings.json 模板（包含所有配置项，空值不生效，用户按需填写）
      */
     private func settingsTemplate(): String {
-        return "{\n" +
-            "  \"_说明\": \"可选配置，默认即可运行。支持 base_url / model / max_iterations / system_prompt / temperature / max_tokens / models / capability。capability 为三域安全白名单（commands 命令 / tools 工具 / resources 文件与危险命令），配置后未声明即拒绝，详见 docs/进度记录 V2a\",\n" +
-            "  \"base_url\": \"https://api.openai.com/v1/chat/completions\",\n" +
-            "  \"model\": \"gpt-4o-mini\",\n" +
-            "  \"max_iterations\": 10,\n" +
-            "  \"temperature\": 0.7,\n" +
-            "  \"max_tokens\": 16384,\n" +
-            "  \"models\": [\n" +
-            "    { \"id\": \"gpt-4o-mini\", \"name\": \"GPT-4o mini\" },\n" +
-            "    { \"id\": \"deepseek-chat\", \"name\": \"DeepSeek V3\", \"base_url\": \"https://api.deepseek.com/v1/chat/completions\", \"temperature\": 1.0 }\n" +
-            "  ]\n" +
-            "}\n"
+        return """
+{
+  "_说明": "cjh 配置文件。空字符串/0/false 表示用默认值不生效。修改后重启 cjh 生效。完整字段说明见 docs/。",
+
+  "base_url": "https://api.openai.com/v1/chat/completions",
+  "model": "gpt-4o-mini",
+  "max_iterations": 10,
+  "temperature": 0.7,
+  "max_tokens": 16384,
+  "system_prompt": "",
+
+  "theme": "starfrost",
+  "tool_result_max_chars": 6000,
+  "compact_threshold": 0,
+  "compact_keep": 12,
+
+  "enabled_skills": [],
+  "enabled_plugins": [],
+  "require_signature": false,
+
+  "models": [
+    { "id": "gpt-4o-mini", "name": "GPT-4o mini" },
+    { "id": "deepseek-chat", "name": "DeepSeek V3", "base_url": "https://api.deepseek.com/v1/chat/completions", "temperature": 1.0 }
+  ],
+
+  "capability": {
+    "_说明": "三域安全白名单。配置后未声明即拒绝；不配置=宽松模式。详见 docs/进度记录 V2a。",
+    "commands": [],
+    "tools": [],
+    "resources": []
+  },
+
+  "mcp_servers": {
+    "_说明": "MCP 服务器配置。每个 key 是服务器名，value 含 transport/command/args/url/env。示例见 docs/MCP设计.md。",
+    "_example_stdio": { "transport": "stdio", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"] },
+    "_example_sse": { "transport": "sse", "url": "http://127.0.0.1:8080/sse" }
+  },
+
+  "web": {
+    "_说明": "Web 服务器配置（cjh web 子命令）。远程访问强烈建议设置 auth_token。",
+    "enabled": false,
+    "port": 8765,
+    "bind_addr": "127.0.0.1",
+    "auth_token": "",
+    "max_request_size": 1048576
+  },
+
+  "web_search": {
+    "_说明": "Web 搜索配置。provider 可选 auto|exa-mcp|tavily|exa|searxng|ddg。auto 模式降级链：Exa MCP → 搜狗 → Bing → 付费 provider。",
+    "enabled": true,
+    "provider": "auto",
+    "tavily_api_keys": "",
+    "exa_api_keys": "",
+    "searxng_url": "",
+    "max_results": 5,
+    "timeout_seconds": 8
+  },
+
+  "web_fetch": {
+    "_说明": "Web 抓取配置。allow_internal_hosts=true 允许抓 localhost（开发服务器）。三级降级：Cangjie HTTP → curl → Firecrawl。",
+    "enabled": true,
+    "allow_internal_hosts": false,
+    "max_chars": 32000,
+    "timeout_seconds": 30
+  }
+}
+"""
     }
 
     /**
