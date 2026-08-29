@@ -87,6 +87,21 @@ public class ToolRegistry {
     }
 
     /**
+     * 获取工具实例（供工作区切换等场景对工具做运行时操作）
+     */
+    public func getTool(name: String): ?CjhTool {
+        lock.lock()
+        try {
+            if (!this.tools.contains(name)) {
+                return None
+            }
+            return this.tools.get(name)
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    /**
      * 查询工具是否 read-only（V2d 并发执行引擎分类）
      * 工具不存在时返回 false（保守：未知工具不并发）
      */

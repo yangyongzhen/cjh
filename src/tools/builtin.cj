@@ -46,6 +46,14 @@ public class BashTool <: CjhTool {
         return false  // 有副作用：V2d 并发执行引擎分类
     }
 
+    /**
+     * 重置持久会话（工作区切换时调用）：关闭现有 bash 进程，
+     * 下次执行在新 cwd 下重建（持久 bash 的 cwd 独立于进程 chdir）。
+     */
+    public func resetSession(): Unit {
+        this.session.close()
+    }
+
     public func spec(): ToolSpec {
         var props = HashMap<String, JsonValue>()
         props.add("command", JsonSchema.str("Shell command to execute"))
