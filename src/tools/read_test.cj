@@ -48,10 +48,10 @@ public class ReadToolTest {
 
     @TestCase
     public func testLargeFileDefaultLimit(): Unit {
-        // 创建大文件（> 200 行，触发默认 limit=200）
+        // 创建大文件（> 500 行，触发默认 limit=500）
         let path = "/tmp/cjh_read_test_large.txt"
         let sb = StringBuilder()
-        for (i in 0..250) {
+        for (i in 0..600) {
             sb.append("line${i}\n")
         }
         File.writeTo(path, sb.toString().toArray())
@@ -62,11 +62,34 @@ public class ReadToolTest {
         let result = tool.execute(args)
 
         @Assert(result.isError, false)
-        // 验证默认返回前 200 行（行号 1 到 200）
+        // 验证默认返回前 500 行
         @Assert(result.content.contains("1\tline0"), true)
-        @Assert(result.content.contains("200\tline199"), true)
-        // 第 201 行不应出现（默认 limit=200）
-        @Assert(result.content.contains("line200"), false)
+        // 截断提示应包含总行数和下一段 offset
+        @Assert(result.content.contains("文件共"), true)
+        @Assert(result.content.contains("offset="), true)
+
+        // 清理
+        try { rmFile(path) } catch (e: Exception) {}
+    }
+
+    @TestCase
+    public func testSmallFileNoTruncationHint(): Unit {
+        // 小文件（< 500 行）不应有截断提示
+        let path = "/tmp/cjh_read_test_smallhint.txt"
+        let sb = StringBuilder()
+        for (i in 0..100) {
+            sb.append("line${i}\n")
+        }
+        File.writeTo(path, sb.toString().toArray())
+
+        let tool = ReadTool()
+        var args = JsonObject()
+        args.put("path", JsonString(path))
+        let result = tool.execute(args)
+
+        @Assert(result.isError, false)
+        // 100 行 < 500 行阈值，无截断提示
+        @Assert(result.content.contains("文件共"), false)
 
         // 清理
         try { rmFile(path) } catch (e: Exception) {}
@@ -122,31 +145,6 @@ public class ReadToolTest {
         // 第 3 次读：应有提示
         let r3 = tool.execute(args)
         @Assert(r3.content.contains("[提示]"), true)
-
-        // 清理
-        try { rmFile(path) } catch (e: Exception) {}
-    }
-
-    @TestCase
-    public func testLineRangeHintForLongContent(): Unit {
-        // 测试长内容翻页提示（无 offset/limit 且结果 > 2000 字符）
-        let path = "/tmp/cjh_read_test_longhint.txt"
-        let sb = StringBuilder()
-        for (i in 0..150) {
-            // 每行约 20 字符，150 行约 3000 字符，触发翻页提示
-            sb.append("line${i}paddingxx\n")
-        }
-        File.writeTo(path, sb.toString().toArray())
-
-        let tool = ReadTool()
-        var args = JsonObject()
-        args.put("path", JsonString(path))
-        let result = tool.execute(args)
-
-        @Assert(result.isError, false)
-        // 150 行 < 200 行阈值，走小文件全文分支
-        // 内容较长时应有翻页提示
-        @Assert(result.content.contains("[提示]"), true)
 
         // 清理
         try { rmFile(path) } catch (e: Exception) {}

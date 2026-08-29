@@ -117,6 +117,8 @@ public class ReadTool <: CjhTool {
         }
         // 重复读计数 + 提示
         let repeatHint = trackReadCount(path)
+        // 默认 limit：无 offset/limit 时读前 500 行（够覆盖大多数源文件，省轮次）
+        let defaultLimit: Int64 = 500
         try {
             // 大文件优化：用 FileInfo.size 判断，避免 File.readFrom 全文加载
             let fi = FileInfo(path)
@@ -126,30 +128,32 @@ public class ReadTool <: CjhTool {
             if (fileSize > largeThreshold) {
                 // 大文件：流式逐行读取，不加载全文到 Array<String>
                 let result = readLargeFile(path, offset, limit)
-                return appendHints(result, repeatHint, offset, limit)
+                return appendHints(result, repeatHint, offset, limit, 0, 0, 0)
             }
             // 小文件：一次读完
             let bytes = File.readFrom(path)
             let content = safeFromUtf8(bytes)
             let lines = content.split("\n", -1)
+            let totalLines = Int64(lines.size)
             // 有 offset 或 limit → 按需展开行段
             if (offset > 0 || limit > 0) {
                 let result = readRange(lines, offset, limit)
-                return appendHints(result, repeatHint, offset, limit)
+                let readEnd = if (limit > 0) { offset + limit - 1 } else { totalLines }
+                return appendHints(result, repeatHint, offset, limit, totalLines, offset, readEnd)
             }
-            // 无 offset/limit：大文件默认读前 200 行，小文件返回全文
-            if (lines.size > 200) {
-                let result = readRange(lines, 1, 200)
-                return appendHints(result, repeatHint, offset, limit)
+            // 无 offset/limit：大文件默认读前 defaultLimit 行，小文件返回全文
+            if (totalLines > defaultLimit) {
+                let result = readRange(lines, 1, defaultLimit)
+                return appendHints(result, repeatHint, 0, 0, totalLines, 1, defaultLimit)
             }
             // 小文件全文（带行号前缀，与 readRange 格式统一）
             var numbered = StringBuilder()
             var i: Int64 = 0
-            while (i < Int64(lines.size)) {
+            while (i < totalLines) {
                 numbered.append("${i + 1}\t${lines[i]}\n")
                 i += 1
             }
-            return appendHints(ToolResult(numbered.toString(), false), repeatHint, offset, limit)
+            return appendHints(ToolResult(numbered.toString(), false), repeatHint, 0, 0, totalLines, 1, totalLines)
         } catch (e: Exception) {
             return ToolResult("读取失败: ${e}", true)
         }
@@ -175,14 +179,23 @@ public class ReadTool <: CjhTool {
     }
 
     /**
-     * 在工具结果末尾追加提示（重复读提示、分段读提示）
+     * 在工具结果末尾追加提示
+     * - 重复读提示（repeatHint）
+     * - 截断提示：文件总行数 + 已读范围 + 剩余行数 + 下一段 offset
+     *
+     * 参数：
+     *   totalLines  文件总行数（0 表示未知，如大文件流式扫描）
+     *   readStart   本次已读起始行（1-based）
+     *   readEnd     本次已读结束行（1-based，含）
      */
     private func appendHints(result: ToolResult, repeatHint: String,
-        offset: Int64, limit: Int64): ToolResult {
+        offset: Int64, limit: Int64, totalLines: Int64,
+        readStart: Int64, readEnd: Int64): ToolResult {
         var hints = repeatHint
-        // 无 offset/limit 且结果较长时，提示用 offset+limit 翻页
-        if (offset == 0 && limit == 0 && result.content.size > 2000) {
-            hints += "\n[提示] 内容较长。如需后续段落，用 offset=N 读取第 N 行之后的内容。"
+        // 截断提示：已读范围未覆盖全文时，告知总行数 + 剩余 + 下一段 offset
+        if (totalLines > 0 && readEnd < totalLines) {
+            let remaining = totalLines - readEnd
+            hints += "\n[提示] 文件共 ${totalLines} 行，已读 ${readStart}-${readEnd}，剩余 ${remaining} 行。用 offset=${readEnd + 1} 读取下一段。"
         }
         if (hints.size > 0) {
             return ToolResult(result.content + hints, result.isError)
