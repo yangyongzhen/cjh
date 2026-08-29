@@ -54,6 +54,23 @@ Mainstream agents rely on sandbox + approval (runtime interception) for plugin s
 
 This is cjh's core distinguishing it from "feature piling". Drawing on Pi's token-saving engineering and OMP's hashline file rewriting, two hard metrics are systematically optimized. See the [Two Hard Metrics](#-two-hard-metrics) section below.
 
+**4. Ultimate vision: agent cluster orchestration (from "single engineer" to "software engineering team")**
+
+Benchmarking against pi/omp is only the starting point — learning from many agents' strengths to **raise the single-agent capability** (token savings, runtime efficiency). What cjh truly aims for, leveraging Cangjie language characteristics, is **agent cluster orchestration** — amplifying single-agent capability into team-level parallelism.
+
+A single agent, however capable, is essentially one engineer — **it can focus on one thing at a time**: while running tests it cannot edit code. Large complex projects are never solo work: project managers, requirement analysts, developers, designers, testers... divided labor, running in parallel.
+
+**cjh's ultimate form is an agent cluster**: one orchestrator agent (the "project manager") coordinates, forking multiple sub-agents on demand — each with an independent workspace and context (like Linux fork: isolated, non-interfering), explicit task contracts, running in parallel, results aggregated for delivery. Workflows can be arbitrarily orchestrated by purpose; each agent configures its own model and capabilities.
+
+| Dimension | Single agent | Agent cluster (cjh ultimate form) |
+|---|---|---|
+| **Parallelism** | One thing at a time (can't edit while testing) | Test / code / review / docs in parallel |
+| **Context cost** | Global memory per agent, token explodes with scale | Sub-agents keep only task-local memory, **context isolated per task, saving tokens** |
+| **Modularity** | Linear single conversation | Contract-based interfaces → modular development, arbitrary workflow orchestration |
+| **Model config** | Single model | Per-role models (fast for explore, strong for coding, dedicated for review) |
+
+Cangjie's **M:N lightweight threads** are the native substrate for the cluster: sub-agents are in-process threads with zero scheduling overhead; **static single binary** makes the whole cluster one file — self-built, controllable, lightweight — far superior to bolting together third-party agents of uneven quality.
+
 ## 🌟 Why cjh
 
 | | |
@@ -477,7 +494,7 @@ cjh has a built-in MCP client supporting stdio transport + JSON-RPC 2.0. After c
 
 - [ ] **V2b Step 3**: WASM tool sandbox + central registry + `cjh install`
 - [ ] **Web TLS**: `ServerBuilder.tlsConfig` support
-- [ ] **V4 multi-agent**: Multi-agent collaboration + HarmonyOS native adaptation
+- [ ] **V4 agent cluster orchestration** (core differentiation): orchestrator + parallel sub-agents (Linux-fork-style isolated workspaces/contexts) + role model (PM/research/coding/testing/review) + contract interfaces + workflow DSL + per-agent model routing + HarmonyOS native
 
 ## 📚 Docs
 
