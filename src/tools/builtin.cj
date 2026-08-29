@@ -2,8 +2,10 @@ package cjh.tools
 
 import std.collection.*
 import stdx.encoding.json.*
+import stdx.encoding.base64.*
 import std.process.*
 import std.fs.*
+import std.env.*
 import cjutil.*
 import std.regex.*
 import std.io.*
@@ -13,9 +15,22 @@ import cjllm.ToolSpec
 
 /**
  * bash 工具：执行 shell 命令并捕获输出
+ *
+ * 超时（P0-1）：默认 60s，用 coreutils timeout 包装命令——
+ * git pull/构建/网络命令卡死不会挂起 agent 会话。
+ * 超时退出码 124 → 返回明确的超时错误（含已捕获的部分输出）。
  */
 public class BashTool <: CjhTool {
-    public init() {}
+    // 默认超时秒数（0=不超时；可用 env CJH_BASH_TIMEOUT 覆盖）
+    public let timeoutSecs: Int64
+
+    public init() {
+        this.timeoutSecs = 60
+    }
+
+    public init(timeoutSecs: Int64) {
+        this.timeoutSecs = timeoutSecs
+    }
 
     public func isReadOnly(): Bool {
         return false  // 有副作用：V2d 并发执行引擎分类
@@ -25,7 +40,7 @@ public class BashTool <: CjhTool {
         var props = HashMap<String, JsonValue>()
         props.add("command", JsonSchema.str("Shell command to execute"))
         let schema = JsonSchema.object(props, ArrayList<String>(["command"]))
-        return ToolSpec("bash", "Run a shell command (git, build, test, package manager). Do NOT use bash to read files — use read_file instead. bash is for executing commands, not for file content extraction (sed/awk/head/tail are slower and less reliable than read_file).", schema)
+        return ToolSpec("bash", "Run a shell command (git, build, test, package manager). Do NOT use bash to read files — use read_file instead. bash is for executing commands, not for file content extraction (sed/awk/head/tail are slower and less reliable than read_file). Commands are killed after ${this.timeoutSecs}s by default.", schema)
     }
 
     public func execute(args: JsonObject): ToolResult {
@@ -33,13 +48,46 @@ public class BashTool <: CjhTool {
             return ToolResult("Missing parameter: command", true)
         }
         let cmd = args.get("command").getOrThrow().asString().getValue()
+        // 超时配置：构造默认 > env CJH_BASH_TIMEOUT 覆盖
+        var secs = this.timeoutSecs
+        let envTimeout = getVariable("CJH_BASH_TIMEOUT")
+        if (envTimeout.isSome() && envTimeout.getOrThrow().size > 0) {
+            try {
+                secs = Int64.parse(envTimeout.getOrThrow())
+            } catch (e: Exception) {
+                ()  // 非法值忽略，用默认
+            }
+        }
         try {
-            var args = Array<String>(2, repeat: "")
-            args[0] = "-c"
-            args[1] = cmd
-            let (code, stdoutBytes, stderrBytes) = executeWithOutput("/bin/bash", args)
+            var argv = Array<String>(2, repeat: "")
+            argv[0] = "-c"
+            // timeout 包装：--kill-after 兜底强杀；退出码 124 = 超时。
+            // 命令经 base64 传给内层 bash -c：引号安全 + 保留 shell 内建语义
+            // （直接 `timeout Ns exit 3` 会因 timeout 无法 exec 内建而失败）
+            var effective = cmd
+            if (secs > 0) {
+                let b64 = toBase64String(cmd.toArray())
+                // 默认 TERM 信号 → 超时返回 124（--signal=KILL 会返回 137 无法识别）；
+                // --kill-after 2s 兜底强杀残留子进程
+                effective = "timeout --kill-after=2s ${secs}s bash -c \"\$(echo ${b64} | base64 -d)\""
+            }
+            argv[1] = effective
+            let (code, stdoutBytes, stderrBytes) = executeWithOutput("/bin/bash", argv)
             var out = safeFromUtf8(stdoutBytes)
             var err = safeFromUtf8(stderrBytes)
+            if (code == 124 && secs > 0) {
+                // 超时：明确提示，避免模型误以为是命令本身失败重试
+                var result = "⚠️ 命令超时（${secs}s 未完成，已强制终止）\n"
+                result += "exit code: 124 (timeout)\n"
+                if (out.size > 0) {
+                    result += "stdout:\n${out}\n"
+                }
+                if (err.size > 0) {
+                    result += "stderr:\n${err}\n"
+                }
+                result += "建议：检查命令是否卡死/需交互；必要时拆分为更短步骤或加更长超时（CJH_BASH_TIMEOUT）"
+                return ToolResult(result, true)
+            }
             var result = "exit code: ${code}\n"
             if (out.size > 0) {
                 result += "stdout:\n${out}\n"
@@ -120,6 +168,10 @@ public class ReadTool <: CjhTool {
         let repeatHint = trackReadCount(path)
         // 默认 limit：无 offset/limit 时读前 500 行（够覆盖大多数源文件，省轮次）
         let defaultLimit: Int64 = 500
+        // SQLite 数据库：P1-7 统一读取接口——.db/.sqlite/.sqlite3 走 sqlite3 CLI
+        if (path.endsWith(".db") || path.endsWith(".sqlite") || path.endsWith(".sqlite3")) {
+            return this.readSqlite(path, repeatHint)
+        }
         try {
             // 大文件优化：用 FileInfo.size 判断，避免 File.readFrom 全文加载
             let fi = FileInfo(path)
@@ -157,6 +209,63 @@ public class ReadTool <: CjhTool {
             return appendHints(ToolResult(numbered.toString(), false), repeatHint, 0, 0, totalLines, 1, totalLines)
         } catch (e: Exception) {
             return ToolResult("读取失败: ${e}", true)
+        }
+    }
+
+    /**
+     * SQLite 数据库读取（P1-7，对齐 omp"一切皆路径"）：
+     * 返回表列表 + 每表前 sampleRows 行，供模型快速了解库结构。
+     * 依赖系统 sqlite3 CLI；不可用时返回明确错误。
+     */
+    private func readSqlite(path: String, repeatHint: String): ToolResult {
+        if (!exists(path)) {
+            return ToolResult("读取失败: ${path} 不存在", true)
+        }
+        let sampleRows: Int64 = 20
+        try {
+            // 1. 表列表
+            var args = Array<String>(2, repeat: "")
+            args[0] = path
+            args[1] = ".tables"
+            let (code1, out1, err1) = executeWithOutput("sqlite3", args)
+            if (code1 != 0) {
+                let err = safeFromUtf8(err1)
+                if (err.contains("not found") || err.contains("No such file")) {
+                    return ToolResult("读取 SQLite 失败：系统未安装 sqlite3 CLI。用 bash 安装（apt install sqlite3）或改用其他方式读取。", true)
+                }
+                return ToolResult("sqlite3 失败: ${err}", true)
+            }
+            let tablesStr = safeFromUtf8(out1).trimAscii()
+            if (tablesStr.size == 0) {
+                return ToolResult("数据库无表（${path}）", false)
+            }
+            var result = StringBuilder()
+            result.append("[SQLite 数据库 ${path}]\n表：${tablesStr}\n\n")
+            // 2. 每表前 sampleRows 行
+            for (t in tablesStr.split(" ")) {
+                let table = t.trimAscii()
+                if (table.size == 0) {
+                    continue
+                }
+                var qargs = Array<String>(3, repeat: "")
+                qargs[0] = path
+                qargs[1] = "SELECT * FROM \"${table}\" LIMIT ${sampleRows};"
+                qargs[2] = "-header"
+                let (code2, out2, err2) = executeWithOutput("sqlite3", qargs)
+                if (code2 != 0) {
+                    result.append("-- ${table}: 读取失败 ${safeFromUtf8(err2)}\n")
+                    continue
+                }
+                result.append("-- ${table}（前 ${sampleRows} 行）：\n${safeFromUtf8(out2)}\n")
+            }
+            result.append("\n提示：可继续用 bash sqlite3 查询具体数据")
+            if (repeatHint.size > 0) {
+                result.append(repeatHint)
+            }
+            return ToolResult(result.toString(), false)
+        } catch (e: Exception) {
+            // sqlite3 命令缺失（exec 失败）等：给出可操作的提示
+            return ToolResult("SQLite 读取失败：sqlite3 CLI 不可用（${e}）。安装：apt install sqlite3，或用其他工具读取。", true)
         }
     }
 

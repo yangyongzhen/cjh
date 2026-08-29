@@ -50,7 +50,8 @@ public class TaskTool <: CjhTool {
             "Delegate a task to a specialized subagent. " +
             "The subagent runs independently with its own message history and returns a result. " +
             "Use for parallel independent subtasks or isolated investigation. " +
-            "subagent_type: explore (read-only investigation) or worker (can modify files).",
+            "PARALLEL: for several independent subtasks, issue MULTIPLE task calls in ONE turn — they run concurrently and are much faster than one at a time. " +
+            "subagent_type: explore (read-only investigation, fast) or worker (can modify files).",
             schema)
     }
 
@@ -89,13 +90,13 @@ public class TaskTool <: CjhTool {
         try {
             let result = this.spawnFn(description, prompt, subagentType)
             var sb = StringBuilder()
-            sb.append("子代理任务完成: ${description}\n")
-            sb.append("类型: ${subagentType}\n")
-            sb.append("迭代次数: ${result.iterations}\n")
+            sb.append("=== 子代理结果: ${description} ===\n")
+            sb.append("类型: ${subagentType} · 迭代 ${result.iterations}")
             if (result.promptTokens > 0 || result.completionTokens > 0) {
-                sb.append("Token: ↑${result.promptTokens} ↓${result.completionTokens}\n")
+                sb.append(" · ↑${result.promptTokens} ↓${result.completionTokens}")
             }
-            sb.append("\n结果:\n${result.text}\n")
+            sb.append("\n${result.text}\n")
+            sb.append("=== 子代理结果结束 ===\n")
             return ToolResult(sb.toString(), false)
         } catch (e: Exception) {
             return ToolResult("子代理任务失败: ${e}", true)

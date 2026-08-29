@@ -125,6 +125,21 @@ class StreamState {
 }
 
 /**
+ * 摘要专用快模型 provider（P1-5 模型路由）：
+ * settings.json 配了 summary_model 时返回独立 provider（compaction 摘要走快模型）；
+ * 未配置返回 None（复用主 provider）。
+ */
+func makeSummaryProvider(cfg: CjhConfig): Option<LlmProvider> {
+    if (cfg.summaryModel.size == 0) {
+        return None
+    }
+    let base = if (cfg.summaryBaseUrl.size > 0) { cfg.summaryBaseUrl } else { cfg.baseUrl }
+    let key = if (cfg.summaryApiKey.size > 0) { cfg.summaryApiKey } else { cfg.apiKey }
+    let p: LlmProvider = OpenAiProvider(base, key, cfg.summaryModel)
+    return Some(p)
+}
+
+/**
  * TUI 跨线程桥：agent 在 spawn 线程运行，经静态引用访问 TUI（避免闭包捕获跨线程问题）
  */
 class TuiBridge {

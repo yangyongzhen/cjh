@@ -27,6 +27,13 @@ public class TuiAppKeyTest {
         return (app, submitted)
     }
 
+    private func buildApp2(): (TuiApp, ArrayList<String>) {
+        let app = TuiApp()
+        let interrupts = ArrayList<String>()
+        app.onInterrupt = { => interrupts.add("yes") }
+        return (app, interrupts)
+    }
+
     private func keyChar(c: Int32): KeyEvent {
         // 普通输入字符：ch + seq=字符（text 取 seq）
         return KeyEvent(c, Rune(c).toString())
@@ -35,7 +42,36 @@ public class TuiAppKeyTest {
     @TestCase
     public func testCtrlCQuits(): Unit {
         let (app, _) = this.buildApp()
-        app.handleKey(KeyEvent(3))  // Ctrl+C
+        app.handleKey(KeyEvent(3))   // 第一次 Ctrl+C：确认退出（不退出）
+        @Assert(app.testRunning(), true)
+        app.handleKey(KeyEvent(3))   // 第二次：退出
+        @Assert(app.testRunning(), false)
+    }
+
+    @TestCase
+    public func testCtrlCSingleConfirmsNotQuit(): Unit {
+        // P0-2：空闲第一次 Ctrl+C 只提示确认，不退出（防误触丢会话）
+        let (app, _) = this.buildApp()
+        app.handleKey(KeyEvent(3))
+        @Assert(app.testRunning(), true)
+        // 其他按键取消退出
+        app.handleKey(this.keyChar(120))  // x
+        app.handleKey(KeyEvent(3))
+        app.handleKey(KeyEvent(3))
+        @Assert(app.testRunning(), false)  // 取消后需再按两次
+    }
+
+    @TestCase
+    public func testCtrlCWhileBusyInterruptsNotQuit(): Unit {
+        // P0-2：agent 忙时 Ctrl+C 触发中断回调，不退出 TUI
+        let (app, interrupted) = this.buildApp2()
+        app.setAgentRunning(true)  // 模拟 agent 执行中
+        app.handleKey(KeyEvent(3))
+        @Assert(app.testRunning(), true)      // 不退出
+        @Assert(interrupted[0], "yes")        // 中断回调已触发
+        app.setAgentRunning(false)
+        app.handleKey(KeyEvent(3))
+        app.handleKey(KeyEvent(3))
         @Assert(app.testRunning(), false)
     }
 

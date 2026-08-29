@@ -177,6 +177,12 @@ public class Agent {
     // 压缩触发用它而非字符估算——估算对中文/JSON 开销严重低估（实测 6.5x 偏差），
     // 真实用量是 provider 已返回的精确值。0=尚未有测量（首轮前）。
     private var lastPromptTokens: Int64 = 0
+    // 中断标志（P0-2）：用户 Ctrl+C 请求中断当前任务轮次。
+    // 线程安全（主线程 handleKey 设置，agent 线程轮询检查）。
+    private var interruptFlag: Bool = false
+    private var interruptLock: Mutex = Mutex()
+    // 摘要专用快模型（P1-5 模型路由）：compaction 摘要走快模型，None=复用主 provider
+    private var summaryProvider: Option<LlmProvider> = None
     // 内置任务列表（对齐 Claude Code TodoWrite，TUI Tasks 面板数据源）
     private var todos: ArrayList<TodoItem> = ArrayList<TodoItem>()
     private var nextTodoId: Int64 = 1
@@ -210,10 +216,43 @@ public class Agent {
     }
 
     /**
+     * 请求中断当前任务（P0-2）：设置中断标志，agent 在轮次间/工具执行后
+     * 检查并停止循环，保留已完成的工作。线程安全。
+     */
+    public func interrupt(): Unit {
+        this.interruptLock.lock()
+        try {
+            this.interruptFlag = true
+        } finally {
+            this.interruptLock.unlock()
+        }
+    }
+
+    /**
+     * 是否已请求中断（agent 循环轮询）
+     */
+    public func isInterrupted(): Bool {
+        this.interruptLock.lock()
+        try {
+            return this.interruptFlag
+        } finally {
+            this.interruptLock.unlock()
+        }
+    }
+
+    /**
      * 运行时切换 provider（/model 命令；历史保留）
      */
     public func setProvider(p: LlmProvider): Unit {
         this.provider = p
+    }
+
+    /**
+     * 设置摘要专用快模型（P1-5）：compaction 摘要/子代理摘要走快模型，
+     * 降低摘要调用耗时（实测主模型摘要 10-100s）
+     */
+    public func setSummaryProvider(p: LlmProvider): Unit {
+        this.summaryProvider = Some(p)
     }
 
     /**
@@ -342,6 +381,15 @@ public class Agent {
         var emptyRetries: Int64 = 0
         let maxEmptyRetries: Int64 = 3
         while (iterations < this.config.maxIterations) {
+            // P0-2：用户 Ctrl+C 中断——轮次间检查，保留已完成工作
+            if (this.isInterrupted()) {
+                Log.warn("Agent.run 被用户中断（${iterations} 轮后）")
+                this.onAssistantText("\n_[已中断：保留已完成的工作，可继续提问]_")
+                let d = (DateTime.now() - startTime).toMilliseconds()
+                summary.durationMs = d
+                summary.reply = "[已中断：${iterations} 轮已完成]"
+                return summary
+            }
             iterations += 1
             summary.rounds = iterations
 
@@ -665,18 +713,28 @@ public class Agent {
         if (compactEnd <= 1) {
             return
         }
-        // 构造摘要请求：把待压缩段拼接给 LLM，请求生成紧凑摘要
+        // P1-8：构造摘要请求——assistant 纯文本进摘要，tool_call/tool_result 保留原文。
+        // 避免摘要丢失工具结果细节导致压缩后 agent"失忆"。
+        var kept = ArrayList<ChatMessage>()
         var sb = StringBuilder()
-        sb.append("请把以下对话历史压缩成一段简洁的中文摘要（保留：任务目标、已完成的工具调用与关键结果、当前进度、尚未解决的问题）。不要遗漏重要事实。")
+        sb.append("请把以下对话历史压缩成一段简洁的中文摘要（保留：任务目标、已完成的关键操作与结果、当前进度、尚未解决的问题）。不要遗漏重要事实。")
         for (i in 1..compactEnd) {
             let m = this.messages[i]
-            sb.append("\n[${m.role}] ${m.content}")
+            if (m.role == "tool" || m.toolCalls.size > 0) {
+                // 工具调用/结果消息：保留原文（信息完整性）
+                kept.add(m)
+            } else {
+                // assistant 文本 / 用户指令：进摘要
+                sb.append("\n[${m.role}] ${m.content}")
+            }
         }
         var summaryMsgs = ArrayList<ChatMessage>()
         summaryMsgs.add(ChatMessage("user", sb.toString()))
         var summary = ""
         try {
-            let resp = this.provider.chatStream(summaryMsgs, ArrayList<ToolSpec>(), { _ => }, { _ => }, { _ => })
+            // P1-5：摘要走快模型（配置了 summary 时），降低摘要调用耗时
+            let sp = if (this.summaryProvider.isSome()) { this.summaryProvider.getOrThrow() } else { this.provider }
+            let resp = sp.chatStream(summaryMsgs, ArrayList<ToolSpec>(), { _ => }, { _ => }, { _ => })
             summary = resp.text
         } catch (e: Exception) {
             // 摘要失败不阻塞主流程（保持原历史继续）
@@ -685,12 +743,15 @@ public class Agent {
         if (summary.size == 0) {
             return
         }
-        // 重建历史：system + 摘要消息 + 最近 keep 条
+        // 重建历史：system + 摘要 + 保留的工具链消息 + 最近 keep 条
         var newMsgs = ArrayList<ChatMessage>()
         if (this.messages.size > 0) {
             newMsgs.add(this.messages[0])  // system
         }
         newMsgs.add(ChatMessage("user", "[历史摘要] ${summary}"))
+        for (m in kept) {
+            newMsgs.add(m)
+        }
         for (i in compactEnd..this.messages.size) {
             newMsgs.add(this.messages[i])
         }
@@ -913,6 +974,83 @@ public class Agent {
         } catch (e: Exception) {
             return ToolResult("工具执行异常: ${e}", true)
         }
+    }
+
+    /**
+     * 生成项目记忆摘要（P1-6，Hindsight 式）：
+     * 从消息历史提取结构化关键信息（最后任务/结果/涉及文件/工具统计），
+     * 无 LLM 调用（快），供跨会话注入。
+     */
+    public func summarizeForMemory(): String {
+        var task = ""
+        var files = HashSet<String>()
+        var toolCount: Int64 = 0
+        var lastReply = ""
+        for (m in this.messages) {
+            if (m.role == "user" && task.size == 0) {
+                task = m.content
+            }
+            if (m.role == "tool") {
+                toolCount += 1
+                // 从工具消息内容提取路径（read/write/edit 结果含路径或内容）
+                if (m.name == "read_file" || m.name == "write_file" || m.name == "edit_file" ||
+                    m.name == "append_file" || m.name == "hashline_edit" || m.name == "grep" || m.name == "glob") {
+                    // 常见格式："Written <path> ..." / "<path>:<line>: ..." / "=== <path> ==="
+                    let c = m.content
+                    var i: Int64 = 0
+                    while (i < c.size) {
+                        // 提取 / 开头的路径片段（简化启发式）
+                        if (c[i] == 47u8) {  // '/'
+                            var j = i
+                            var path = StringBuilder()
+                            while (j < c.size && c[j] != 32u8 && c[j] != 10u8 && c[j] != 58u8 && c[j] != 41u8 && path.toString().size < 120) {
+                                path.append(String(Rune(c[j])))
+                                j += 1
+                            }
+                            let p = path.toString()
+                            if (p.size > 4 && (p.contains(".") || p.contains("/"))) {
+                                files.add(p)
+                            }
+                            i = j
+                        } else {
+                            i += 1
+                        }
+                    }
+                }
+            }
+            if (m.role == "assistant" && m.content.size > 0) {
+                lastReply = m.content
+            }
+        }
+        var sb = StringBuilder()
+        sb.append("- 最后任务: ")
+        sb.append(if (task.size > 60) { task[0..60] + "…" } else { task })
+        sb.append("\n")
+        sb.append("- 工具调用: ${toolCount} 次\n")
+        if (files.size > 0) {
+            sb.append("- 涉及文件:")
+            var first: Bool = true
+            var n: Int64 = 0
+            for (f in files) {
+                if (n >= 8) {
+                    break
+                }
+                if (!first) {
+                    sb.append(",")
+                }
+                sb.append(" ${f}")
+                first = false
+                n += 1
+            }
+            sb.append("\n")
+        }
+        let reply = lastReply.trimAscii()
+        if (reply.size > 0) {
+            sb.append("- 结果: ")
+            sb.append(if (reply.size > 200) { reply[0..200] + "…" } else { reply })
+            sb.append("\n")
+        }
+        return sb.toString()
     }
 
     /**

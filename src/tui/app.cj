@@ -103,6 +103,10 @@ public class TuiApp {
 
     // 事件回调：提交输入时触发（外部接线）
     public var onSubmit: (String) -> Unit = { _ => }
+    // 中断回调（P0-2）：Ctrl+C 且 agent 忙时触发，外部接线到 agent.interrupt()
+    public var onInterrupt: () -> Unit = { => }
+    // 空闲时第一次 Ctrl+C 的退出确认（再按一次才退出，防误触丢会话）
+    private var quitConfirmPending: Bool = false
 
     // provider 配置表单提交回调（外部接线；参数：provider/baseUrl/model/apiKey/protocol）
     public var onProviderSubmit: (String, String, String, String, String) -> Unit = { _, _, _, _, _ => }
@@ -820,17 +824,43 @@ public class TuiApp {
      * 单元测试可直接构造 KeyEvent 驱动验证协议（输入/视图/编辑/补全/退出）。
      */
     public func handleKey(key: KeyEvent): Unit {
-        // Ctrl+C 最高优先级：任何模式（含审批等待中）下都退出
+        // Ctrl+C（P0-2）：审批等待中→拒绝审批；agent 忙→中断当前轮；
+        // 空闲→第一次确认、第二次退出（防误触丢会话）
         if (key.isCtrlC) {
             // 若有等待中的审批：写回 false 让其解除阻塞（避免 agent 线程悬挂）
             this.approvalLock.lock()
-            if (this.pendingApproval.isSome()) {
+            let hasPending = this.pendingApproval.isSome()
+            if (hasPending) {
                 this.approvalResult = Some(false)
                 this.pendingApproval = None
             }
             this.approvalLock.unlock()
+            if (hasPending) {
+                return  // 审批拒绝：不退出、不中断任务
+            }
+            if (this.isAgentBusy()) {
+                // 中断当前任务轮次（保留已完成工作），不退出 TUI
+                this.quitConfirmPending = false
+                this.onInterrupt()
+                this.safeLog("info", "Ctrl+C: 请求中断当前任务")
+                this.appendOutput(Ansi.fg(Ansi.THEME_WARN) + "⏹ 已请求中断当前任务，正在停止…" + Ansi.reset())
+                return
+            }
+            // 空闲：第一次确认，第二次退出
+            if (!this.quitConfirmPending) {
+                this.quitConfirmPending = true
+                this.safeLog("info", "Ctrl+C: 空闲，确认退出（再按一次退出）")
+                this.appendOutput(Ansi.fg(Ansi.THEME_WARN) + "再按 Ctrl+C 退出；按其他键取消" + Ansi.reset())
+                this.markDirty()
+                return
+            }
             this.running = false
             return
+        }
+        // 其他按键清除退出确认（用户按任意键取消退出）
+        if (this.quitConfirmPending) {
+            this.quitConfirmPending = false
+            this.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "[已取消退出]" + Ansi.reset())
         }
         // 审批模式：等待用户 y/n 决策（危险操作审批链）
         this.approvalLock.lock()

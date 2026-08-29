@@ -2,6 +2,7 @@ package cjh.tests
 
 import std.collection.*
 import std.fs.*
+import std.process.*
 import stdx.encoding.json.*
 import cjh.tools.*
 
@@ -100,6 +101,52 @@ public class ReadToolEdgeTest {
         let hasSummary = result.content.contains("结构化摘要")
         let hasTruncHint = result.content.contains("offset=")
         @Assert(hasSummary || hasTruncHint, true)
+    }
+
+    @TestCase
+    public func testSqliteRead(): Unit {
+        // P1-7：.db 文件走 SQLite 读取。sqlite3 CLI 可用 → 表/行输出；
+        // 不可用 → 明确提示安装（不静默失败）
+        let path = this.dir + "/test.db"
+        writeTextFile(path, "placeholder")
+        let result = this.runRead(path, 0, 0)
+        // 两种合法结果：sqlite3 存在 → 表结构输出；不存在 → 提示安装
+        let hasSqlite = sqlite3Available()
+        if (hasSqlite) {
+            @Assert(result.isError, false)
+        } else {
+            @Assert(result.isError, true)
+            @Assert(result.content.contains("sqlite3"), true)
+        }
+    }
+
+    @TestCase
+    public func testSqliteReadRealData(): Unit {
+        // 仅当 sqlite3 可用时验证真实数据读取（建临时库 → 表/行）
+        if (!sqlite3Available()) {
+            return  // 环境无 sqlite3，跳过（无法建库）
+        }
+        let path = this.dir + "/real.db"
+        removeTree(path)
+        var args = Array<String>(3, repeat: "")
+        args[0] = path
+        args[1] = "CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT); INSERT INTO users VALUES(1,'alice'),(2,'bob');"
+        let (code, _, _) = executeWithOutput("sqlite3", args)
+        @Assert(code, 0)
+        let result = this.runRead(path, 0, 0)
+        @Assert(result.isError, false)
+        @Assert(result.content.contains("users"), true)
+        @Assert(result.content.contains("alice"), true)
+        @Assert(result.content.contains("bob"), true)
+    }
+
+    private func sqlite3Available(): Bool {
+        try {
+            let (code, _, _) = executeWithOutput("/bin/bash", ["-c", "which sqlite3"])
+            return code == 0
+        } catch (e: Exception) {
+            return false
+        }
     }
 
     @TestCase

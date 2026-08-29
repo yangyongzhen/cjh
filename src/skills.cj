@@ -12,6 +12,7 @@ import std.convert.Parsable
 import std.env.*
 import std.fs.*
 import std.io.*
+import std.time.*
 import stdx.encoding.json.*
 import cjh.agent.*
 import cjh.tools.*
@@ -377,7 +378,58 @@ func loadSkillTools(skillsDir: String, registry: ToolRegistry, enabled: ArrayLis
 /**
  * 组装 system prompt：全局配置 + 项目指令（AGENTS.md）+ 技能（Skills）
  */
-func buildSystemPrompt(base: String, skillsDir: String, enabled: ArrayList<String>): String {
+/**
+ * 当前项目名（记忆文件隔离用）：cwd 的 basename
+ */
+func currentProjectName(): String {
+    let cwd = getWorkingDirectory().toString()
+    let slash = cwd.lastIndexOf("/")
+    match (slash) {
+        case Some(idx) =>
+            let name = cwd[(idx + 1)..cwd.size]
+            return if (name.size > 0) { name } else { "root" }
+        case None => return cwd
+    }
+}
+
+/**
+ * 保存项目记忆（P1-6，Hindsight 式）：会话结束后写 memoryDir/<project>.md
+ * 保留关键信息，供下次会话注入。限制：只覆盖写入，不累积（防膨胀）。
+ */
+func saveProjectMemory(memoryDir: String, summary: String): Unit {
+    try {
+        if (!exists(memoryDir)) {
+            Directory.create(memoryDir, recursive: true)
+        }
+        let name = currentProjectName()
+        let now = DateTime.now().toString()
+        let content = "# 项目记忆：${name}\n> 更新时间：${now}\n\n${summary}"
+        File.writeTo(memoryDir + "/" + name + ".md", content.toArray())
+    } catch (e: Exception) {
+        // 记忆写入失败不影响主流程
+    }
+}
+
+/**
+ * 读取项目记忆（供 buildSystemPrompt 注入）
+ */
+func loadProjectMemory(memoryDir: String): String {
+    try {
+        if (!exists(memoryDir)) {
+            return ""
+        }
+        let name = currentProjectName()
+        let path = memoryDir + "/" + name + ".md"
+        if (!exists(path)) {
+            return ""
+        }
+        return safeFromUtf8(File.readFrom(path))
+    } catch (e: Exception) {
+        return ""
+    }
+}
+
+func buildSystemPrompt(base: String, skillsDir: String, enabled: ArrayList<String>, memoryDir: String): String {
     var s = base
     let instr = loadProjectInstructions()
     if (instr.size > 0) {
@@ -386,6 +438,11 @@ func buildSystemPrompt(base: String, skillsDir: String, enabled: ArrayList<Strin
     let skills = loadSkills(skillsDir, enabled)
     if (skills.size > 0) {
         s += "\n\n## 可用技能（Skills，按需使用）\n" + skills
+    }
+    // 跨会话项目记忆（P1-6）：上次会话的关键信息，帮助快速恢复上下文
+    let memory = loadProjectMemory(memoryDir)
+    if (memory.size > 0) {
+        s += "\n\n## 项目记忆（上次会话）\n" + memory
     }
     // 工具结果截断与回溯（对标 Pi spill extension）
     s += "\n\n## 工具结果截断\n当工具返回的结果过长时，cjh 会自动截断：保留结果的头部和尾部，"

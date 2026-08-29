@@ -78,6 +78,11 @@ public class CjhConfig {
     //   "openai"=OpenAI 兼容 / "anthropic"=Anthropic Messages / "gemini"=预留（暂未实现）
     // 用于聚合/自定义端点（custom provider）选择接入协议
     public var providerProtocol: String = ""
+    // 摘要/子代理专用快模型（P1-5 模型路由）：compaction 摘要、explore 子代理走快模型，
+    // 主对话用强模型。三项全空 = 复用主 provider。
+    public var summaryModel: String = ""
+    public var summaryBaseUrl: String = ""
+    public var summaryApiKey: String = ""
     // 三域 capability 安全模型（settings.json "capability": {...}；未配置=宽松模式）
     public var capability: Capability = Capability.fromJson(None)
     // Compaction：消息条数超阈值触发 LLM 摘要压缩早期历史（0=禁用，对齐 pi 自动摘要）
@@ -97,6 +102,8 @@ public class CjhConfig {
     public var toolResultMaxChars: Int64 = 6000
     // 落盘根目录：工具结果超长时完整内容写到此目录下 <sessionId>/<toolCallId>.txt
     public let spillDir: String
+    // 跨会话项目记忆目录（P1-6，Hindsight 式）：<project>.md 按项目隔离
+    public let memoryDir: String
     // 插件根目录：~/.cjh/plugins/<plugin-name>/plugin.json
     public let pluginsDir: String
     // 启用的插件白名单（settings.json "enabled_plugins": [...]；空=全部启用）
@@ -144,6 +151,7 @@ public class CjhConfig {
         this.skillsDir = this.configDir + "/skills"
         this.spillDir = this.configDir + "/spill"
         this.pluginsDir = this.configDir + "/plugins"
+        this.memoryDir = this.configDir + "/project-memory"
         this.load()
     }
 
@@ -159,6 +167,9 @@ public class CjhConfig {
         }
         if (!exists(this.spillDir)) {
             Directory.create(this.spillDir, recursive: true)
+        }
+        if (!exists(this.memoryDir)) {
+            Directory.create(this.memoryDir, recursive: true)
         }
         if (!exists(this.pluginsDir)) {
             Directory.create(this.pluginsDir, recursive: true)
@@ -193,6 +204,9 @@ public class CjhConfig {
   "base_url": "https://api.openai.com/v1/chat/completions",
   "model": "gpt-4o-mini",
   "provider_protocol": "",
+  "summary_model": "",
+  "summary_base_url": "",
+  "summary_api_key": "",
   "max_iterations": 10,
   "temperature": 0.7,
   "max_tokens": 16384,
@@ -449,8 +463,16 @@ public class CjhConfig {
                 " 6. bash is best for: git, builds, package managers, running tests, short aggregation (wc/sort/uniq)." +
                 "\n\n## Do not hallucinate encodings\n" +
                 " read_file and bash return plain text. If you see normal source code (HTML/JS/CSS), it IS the file content — do NOT run python3/awk/od to 'decode' it. Only use od/hexdump on genuinely binary files." +
+                "\n\n## Work loop (read → edit → verify)\n" +
+                " For each task: (1) READ the relevant files first to understand current state; (2) make targeted edits (edit_file/hashline_edit, or write_file for new files); (3) VERIFY with bash (run build/tests or inspect output). Do not modify blind — read before write." +
                 "\n\n## Batch tool calls\n" +
-                " When you need to do several independent things (read 3 files, run 2 commands), issue ALL the tool calls in ONE turn — do not do them one at a time. This saves round-trips and is much faster." +
+                " When you need to do several independent things (read 3 files, run 2 commands), issue ALL the tool calls in ONE turn — do not do them one at a time. This saves round-trips and is much faster.\n" +
+                " Example: to understand 3 files, call read_file 3 times in one turn; to run tests after a change, one bash call.\n" +
+                " NOTE: independent tool calls in one turn execute in parallel — take advantage of it." +
+                "\n\n## Tool failure handling\n" +
+                " If a tool fails, READ the error message and fix the cause (wrong path/args/state), then retry with corrected parameters. Do NOT switch to a different tool to do the same thing unless the error says the approach is wrong. Repeated identical retries without changing anything are wasteful." +
+                "\n\n## Context budget\n" +
+                " bash output is truncated to 2000 chars; long file reads are paginated with offset/limit. If you need the middle of a truncated bash output, read the spill file path shown in the truncation marker. Prefer targeted reads over dumping whole files." +
                 "\n\n## Writing files\n" +
                 " Write the complete file in one write_file call. If the file is large (>150 lines) and write_file gets truncated, continue with append_file — never rewrite a truncated file with write_file."
         }
@@ -480,6 +502,24 @@ public class CjhConfig {
                     if (let Some(v) <- obj.get("provider_protocol")) {
                         match (v.kind()) {
                             case JsonKind.JsString => this.providerProtocol = v.asString().getValue()
+                            case _ => ()
+                        }
+                    }
+                    if (let Some(v) <- obj.get("summary_model")) {
+                        match (v.kind()) {
+                            case JsonKind.JsString => this.summaryModel = v.asString().getValue()
+                            case _ => ()
+                        }
+                    }
+                    if (let Some(v) <- obj.get("summary_base_url")) {
+                        match (v.kind()) {
+                            case JsonKind.JsString => this.summaryBaseUrl = v.asString().getValue()
+                            case _ => ()
+                        }
+                    }
+                    if (let Some(v) <- obj.get("summary_api_key")) {
+                        match (v.kind()) {
+                            case JsonKind.JsString => this.summaryApiKey = v.asString().getValue()
                             case _ => ()
                         }
                     }

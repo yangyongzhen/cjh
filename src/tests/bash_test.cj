@@ -57,4 +57,22 @@ public class BashToolTest {
         let result = tool.execute(args)
         @Assert(result.isError, true)
     }
+
+    @TestCase
+    public func testTimeoutKillsLongCommand(): Unit {
+        // P0-1：超时防挂死——sleep 5 用 1s 超时必须被杀
+        let tool = BashTool(1)  // 1 秒超时
+        let result = tool.execute(this.buildArgs("sleep 5"))
+        @Assert(result.isError, true)
+        @Assert(result.content.contains("超时"), true)
+        @Assert(result.content.contains("124"), true)
+    }
+
+    @TestCase
+    public func testFastCommandNotAffectedByTimeout(): Unit {
+        let tool = BashTool(1)
+        let result = tool.execute(this.buildArgs("echo quick"))
+        @Assert(result.isError, false)
+        @Assert(result.content.contains("quick"), true)
+    }
 }

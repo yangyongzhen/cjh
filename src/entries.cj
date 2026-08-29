@@ -165,7 +165,7 @@ func runCli(sessionId: String): Int64 {
 
     // system prompt：全局配置 + 项目指令（AGENTS.md）+ 技能（Skills）
     let config = AgentConfig(
-        buildSystemPrompt(cjhCfg.systemPrompt, cjhCfg.skillsDir, cjhCfg.enabledSkills),
+        buildSystemPrompt(cjhCfg.systemPrompt, cjhCfg.skillsDir, cjhCfg.enabledSkills, cjhCfg.memoryDir),
         cjhCfg.maxIterations,
         cjhCfg.capability,
         cjhCfg.compactThreshold,
@@ -183,6 +183,10 @@ func runCli(sessionId: String): Int64 {
             provider = makeProvider(cjhCfg)
         }
         let agent = Agent(provider, registry, config)
+        match (makeSummaryProvider(cjhCfg)) {
+            case Some(sp) => agent.setSummaryProvider(sp)
+            case None => ()
+        }
         agent.setPluginManager(pluginManager)
         let store = SessionStore(cjhCfg.sessionsDir)
         CliSession.id = ""
@@ -304,7 +308,7 @@ func runJson(prompt: String, sessionId: String): Int64 {
     let effectiveSessionId = if (sessionId.size > 0) { sessionId } else { SessionStore(cjhCfg.sessionsDir).newSessionId() }
 
     let config = AgentConfig(
-        buildSystemPrompt(cjhCfg.systemPrompt, cjhCfg.skillsDir, cjhCfg.enabledSkills),
+        buildSystemPrompt(cjhCfg.systemPrompt, cjhCfg.skillsDir, cjhCfg.enabledSkills, cjhCfg.memoryDir),
         cjhCfg.maxIterations,
         cjhCfg.capability,
         cjhCfg.compactThreshold,
@@ -322,6 +326,10 @@ func runJson(prompt: String, sessionId: String): Int64 {
             provider = makeProvider(cjhCfg)
         }
         let agent = Agent(provider, registry, config)
+        match (makeSummaryProvider(cjhCfg)) {
+            case Some(sp) => agent.setSummaryProvider(sp)
+            case None => ()
+        }
         agent.setPluginManager(pluginManager)
         let store = SessionStore(cjhCfg.sessionsDir)
 
@@ -485,7 +493,7 @@ func runTui(sessionId: String): Int64 {
 
     // system prompt：全局配置 + 项目指令（AGENTS.md）+ 技能（Skills）
     let config = AgentConfig(
-        buildSystemPrompt(cjhCfg.systemPrompt, cjhCfg.skillsDir, cjhCfg.enabledSkills),
+        buildSystemPrompt(cjhCfg.systemPrompt, cjhCfg.skillsDir, cjhCfg.enabledSkills, cjhCfg.memoryDir),
         cjhCfg.maxIterations,
         cjhCfg.capability,
         cjhCfg.compactThreshold,
@@ -507,6 +515,10 @@ func runTui(sessionId: String): Int64 {
         }
         mark("provider created (warmup spawned)")
         let agent = Agent(provider, registry, config)
+        match (makeSummaryProvider(cjhCfg)) {
+            case Some(sp) => agent.setSummaryProvider(sp)
+            case None => ()
+        }
         agent.setPluginManager(pluginManager)
 
         // TodoWriteTool：LLM 通过工具调用管理任务列表（回调绑定到 agent）
@@ -726,6 +738,10 @@ func runTui(sessionId: String): Int64 {
             cjhCfg.theme = name
             cjhCfg.saveTheme(name)
         }
+        // P0-2：Ctrl+C 中断当前任务（agent 忙时）
+        tui.onInterrupt = { =>
+            agent.interrupt()
+        }
         tui.onSubmit = { input =>
             // slash 命令（对齐 pi：/help /new /resume /quit /model /settings）
             if (input.startsWith("/")) {
@@ -752,6 +768,10 @@ func runTui(sessionId: String): Int64 {
                     }
                 } catch (e: Exception) {
                     TuiBridge.output(Ansi.fg(Ansi.THEME_ERR) + "错误: ${e}" + Ansi.reset())
+                }
+                // P1-6：会话结束后保存项目记忆（供下次会话注入，Hindsight 式）
+                if (summary.rounds > 0) {
+                    saveProjectMemory(cjhCfg.memoryDir, agent.summarizeForMemory())
                 }
                 // 先关闭 agent 运行态（动态状态栏消失，输出区恢复占满），
                 // 再触发 onRunComplete 渲染回合总结条，避免总结条被收缩的输出区挤压
