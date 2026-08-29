@@ -166,6 +166,8 @@ public class Agent {
     // 状态回调（TUI 实时状态行用）
     public var onThinking: () -> Unit = { => }
     public var onTokens: (Int64) -> Unit = { _ => }
+    // 流式逐帧 token 估算回调（思考过程中实时更新动态状态栏）
+    public var onTokenEstimate: (Int64) -> Unit = { _ => }
     // 审批回调：危险操作需人工确认时调用，返回 true=同意执行（默认拒绝）
     public var onApproval: (String, JsonObject, String) -> Bool = { n, a, r => false }
     // 任务变更回调（TUI Tasks 面板实时刷新）
@@ -325,6 +327,8 @@ public class Agent {
                     this.onDelta(delta)
                 }, { r =>
                     this.onReasoning(r)
+                }, { est =>
+                    this.onTokenEstimate(est)
                 })
             } catch (e: Exception) {
                 Log.error("Agent.run chatStream 异常: ${e}")
@@ -527,7 +531,7 @@ public class Agent {
         summaryMsgs.add(ChatMessage("user", sb.toString()))
         var summary = ""
         try {
-            let resp = this.provider.chatStream(summaryMsgs, ArrayList<ToolSpec>(), { _ => }, { _ => })
+            let resp = this.provider.chatStream(summaryMsgs, ArrayList<ToolSpec>(), { _ => }, { _ => }, { _ => })
             summary = resp.text
         } catch (e: Exception) {
             return
@@ -664,7 +668,7 @@ public class Agent {
         summaryMsgs.add(ChatMessage("user", sb.toString()))
         var summary = ""
         try {
-            let resp = this.provider.chatStream(summaryMsgs, ArrayList<ToolSpec>(), { _ => }, { _ => })
+            let resp = this.provider.chatStream(summaryMsgs, ArrayList<ToolSpec>(), { _ => }, { _ => }, { _ => })
             summary = resp.text
         } catch (e: Exception) {
             // 摘要失败不阻塞主流程（保持原历史继续）

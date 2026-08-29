@@ -394,6 +394,21 @@ public class TuiApp {
     }
 
     /**
+     * 设置流式 token 估算值（思考过程中实时更新）
+     * 用估算值覆盖 agentPromptTokens，让动态状态栏显示实时增长的 token 数。
+     * usage 精确值回传后，addAgentTokens 会再次累加精确值。
+     */
+    public func setAgentTokenEstimate(estimate: Int64): Unit {
+        this.agentTokenLock.lock()
+        // 估算值只增不减（避免帧间抖动），且只在实际 token 未回传前生效
+        if (estimate > this.agentPromptTokens) {
+            this.agentPromptTokens = estimate
+        }
+        this.agentTokenLock.unlock()
+        this.markDirty()
+    }
+
+    /**
      * 入队待发送消息（Agent 执行期间提交的输入）
      * @return 队列长度（用于提示"前面还有 N 条"）
      */

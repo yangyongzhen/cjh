@@ -589,6 +589,10 @@ func runTui(sessionId: String): Int64 {
         agent.onTokens = { tokens =>
             tui.addAgentTokens(tokens)
         }
+        // 流式逐帧 token 估算：思考过程中实时更新动态状态栏 token 数
+        agent.onTokenEstimate = { est =>
+            tui.setAgentTokenEstimate(est)
+        }
         agent.onToolStart = { name, args =>
             if (StreamState.active) {
                 TuiBridge.delta("")

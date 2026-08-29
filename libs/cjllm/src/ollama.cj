@@ -73,7 +73,8 @@ public class OllamaProvider <: LlmProvider {
     }
 
     public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
-        onDelta: (String) -> Unit, onReasoning: (String) -> Unit): ModelResponse {
+        onDelta: (String) -> Unit, onReasoning: (String) -> Unit,
+        onTokenEstimate: (Int64) -> Unit): ModelResponse {
         // 构造请求体（与 OpenAiProvider 一致）
         var body = JsonObject()
         body.put("model", JsonString(this.model))
@@ -121,6 +122,13 @@ public class OllamaProvider <: LlmProvider {
 
         // SSE 解析（复用 OpenAI 兼容的 StreamAccumulator + SseParser）
         let acc = StreamAccumulator()
+        // prompt token 估算：消息历史字符数 / 4
+        var promptChars: Int64 = 0
+        for (m in messages) {
+            promptChars += Int64(m.content.size)
+        }
+        acc.estimatedPromptTokens = promptChars / 4
+        acc.onTokenEstimate = onTokenEstimate
         let parser = SseParser(resp.body)
         parser.onEvent = { data =>
             acc.feed(data)

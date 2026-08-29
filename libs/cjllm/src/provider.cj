@@ -46,10 +46,12 @@ public interface LlmProvider {
      * @param tools    工具 schema（可为空）
      * @param onDelta  文本增量回调
      * @param onReasoning  思考增量回调（reasoning_content，glm-5.3-flash 等模型会先输出思考过程）
+     * @param onTokenEstimate  流式逐帧 token 估算回调（prompt 估算 + completion 字符数粗估）
      * @return 完整响应（含工具调用）
      */
     public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
-        onDelta: (String) -> Unit, onReasoning: (String) -> Unit): ModelResponse
+        onDelta: (String) -> Unit, onReasoning: (String) -> Unit,
+        onTokenEstimate: (Int64) -> Unit): ModelResponse
 }
 
 /**
@@ -65,6 +67,11 @@ public class StreamAccumulator {
     private var lastSentReasoning: String = ""
     // 思考增量回调：实时把 reasoning_content 流推给 TUI 显示
     public var onReasoningDelta: (String) -> Unit = { _ => }
+    // token 实时估算回调：流式过程中逐帧粗估累计 token（prompt 估算 + completion 字符数估算）
+    // usage 最后一帧回传精确值后，由 finish() 覆盖
+    public var onTokenEstimate: (Int64) -> Unit = { _ => }
+    // prompt token 估算（消息历史字符数 / 4，调用方在 chatStream 前设置）
+    public var estimatedPromptTokens: Int64 = 0
     // 并行工具调用按 index 分别累积（OpenAI 流式 tool_calls 数组元素带 index；
     // 旧实现单一 curToolArgs 会把多个调用参数拼成非法 JSON → _raw 透传 → "缺少参数"）
     private var pendingToolIds: ArrayList<String> = ArrayList<String>()
@@ -238,6 +245,20 @@ public class StreamAccumulator {
         } catch (e: Exception) {
             // 忽略非 JSON 帧（如 keep-alive）
         }
+        // 逐帧 token 估算：prompt 估算 + completion 字符数粗估（text + reasoningContent）
+        // usage 最后一帧回传后，finish() 用精确值覆盖
+        this.estimateAndNotify()
+    }
+
+    /**
+     * 逐帧 token 估算：prompt 估算（固定）+ completion 字符数粗估
+     * 粗估规则：每 4 字符 ≈ 1 token（混合中英文经验值）
+     */
+    private func estimateAndNotify(): Unit {
+        let completionChars = this.text.size + this.reasoningContent.size
+        let estimatedCompletion = Int64(completionChars) / 4
+        let total = this.estimatedPromptTokens + estimatedCompletion
+        this.onTokenEstimate(total)
     }
 
     private func feedToolCall(tc: JsonValue): Unit {

@@ -118,7 +118,8 @@ public class OpenAiProvider <: LlmProvider {
     }
 
     public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
-        onDelta: (String) -> Unit, onReasoning: (String) -> Unit): ModelResponse {
+        onDelta: (String) -> Unit, onReasoning: (String) -> Unit,
+        onTokenEstimate: (Int64) -> Unit): ModelResponse {
         // 构造请求体
         var body = JsonObject()
         body.put("model", JsonString(this.model))
@@ -180,6 +181,12 @@ public class OpenAiProvider <: LlmProvider {
 
         // SSE 解析
         let acc = StreamAccumulator()
+        // prompt token 估算：消息历史字符数 / 4（混合中英文经验值）
+        var promptChars: Int64 = 0
+        for (m in messages) {
+            promptChars += Int64(m.content.size)
+        }
+        acc.estimatedPromptTokens = promptChars / 4
         let parser = SseParser(resp.body)
         parser.onEvent = { data =>
             acc.feed(data)
@@ -194,6 +201,8 @@ public class OpenAiProvider <: LlmProvider {
         acc.onReasoningDelta = { r =>
             onReasoning(r)
         }
+        // token 实时估算回调：流式逐帧粗估，usage 最后一帧回传精确值后由 finish() 覆盖
+        acc.onTokenEstimate = onTokenEstimate
         parser.run()
         let modelResp = acc.finish()
         modelResp.timedOut = parser.timedOut

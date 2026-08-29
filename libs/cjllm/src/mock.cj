@@ -20,7 +20,8 @@ public class MockProvider <: LlmProvider {
     }
 
     public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
-        onDelta: (String) -> Unit, onReasoning: (String) -> Unit): ModelResponse {
+        onDelta: (String) -> Unit, onReasoning: (String) -> Unit,
+        onTokenEstimate: (Int64) -> Unit): ModelResponse {
         this.callCount += 1
         match (this.callCount) {
             case 1 =>
@@ -54,6 +55,7 @@ public class MockProvider <: LlmProvider {
                 let finalText = "FINAL-DONE: 验证完成，工具链正常"
                 // 整体回调（避免逐字节/码点重建的 mojibake 风险）
                 onDelta(finalText)
+                onTokenEstimate(100)  // mock 估算值
                 return ModelResponse(finalText, ArrayList<ToolCall>())
         }
     }

@@ -77,7 +77,8 @@ public class AnthropicProvider <: LlmProvider {
     }
 
     public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
-        onDelta: (String) -> Unit, onReasoning: (String) -> Unit): ModelResponse {
+        onDelta: (String) -> Unit, onReasoning: (String) -> Unit,
+        onTokenEstimate: (Int64) -> Unit): ModelResponse {
         // 请求体
         var body = JsonObject()
         body.put("model", JsonString(this.model))
@@ -184,6 +185,13 @@ public class AnthropicProvider <: LlmProvider {
 
         // SSE 解析（Anthropic event 格式）
         let acc = AnthropicAccumulator()
+        // prompt token 估算：消息历史字符数 / 4
+        var promptChars: Int64 = 0
+        for (m in messages) {
+            promptChars += Int64(m.content.size)
+        }
+        acc.estimatedPromptTokens = promptChars / 4
+        acc.onTokenEstimate = onTokenEstimate
         let parser = SseParser(resp.body)
         parser.onEvent = { data =>
             acc.feed(data, onDelta)
@@ -200,6 +208,9 @@ public class AnthropicProvider <: LlmProvider {
 public class AnthropicAccumulator {
     public var text: String = ""
     public var toolCalls: ArrayList<ToolCall> = ArrayList<ToolCall>()
+    // token 实时估算回调（与 StreamAccumulator.onTokenEstimate 同语义）
+    public var onTokenEstimate: (Int64) -> Unit = { _ => }
+    public var estimatedPromptTokens: Int64 = 0
 
     // 并行工具调用按 content_block index 分别累积（Anthropic 流式
     // content_block_start/delta 事件带 index；旧实现单一 curToolArgs 会把
@@ -334,6 +345,9 @@ public class AnthropicAccumulator {
         } catch (e: Exception) {
             // 忽略非 JSON 帧
         }
+        // 逐帧 token 估算：prompt 估算 + completion 字符数粗估（text）
+        let estimatedCompletion = Int64(this.text.size) / 4
+        this.onTokenEstimate(this.estimatedPromptTokens + estimatedCompletion)
     }
 
     private func takeDelta(): String {
