@@ -335,7 +335,7 @@ public class Agent {
             summary.promptTokens += response.usage.promptTokens
             summary.completionTokens += response.usage.completionTokens
             summary.cachedTokens += response.usage.cachedTokens
-            this.onTokens(response.usage.promptTokens)
+            this.onTokens(response.usage.promptTokens + response.usage.completionTokens)
 
             // SSE 空闲超时：网络 60s 无新数据，已收文本/tool_calls 保留
             // 给 LLM 注入提示，让它在下一轮知道发生了超时
