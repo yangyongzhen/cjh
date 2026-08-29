@@ -271,8 +271,8 @@ cjpm build
 
 | Platform | Command | Artifact | Notes |
 |---|---|---|---|
-| Linux (static single file) | switch to static config (`--static --static-std --static-libs`) → `cjpm build` | `dist/cjh-<ver>-linux-x64` | Single file, zero deps (Cangjie runtime + stdx included). Switch back to dynamic config afterwards (`cjpm test` crashes with double free under static linking — see docs/开发文档与踩坑记录.md §3.10) |
-| Windows | `cjpm build --target x86_64-pc-windows-gnu` | `dist/cjh-<ver>-windows-x64.exe` | Cross-compiled directly on Linux to a PE executable (verified). **Prerequisite**: `cangjie-stdx-windows-x64-<ver>` installed under `~/.cangjie/stdx/` (download from gitcode.com/Cangjie/cangjie_stdx/releases, same version as Linux). **Deploy**: exe needs stdx Windows DLLs (`libcangjie-runtime.dll`, `libstdx*.dll`) in the same directory |
+| Linux (static single file) | switch to static config (`--static --static-std --static-libs`) → `cjpm build` | `dist/linux/cjh-<ver>-linux-x64` | Single file, zero deps (Cangjie runtime + stdx included). Switch back to dynamic config afterwards (`cjpm test` crashes with double free under static linking — see docs/开发文档与踩坑记录.md §3.10) |
+| Windows | `cjpm build --target x86_64-pc-windows-gnu` | `dist/windows/cjh-<ver>-windows-x64.exe` | Cross-compiled directly on Linux to a PE executable (verified). **Prerequisite**: `cangjie-stdx-windows-x64-<ver>` installed under `~/.cangjie/stdx/` (download from gitcode.com/Cangjie/cangjie_stdx/releases, same version as Linux). **Deploy**: `dist/windows/` already bundles all required DLLs (`libcangjie-runtime.dll` + `libstdx*.dll` etc.) — copy the whole directory, no install needed |
 | macOS | POSIX backend passthrough, same source tree | — | Build on macOS (termios-compatible, `@When` auto-selects POSIX backend) |
 
 > Cross-platform principle: terminal-layer `TerminalBackend` abstraction (`@When[os == ...]` conditional compilation selects the backend; Windows uses Win32 Console API + VT output, Linux/macOS use termios) — one source tree, multi-platform binaries. See [design](docs/跨平台终端层设计方案.md).
