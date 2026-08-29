@@ -390,7 +390,7 @@ cjh 内置 MCP 客户端，支持 stdio 传输 + JSON-RPC 2.0。配置 `mcp_serv
 
 ## 🧪 测试与质量保证
 
-**216 个单元测试全绿**（4 包 25 个测试类，`cjpm test` 一键运行），覆盖全部 14 个内置工具 + Agent 核心 + TUI 渲染 + 基础设施：
+**216 个单元测试全绿**（4 包 25 个测试类，`cjpm test` 一键运行）+ **14 个 PTY 集成测试**（`python3 scripts/tui_pty_test.py`，伪终端驱动真实 TUI），覆盖全部 14 个内置工具 + Agent 核心 + TUI 渲染/事件 + 基础设施：
 
 | 测试域 | 覆盖 |
 |---|---|
@@ -400,6 +400,7 @@ cjh 内置 MCP 客户端，支持 stdio 传输 + JSON-RPC 2.0。配置 `mcp_serv
 | 基础设施 | 会话保存/恢复/分支、技能 frontmatter 解析、UTF-8 容错解码/字节安全截断、WebBudget 预算、BM25 检索、web_search 路由降级链、KeyRotator 轮换 |
 | 纯函数 | ToolResultTruncator 阈值/头尾/落盘、parseSgJsonLine、escapeRegex、formatToolArgs |
 | **TUI 渲染与事件** | Markdown 粗体/行内代码/代码块/跨帧流式/finish 复位、Screen 差分渲染（变化行/中文/clone）、Ansi 转义序列、**TuiApp 按键协议**（Ctrl+C 退出/输入/提交/补全/视图切换/多行编辑/退格防崩） |
+| **PTY 集成（真实终端）** | `scripts/tui_pty_test.py`：启动渲染、mock 工具链端到端、`/` 命令补全、帮助视图、**审批弹窗同意/拒绝**（单测无法覆盖的阻塞审批路径） |
 
 **CI 门禁（强制，见 `AGENTS.md`）**：`cjpm test` 全绿是唯一交付凭证；新功能/修复必须带测试；bug 修复先写复现测试再修。
 

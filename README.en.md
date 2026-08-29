@@ -396,7 +396,7 @@ cjh has a built-in MCP client supporting stdio transport + JSON-RPC 2.0. After c
 
 ## 🧪 Testing & Quality Assurance
 
-**216 unit tests, all green** (4 packages, 25 test classes, one-shot `cjpm test`), covering all 14 built-in tools + Agent core + TUI rendering + infrastructure:
+**216 unit tests, all green** (4 packages, 25 test classes, one-shot `cjpm test`) + **14 PTY integration tests** (`python3 scripts/tui_pty_test.py`, real TUI driven via pseudo-terminal), covering all 14 built-in tools + Agent core + TUI rendering/events + infrastructure:
 
 | Test domain | Coverage |
 |---|---|
@@ -406,6 +406,7 @@ cjh has a built-in MCP client supporting stdio transport + JSON-RPC 2.0. After c
 | Infrastructure | session save/restore/fork, skill frontmatter parsing, UTF-8 tolerant decode/byte-safe truncation, WebBudget, BM25 retrieval, web_search degradation chain, KeyRotator |
 | Pure functions | ToolResultTruncator thresholds/head-tail/spill, parseSgJsonLine, escapeRegex, formatToolArgs |
 | **TUI rendering & events** | Markdown bold/inline-code/code-block/cross-frame streaming/finish reset, Screen diff rendering (changed lines/Chinese/clone), Ansi sequences, **TuiApp key protocol** (Ctrl+C quit/typing/submit/completion/view switch/multiline/backspace crash-guard) |
+| **PTY integration (real terminal)** | `scripts/tui_pty_test.py`: startup rendering, mock toolchain e2e, `/` completion, help view, **approval dialog yes/no** (blocking approval path unit tests can't cover) |
 
 **CI gate (mandatory, see `AGENTS.md`)**: `cjpm test` all-green is the sole delivery credential; new features/fixes must ship with tests; bug fixes require a reproducing test written first.
 
