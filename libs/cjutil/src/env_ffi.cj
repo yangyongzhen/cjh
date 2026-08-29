@@ -1,4 +1,4 @@
-package cjcfg
+package cjutil
 
 /**
  * getenv FFI（独立包避免重复声明）

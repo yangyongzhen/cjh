@@ -3,6 +3,7 @@ package cjcfg
 import std.fs.*
 import stdx.encoding.json.*
 import std.collection.*
+import cjutil.*
 
 /**
  * 模型条目（settings.json models 数组项；对齐 pi models.json 的轻量版）
