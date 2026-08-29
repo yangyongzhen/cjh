@@ -33,10 +33,11 @@ func makeProvider(cfg: CjhConfig): LlmProvider {
     // Ollama 本地模型：CJH_PROVIDER=ollama 或 base_url 指向 localhost/127.0.0.1
     let isOllama = (providerName == "ollama") ||
         cfg.baseUrl.contains("localhost") || cfg.baseUrl.contains("127.0.0.1")
-    // Ollama 本地服务无需认证，apiKey 可空；其他 provider 必须有 apiKey
+    // Ollama 本地服务无需认证，apiKey 可空；其他 provider 无 key 时
+    // 不阻断启动（TUI/Web 可进入，发消息时请求自然失败提示），仅告警
     if (!isOllama && cfg.apiKey.size == 0) {
-        throw LlmException(
-            "未配置 API Key。请在 ${cfg.authPath} 的 api_key 字段填写，或设置 OPENAI_API_KEY / DEEPSEEK_API_KEY / DASHSCOPE_API_KEY / CJH_API_KEY 环境变量")
+        eprintln("[cjh] 警告：未配置 API Key（${cfg.authPath} 的 api_key 或 OPENAI_API_KEY / DEEPSEEK_API_KEY / DASHSCOPE_API_KEY / CJH_API_KEY 环境变量）。")
+        eprintln("[cjh] 界面可正常进入，但发送消息会失败。离线演示请用 --mock 或 CJH_MOCK=1。")
     }
     // 协议选择（优先级）：CJH_PROVIDER 环境变量 > settings.json provider_protocol > 默认 OpenAI
     // provider_protocol 支持聚合/自定义端点（custom provider）指定接入协议：
