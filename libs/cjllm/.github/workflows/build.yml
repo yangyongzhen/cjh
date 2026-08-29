@@ -1,0 +1,37 @@
+# cjllm 独立仓库 CI（发布到独立仓库时启用）
+#
+# 说明：cjterm 作为独立仓库发布时，把本文件移到仓库根
+# `.github/workflows/build.yml` 使用。cjh 主仓库不执行此 workflow。
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 仓颉 SDK 安装：按官方指引（cangjie-lang.cn / apt 源）
+      - name: Setup Cangjie SDK
+        run: |
+          # 示例：解压官方 SDK 到 /opt/cangjie，设置环境
+          echo "CANGJIE_HOME=/opt/cangjie/cangjie" >> $GITHUB_ENV
+          echo "/opt/cangjie/cangjie/bin:/opt/cangjie/cangjie/tools/bin" >> $GITHUB_PATH
+
+      - name: Build
+        run: cjpm build
+
+      - name: Unit tests
+        run: cjpm test
+
+      # Windows 交叉编译（可选）：需在 ~/.cangjie/stdx 安装
+      # cangjie-stdx-windows-x64-<ver>（gitcode.com/Cangjie/cangjie_stdx/releases）
+      - name: Cross-compile Windows (optional)
+        run: |
+          cjpm build --target x86_64-pc-windows-gnu || echo "skip: stdx windows not installed"
+        continue-on-error: true

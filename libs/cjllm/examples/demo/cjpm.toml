@@ -1,0 +1,19 @@
+[package]
+  cjc-version = "1.0.5"
+  name = "llm_demo"
+  description = "cjllm 最小示例"
+  version = "0.1.0"
+  target-dir = ""
+  output-type = "executable"
+  compile-option = ""
+  override-compile-option = ""
+  link-option = ""
+  package-configuration = {}
+
+[dependencies]
+  cjllm = { path = "../.." }
+  cjutil = { path = "../../../cjutil" }
+  cjlog = { path = "../../../cjlog" }
+
+[target.x86_64-unknown-linux-gnu.bin-dependencies]
+    path-option = ["/root/.cangjie/stdx/cangjie-stdx-linux-x64-1.0.5.1/dynamic/stdx"]

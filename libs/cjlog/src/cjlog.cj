@@ -402,7 +402,14 @@ internal class LogSink <: LogSinkImpl {
      * 默认日志目录：~/.cjh/logs/
      */
     private static func defaultLogDir(): String {
-        let home = getVariable("HOME") ?? "."
+        // 跨平台主目录：Windows USERPROFILE（无 HOME）→ POSIX HOME → 当前目录
+        let up = getVariable("USERPROFILE")
+        var home = "."
+        if (up.isSome() && up.getOrThrow().size > 0) {
+            home = up.getOrThrow()
+        } else {
+            home = getVariable("HOME") ?? "."
+        }
         return "${home}/.cjh/logs"
     }
 
