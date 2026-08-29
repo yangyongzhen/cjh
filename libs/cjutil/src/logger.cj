@@ -16,7 +16,7 @@ import stdx.logger.*
  * - 依赖倒置：依赖 Logger 抽象，不依赖具体实现
  *
  * 级别策略：
- * - FATAL/ERROR：永久写文件（/tmp/cjh_error.log 或 CJH_ERROR_LOG 覆盖）
+ * - FATAL/ERROR：永久写文件（~/.cjh/logs/error.log 或 CJH_ERROR_LOG 覆盖）
  * - WARN/INFO/DEBUG：CJH_DEBUG=1 时写文件
  *
  * 用法（简短，易替换）：
@@ -31,6 +31,15 @@ public class Log {
     private static let lock: ReentrantMutex = ReentrantMutex()
 
     /**
+     * 默认错误日志路径：~/.cjh/logs/error.log
+     * /tmp 重启会清空，不满足"永久记录"需求；~/.cjh/logs/ 持久化
+     */
+    private static func defaultErrorPath(): String {
+        let home = getVariable("HOME") ?? "."
+        return "${home}/.cjh/logs/error.log"
+    }
+
+    /**
      * 初始化日志文件（线程安全，幂等）
      */
     public static func ensureInit(): Unit {
@@ -42,9 +51,28 @@ public class Log {
             lock.unlock()
             return
         }
-        // error/fatal 永久写文件
-        let errorPath = getVariable("CJH_ERROR_LOG") ?? "/tmp/cjh_error.log"
+        // error/fatal 永久写文件（~/.cjh/logs/error.log，自动创建父目录）
+        let errorPath = getVariable("CJH_ERROR_LOG") ?? defaultErrorPath()
         try {
+            // 确保父目录存在（~/.cjh/logs/）
+            let parent = parentDir(errorPath)
+            if (parent.size > 0) {
+                try {
+                    if (!exists(parent)) {
+                        Directory.create(parent, recursive: true)
+                    }
+                } catch (e: Exception) {
+                    // 父目录创建失败，降级到 /tmp
+                    let fallback = "/tmp/cjh_error.log"
+                    let f = File(fallback, OpenMode.Append)
+                    let el = TextLogger(f)
+                    el.level = LogLevel.ERROR
+                    errorLogger = el
+                    initialized = true
+                    lock.unlock()
+                    return
+                }
+            }
             let f = File(errorPath, OpenMode.Append)
             let el = TextLogger(f)
             el.level = LogLevel.ERROR
@@ -131,6 +159,21 @@ public class Log {
     private static func format(level: String, msg: String): String {
         let now = DateTime.now()
         return "[${now}] [${level}] ${msg}"
+    }
+
+    /**
+     * 从路径提取父目录（最后一个 / 之前的部分）
+     * 例："/root/.cjh/logs/error.log" → "/root/.cjh/logs"
+     */
+    private static func parentDir(path: String): String {
+        var i = path.size - 1
+        while (i >= 0) {
+            if (path[i] == UInt8(47)) {  // '/'
+                return path[0..i]
+            }
+            i -= 1
+        }
+        return ""
     }
 
     /**

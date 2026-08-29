@@ -331,7 +331,7 @@ public class Agent {
                     this.onTokenEstimate(est)
                 })
             } catch (e: Exception) {
-                Log.error("Agent.run chatStream 异常: ${e}")
+                Log.error("Agent.run chatStream 异常: ${e}", e)
                 summary.reply = "[LLM 调用异常: ${e}]"
                 return summary
             }
@@ -344,6 +344,7 @@ public class Agent {
             // SSE 空闲超时：网络 60s 无新数据，已收文本/tool_calls 保留
             // 给 LLM 注入提示，让它在下一轮知道发生了超时
             if (response.timedOut) {
+                Log.error("SSE 空闲超时（60s 无新数据），SSE 流被切断")
                 this.onAssistantText("\n\n⚠️ 网络空闲超时（60s 无新数据），SSE 流被切断。已收到的内容已保留，但可能不完整。\n")
                 this.messages.add(ChatMessage("user", "[System Notice] The previous SSE stream was cut off due to a 60-second idle timeout (network stall). The received content may be INCOMPLETE. Please check whether the output/tool_calls were fully received, and continue or retry as needed."))
             }
@@ -467,6 +468,10 @@ public class Agent {
             if (response.text.size > 0) {
                 this.messages.add(ChatMessage("assistant", response.text))
                 this.onAssistantText(response.text)
+            } else {
+                // LLM 返回空响应（无 text 且无 tool_calls）：提示用户而非静默退出
+                Log.error("LLM 返回空响应（无 text 且无 tool_calls），回合 ${iterations} 提前结束")
+                this.onAssistantText("\n[空响应] LLM 未返回文本或工具调用，回合结束。")
             }
             // 回合结束：计算耗时，回填 reply，返回 summary（onRunComplete 由调用方在 setAgentRunning(false) 后触发）
             let durationMs = (DateTime.now() - startTime).toMilliseconds()
@@ -475,6 +480,7 @@ public class Agent {
             return summary
         }
         // 达最大迭代次数也触发总结
+        Log.warn("已达最大迭代次数 ${this.config.maxIterations}，强制结束回合")
         let durationMsMax = (DateTime.now() - startTime).toMilliseconds()
         summary.durationMs = durationMsMax
         summary.reply = "[已达最大迭代次数 ${this.config.maxIterations}]"
