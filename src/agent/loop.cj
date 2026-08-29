@@ -501,6 +501,8 @@ public class Agent {
         let durationMsMax = (DateTime.now() - startTime).toMilliseconds()
         summary.durationMs = durationMsMax
         summary.reply = "[已达最大迭代次数 ${this.config.maxIterations}]"
+        // 给 TUI 上文字提示，而非静默退出
+        this.onAssistantText("\n⚠️ 已达最大迭代次数 ${this.config.maxIterations}，回合强制结束。如需继续，请重新提问。")
         return summary
     }
 
