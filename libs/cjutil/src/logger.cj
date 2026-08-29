@@ -10,37 +10,59 @@ import stdx.logger.*
 /**
  * cjh 全局日志模块
  *
- * 设计原则（对齐六大原则）：
- * - 单一职责：只管日志输出，不管业务逻辑
- * - 开闭：通过 level 控制输出，不改代码
- * - 依赖倒置：依赖 Logger 抽象，不依赖具体实现
+ * 双文件设计：
+ * - ~/.cjh/logs/error.log — 只记 ERROR/FATAL（聚焦排查问题）
+ * - ~/.cjh/logs/cjh.log   — 应用级日志，记录所有级别（WARN/INFO/DEBUG + ERROR/FATAL 冗余记录）
  *
- * 级别策略：
- * - FATAL/ERROR：永久写文件（~/.cjh/logs/error.log 或 CJH_ERROR_LOG 覆盖）
- * - WARN/INFO/DEBUG：CJH_DEBUG=1 时写文件
+ * 级别策略（可配置，CJH_LOG_LEVEL 环境变量）：
+ * - FATAL > ERROR > WARN > INFO > DEBUG
+ * - 默认 WARN：WARN 及以上写入 cjh.log，ERROR/FATAL 另写入 error.log
+ * - 设 CJH_LOG_LEVEL=DEBUG 记录所有级别
+ * - 设 CJH_LOG_LEVEL=ERROR 只记 ERROR/FATAL
  *
  * 用法（简短，易替换）：
- *   Log.error("UTF-8 解码失败: ${e}")   // 永久记录
- *   Log.fatal("启动失败: ${e}")         // 永久记录
- *   Log.info("会话已保存: ${id}")       // 可控
+ *   Log.error("UTF-8 解码失败: ${e}")   // → error.log + cjh.log
+ *   Log.fatal("启动失败: ${e}")         // → error.log + cjh.log
+ *   Log.warn("SSE 空闲超时")            // → cjh.log
+ *   Log.info("会话已保存: ${id}")       // → cjh.log (CJH_LOG_LEVEL ≤ INFO)
+ *   Log.debug("进入 Agent.run")         // → cjh.log (CJH_LOG_LEVEL=DEBUG)
  */
 public class Log {
     private static var initialized: Bool = false
+    // errorLogger: 只记 ERROR/FATAL → ~/.cjh/logs/error.log
     private static var errorLogger: Logger = NoopLogger()
-    private static var debugLogger: Logger = NoopLogger()
+    // appLogger: 记录所有级别（由 level 过滤）→ ~/.cjh/logs/cjh.log
+    private static var appLogger: Logger = NoopLogger()
     private static let lock: ReentrantMutex = ReentrantMutex()
 
     /**
-     * 默认错误日志路径：~/.cjh/logs/error.log
+     * 默认日志目录：~/.cjh/logs/
      * /tmp 重启会清空，不满足"永久记录"需求；~/.cjh/logs/ 持久化
      */
-    private static func defaultErrorPath(): String {
+    private static func defaultLogDir(): String {
         let home = getVariable("HOME") ?? "."
-        return "${home}/.cjh/logs/error.log"
+        return "${home}/.cjh/logs"
+    }
+
+    /**
+     * 解析 CJH_LOG_LEVEL 环境变量为 LogLevel
+     * 默认 WARN（WARN 及以上写入 cjh.log，ERROR/FATAL 另写入 error.log）
+     */
+    private static func resolveLogLevel(): LogLevel {
+        match ((getVariable("CJH_LOG_LEVEL") ?? "WARN").toAsciiLower()) {
+            case "fatal" => LogLevel.FATAL
+            case "error" => LogLevel.ERROR
+            case "warn" => LogLevel.WARN
+            case "info" => LogLevel.INFO
+            case "debug" => LogLevel.DEBUG
+            case _ => LogLevel.WARN  // 未知值降级到 WARN
+        }
     }
 
     /**
      * 初始化日志文件（线程安全，幂等）
+     * - errorLogger: level=ERROR，只记 ERROR/FATAL → error.log
+     * - appLogger: level=resolveLogLevel()，记所有通过过滤的级别 → cjh.log
      */
     public static func ensureInit(): Unit {
         if (initialized) {
@@ -51,28 +73,40 @@ public class Log {
             lock.unlock()
             return
         }
-        // error/fatal 永久写文件（~/.cjh/logs/error.log，自动创建父目录）
-        let errorPath = getVariable("CJH_ERROR_LOG") ?? defaultErrorPath()
+        let logDir = getVariable("CJH_LOG_DIR") ?? defaultLogDir()
+        let level = resolveLogLevel()
+        // 确保日志目录存在（~/.cjh/logs/）
         try {
-            // 确保父目录存在（~/.cjh/logs/）
-            let parent = parentDir(errorPath)
-            if (parent.size > 0) {
-                try {
-                    if (!exists(parent)) {
-                        Directory.create(parent, recursive: true)
-                    }
-                } catch (e: Exception) {
-                    // 父目录创建失败，降级到 /tmp
-                    let fallback = "/tmp/cjh_error.log"
-                    let f = File(fallback, OpenMode.Append)
-                    let el = TextLogger(f)
-                    el.level = LogLevel.ERROR
-                    errorLogger = el
-                    initialized = true
-                    lock.unlock()
-                    return
-                }
+            if (!exists(logDir)) {
+                Directory.create(logDir, recursive: true)
             }
+        } catch (e: Exception) {
+            // 目录创建失败，降级到 /tmp
+            let errFallback = "/tmp/cjh_error.log"
+            let appFallback = "/tmp/cjh.log"
+            try {
+                let ef = File(errFallback, OpenMode.Append)
+                let el = TextLogger(ef)
+                el.level = LogLevel.ERROR
+                errorLogger = el
+            } catch (e2: Exception) {
+                errorLogger = NoopLogger()
+            }
+            try {
+                let af = File(appFallback, OpenMode.Append)
+                let al = TextLogger(af)
+                al.level = level
+                appLogger = al
+            } catch (e2: Exception) {
+                appLogger = NoopLogger()
+            }
+            initialized = true
+            lock.unlock()
+            return
+        }
+        // errorLogger: 只记 ERROR/FATAL → error.log
+        let errorPath = getVariable("CJH_ERROR_LOG") ?? "${logDir}/error.log"
+        try {
             let f = File(errorPath, OpenMode.Append)
             let el = TextLogger(f)
             el.level = LogLevel.ERROR
@@ -80,77 +114,90 @@ public class Log {
         } catch (e: Exception) {
             errorLogger = NoopLogger()
         }
-        // debug/info 可控（CJH_DEBUG=1 开启）
-        if ((getVariable("CJH_DEBUG") ?? "") == "1") {
-            let debugPath = getVariable("CJH_DEBUG_LOG") ?? "/tmp/cjh_debug.log"
-            try {
-                let f = File(debugPath, OpenMode.Append)
-                let dl = TextLogger(f)
-                dl.level = LogLevel.DEBUG
-                debugLogger = dl
-            } catch (e: Exception) {
-                debugLogger = NoopLogger()
-            }
+        // appLogger: 记录所有级别（由 level 过滤）→ cjh.log
+        let appPath = getVariable("CJH_APP_LOG") ?? "${logDir}/cjh.log"
+        try {
+            let f = File(appPath, OpenMode.Append)
+            let al = TextLogger(f)
+            al.level = level
+            appLogger = al
+        } catch (e: Exception) {
+            appLogger = NoopLogger()
         }
         initialized = true
         lock.unlock()
     }
 
     /**
-     * FATAL 级别日志（永久写文件）
+     * FATAL 级别日志
+     * → error.log + cjh.log
      */
     public static func fatal(msg: String): Unit {
         ensureInit()
-        errorLogger.fatal(format("FATAL", msg))
+        let formatted = format("FATAL", msg)
+        errorLogger.fatal(formatted)
+        appLogger.fatal(formatted)
     }
 
     /**
-     * FATAL 级别日志，附带异常堆栈（永久写文件）
+     * FATAL 级别日志，附带异常堆栈
      * 堆栈含 fileName:lineNumber @ functionName，便于定位异常源头
+     * → error.log + cjh.log
      */
     public static func fatal(msg: String, e: Exception): Unit {
         ensureInit()
-        errorLogger.fatal(format("FATAL", msg + "\n" + stackTraceOf(e)))
+        let formatted = format("FATAL", msg + "\n" + stackTraceOf(e))
+        errorLogger.fatal(formatted)
+        appLogger.fatal(formatted)
     }
 
     /**
-     * ERROR 级别日志（永久写文件）
+     * ERROR 级别日志
+     * → error.log + cjh.log
      */
     public static func error(msg: String): Unit {
         ensureInit()
-        errorLogger.error(format("ERROR", msg))
+        let formatted = format("ERROR", msg)
+        errorLogger.error(formatted)
+        appLogger.error(formatted)
     }
 
     /**
-     * ERROR 级别日志，附带异常堆栈（永久写文件）
+     * ERROR 级别日志，附带异常堆栈
+     * → error.log + cjh.log
      */
     public static func error(msg: String, e: Exception): Unit {
         ensureInit()
-        errorLogger.error(format("ERROR", msg + "\n" + stackTraceOf(e)))
+        let formatted = format("ERROR", msg + "\n" + stackTraceOf(e))
+        errorLogger.error(formatted)
+        appLogger.error(formatted)
     }
 
     /**
-     * WARN 级别日志（CJH_DEBUG=1 时写文件）
+     * WARN 级别日志
+     * → cjh.log（CJH_LOG_LEVEL ≤ WARN 时写入）
      */
     public static func warn(msg: String): Unit {
         ensureInit()
-        debugLogger.warn(format("WARN", msg))
+        appLogger.warn(format("WARN", msg))
     }
 
     /**
-     * INFO 级别日志（CJH_DEBUG=1 时写文件）
+     * INFO 级别日志
+     * → cjh.log（CJH_LOG_LEVEL ≤ INFO 时写入）
      */
     public static func info(msg: String): Unit {
         ensureInit()
-        debugLogger.info(format("INFO", msg))
+        appLogger.info(format("INFO", msg))
     }
 
     /**
-     * DEBUG 级别日志（CJH_DEBUG=1 时写文件）
+     * DEBUG 级别日志
+     * → cjh.log（CJH_LOG_LEVEL=DEBUG 时写入）
      */
     public static func debug(msg: String): Unit {
         ensureInit()
-        debugLogger.debug(format("DEBUG", msg))
+        appLogger.debug(format("DEBUG", msg))
     }
 
     /**
