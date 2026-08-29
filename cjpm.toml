@@ -8,7 +8,7 @@
   bin-name = "cjh"
   compile-option = ""
   override-compile-option = ""
-  link-option = "--disable-new-dtags -rpath /root/.cangjie/stdx/cangjie-stdx-linux-x64-1.0.5.1/dynamic/stdx -rpath /opt/cangjie/cangjie/runtime/lib/linux_x86_64_cjnative -rpath /opt/cangjie/cangjie/third_party/llvm/lib -rpath /opt/cangjie/cangjie/lib/linux_x86_64_cjnative"
+  link-option = ""
   package-configuration = {}
 
 [dependencies]
@@ -20,3 +20,8 @@
 
 [target.x86_64-unknown-linux-gnu.bin-dependencies]
     path-option = ["/root/.cangjie/stdx/cangjie-stdx-linux-x64-1.0.5.1/dynamic/stdx"]
+
+# Windows 交叉构建（cjc --target x86_64-pc-windows-gnu）
+[target.x86_64-pc-windows-gnu.bin-dependencies]
+    path-option = ["/root/.cangjie/stdx/cangjie-stdx-windows-x64-1.0.5.1/windows_x86_64_cjnative/dynamic/stdx"]
+    link-option = ""
