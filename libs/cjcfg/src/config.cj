@@ -410,6 +410,10 @@ public class CjhConfig {
                 " 5. Use bash ONLY for: git, builds, package managers, running commands, and short aggregation pipelines (wc, sort, uniq). Do NOT use bash to read, slice, or reformat file contents.\n" +
                 " 6. List directories with list_dir, find files with glob, search contents with grep — not bash ls/find/rg.\n" +
                 " Forbidden: using bash awk/tail/head/sed to extract file content that read_file already provides — this wastes rounds." +
+                "\n\n## Do not hallucinate encodings (important)\n" +
+                " read_file and bash return plain text (line-numbered for read_file). " +
+                " If you see normal source code (HTML/JS/CSS/etc.), it IS the file content — do NOT run python3/awk/od to 'decode' it into numbers and back. " +
+                " 'Decoding' plain text wastes rounds and tokens. Only use od/hexdump/xxd on genuinely binary files (images, compiled binaries) when read_file shows mojibake." +
                 "\n\n## Large file write strategy (important)\n" +
                 " The model's single-turn output has a max_tokens limit (usually 4000~8000 chars). Writing a large file (full HTML game, multi-function JS, long markdown) in a single write_file call will be truncated, leaving the file incomplete (missing </script></body></html> etc.).\n" +
                 " Correct approach:\n" +
