@@ -605,8 +605,11 @@ func runTui(sessionId: String): Int64 {
         }
         agent.onToolResult = { name, result =>
             var preview = result.content
-            if (preview.size > 200) {
-                preview = truncateUtf8(preview, 200) + "…"
+            // read_file 是按需读取工具，LLM 已通过 offset/limit 控制读取量；
+            // 截断 preview 会让 LLM 误以为输出被截断，反复换 bash 重读
+            let maxPreview: Int64 = if (name == "read_file") { 2000 } else { 200 }
+            if (Int64(preview.size) > maxPreview) {
+                preview = truncateUtf8(preview, maxPreview) + "…"
             }
             TuiBridge.ensureNewline()
             TuiBridge.output(Ansi.fg(Ansi.THEME_MUTED) + "  ↳ ${name}: ${preview}" + Ansi.reset())
