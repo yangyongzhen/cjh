@@ -25,7 +25,7 @@ public class BashTool <: CjhTool {
         var props = HashMap<String, JsonValue>()
         props.add("command", JsonSchema.str("Shell command to execute"))
         let schema = JsonSchema.object(props, ArrayList<String>(["command"]))
-        return ToolSpec("bash", "Execute a command in the local shell and return combined stdout/stderr. Use for builds, tests, git, etc.", schema)
+        return ToolSpec("bash", "Run a shell command (git, build, test, package manager). Do NOT use bash to read files — use read_file instead. bash is for executing commands, not for file content extraction (sed/awk/head/tail are slower and less reliable than read_file).", schema)
     }
 
     public func execute(args: JsonObject): ToolResult {
@@ -85,11 +85,12 @@ public class ReadTool <: CjhTool {
         props.add("limit", JsonSchema.str("Number of lines to return (default: 200 for large files, full for small)"))
         let schema = JsonSchema.object(props, ArrayList<String>(["path"]))
         return ToolSpec("read_file",
-            "Read a file. Returns line-numbered content (format: <N>\\t<content>). " +
-            "Default behavior: small files (<200 lines) return full content; " +
-            "larger files return the first 200 lines -- use offset+limit to read other sections. " +
-            "Pass offset=1 limit=50 to read lines 1-50. " +
-            "Avoid reading the same file repeatedly; if you need a different section, use offset+limit.",
+            "Read a file — or any slice of one — from the filesystem. " +
+            "This is the PRIMARY way to read files; always prefer it over bash sed/awk/head/tail. " +
+            "Returns line-numbered content (format: <N>\\t<content>). " +
+            "Call WITHOUT offset/limit first to load the whole file; " +
+            "if the file is large (>500 lines), use offset+limit to read a section. " +
+            "Example: offset=50 limit=20 reads lines 50-69.",
             schema)
     }
 
