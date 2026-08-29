@@ -127,12 +127,14 @@ class PtuSession:
             pass
 
 
-def make_config_dir(approval: list[str] | None = None) -> str:
+def make_config_dir(approval: list[str] | None = None,
+                    base_url: str = "https://api.openai.com/v1/chat/completions",
+                    model: str = "mock-model") -> str:
     """创建临时配置目录：settings.json（可含 capability）+ auth.json。"""
     cfg = tempfile.mkdtemp(prefix="cjh_pty_")
     settings: dict = {
-        "model": "mock-model",
-        "base_url": "https://api.openai.com/v1/chat/completions",
+        "model": model,
+        "base_url": base_url,
     }
     if approval is not None:
         settings["capability"] = {
@@ -280,18 +282,59 @@ def test_provider_dialog() -> None:
         # 测试配置 base_url=openai 默认 → 弹窗按推断显示 openai 预设（自洽，不掺真实配置）
         check("弹窗出现", True)
         check("Provider 显示 openai", "openai" in buf)
-        check("端点=openai 预设", "api.openai.com" in buf, f"(buf尾部: {buf[-200:]})")
-        check("模型=gpt-4o-mini", "gpt-4o-mini" in buf)
+        check("端点=openai（真实配置预填）", "api.openai.com" in buf, f"(buf尾部: {buf[-200:]})")
+        check("模型=真实配置预填", "mock-model" in buf)  # 预填 make_config_dir 的 model
         # API Key 不预填（显示 placeholder sk-xxxx，避免误导其他家有 key）
         check("API Key 显示占位符", "sk-xxxx" in buf, f"(buf尾部: {buf[-200:]})")
         check("API Key 无预填星号", "*" * 8 not in buf)
-        # ← 切换到 deepseek：端点/模型联动为 deepseek 预设（expect 轮询等渲染完成）
+        # ← 切换到 deepseek：端点/模型联动为 deepseek 预设（expect 等唯一新帧，防历史假阳性）
         s.send_esc_seq("\x1b[D")   # 左键 → deepseek
-        s.expect("api.deepseek.com")
-        s.expect("deepseek-chat")
-        check("切换到 deepseek 端点", True)
-        check("切换到 deepseek 模型", True)
+        s.expect("deepseek-chat")  # 唯一文本：联动后的模型
+        check("切换到 deepseek（模型联动）", True)
+        # → 逐个切到 qwen：验证新增预设联动（deepseek→openai→glm→qwen），
+        # 每次 expect 唯一文本（gpt-4o-mini / bigmodel.cn / dashscope），天然拉开时序
+        s.send_esc_seq("\x1b[C")   # → openai
+        s.expect("gpt-4o-mini")
+        check("切回 openai 模型联动", True)
+        s.send_esc_seq("\x1b[C")   # → glm
+        s.expect("bigmodel.cn")
+        check("切换到 glm 端点", True)
+        s.send_esc_seq("\x1b[C")   # → qwen
+        s.expect("dashscope.aliyuncs.com")
+        s.expect("qwen-plus")
+        check("切换到 qwen 端点", True)
+        check("切换到 qwen 模型", True)
+        # → 切到 kimi：验证新增预设（select 只渲染当前值，直接切换验证）
+        s.send_esc_seq("\x1b[C")   # → kimi
+        s.expect("moonshot.cn")
+        s.expect("moonshot-v1-8k")
+        check("切换到 kimi 端点", True)
+        check("切换到 kimi 模型", True)
         # Esc 关闭
+        s.send_esc_seq("\x1b")
+        s.read_available(0.3)
+        s.send_key(3)
+        s.wait_exit()
+    finally:
+        s.close()
+
+
+def test_provider_dialog_aggregator() -> None:
+    print("[场景7] Provider 弹窗-聚合端点：真实配置（端点/模型）必须体现")
+    # 聚合平台（taotoken.net + deepseek-v4-flash）：base_url 未匹配任何预设
+    cfg = make_config_dir(base_url="https://taotoken.net/api", model="deepseek-v4-flash")
+    s = PtuSession(cfg)
+    try:
+        s.expect("cjh")
+        time.sleep(0.5)
+        s.send("/provider\n")
+        s.expect("配置 Provider")
+        s.read_available(0.5)
+        buf = strip_ansi(s.buf)
+        # 聚合端点未匹配预设 → Provider 默认 deepseek，但端点/模型体现真实配置
+        check("聚合端点体现在弹窗", "taotoken.net" in buf, f"(buf尾部: {buf[-200:]})")
+        check("真实模型体现在弹窗", "deepseek-v4-flash" in buf, f"(buf尾部: {buf[-200:]})")
+        check("Provider 推断为 deepseek", "deepseek" in buf)
         s.send_esc_seq("\x1b")
         s.read_available(0.3)
         s.send_key(3)
@@ -312,6 +355,7 @@ def main() -> None:
     test_approval_yes()
     test_approval_no()
     test_provider_dialog()
+    test_provider_dialog_aggregator()
     print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
     sys.exit(1 if FAIL else 0)
 

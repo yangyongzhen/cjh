@@ -480,14 +480,16 @@ public class TuiApp {
 
     /**
      * 弹出 provider 配置表单（/provider 无参数时调用）
-     * Provider 字段为 select 下拉（deepseek/openai/glm），
+     * Provider 字段为 select 下拉（deepseek/openai/glm/qwen/kimi/doubao/siliconflow），
      * ←→ 切换时联动填充对应 baseUrl/model 预设。
      *
-     * 默认值策略：端点/模型按"各家预设"自洽填充（不掺真实配置）——
-     * 根据当前 base_url 推断 Provider 并填充该家预设，保证
-     * Provider 下拉与端点/模型始终匹配；未匹配预设时默认 deepseek。
-     * API Key **不预填**（各家 key 独立且敏感，预填会误导——切到未配置的
-     * 家仍显示当前 key 的星号）；留空保存时 applyProvider 保留原 key。
+     * 默认值策略：
+     * - Provider select：按当前 base_url 推断（openai.com/bigmodel.cn/deepseek.com/
+     *   dashscope/moonshot.cn/volces.com/siliconflow.cn 匹配；未匹配默认 deepseek）
+     * - 端点/模型：**预填当前真实配置**（体现 deepseek-v4-flash 等实际使用的值，
+     *   而非仅预设）——切换 ←→ 到其他家时联动覆盖为该家预设
+     * - API Key **不预填**（各家 key 独立且敏感，预填会误导——切到未配置的
+     *   家仍显示当前 key 的星号）；留空保存时 applyProvider 保留原 key
      */
     public func showProviderDialog(currentBaseUrl: String, currentModel: String, currentApiKey: String): Unit {
         // 根据当前 base_url 推断 provider（预设匹配；未匹配默认 deepseek）
@@ -498,25 +500,26 @@ public class TuiApp {
             provider = "glm"
         } else if (currentBaseUrl.contains("deepseek.com")) {
             provider = "deepseek"
-        }
-        // 各家预设（与下方 onSelectChange 联动表保持一致）
-        let presetBase = match (provider) {
-            case "openai" => "https://api.openai.com/v1/chat/completions"
-            case "glm" => "https://open.bigmodel.cn/api/paas/v4/chat/completions"
-            case _ => "https://api.deepseek.com/v1/chat/completions"
-        }
-        let presetModel = match (provider) {
-            case "openai" => "gpt-4o-mini"
-            case "glm" => "glm-4-flash"
-            case _ => "deepseek-chat"
+        } else if (currentBaseUrl.contains("dashscope")) {
+            provider = "qwen"
+        } else if (currentBaseUrl.contains("moonshot.cn")) {
+            provider = "kimi"
+        } else if (currentBaseUrl.contains("volces.com")) {
+            provider = "doubao"
+        } else if (currentBaseUrl.contains("siliconflow.cn")) {
+            provider = "siliconflow"
         }
 
         this.providerDialog.clearFields()
-        // 字段 0：Provider（select，含三个预设）
+        // 字段 0：Provider（select，含各家预设）
         let providers = ArrayList<String>()
         providers.add("deepseek")
         providers.add("openai")
         providers.add("glm")
+        providers.add("qwen")
+        providers.add("kimi")
+        providers.add("doubao")
+        providers.add("siliconflow")
         this.providerDialog.addSelectField("Provider", providers)
         // 字段 1：API 端点（text）
         this.providerDialog.addField("API 端点", "https://api.openai.com/v1/chat/completions", false)
@@ -526,31 +529,37 @@ public class TuiApp {
         this.providerDialog.addField("API Key", "sk-xxxx", true)
         // select 初始选中 = 推断的 provider（value 必须在 options 中）
         this.providerDialog.setFieldValue(0, provider)
-        // 端点/模型按该家预设填充（不自洽地混入真实配置；currentModel 不再用于预填）
-        this.providerDialog.setFieldValue(1, presetBase)
-        this.providerDialog.setFieldValue(2, presetModel)
+        // 端点/模型预填当前真实配置（体现实际使用的模型，如 deepseek-v4-flash）
+        this.providerDialog.setFieldValue(1, currentBaseUrl)
+        this.providerDialog.setFieldValue(2, currentModel)
         // API Key 不预填（placeholder "sk-xxxx"；各家 key 独立，预填易误导）
         // select 联动：切换 Provider 时填充对应 baseUrl/model 预设
         this.providerDialog.onSelectChange = { index, value =>
             if (index == 0) {
-                // 联动填充 baseUrl/model 预设
-                match (value) {
-                    case "deepseek" =>
-                        this.providerDialog.setFieldValue(1, "https://api.deepseek.com/v1/chat/completions")
-                        this.providerDialog.setFieldValue(2, "deepseek-chat")
-                    case "openai" =>
-                        this.providerDialog.setFieldValue(1, "https://api.openai.com/v1/chat/completions")
-                        this.providerDialog.setFieldValue(2, "gpt-4o-mini")
-                    case "glm" =>
-                        this.providerDialog.setFieldValue(1, "https://open.bigmodel.cn/api/paas/v4/chat/completions")
-                        this.providerDialog.setFieldValue(2, "glm-4-flash")
-                    case _ => ()
-                }
+                let (b, m) = TuiApp.providerPresets(value)
+                this.providerDialog.setFieldValue(1, b)
+                this.providerDialog.setFieldValue(2, m)
                 this.markDirty()
             }
         }
         this.providerDialog.show("配置 Provider", "[Enter]=保存 [Esc]=取消 [↑↓/Tab]切换字段 [←→]选择Provider")
         this.markDirty()
+    }
+
+    /**
+     * 各家 provider 预设（端点 + 默认模型）。
+     * 与 slash_command.cj 的 /provider 预设保持一致。
+     */
+    public static func providerPresets(name: String): (String, String) {
+        match (name) {
+            case "openai" => ("https://api.openai.com/v1/chat/completions", "gpt-4o-mini")
+            case "glm" => ("https://open.bigmodel.cn/api/paas/v4/chat/completions", "glm-4-flash")
+            case "qwen" => ("https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus")
+            case "kimi" => ("https://api.moonshot.cn/v1", "moonshot-v1-8k")
+            case "doubao" => ("https://ark.cn-beijing.volces.com/api/v3", "doubao-1-5-pro-32k-250115")
+            case "siliconflow" => ("https://api.siliconflow.cn/v1", "deepseek-ai/DeepSeek-V3")
+            case _ => ("https://api.deepseek.com/v1/chat/completions", "deepseek-chat")
+        }
     }
 
     /**

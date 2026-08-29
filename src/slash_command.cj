@@ -30,7 +30,7 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
             tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /new           开始新会话" + Ansi.reset())
             tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /resume [id]   恢复历史会话（无 id 时列出）" + Ansi.reset())
             tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /model [id|#]  列出/切换模型" + Ansi.reset())
-            tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /provider [name] [key]  切换 provider（deepseek/openai/glm）" + Ansi.reset())
+            tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /provider [name] [key]  切换 provider（deepseek/openai/glm/qwen/kimi/doubao/siliconflow/ollama）" + Ansi.reset())
             tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /skills        列出技能与启用状态" + Ansi.reset())
             tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /compact       手动压缩历史（LLM 摘要早期消息）" + Ansi.reset())
             tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /tree          树形列示会话分支" + Ansi.reset())
@@ -53,6 +53,14 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
                         applyProvider(cfg, agent, tui, "OpenAI", "https://api.openai.com/v1/chat/completions", "gpt-4o-mini", key)
                     case "glm" =>
                         applyProvider(cfg, agent, tui, "GLM", "https://open.bigmodel.cn/api/paas/v4/chat/completions", "glm-4-flash", key)
+                    case "qwen" =>
+                        applyProvider(cfg, agent, tui, "Qwen", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus", key)
+                    case "kimi" =>
+                        applyProvider(cfg, agent, tui, "Kimi", "https://api.moonshot.cn/v1", "moonshot-v1-8k", key)
+                    case "doubao" =>
+                        applyProvider(cfg, agent, tui, "Doubao", "https://ark.cn-beijing.volces.com/api/v3", "doubao-1-5-pro-32k-250115", key)
+                    case "siliconflow" =>
+                        applyProvider(cfg, agent, tui, "SiliconFlow", "https://api.siliconflow.cn/v1", "deepseek-ai/DeepSeek-V3", key)
                     case "ollama" =>
                         // 本地 Ollama：无需 API Key，默认 llama3.2 模型
                         // 用法：/provider ollama [model] [api_key]
