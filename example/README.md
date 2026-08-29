@@ -1,21 +1,81 @@
-# cjh 示例插件
+# cjh 示例（插件 + 技能）
 
 本目录包含 cjh 插件系统的示例插件，供参考和快速上手。
 
 ## 目录结构
 
 ```
-example/plugins/
-├── echo-test/                    # 工具插件示例
-│   ├── plugin.json               # 插件元数据
-│   └── tools/
-│       └── echo.sh               # 工具实现（shell 脚本）
+example/
+├── skills/
+│   └── example.md                # 声明式技能示例（frontmatter + 正文指令 + 声明式工具）
 │
-└── log-pruner/                   # 事件钩子插件示例
-    ├── plugin.json
-    └── hooks/
-        └── on_tool_result.sh     # on_tool_result 钩子
+└── plugins/
+    ├── echo-test/                # 工具插件示例
+    │   ├── plugin.json           # 插件元数据
+    │   └── tools/
+    │       └── echo.sh           # 工具实现（shell 脚本）
+    │
+    └── log-pruner/               # 事件钩子插件示例
+        ├── plugin.json
+        └── hooks/
+            └── on_tool_result.sh # on_tool_result 钩子
 ```
+
+## example.md：声明式技能示例（Skills）
+
+Skills 是比插件更低门槛的自定义工具机制——**写一个 Markdown 文件即贡献工具**，无需脚本。
+
+文件位于 `~/.cjh/skills/<name>.md`，由两部分组成：
+
+1. **frontmatter**（YAML）：声明 `name`、`description`、`tools`（声明式工具数组）
+2. **正文**（Markdown）：作为指令注入 system prompt，告诉模型该技能的用途
+
+声明式工具 = shell 命令模板 + 参数 schema，`${argName}` 占位符在执行时展开，经 `/bin/sh` 执行。
+
+### 完整示例（example/skills/example.md）
+
+```markdown
+---
+name: example
+description: 示例技能，演示 frontmatter + 正文指令 + 声明式工具的完整形态
+tools:
+  [
+    {
+      "name": "echo_hi",
+      "description": "向指定用户打招呼",
+      "command": "echo Hi, ${who}!",
+      "args": { "who": "要打招呼的用户名" }
+    },
+    {
+      "name": "disk_usage",
+      "description": "查看指定目录的磁盘占用",
+      "command": "du -sh ${path}",
+      "args": { "path": "要查看的目录路径" }
+    }
+  ]
+---
+
+# 示例技能
+
+（正文作为指令注入 system prompt……）
+```
+
+### 安装
+
+```bash
+cp example/skills/example.md ~/.cjh/skills/
+```
+
+cjh 启动时会自动扫描 `~/.cjh/skills/*.md`，解析 frontmatter 并注册声明式工具到 ToolRegistry。
+
+### 与插件的对比
+
+| 维度 | Skills（声明式） | 插件（plugin.json + 脚本） |
+|------|-----------------|---------------------------|
+| 载体 | 单个 Markdown 文件 | 目录 + plugin.json + shell 脚本 |
+| 工具实现 | 命令模板（零代码） | shell 脚本（可用 jq 等解析参数） |
+| 附加能力 | 正文注入 system prompt | 事件钩子（on_tool_result）、SM2 签名信任链 |
+| 适用场景 | 简单命令封装 + 领域指令 | 复杂参数解析、结果改写、签名分发 |
 
 ## 安装示例插件
 
@@ -407,3 +467,4 @@ cjh
 
 - [插件系统实现方案](../docs/插件系统实现方案.md)
 - [cjh 方案与架构设计](../docs/方案与架构设计-v2.md)
+- Skills 子系统实现：`src/skills.cj`（loadSkillTools / registerSkillTools）、声明式工具：`src/tools/registry.cj`（DeclarativeTool）
