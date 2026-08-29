@@ -20,3 +20,7 @@
 
 [target.x86_64-unknown-linux-gnu.bin-dependencies]
     path-option = ["/root/.cangjie/stdx/cangjie-stdx-linux-x64-1.0.5.1/static/stdx"]
+
+# Windows 交叉构建（cjc --target x86_64-pc-windows-gnu；stdx 静态链接）
+[target.x86_64-pc-windows-gnu.bin-dependencies]
+    path-option = ["/root/.cangjie/stdx/cangjie-stdx-windows-x64-1.0.5.1/windows_x86_64_cjnative/static/stdx"]
