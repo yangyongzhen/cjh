@@ -194,12 +194,12 @@ public class TuiApp {
                 if (cur.size > 0) {
                     finalLine = cur
                 }
-                this.logger.debug("enter+pick: 选中项='${cur}' -> inputLine='${finalLine}'")
+                this.safeLog("debug", "enter+pick: 选中项='${cur}' -> inputLine='${finalLine}'")
             }
             this.inputBox.clear()
             this.picker.hide()
             if (finalLine.size > 0) {
-                this.logger.info("submit: '${finalLine}'")
+                this.safeLog("info", "submit: '${finalLine}'")
                 this.appendOutput("")  // 空行：与上一轮回复分隔
                 this.appendOutput(Ansi.fg(Ansi.THEME_ACCENT) + "❯ " + Ansi.reset() + finalLine)
                 this.appendOutput("")  // 空行：分隔用户输入与 Agent 回复
@@ -293,6 +293,32 @@ public class TuiApp {
         this.running = false
         this.markDirty()
     }
+
+    // ── 测试观测（TUI 逻辑单测用；不触碰终端渲染）──
+
+    /**
+     * 安全日志：日志写入异常绝不带崩主循环。
+     * 实测：Backspace(ch=127) 等控制字符触发 stdx.logger quotedReplace
+     * IndexOutOfBoundsException——真实用户按退格会崩 TUI，必须防御。
+     */
+    private func safeLog(level: String, msg: String): Unit {
+        try {
+            match (level) {
+                case "debug" => this.logger.debug(msg)
+                case "info" => this.logger.info(msg)
+                case _ => this.logger.warn(msg)
+            }
+        } catch (e: Exception) {
+            // 日志失败忽略：TUI 主流程优先
+        }
+    }
+
+    public func testRunning(): Bool { return this.running }
+    public func testInputText(): String { return this.inputBox.text() }
+    public func testPickerVisible(): Bool { return this.picker.isVisible() }
+    public func testPickerCurrent(): String { return this.picker.current() }
+    public func testViewMode(): Int64 { return this.viewMode }
+    public func testEditMode(): Bool { return this.editMode }
 
     /**
      * 设置 Agent 执行状态（方案 B：执行期间输入可编辑，提交时入队 + 提示）
@@ -719,7 +745,11 @@ public class TuiApp {
         }
     }
 
-    private func handleKey(key: KeyEvent): Unit {
+    /**
+     * 按键分发（主循环调用）。不依赖终端 FFI，仅改内部状态 + 组件分发——
+     * 单元测试可直接构造 KeyEvent 驱动验证协议（输入/视图/编辑/补全/退出）。
+     */
+    public func handleKey(key: KeyEvent): Unit {
         // Ctrl+C 最高优先级：任何模式（含审批等待中）下都退出
         if (key.isCtrlC) {
             // 若有等待中的审批：写回 false 让其解除阻塞（避免 agent 线程悬挂）
@@ -768,7 +798,8 @@ public class TuiApp {
             return
         }
         // 文件日志：记录每个按键的完整形态（排查方向键/下拉框问题）
-        this.logger.debug(
+        // 用 safeLog：Backspace(ch=127) 等字符曾触发 stdx logger 越界崩 TUI
+        this.safeLog("debug",
             "key ch=${key.ch} esc=${key.escapeSeq} text='${key.text}' " +
             "up=${key.isArrowUp} down=${key.isArrowDown} tab=${key.isTab} " +
             "enter=${key.isEnter} back=${key.isBackspace} mouse=${key.isMouse} " +
@@ -850,7 +881,8 @@ public class TuiApp {
                     this.inputBox.setTextSilent(cur)
                 }
                 this.picker.hide()
-                this.refreshCandidates()
+                // 注意：不能在此调 refreshCandidates()——补全后的文本（如 /theme）
+                // 仍以 "/" 开头无空格，会把刚隐藏的下拉框重新打开（实测 bug）
                 this.markDirty()
                 return
             }
@@ -882,7 +914,7 @@ public class TuiApp {
         this.editor.setText(this.inputBox.text())
         this.editMode = true
         this.picker.hide()
-        this.logger.info("editor enter: text='${this.editor.text()}'")
+        this.safeLog("info", "editor enter: text='${this.editor.text()}'")
         this.markDirty()
     }
 
@@ -892,7 +924,7 @@ public class TuiApp {
     private func editorExit(): Unit {
         this.inputBox.setTextSilent(this.editor.text())
         this.editMode = false
-        this.logger.info("editor exit: text='${this.inputBox.text()}'")
+        this.safeLog("info", "editor exit: text='${this.inputBox.text()}'")
         this.markDirty()
     }
 
@@ -904,7 +936,7 @@ public class TuiApp {
         this.editMode = false
         this.inputBox.clear()
         if (text.size > 0) {
-            this.logger.info("editor submit: '${text}'")
+            this.safeLog("info", "editor submit: '${text}'")
             this.appendOutput(Ansi.fg(Ansi.THEME_ACCENT) + "❯ " + Ansi.reset() + text)
             this.onSubmit(text)
         }
@@ -934,10 +966,10 @@ public class TuiApp {
             }
             if (list.size > 0) {
                 this.picker.show(list)
-                this.logger.debug("candidates input='${line}' -> ${list.size} 项: ${list}")
+                this.safeLog("debug", "candidates input='${line}' -> ${list.size} 项: ${list}")
             } else {
                 this.picker.hide()
-                this.logger.debug("candidates input='${line}' -> 无匹配，隐藏")
+                this.safeLog("debug", "candidates input='${line}' -> 无匹配，隐藏")
             }
         } else {
             this.picker.hide()
