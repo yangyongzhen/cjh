@@ -529,16 +529,26 @@ cjh 内置 MCP 客户端，支持 stdio 传输 + JSON-RPC 2.0。配置 `mcp_serv
 
 ## 🤝 仓颉生态价值
 
-cjh 是仓颉语言在 **AI 编程代理**领域的完整实践，为仓颉生态贡献：
+cjh 是仓颉语言在 **AI 编程代理**领域的完整实践。开发过程中沉淀出 **5 个零依赖（或仅官方 stdx）的独立仓颉库**，已自包含可独立发布，贡献仓颉生态：
+
+| 库 | 定位 | 依赖 | 发布难度 |
+|---|---|---|---|
+| [**cjterm**](libs/cjterm/README.md) | 终端 UI 组件库：ANSI 控制 / 差分渲染 / 输入框/编辑器/表单/列表选择等组件 / **跨平台终端层**（termios + Win32 Console，`@When[os]` 条件编译） | 零依赖 | ★ |
+| [**cjlog**](libs/cjlog/README.md) | 异步日志库：级别控制 / 双文件落盘 / 异常堆栈提取 | 零依赖 | ★ |
+| [**cjconfig**](libs/cjconfig/README.md) | 通用分层配置库：环境变量 > 配置文件 > 默认值 / 声明式字段 / 自动模板 / 保留用户扩展 | 仅 stdx.json | ★ |
+| [**cjutil**](libs/cjutil/README.md) | 通用工具库：UTF-8 安全截断 / SHA-256 / 国密 SM2 / 网页正文提取 / BM25 检索 / HTML→Markdown / JSON 修复 / SSRF 防护 / 跨平台 FFI | 官方 stdx | ★★ |
+| [**cjllm**](libs/cjllm/README.md) | LLM 协议库：OpenAI 兼容 / Anthropic Messages / Ollama / Mock，流式 + 工具调用 + token 统计 + mojibake 修复 | cjutil+cjlog+stdx | ★★★ |
+
+> 每个库均含独立 README、MIT LICENSE、可运行示例（`examples/`）、CI 模板、发布指南（`docs/发布指南.md`）。发布方式：独立仓库推送 atomgit（Cangjie-TPC）→ 打 tag → 可提交 pkg.cangjie-lang.cn 中心仓 → 向 Cangjie-SIG 请求收录。详见 [libs/README.md](libs/README.md)。
+
+cjh 对仓颉生态的其他贡献：
 
 | 贡献 | 说明 |
 |---|---|
-| **cjterm** | 独立终端 UI 库（ANSI / 差分渲染 / termios / 6 套主题），纯 libc FFI 自实现，任何仓颉终端项目可复用 |
-| **cjllm** | 独立 LLM 协议库（OpenAI / Anthropic / Ollama / SSE / Mock），任何仓颉 AI 项目可复用 |
-| **cjutil** | 独立工具库（SHA256 / SM2 签名 / UTF-8 / JSON 修复 / 日志），仓颉生态通用基础设施 |
-| **MCP 协议实现** | 仓颉语言首个 MCP 客户端实现，为仓颉生态接入 MCP 工具网络铺路 |
-| **插件信任链** | 仓颉 `stdx.crypto` 国密 SM2 在插件安全场景的实践范例 |
-| **工程踩坑经验** | 完整记录仓颉开发中的 FFI / 编译 / 并发 / TLS 等坑点，降低后来者门槛 |
+| **MCP 协议实现** | 仓颉语言首个 MCP 客户端实现（stdio 传输 + 工具注册），为仓颉生态接入 MCP 工具网络铺路 |
+| **插件信任链** | 仓颉 `stdx.crypto` 国密 SM2 在插件安全场景的实践范例（SHA256 校验 + SM2 签名） |
+| **跨平台终端层** | `TerminalBackend` 抽象 + 条件编译（termios / Win32），仓颉 TUI 跨平台的标准范式（[方案](docs/跨平台终端层设计方案.md)） |
+| **工程踩坑经验** | 完整记录仓颉开发中的 FFI / 条件编译 / 静态链接 / 并发 / TLS 等坑点（[开发文档与踩坑记录](docs/开发文档与踩坑记录.md)），降低后来者门槛 |
 
 ## 🔨 开发
 
