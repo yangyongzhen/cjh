@@ -490,6 +490,9 @@ public class Agent {
             let durationMs = (DateTime.now() - startTime).toMilliseconds()
             summary.durationMs = durationMs
             summary.reply = response.text
+            // 正常退出也记日志，方便排查"意外停止"——区分 LLM 主动结束 vs 异常
+            // 用 warn 级别确保写入 error.log（info 级别默认 NoopLogger）
+            Log.warn("Agent.run 正常结束: ${iterations} rounds, ${summary.toolCalls} tools, ${durationMs}ms")
             return summary
         }
         // 达最大迭代次数也触发总结
