@@ -526,16 +526,26 @@ cjh has a built-in MCP client supporting stdio transport + JSON-RPC 2.0. After c
 
 ## 🤝 Cangjie Ecosystem Value
 
-cjh is a complete practice of the Cangjie language in the **AI coding agent** domain, contributing to the Cangjie ecosystem:
+cjh is a complete practice of the Cangjie language in the **AI coding agent** domain. Along the way it produced **5 self-contained Cangjie libraries** (zero deps or official-stdx only), ready to be published independently to the Cangjie ecosystem:
+
+| Library | Position | Deps | Ease |
+|---|---|---|---|
+| [**cjterm**](libs/cjterm/README.md) | Terminal UI component library: ANSI control / diff rendering / input box / editor / form / list select components / **cross-platform terminal layer** (termios + Win32 Console via `@When[os]` conditional compilation) | zero deps | ★ |
+| [**cjlog**](libs/cjlog/README.md) | Async logging: level control / dual-file output / exception stack extraction | zero deps | ★ |
+| [**cjconfig**](libs/cjconfig/README.md) | Layered config: env var > config file > defaults / declarative fields / auto template / preserves user extensions | stdx.json only | ★ |
+| [**cjutil**](libs/cjutil/README.md) | Utilities: UTF-8 safe truncation / SHA-256 / national crypto SM2 / article extraction / BM25 search / HTML→Markdown / JSON repair / SSRF guard / cross-platform FFI | official stdx | ★★ |
+| [**cjllm**](libs/cjllm/README.md) | LLM protocol library: OpenAI-compatible / Anthropic Messages / Ollama / Mock, streaming + tool calls + token stats + mojibake fix | cjutil+cjlog+stdx | ★★★ |
+
+> Each library ships with its own README, MIT LICENSE, runnable examples (`examples/`), CI template, and release guide (`docs/发布指南.md`). Publish by pushing an independent repo to atomgit (Cangjie-TPC) → tag → optionally submit to pkg.cangjie-lang.cn → request inclusion from Cangjie-SIG. See [libs/README.md](libs/README.md).
+
+Further contributions from cjh:
 
 | Contribution | Description |
 |---|---|
-| **cjterm** | Independent terminal UI library (ANSI / diff rendering / termios / 6 themes), pure libc FFI, reusable by any Cangjie terminal project |
-| **cjllm** | Independent LLM protocol library (OpenAI / Anthropic / Ollama / SSE / Mock), reusable by any Cangjie AI project |
-| **cjutil** | Independent utility library (SHA256 / SM2 signature / UTF-8 / JSON repair / logging), common infrastructure for the Cangjie ecosystem |
-| **MCP Protocol Implementation** | The first MCP client implementation in Cangjie, paving the way for the Cangjie ecosystem to access the MCP tool network |
-| **Plugin Trust Chain** | A practical example of Cangjie `stdx.crypto` national cryptography SM2 in plugin security scenarios |
-| **Engineering Pitfall Records** | Complete records of FFI / compilation / concurrency / TLS pitfalls in Cangjie development, lowering the barrier for newcomers |
+| **MCP Protocol Implementation** | The first MCP client implementation in Cangjie (stdio transport + tool registration), paving the way for the Cangjie ecosystem to access the MCP tool network |
+| **Plugin Trust Chain** | A practical example of Cangjie `stdx.crypto` national cryptography SM2 in plugin security (SHA256 checksum + SM2 signature) |
+| **Cross-platform terminal layer** | `TerminalBackend` abstraction + conditional compilation (termios / Win32), a standard pattern for cross-platform Cangjie TUIs ([design](docs/跨平台终端层设计方案.md)) |
+| **Engineering Pitfall Records** | Complete records of FFI / conditional compilation / static linking / concurrency / TLS pitfalls in Cangjie development ([dev docs](docs/开发文档与踩坑记录.md)), lowering the barrier for newcomers |
 
 ## 🔨 Development
 
