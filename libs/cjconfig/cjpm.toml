@@ -1,0 +1,16 @@
+[package]
+  cjc-version = "1.0.5"
+  name = "cjconfig"
+  description = "cjconfig：仓颉通用分层配置库（环境变量 > 配置文件 > 默认值）"
+  version = "0.1.0"
+  target-dir = ""
+  output-type = "static"
+  compile-option = ""
+  override-compile-option = ""
+  link-option = ""
+  package-configuration = {}
+
+[dependencies]
+
+[target.x86_64-unknown-linux-gnu.bin-dependencies]
+    path-option = ["/root/.cangjie/stdx/cangjie-stdx-linux-x64-1.0.5.1/dynamic/stdx"]
