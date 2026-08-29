@@ -34,7 +34,7 @@ Cangjie's characteristics happen to hit 4 of the above pain points. This is "why
 |---|---|---|
 | **Static compilation single binary** (cjnative) | Runtime baggage, distribution cost | No Node/Bun/npm dependency tree, `one file = one agent`, <10MB |
 | **Strong safety language design** (safety DNA) | Security model | Plugin/skill compile-time type checking, memory safety, structurally reduced malicious code risk |
-| **Multi-backend compilation** (cjnative/cjvm + HarmonyOS slot) | Platform coverage | Future native HarmonyOS (Huawei ecosystem slot), cross-end isomorphic |
+| **Multi-backend compilation + terminal-layer platform abstraction** (cjnative/cjvm + HarmonyOS slot) | Platform coverage | Native on Linux / macOS / Windows, HarmonyOS reserved; unified VT output with conditional-compiled platform backends — one source tree, multi-platform binaries ([design](docs/跨平台终端层设计方案.md)) |
 | **M:N lightweight threads + high performance** | Context management, concurrency | Native concurrent processing of streaming/multi-agent, low overhead |
 | **Domestic root technology** | Xinchu/self-controllable | Government, finance and other sensitive scenarios with no foreign runtime dependencies |
 
@@ -81,6 +81,7 @@ Cangjie's **M:N lightweight threads** are the native substrate for the cluster: 
 | **Multi-Provider Out of the Box** | OpenAI / DeepSeek / GLM / Anthropic / Ollama all compatible, `/provider` hot-swap. |
 | **Plugin Trust Chain** | SHA256 checksum + SM2 national cryptography signature verification (Cangjie native `stdx.crypto`), preventing supply chain poisoning. |
 | **Web Native Support** | Built-in HTTP Server + WebSocket streaming conversation + REST API + frontend SPA, remotely driving the Agent. |
+| **Cross-Platform Native** | Cangjie multi-backend compilation + terminal-layer platform abstraction (POSIX/Win32 backends via conditional compilation, unified VT output) — one source tree, multi-platform binaries, unchanged single-file distribution ([design](docs/跨平台终端层设计方案.md), planned). |
 
 ## 🎯 Two Hard Metrics
 
