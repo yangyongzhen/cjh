@@ -585,6 +585,9 @@ public class Agent {
         match (toolName) {
             case "bash" => if (this.config.toolResultMaxChars >= 8000) { this.config.toolResultMaxChars } else { 8000 }
             case "list_dir" => 4000
+            // read_file 是按需读取工具，LLM 已通过 offset/limit 控制读取量；
+            // 截断会导致 LLM 看到不完整内容，反复重读，浪费轮次
+            case "read_file" => Int64.Max
             case _ => this.config.toolResultMaxChars
         }
     }
