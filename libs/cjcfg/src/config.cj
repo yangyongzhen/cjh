@@ -145,8 +145,8 @@ public class CjhConfig {
     public var webFetchTimeoutSeconds: Int64 = 30
 
     public init() {
-        // 配置目录：环境变量覆盖，默认 ~/.cjh
-        let home = readEnv("HOME") ?? "/root"
+        // 配置目录：环境变量覆盖，默认用户主目录（跨平台：Windows USERPROFILE / POSIX HOME）
+        let home = EnvFfi.homeDir()
         this.configDir = readEnv("CJH_CONFIG_DIR") ?? (home + "/.cjh")
         this.settingsPath = this.configDir + "/settings.json"
         this.authPath = this.configDir + "/auth.json"
