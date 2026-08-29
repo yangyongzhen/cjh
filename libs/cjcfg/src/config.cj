@@ -77,7 +77,7 @@ public class CjhConfig {
     // 三域 capability 安全模型（settings.json "capability": {...}；未配置=宽松模式）
     public var capability: Capability = Capability.fromJson(None)
     // Compaction：消息条数超阈值触发 LLM 摘要压缩早期历史（0=禁用，对齐 pi 自动摘要）
-    public var compactThreshold: Int64 = 0
+    public var compactThreshold: Int64 = 30
     // 压缩时保留的最近消息条数
     public var compactKeep: Int64 = 12
     // 启用的技能白名单（settings.json "enabled_skills": [...]；空=全部启用）
@@ -411,8 +411,10 @@ public class CjhConfig {
                 " 6. bash is best for: git, builds, package managers, running tests, short aggregation (wc/sort/uniq)." +
                 "\n\n## Do not hallucinate encodings\n" +
                 " read_file and bash return plain text. If you see normal source code (HTML/JS/CSS), it IS the file content — do NOT run python3/awk/od to 'decode' it. Only use od/hexdump on genuinely binary files." +
-                "\n\n## Large file write strategy\n" +
-                " write_file has a max_tokens limit. For files >150 lines: first write_file the skeleton, then append_file multiple chunks (each <1500 chars), last chunk appends closing tags. Never rewrite a truncated file with write_file — use append_file to continue."
+                "\n\n## Batch tool calls\n" +
+                " When you need to do several independent things (read 3 files, run 2 commands), issue ALL the tool calls in ONE turn — do not do them one at a time. This saves round-trips and is much faster." +
+                "\n\n## Writing files\n" +
+                " Write the complete file in one write_file call. If the file is large (>150 lines) and write_file gets truncated, continue with append_file — never rewrite a truncated file with write_file."
         }
     }
 
