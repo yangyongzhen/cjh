@@ -242,6 +242,11 @@ public class TuiApp {
             if (let Some(key) <- this.term.readKey()) {
                 this.handleKey(key)
             }
+            // resize 感知：终端尺寸变化时立即重绘
+            // （空闲时 resize 不产生输入事件，依赖每帧尺寸查询对比触发）
+            if (this.term.sizeChanged()) {
+                this.markDirty()
+            }
             // agent 执行中：每 1 秒触发一次重绘（刷新计时/token 计数）
             if (this.isAgentBusy()) {
                 let now = DateTime.now()

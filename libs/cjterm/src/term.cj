@@ -147,21 +147,9 @@ public class KeyEvent {
 public class Term {
     private let backend: TerminalBackend
     private var rawOn: Bool = false
-    // 静态缓存：Stderr.suppress() 前通过 TermSize.prefetch() 设置，
-    // 之后 size() 优先返回缓存值（避免 ioctl(STDERR) 失效回退到 80 列）
-    private static var cachedRows: Int64 = -1
-    private static var cachedCols: Int64 = -1
 
     public init() {
         this.backend = createTerminalBackend()
-    }
-
-    /**
-     * 预缓存终端尺寸（在屏蔽 stderr 前调用）
-     */
-    public static func prefetch(rows: Int64, cols: Int64): Unit {
-        Term.cachedRows = rows
-        Term.cachedCols = cols
     }
 
     public func enableRaw(): Bool {
@@ -213,10 +201,9 @@ public class Term {
     }
 
     public func size(): (Int64, Int64) {
-        // 优先返回预缓存尺寸（Stderr.suppress() 前由 TermSize.get() 设置）
-        if (Term.cachedRows > 0 && Term.cachedCols > 0) {
-            return (Term.cachedRows, Term.cachedCols)
-        }
+        // 每帧返回真实尺寸（resize 感知），不做静态缓存——
+        // 历史缓存目的（stderr suppress 后 ioctl(STDERR) 失效回退 80 列）
+        // 已被 backend 的 STDIN/STDOUT/STDERR 依次尝试覆盖
         return this.backend.size()
     }
 
