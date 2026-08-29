@@ -481,9 +481,36 @@ public class TuiApp {
     /**
      * 弹出 provider 配置表单（/provider 无参数时调用）
      * Provider 字段为 select 下拉（deepseek/openai/glm），
-     * ←→ 切换时联动填充对应 baseUrl/model 预设
+     * ←→ 切换时联动填充对应 baseUrl/model 预设。
+     *
+     * 默认值策略：端点/模型按"各家预设"自洽填充（不掺真实配置）——
+     * 根据当前 base_url 推断 Provider 并填充该家预设，保证
+     * Provider 下拉与端点/模型始终匹配；未匹配预设时默认 deepseek。
+     * API Key **不预填**（各家 key 独立且敏感，预填会误导——切到未配置的
+     * 家仍显示当前 key 的星号）；留空保存时 applyProvider 保留原 key。
      */
     public func showProviderDialog(currentBaseUrl: String, currentModel: String, currentApiKey: String): Unit {
+        // 根据当前 base_url 推断 provider（预设匹配；未匹配默认 deepseek）
+        var provider = "deepseek"
+        if (currentBaseUrl.contains("openai.com")) {
+            provider = "openai"
+        } else if (currentBaseUrl.contains("bigmodel.cn")) {
+            provider = "glm"
+        } else if (currentBaseUrl.contains("deepseek.com")) {
+            provider = "deepseek"
+        }
+        // 各家预设（与下方 onSelectChange 联动表保持一致）
+        let presetBase = match (provider) {
+            case "openai" => "https://api.openai.com/v1/chat/completions"
+            case "glm" => "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+            case _ => "https://api.deepseek.com/v1/chat/completions"
+        }
+        let presetModel = match (provider) {
+            case "openai" => "gpt-4o-mini"
+            case "glm" => "glm-4-flash"
+            case _ => "deepseek-chat"
+        }
+
         this.providerDialog.clearFields()
         // 字段 0：Provider（select，含三个预设）
         let providers = ArrayList<String>()
@@ -497,10 +524,12 @@ public class TuiApp {
         this.providerDialog.addField("模型", "gpt-4o-mini", false)
         // 字段 3：API Key（secret）
         this.providerDialog.addField("API Key", "sk-xxxx", true)
-        // 预填当前配置，方便增量修改
-        this.providerDialog.setFieldValue(1, currentBaseUrl)
-        this.providerDialog.setFieldValue(2, currentModel)
-        this.providerDialog.setFieldValue(3, currentApiKey)
+        // select 初始选中 = 推断的 provider（value 必须在 options 中）
+        this.providerDialog.setFieldValue(0, provider)
+        // 端点/模型按该家预设填充（不自洽地混入真实配置；currentModel 不再用于预填）
+        this.providerDialog.setFieldValue(1, presetBase)
+        this.providerDialog.setFieldValue(2, presetModel)
+        // API Key 不预填（placeholder "sk-xxxx"；各家 key 独立，预填易误导）
         // select 联动：切换 Provider 时填充对应 baseUrl/model 预设
         this.providerDialog.onSelectChange = { index, value =>
             if (index == 0) {

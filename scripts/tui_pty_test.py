@@ -266,6 +266,40 @@ def test_approval_no() -> None:
         s.close()
 
 
+def test_provider_dialog() -> None:
+    print("[场景6] Provider 配置弹窗：默认值按各家预设自洽 + ←→ 切换联动")
+    cfg = make_config_dir()
+    s = PtuSession(cfg)
+    try:
+        s.expect("cjh")
+        time.sleep(0.5)
+        s.send("/provider\n")      # 无参数 → 弹窗
+        s.expect("配置 Provider")
+        s.read_available(0.5)
+        buf = strip_ansi(s.buf)
+        # 测试配置 base_url=openai 默认 → 弹窗按推断显示 openai 预设（自洽，不掺真实配置）
+        check("弹窗出现", True)
+        check("Provider 显示 openai", "openai" in buf)
+        check("端点=openai 预设", "api.openai.com" in buf, f"(buf尾部: {buf[-200:]})")
+        check("模型=gpt-4o-mini", "gpt-4o-mini" in buf)
+        # API Key 不预填（显示 placeholder sk-xxxx，避免误导其他家有 key）
+        check("API Key 显示占位符", "sk-xxxx" in buf, f"(buf尾部: {buf[-200:]})")
+        check("API Key 无预填星号", "*" * 8 not in buf)
+        # ← 切换到 deepseek：端点/模型联动为 deepseek 预设（expect 轮询等渲染完成）
+        s.send_esc_seq("\x1b[D")   # 左键 → deepseek
+        s.expect("api.deepseek.com")
+        s.expect("deepseek-chat")
+        check("切换到 deepseek 端点", True)
+        check("切换到 deepseek 模型", True)
+        # Esc 关闭
+        s.send_esc_seq("\x1b")
+        s.read_available(0.3)
+        s.send_key(3)
+        s.wait_exit()
+    finally:
+        s.close()
+
+
 def main() -> None:
     if not os.path.exists(BIN):
         print(f"错误：未找到 {BIN}，请先 cjpm build")
@@ -277,6 +311,7 @@ def main() -> None:
     test_help_view()
     test_approval_yes()
     test_approval_no()
+    test_provider_dialog()
     print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
     sys.exit(1 if FAIL else 0)
 
