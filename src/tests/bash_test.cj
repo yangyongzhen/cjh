@@ -17,7 +17,7 @@ public class BashToolTest {
 
     @TestCase
     public func testEchoSuccess(): Unit {
-        let tool = BashTool()
+        let tool = BashTool(60, false)  // 非会话路径（stderr 分离语义）
         let result = tool.execute(this.buildArgs("echo hello"))
         @Assert(result.isError, false)
         @Assert(result.content.contains("exit code: 0"), true)
@@ -26,7 +26,7 @@ public class BashToolTest {
 
     @TestCase
     public func testNonZeroExitIsError(): Unit {
-        let tool = BashTool()
+        let tool = BashTool(60, false)  // 非会话路径（stderr 分离语义）
         let result = tool.execute(this.buildArgs("exit 3"))
         @Assert(result.isError, true)
         @Assert(result.content.contains("exit code: 3"), true)
@@ -34,7 +34,7 @@ public class BashToolTest {
 
     @TestCase
     public func testStderrCaptured(): Unit {
-        let tool = BashTool()
+        let tool = BashTool(60, false)  // 非会话路径（stderr 分离语义）
         let result = tool.execute(this.buildArgs("echo oops >&2"))
         @Assert(result.isError, false)
         @Assert(result.content.contains("stderr"), true)
@@ -43,7 +43,7 @@ public class BashToolTest {
 
     @TestCase
     public func testPipelineAndEnv(): Unit {
-        let tool = BashTool()
+        let tool = BashTool(60, false)  // 非会话路径（stderr 分离语义）
         // 管道 + 变量展开：验证 -c 语义
         let result = tool.execute(this.buildArgs("X=5; echo $X | wc -l"))
         @Assert(result.isError, false)
@@ -52,7 +52,7 @@ public class BashToolTest {
 
     @TestCase
     public func testMissingCommandParam(): Unit {
-        let tool = BashTool()
+        let tool = BashTool(60, false)  // 非会话路径（stderr 分离语义）
         var args = JsonObject()
         let result = tool.execute(args)
         @Assert(result.isError, true)
@@ -61,7 +61,7 @@ public class BashToolTest {
     @TestCase
     public func testTimeoutKillsLongCommand(): Unit {
         // P0-1：超时防挂死——sleep 5 用 1s 超时必须被杀
-        let tool = BashTool(1)  // 1 秒超时
+        let tool = BashTool(1, false)  // 非会话路径 + 1 秒超时
         let result = tool.execute(this.buildArgs("sleep 5"))
         @Assert(result.isError, true)
         @Assert(result.content.contains("超时"), true)
@@ -70,7 +70,7 @@ public class BashToolTest {
 
     @TestCase
     public func testFastCommandNotAffectedByTimeout(): Unit {
-        let tool = BashTool(1)
+        let tool = BashTool(1, false)
         let result = tool.execute(this.buildArgs("echo quick"))
         @Assert(result.isError, false)
         @Assert(result.content.contains("quick"), true)

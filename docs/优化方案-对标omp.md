@@ -13,7 +13,7 @@
 |---|---|---|---|
 | P0 | bash 工具超时 | ✅ 已实施（默认 60s，CJH_BASH_TIMEOUT 可配，timeout 命令包装 + base64 传命令） | 待提交 |
 | P0 | Ctrl+C 中断当前轮 | ✅ 已实施（忙时中断 agent、空闲两次退出、审批拒绝保持） | 待提交 |
-| P1 | 持久 bash 会话 | ⏸ 暂缓——std.process 管道 `read` 阻塞无超时，命令挂死会卡死读循环（违背 P0-1）；需先解决非阻塞读/进程 kill 能力 | — |
+| P1 | 持久 bash 会话 | ✅ 已实施（异步读线程 + 完成标志轮询 + 超时 terminate 重建；cwd/env 跨命令保留；exit N 由 EOF+wait 取退出码） | 待提交 |
 | P1 | task 结构化返回 + 并行引导 | ✅ 已实施（spec 加并行引导；结果 `=== 子代理结果 ===` 结构化标记） | 待提交 |
 | P1 | 模型路由（摘要快模型） | ✅ 已实施（settings `summary_model/base_url/api_key`，compaction 摘要走快模型）；429 fallback ⬜ 待做（需 openai.cj 请求层 key 轮换） | 待提交 |
 | P1 | 跨会话项目记忆（Hindsight 式） | ✅ 已实施（会话结束写 `~/.cjh/project-memory/<project>.md`，新会话注入 system prompt） | 待提交 |

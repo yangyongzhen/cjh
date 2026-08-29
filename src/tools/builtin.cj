@@ -16,20 +16,30 @@ import cjllm.ToolSpec
 /**
  * bash 工具：执行 shell 命令并捕获输出
  *
- * 超时（P0-1）：默认 60s，用 coreutils timeout 包装命令——
- * git pull/构建/网络命令卡死不会挂起 agent 会话。
- * 超时退出码 124 → 返回明确的超时错误（含已捕获的部分输出）。
+ * 持久会话（P1-3）：默认走 BashSession（跨命令保留 cwd/env），
+ * 超时（P0-1）：默认 60s——git pull/构建/网络命令卡死不会挂起 agent。
  */
 public class BashTool <: CjhTool {
     // 默认超时秒数（0=不超时；可用 env CJH_BASH_TIMEOUT 覆盖）
     public let timeoutSecs: Int64
+    // 持久会话（P1-3）：true=跨命令保留 cwd/env；false=每次独立 bash -c
+    public let useSession: Bool
+    // 会话（跨实例共享？registry 单例，实例字段即可）
+    private let session: BashSession = BashSession()
 
     public init() {
         this.timeoutSecs = 60
+        this.useSession = true
     }
 
     public init(timeoutSecs: Int64) {
         this.timeoutSecs = timeoutSecs
+        this.useSession = true
+    }
+
+    public init(timeoutSecs: Int64, useSession: Bool) {
+        this.timeoutSecs = timeoutSecs
+        this.useSession = useSession
     }
 
     public func isReadOnly(): Bool {
@@ -40,7 +50,7 @@ public class BashTool <: CjhTool {
         var props = HashMap<String, JsonValue>()
         props.add("command", JsonSchema.str("Shell command to execute"))
         let schema = JsonSchema.object(props, ArrayList<String>(["command"]))
-        return ToolSpec("bash", "Run a shell command (git, build, test, package manager). Do NOT use bash to read files — use read_file instead. bash is for executing commands, not for file content extraction (sed/awk/head/tail are slower and less reliable than read_file). Commands are killed after ${this.timeoutSecs}s by default.", schema)
+        return ToolSpec("bash", "Run a shell command (git, build, test, package manager). Do NOT use bash to read files — use read_file instead. bash is for executing commands, not for file content extraction (sed/awk/head/tail are slower and less reliable than read_file). Working directory and env persist across commands. Commands are killed after ${this.timeoutSecs}s by default.", schema)
     }
 
     public func execute(args: JsonObject): ToolResult {
@@ -59,11 +69,17 @@ public class BashTool <: CjhTool {
             }
         }
         try {
+            if (this.useSession) {
+                // 持久会话（P1-3）：跨命令保留 cwd/env
+                let (code, output) = this.session.execute(cmd, secs)
+                if (code < 0) {
+                    return ToolResult(output, true)  // 超时提示
+                }
+                return ToolResult("exit code: ${code}\nstdout:\n${output}", code != 0)
+            }
+            // 非会话路径（useSession=false）：timeout 命令包装，base64 传命令
             var argv = Array<String>(2, repeat: "")
             argv[0] = "-c"
-            // timeout 包装：--kill-after 兜底强杀；退出码 124 = 超时。
-            // 命令经 base64 传给内层 bash -c：引号安全 + 保留 shell 内建语义
-            // （直接 `timeout Ns exit 3` 会因 timeout 无法 exec 内建而失败）
             var effective = cmd
             if (secs > 0) {
                 let b64 = toBase64String(cmd.toArray())
@@ -76,7 +92,6 @@ public class BashTool <: CjhTool {
             var out = safeFromUtf8(stdoutBytes)
             var err = safeFromUtf8(stderrBytes)
             if (code == 124 && secs > 0) {
-                // 超时：明确提示，避免模型误以为是命令本身失败重试
                 var result = "⚠️ 命令超时（${secs}s 未完成，已强制终止）\n"
                 result += "exit code: 124 (timeout)\n"
                 if (out.size > 0) {
