@@ -3,7 +3,6 @@ package cjterm
 import std.collection.*
 import std.sync.*
 import std.io.*
-import cjutil.*
 
 /**
  * 任务项数据（TUI 层的轻量副本，从 Agent.todos 拷贝）
