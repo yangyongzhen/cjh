@@ -384,11 +384,12 @@ public class TuiApp {
     }
 
     /**
-     * 累加 Agent 执行期间的输入 token（实时状态行显示用）
+     * 设置 Agent 执行期间的精确 token 数（每轮 LLM 调用结束后的 usage）
+     * 覆盖语义：精确值直接覆盖估算值，避免累加导致后续轮次的估算值无法更新
      */
     public func addAgentTokens(tokens: Int64): Unit {
         this.agentTokenLock.lock()
-        this.agentPromptTokens += tokens
+        this.agentPromptTokens = tokens
         this.agentTokenLock.unlock()
         this.markDirty()
     }
