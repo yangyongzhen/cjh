@@ -147,16 +147,26 @@ public class CjhConfig {
     public init() {
         // 配置目录：环境变量覆盖，默认用户主目录（跨平台：Windows USERPROFILE / POSIX HOME）
         let home = EnvFfi.homeDir()
-        this.configDir = readEnv("CJH_CONFIG_DIR") ?? (home + "/.cjh")
-        this.settingsPath = this.configDir + "/settings.json"
-        this.authPath = this.configDir + "/auth.json"
-        this.sessionsDir = this.configDir + "/sessions"
-        this.skillsDir = this.configDir + "/skills"
-        this.spillDir = this.configDir + "/spill"
-        this.pluginsDir = this.configDir + "/plugins"
-        this.memoryDir = this.configDir + "/project-memory"
+        let s = CjhConfig.sep()
+        this.configDir = readEnv("CJH_CONFIG_DIR") ?? (home + s + ".cjh")
+        this.settingsPath = this.configDir + s + "settings.json"
+        this.authPath = this.configDir + s + "auth.json"
+        this.sessionsDir = this.configDir + s + "sessions"
+        this.skillsDir = this.configDir + s + "skills"
+        this.spillDir = this.configDir + s + "spill"
+        this.pluginsDir = this.configDir + s + "plugins"
+        this.memoryDir = this.configDir + s + "project-memory"
         this.load()
     }
+
+    /**
+     * 平台路径分隔符（Windows 反斜杠 / POSIX 正斜杠），编译期确定
+     */
+    @When[os == "Windows"]
+    private static func sep(): String { return "\\" }
+
+    @When[os != "Windows"]
+    private static func sep(): String { return "/" }
 
     /**
      * 确保配置目录存在（含 sessions/）
