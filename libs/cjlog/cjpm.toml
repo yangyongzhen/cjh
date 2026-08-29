@@ -1,0 +1,16 @@
+[package]
+  cjc-version = "1.0.5"
+  name = "cjlog"
+  description = "cjlog：仓颉异步日志库（参考 g3log 设计，内存队列 + 后台刷盘），可独立贡献给仓颉生态"
+  version = "0.1.0"
+  target-dir = ""
+  output-type = "static"
+  compile-option = ""
+  override-compile-option = ""
+  link-option = ""
+  package-configuration = {}
+
+[dependencies]
+
+[target.x86_64-unknown-linux-gnu.bin-dependencies]
+    path-option = ["/root/.cangjie/stdx/cangjie-stdx-linux-x64-1.0.5.1/dynamic/stdx", "/opt/cangjie/cangjie/lib/linux_x86_64_cjnative"]

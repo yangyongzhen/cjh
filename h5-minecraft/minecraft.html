@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>我的世界 · H5 版</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #87ceeb;
+    font-family: "Microsoft YaHei", "PingFang SC", sans-serif; user-select: none; }
+  canvas { display: block; }
+  #crosshair { position: fixed; left: 50%; top: 50%; width: 20px; height: 20px;
+    transform: translate(-50%, -50%); pointer-events: none; z-index: 10; opacity: .9; }
+  #crosshair::before, #crosshair::after { content: ""; position: absolute; background: #000; }
+  #crosshair::before { left: 9px; top: 0; width: 2px; height: 20px; }
+  #crosshair::after  { left: 0; top: 9px; height: 2px; width: 20px; }
+  #overlay { position: fixed; inset: 0; z-index: 20; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; background: rgba(0,0,0,.35); cursor: pointer; }
+  #overlay .panel { background: rgba(20,20,30,.92); border: 2px solid #666;
+    border-radius: 10px; padding: 28px 40px; text-align: center; color: #fff;
+    box-shadow: 0 10px 40px rgba(0,0,0,.5); }
+  #overlay h1 { font-size: 34px; letter-spacing: 3px; color: #7ec850;
+    text-shadow: 2px 2px 0 #2f5d1a; margin-bottom: 6px; }
+  #overlay .sub { color: #9ab; font-size: 14px; margin-bottom: 18px; }
+  #overlay .keys { display: grid; grid-template-columns: auto auto; gap: 6px 24px;
+    text-align: left; font-size: 14px; color: #ccc; margin-bottom: 20px; line-height: 1.7; }
+  #overlay .keys b { color: #ffd76a; font-family: Consolas, monospace; }
+  #overlay .start { display: inline-block; background: #7ec850; color: #143a05;
+    font-size: 20px; font-weight: bold; padding: 10px 42px; border-radius: 8px;
+    border-bottom: 4px solid #4d8a28; }
+  #overlay .tip { margin-top: 14px; font-size: 12px; color: #889; }
+  #hotbar { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);
+    display: flex; gap: 4px; z-index: 10; background: rgba(0,0,0,.45);
+    padding: 5px; border-radius: 6px; }
+  .slot { width: 46px; height: 46px; border: 2px solid #555; border-radius: 4px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    color: #fff; font-size: 11px; gap: 2px; background: rgba(0,0,0,.35); }
+  .slot .num { color: #aaa; font-size: 10px; }
+  .slot.sel { border-color: #fff; background: rgba(126,200,80,.35); box-shadow: 0 0 8px rgba(255,255,255,.6); }
+  .slot img { width: 26px; height: 26px; image-rendering: pixelated; }
+  #hint { position: fixed; left: 12px; top: 12px; color: rgba(255,255,255,.85);
+    font-size: 12px; z-index: 10; text-shadow: 1px 1px 2px #000; line-height: 1.6; }
+</style>
+</head>
+<body>
+<div id="crosshair"></div>
+<div id="hint">左键 破坏 · 右键 放置<br>WASD 移动 · 空格 跳跃 · 1~6 选方块</div>
+<div id="hotbar"></div>
+<div id="overlay">
+  <div class="panel">
+    <h1>⛏ 我的世界</h1>
+    <div class="sub">H5 像素体素沙盒 · Three.js 实现</div>
+    <div class="keys">
+      <span><b>W A S D</b> 移动</span><span><b>鼠标</b> 视角</span>
+      <span><b>空格</b> 跳跃</span><span><b>左键</b> 破坏方块</span>
+      <span><b>右键</b> 放置方块</span><span><b>1~6</b> 选择方块</span>
+      <span><b>Shift</b> 疾跑</span><span><b>Esc</b> 释放鼠标</span>
+    </div>
+    <div class="start">点击开始游戏</div>
+    <div class="tip">需要联网加载 Three.js 库 · 建议 Chrome / Edge</div>
+  </div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+"use strict";
+/* ================= 全局变量 ================= */
+const B = { AIR: 0, GRASS: 1, DIRT: 2, STONE: 3, LOG: 4, LEAF: 5, PLANK: 6 };
+const world = new Map();          // "x,y,z" -> 方块类型
+const WORLD = 28, MIN_H = 1, MAX_H = 8;
+let px = 0, py = 10, pz = 0;      // 玩家脚部位置
+let yaw = 0, pitch = 0, vy = 0, onGround = false;
+let selected = 1, locked = false, running = false;
+const keys = {};
+let scene, camera, renderer, blockMeshes = [];
+
+/* ================= 像素纹理生成 ================= */
+function makeTex(size, draw) {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+  draw(ctx, size);
+  const t = new THREE.CanvasTexture(c);
+  t.magFilter = THREE.NearestFilter;
+  t.minFilter = THREE.NearestFilter;
+  return t;
+}
+function px(ctx, x, y, color) { ctx.fillStyle = color; ctx.fillRect(x, y, 1, 1); }
+function speckle(ctx, size, base, vars, n) {
+  for (let i = 0; i < n; i++) {
+    const c = vars[(Math.random() * vars.length) | 0];
+    px(ctx, (Math.random() * size) | 0, (Math.random() * size) | 0, c);
+  }
+}
+const T = {}; // 纹理
+T.grassTop  = makeTex(16, (c, s) => { c.fillStyle = '#6abe30'; c.fillRect(0, 0, s, s); speckle(c, s, 0, ['#5aa828', '#7fd43e', '#4e9222'], 40); });
+T.grassSide = makeTex(16, (c, s) => {
+  c.fillStyle = '#8a5a32'; c.fillRect(0, 0, s, s);
+  c.fillStyle = '#6abe30'; c.fillRect(0, 0, s, 3);
+  speckle(c, s, 0, ['#7a4c28', '#9a6a3c', '#5a3820'], 30);
+  speckle(c, s, 0, ['#5aa828', '#7fd43e'], 8);
+});
+T.dirt = makeTex(16, (c, s) => { c.fillStyle = '#8a5a32'; c.fillRect(0, 0, s, s); speckle(c, s, 0, ['#7a4c28', '#9a6a3c', '#5a3820'], 45); });
+T.stone = makeTex(16, (c, s) => { c.fillStyle = '#8f8f8f'; c.fillRect(0, 0, s, s); speckle(c, s, 0, ['#7d7d7d', '#a2a2a2', '#6b6b6b'], 45); });
+T.logSide = makeTex(16, (c, s) => {
+  c.fillStyle = '#6b4a26'; c.fillRect(0, 0, s, s);
+  for (let x = 0; x < s; x++) { const v = 100 + ((Math.random() * 40) | 0); px(c, x, 2, `rgb(${v},${v * .7 | 0},${v * .4 | 0})`); px(c, x, 13, `rgb(${v},${v * .7 | 0},${v * .4 | 0})`); }
+  speckle(c, s, 0, ['#5d3f1f', '#7a552e'], 20);
+});
+T.logTop = makeTex(16, (c, s) => {
+  c.fillStyle = '#9c7a48'; c.fillRect(0, 0, s, s);
+  c.strokeStyle = '#6b4a26'; c.lineWidth = 1;
+  for (let r = 3; r <= 8; r += 2) { c.strokeRect(8 - r, 8 - r, r * 2, r * 2); }
+  speckle(c, s, 0, ['#8a6a3c', '#a88a56'], 16);
+});
+T.leaves = makeTex(16, (c, s) => {
+  c.fillStyle = '#2e7d1e'; c.fillRect(0, 0, s, s);
+  speckle(c, s, 0, ['#256616', '#3a9427', '#1e5212', '#47a832'], 50);
+});
+T.plank = makeTex(16, (c, s) => {
+  c.fillStyle = '#a8824a'; c.fillRect(0, 0, s, s);
+  c.fillStyle = '#8a6a3a'; c.fillRect(0, 5, s, 1); c.fillRect(0, 11, s, 1);
+  for (let i = 0; i < 5; i++) px(c, (Math.random() * 16) | 0, 5, '#8a6a3a');
+  speckle(c, s, 0, ['#9a7842', '#b89058'], 20);
+});
+
+/* ================= 方块材质（6 面数组：+x -x +y -y +z -z） ================= */
+function texMats(top, side, bottom) {
+  return [new THREE.MeshLambertMaterial({ map: side }), new THREE.MeshLambertMaterial({ map: side }),
+          new THREE.MeshLambertMaterial({ map: top }), new THREE.MeshLambertMaterial({ map: bottom }),
+          new THREE.MeshLambertMaterial({ map: side }), new THREE.MeshLambertMaterial({ map: side })];
+}
+const MATERIALS = {
+  [B.GRASS]: texMats(T.grassTop, T.grassSide, T.dirt),
+  [B.DIRT]:  texMats(T.dirt, T.dirt, T.dirt),
+  [B.STONE]: texMats(T.stone, T.stone, T.stone),
+  [B.LOG]:   texMats(T.logTop, T.logSide, T.logTop),
+  [B.PLANK]: texMats(T.plank, T.plank, T.plank),
+  [B.LEAF]:  (() => {
+    const m = new THREE.MeshLambertMaterial({ map: T.leaves, transparent: true, opacity: .88, side: THREE.DoubleSide });
+    return [m, m, m, m, m, m];
+  })(),
+};
+const HOTBAR_ICONS = { [B.GRASS]: T.grassSide, [B.DIRT]: T.dirt, [B.STONE]: T.stone,
+  [B.LOG]: T.logSide, [B.LEAF]: T.leaves, [B.PLANK]: T.plank };
+
+/* ================= 世界数据 ================= */
+function key(x, y, z) { return x + ',' + y + ',' + z; }
+function blockAt(x, y, z) { return world.get(key(x, y, z)) || B.AIR; }
+function setBlock(x, y, z, t) {
+  const k = key(x, y, z);
+  if (t === B.AIR) world.delete(k); else world.set(k, t);
+}
+function seedRandom(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+function generate() {
+  const rnd = seedRandom(20240520);
+  const half = WORLD / 2;
+  for (let x = -half; x < half; x++) {
+    for (let z = -half; z < half; z++) {
+      // 高度图：正弦叠加 + 随机扰动
+      let h = 4 + Math.sin(x * 0.22) * 1.8 + Math.cos(z * 0.22) * 1.8
+            + Math.sin((x + z) * 0.12) * 1.4 + Math.cos((x - z) * 0.17) * 1.2;
+      h = Math.round(h);
+      h = Math.max(MIN_H, Math.min(MAX_H, h));
+      for (let y = 0; y <= h; y++) {
+        let t = B.STONE;
+        if (y === h) t = B.GRASS;
+        else if (y >= h - 3) t = B.DIRT;
+        setBlock(x, y, z, t);
+      }
+      // 树
+      if (rnd() < 0.022 && h >= 3 && Math.abs(x) > 2 && Math.abs(z) > 2) {
+        const th = 4 + ((rnd() * 2) | 0);
+        for (let i = 1; i <= th; i++) setBlock(x, h + i, z, B.LOG);
+        for (let dy = th - 1; dy <= th + 1; dy++) {
+          for (let dx = -2; dx <= 2; dx++) {
+            for (let dz = -2; dz <= 2; dz++) {
+              if (dx === 0 && dz === 0 && dy <= th) continue;
+              if (Math.abs(dx) === 2 && Math.abs(dz) === 2 && rnd() < 0.5) continue;
+              if (blockAt(x + dx, h + dy, z + dz) === B.AIR) setBlock(x + dx, h + dy, z + dz, B.LEAF);
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/* ================= 合并网格构建（只渲染暴露面） ================= */
+const DIRS = [
+  [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]
+];
+// 六个面的单位盒子模板
+const BOX_TEMPLATES = DIRS.map(d => {
+  const g = new THREE.BoxGeometry(1, 1, 1);
+  g.translate(d[0] * 0.5, d[1] * 0.5, d[2] * 0.5);
+  return g;
+});
+function mergeGeometries(list) {
+  if (!list.length) return null;
+  let total = 0;
+  list.forEach(g => total += g.attributes.position.count);
+  const pos = new Float32Array(total * 3), nor = new Float32Array(total * 3), uv = new Float32Array(total * 2);
+  let off = 0;
+  list.forEach(g => {
+    pos.set(g.attributes.position.array, off * 3);
+    nor.set(g.attributes.normal.array, off * 3);
+    uv.set(g.attributes.uv.array, off * 2);
+    off += g.attributes.position.count;
+  });
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+  geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  const groups = [];
+  let voff = 0;
+  list.forEach(g => {
+    g.groups.forEach(gr => groups.push({ start: gr.start + voff, count: gr.count, materialIndex: gr.materialIndex }));
+    voff += g.attributes.position.count;
+  });
+  geo.groups = groups;
+  return geo;
+}
+function buildMeshes() {
+  blockMeshes.forEach(m => { scene.remove(m); m.geometry.dispose(); m.material.forEach(x => x.dispose()); });
+  blockMeshes = [];
+  const byType = {};
+  for (const k of world.keys()) {
+    const p = k.split(',').map(Number), bx = p[0], by = p[1], bz = p[2];
+    const type = world.get(k);
+    for (let d = 0; d < 6; d++) {
+      const nb = blockAt(bx + DIRS[d][0], by + DIRS[d][1], bz + DIRS[d][2]);
+      if (nb === B.AIR || nb === B.LEAF && type === B.LEAF) {
+        (byType[type] = byType[type] || []).push(BOX_TEMPLATES[d].clone().translate(bx, by, bz));
+      }
+    }
+  }
+  for (const type in byType) {
+    const geo = mergeGeometries(byType[type]);
+    if (!geo) continue;
+    const mesh = new THREE.Mesh(geo, MATERIALS[type]);
+    mesh.castShadow = true; mesh.receiveShadow = true;
+    scene.add(mesh); blockMeshes.push(mesh);
+  }
+}
+
+/* ================= 体素射线检测（DDA 步进） ================= */
+function raycastVoxel(ox, oy, oz, dx, dy, dz, maxDist) {
+  let x = Math.floor(ox), y = Math.floor(oy), z = Math.floor(oz);
+  const stepX = dx > 0 ? 1 : -1, stepY = dy > 0 ? 1 : -1, stepZ = dz > 0 ? 1 : -1;
+  const tDx = dx !== 0 ? Math.abs(1 / dx) : Infinity;
+  const tDy = dy !== 0 ? Math.abs(1 / dy) : Infinity;
+  const tDz = dz !== 0 ? Math.abs(1 / dz) : Infinity;
+  let tMx = dx !== 0 ? Math.abs((dx > 0 ? (x + 1 - ox) : (ox - x)) / dx) : Infinity;
+  let tMy = dy !== 0 ? Math.abs((dy > 0 ? (y + 1 - oy) : (oy - y)) / dy) : Infinity;
+  let tMz = dz !== 0 ? Math.abs((dz > 0 ? (z + 1 - oz) : (oz - z)) / dz) : Infinity;
+  let nx = 0, ny = 0, nz = 0;
+  for (let i = 0; i < 64; i++) {
+    const b = blockAt(x, y, z);
+    if (b !== B.AIR) return { x, y, z, type: b, nx, ny, nz };
+    if (tMx < tMy && tMx < tMz) {
+      if (tMx > maxDist) return null;
+      x += stepX; nx = -stepX; ny = 0; nz = 0; tMx += tDx;
+    } else if (tMy < tMz) {
+      if (tMy > maxDist) return null;
+      y += stepY; nx = 0; ny = -stepY; nz = 0; tMy += tDy;
+    } else {
+      if (tMz > maxDist) return null;
+      z += stepZ; nx = 0; ny = 0; nz = -stepZ; tMz += tDz;
+    }
+  }
+  return null;
+}
+function hitVoxel() {
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  return raycastVoxel(camera.position.x, camera.position.y, camera.position.z,
+                      dir.x, dir.y, dir.z, 7);
+}
+function playerOccupies(x, y, z) {
+  // 玩家身体占据脚部格和头部格
+  const fy = Math.floor(py), hy = Math.floor(py + 1.62);
+  return (x === Math.floor(px) && (y === fy || y === hy) && z === Math.floor(pz));
+}
+function breakBlock(hit) {
+  setBlock(hit.x, hit.y, hit.z, B.AIR);
+  buildMeshes();
+}
+function placeBlock(hit) {
+  const x = hit.x + hit.nx, y = hit.y + hit.ny, z = hit.z + hit.nz;
+  if (y < 0 || y > 24) return;
+  if (blockAt(x, y, z) !== B.AIR) return;
+  if (playerOccupies(x, y, z)) return;
+  setBlock(x, y, z, selected);
+  buildMeshes();
+}
+
+/* ================= 玩家控制 ================= */
+function solidAt(x, y, z) {
+  const b = blockAt(Math.floor(x), Math.floor(y), Math.floor(z));
+  return b !== B.AIR && b !== B.LEAF;
+}
+function updatePlayer(dt) {
+  const speed = keys['ShiftLeft'] || keys['ShiftRight'] ? 8 : 5;
+  const sin = Math.sin(yaw), cos = Math.cos(yaw);
+  let mx = 0, mz = 0;
+  if (keys['KeyW']) { mx += -sin; mz += -cos; }
+  if (keys['KeyS']) { mx += sin;  mz += cos; }
+  if (keys['KeyA']) { mx += -cos; mz += sin; }
+  if (keys['KeyD']) { mx += cos;  mz += -sin; }
+  const len = Math.hypot(mx, mz);
+  if (len > 0) { mx = mx / len * speed; mz = mz / len * speed; }
+  // 重力与跳跃
+  vy -= 25 * dt;
+  if (keys['Space'] && onGround) vy = 8.2;
+  py += vy * dt;
+  // 脚部落地
+  const footY = Math.floor(py - 0.001);
+  if (vy <= 0 && solidAt(px, py - 0.01, pz)) {
+    py = footY + 1; vy = 0; onGround = true;
+  } else {
+    onGround = false;
+  }
+  // 头顶碰撞
+  if (vy > 0 && solidAt(px, py + 1.7, pz)) { vy = 0; py = Math.floor(py + 1.7) - 1.7 - 0.02; }
+  // 水平移动碰撞（分别沿 X / Z 检测）
+  const nx = px + mx * dt, nz = pz + mz * dt;
+  if (!solidAt(nx, py + 0.3, pz) && !solidAt(nx, py + 1.1, pz) && !solidAt(nx, py + 1.62, pz)) px = nx;
+  if (!solidAt(px, py + 0.3, nz) && !solidAt(px, py + 1.1, nz) && !solidAt(px, py + 1.62, nz)) pz = nz;
+  // 掉出世界
+  if (py < -20) { py = 40; vy = 0; }
+  // 更新相机
+  camera.rotation.order = 'YXZ';
+  camera.rotation.y = yaw;
+  camera.rotation.x = pitch;
+  camera.position.set(px, py + 1.62, pz);
+}
+function spawnPlayer() {
+  // 在世界中心附近找到地表最高点
+  let top = 0;
+  for (let x = -1; x <= 1; x++) for (let z = -1; z <= 1; z++) {
+    for (let y = MAX_H + 6; y >= 0; y--) {
+      if (blockAt(x, y, z) !== B.AIR) { top = Math.max(top, y); break; }
+    }
+  }
+  py = top + 2; vy = 0; px = 0.5; pz = 0.5;
+}
+
+/* ================= UI：热键栏 ================= */
+function buildHotbar() {
+  const bar = document.getElementById('hotbar');
+  const names = { 1: '草方块', 2: '泥土', 3: '石头', 4: '木头', 5: '树叶', 6: '木板' };
+  for (let i = 1; i <= 6; i++) {
+    const div = document.createElement('div');
+    div.className = 'slot' + (i === selected ? ' sel' : '');
+    div.id = 'slot' + i;
+    const img = document.createElement('img');
+    img.src = HOTBAR_ICONS[i].image.src;
+    img.alt = names[i];
+    const num = document.createElement('div');
+    num.className = 'num';
+    num.textContent = i + ' ' + names[i];
+    div.appendChild(img); div.appendChild(num);
+    bar.appendChild(div);
+  }
+}
+function selectSlot(i) {
+  selected = i;
+  for (let n = 1; n <= 6; n++) {
+    document.getElementById('slot' + n).className = 'slot' + (n === i ? ' sel' : '');
+  }
+}
+
+/* ================= 场景 ================= */
+function initScene() {
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x87ceeb);
+  scene.fog = new THREE.Fog(0x87ceeb, 40, 90);
+  camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.1, 200);
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.outputEncoding = THREE.sRGBEncoding;
+  document.body.appendChild(renderer.domElement);
+  const sun = new THREE.DirectionalLight(0xffffff, 1.1);
+  sun.position.set(30, 60, 20);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  sun.shadow.camera.left = -35; sun.shadow.camera.right = 35;
+  sun.shadow.camera.top = 35; sun.shadow.camera.bottom = -35;
+  sun.shadow.camera.far = 120;
+  scene.add(sun);
+  scene.add(new THREE.AmbientLight(0xffffff, 0.45));
+  const hemi = new THREE.HemisphereLight(0xbfd9ff, 0x6b4a2a, 0.35);
+  scene.add(hemi);
+  addEventListener('resize', () => {
+    camera.aspect = innerWidth / innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight);
+  });
+}
+
+/* ================= 事件 ================= */
+const canvas = () => renderer.domElement;
+function lockPointer() {
+  const el = renderer.domElement;
+  if (el.requestPointerLock) el.requestPointerLock();
+}
+document.getElementById('overlay').addEventListener('click', lockPointer);
+document.addEventListener('pointerlockchange', () => {
+  locked = document.pointerLockElement === renderer.domElement;
+  document.getElementById('overlay').style.display = locked ? 'none' : 'flex';
+});
+document.addEventListener('mousemove', e => {
+  if (!locked) return;
+  yaw -= e.movementX * 0.0022;
+  pitch -= e.movementY * 0.0022;
+  pitch = Math.max(-1.55, Math.min(1.55, pitch));
+});
+document.addEventListener('mousedown', e => {
+  if (!locked) return;
+  const hit = hitVoxel();
+  if (!hit) return;
+  if (e.button === 0) breakBlock(hit);
+  else if (e.button === 2) placeBlock(hit);
+});
+document.addEventListener('contextmenu', e => e.preventDefault());
+document.addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (e.code.startsWith('Digit') && e.code[5] >= '1' && e.code[5] <= '6') selectSlot(+e.code[5]);
+});
+document.addEventListener('keyup', e => keys[e.code] = false);
+
+/* ================= 主循环 ================= */
+let last = 0;
+function loop(t) {
+  requestAnimationFrame(loop);
+  const dt = Math.min((t - last) / 1000 || 0, 0.05);
+  last = t;
+  if (locked) updatePlayer(dt);
+  renderer.render(scene, camera);
+}
+
+/* ================= 启动 ================= */
+generate();
+buildHotbar();
+initScene();
+spawnPlayer();
+buildMeshes();
+loop(0);
+</script>
+</body>
+</html>

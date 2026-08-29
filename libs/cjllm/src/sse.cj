@@ -1,6 +1,7 @@
 package cjllm
 
 import std.io.*
+import cjlog.*
 import std.collection.*
 import stdx.net.http.HttpTimeoutException
 import cjutil.*

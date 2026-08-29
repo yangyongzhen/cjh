@@ -1,6 +1,7 @@
 package cjllm
 
 import stdx.encoding.json.*
+import cjlog.*
 import stdx.net.http.*
 import std.io.*
 import std.collection.*

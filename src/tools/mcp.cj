@@ -17,6 +17,7 @@ package cjh.tools
  */
 
 import std.collection.*
+import cjlog.*
 import std.process.*
 import std.io.*
 import stdx.encoding.json.*

@@ -9,6 +9,7 @@ package cjh
  */
 
 import std.collection.*
+import cjlog.*
 import std.console.*
 import std.env.*
 import std.fs.*

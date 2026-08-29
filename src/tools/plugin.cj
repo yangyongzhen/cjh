@@ -19,6 +19,7 @@ package cjh.tools
  */
 
 import std.collection.*
+import cjlog.*
 import std.env.*
 import std.process.*
 import std.fs.*
