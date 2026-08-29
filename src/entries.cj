@@ -644,33 +644,47 @@ func runTui(sessionId: String): Int64 {
         }
         // 回合总结条：Agent.run 结束后渲染统计
         agent.onRunComplete = { s =>
-            let secs = Float64(s.durationMs) / 1000.0
-            let tokensK = Float64(s.totalTokens()) / 1000.0
             let rate = s.cacheHitRate()
-            // 格式：─── ✓ 2 rounds · 3 tools · 42.6s · 1.53K tokens · 99% cached ───
-            let stat = "✓ ${s.rounds} rounds · ${s.toolCalls} tools · ${secs}s · ${tokensK}K tokens · ${rate}% cached"
+            // 单复数 + 1 位小数格式化（整数运算避免浮点精度噪声）
+            let roundWord = if (s.rounds == 1) { "round" } else { "rounds" }
+            let toolWord = if (s.toolCalls == 1) { "tool" } else { "tools" }
+            // 耗时：ms → 秒.十分位（42.6s）
+            let secInt = s.durationMs / 1000
+            let secTenths = (s.durationMs % 1000) / 100
+            // tokens → K.十分位（1.5K tokens）
+            let tokTotal = s.totalTokens()
+            let kInt = tokTotal / 1000
+            let kTenths = (tokTotal % 1000) / 100
+            // 格式：─── ✓ 2 rounds · 3 tools · 42.6s · 1.5K tokens · 99% cached ───
+            // 整行统一灰色（THEME_MUTED），居中：左右横线等分
+            let stat = "✓ ${s.rounds} ${roundWord} · ${s.toolCalls} ${toolWord} · ${secInt}.${secTenths}s · ${kInt}.${kTenths}K tokens · ${rate}% cached"
             let (rows, cols) = TermSize.get()
-            let lineW = TuiCanvas.displayWidth(stat) + 8  // ─── 两侧 ───
+            let statW = TuiCanvas.displayWidth(stat)
+            // 内容总宽 = 左横线 + 1空格 + stat + 1空格 + 右横线
+            // 居中：左右横线各 (cols - statW - 2) / 2，余数补到左侧
+            let avail = cols - statW - 2  // 去掉两侧空格后剩余给横线
             var leftDash: Int64 = 3
-            var rightDash: Int64 = cols - lineW - 1
-            if (rightDash < 3) {
-                rightDash = 3
+            var rightDash: Int64 = 3
+            if (avail > 6) {
+                leftDash = avail / 2 + avail % 2  // 余数补左侧，视觉居中
+                rightDash = avail / 2
             }
             var bar = StringBuilder()
+            bar.append(Ansi.fg(Ansi.THEME_MUTED))
             var i: Int64 = 0
             while (i < leftDash) {
                 bar.append("─")
                 i += 1
             }
-            bar.append(Ansi.fg(Ansi.THEME_MUTED) + " " + Ansi.fg(Ansi.THEME_OK) + stat +
-                Ansi.fg(Ansi.THEME_MUTED) + " " + Ansi.reset())
+            bar.append(" " + stat + " ")
             i = 0
             while (i < rightDash) {
                 bar.append("─")
                 i += 1
             }
+            bar.append(Ansi.reset())
             TuiBridge.output("")  // 上空行
-            TuiBridge.output(Ansi.fg(Ansi.THEME_MUTED) + bar.toString() + Ansi.reset())
+            TuiBridge.output(bar.toString())
             TuiBridge.output("")  // 下空行
         }
 

@@ -1015,17 +1015,21 @@ public class TuiApp {
             // 无 agent 运行时，agentRow 不使用，仅用于 outH 计算
             let agentRow: Int64 = if (agentBusy) { statusRow - 1 - tasksH - 1 } else { -1 }
 
-            // 思考窗口：reasoningBuffer 非空时占 3 行（1 行内容 + 1 行边框 + 1 行空行间隔），
-            // 插在动态状态行上方，与动态状态栏空一行
+            // 思考窗口：reasoningBuffer 非空时占 2 行内容，紧贴动态状态栏上方（无空行）
             this.reasoningLock.lock()
             let hasReasoning: Bool = this.reasoningBuffer.size > 0
             this.reasoningLock.unlock()
-            let reasoningH: Int64 = if (hasReasoning) { 3 } else { 0 }
+            let reasoningH: Int64 = if (hasReasoning) { 2 } else { 0 }
             let reasoningRow: Int64 = if (agentBusy && hasReasoning) { agentRow - reasoningH } else { -1 }
 
-            // 输出区可用高度：8 .. agentRow-1（agent 执行中时为动态状态行预留空间）
+            // 输出区可用高度：8 .. outBottom
+            // agent 执行中时为动态状态行/思考窗口预留空间：
+            //   有思考窗口 → outBottom = reasoningRow - 2（输出区与思考窗口间隔 1 空行）
+            //   无思考窗口 → outBottom = agentRow - 1（输出区紧贴动态状态栏）
             // agent 不在执行时 agentRow=-1，输出区占满 8..statusRow-1
-            let outBottom: Int64 = if (agentBusy && agentRow >= 8) { agentRow - 1 } else { statusRow - 1 }
+            let outBottom: Int64 = if (agentBusy && agentRow >= 8) {
+                if (hasReasoning && reasoningRow >= 8) { reasoningRow - 2 } else { agentRow - 1 }
+            } else { statusRow - 1 }
             let outH: Int64 = if (outBottom - 8 + 1 > 0) { outBottom - 8 + 1 } else { 0 }
 
             // 输出区（对话 / 帮助视图，无边框全宽）
