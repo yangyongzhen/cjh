@@ -6,7 +6,7 @@
 
 Describe tasks in natural language → the Agent understands intent, plans autonomously, calls tools, observes results, and iterates until done. The entire workflow is rendered live in a TUI, and can also be driven remotely via Web.
 
-**cjh is a coding agent harness natively implemented in Cangjie**: single-binary zero-dependency distribution (one file = one agent), a plugin trust chain backed by language-level memory safety, and systematic engineering optimization around two hard metrics: **token efficiency** + **execution speed**. Driven both from the TUI and remotely via Web, cjh is evolving toward **agent-cluster orchestration** — scaling from a single engineer to a software-engineering team working in parallel.
+**cjh is a coding agent harness natively implemented in Cangjie**: single-binary zero-dependency distribution (one file = one agent), a plugin trust chain backed by language-level memory safety, and systematic engineering optimization around two hard metrics: **token efficiency** + **execution speed**. Driven both from the TUI and remotely via Web, cjh is evolving toward **parallel multi-agent orchestration** (drawing on mature patterns like swarm, with a parallel-subagent orientation).
 
 [Project Intent](#-project-intent-not-just-another-agent) · [Features](#-features) · [Two Hard Metrics](#-two-hard-metrics) · [Quick Start](#-quick-start) · [Architecture](#-architecture) · [Plugin Ecosystem](#-plugin-ecosystem--trust-chain) · [Docs](#-docs) · [Roadmap](#-roadmap)
 
@@ -18,7 +18,7 @@ Describe tasks in natural language → the Agent understands intent, plans auton
 
 > The coding-agent space already has mature solutions — codex, claude code, deepseek's dsh, pi, omp, and more — with features proven viable.
 > **Building yet another "same agent in Cangjie" has no value.** cjh's foundation is the differentiation only Cangjie can provide:
-> single-binary distribution, a strong safety DNA, multi-backend compilation, M:N native concurrency, and the **agent-cluster orchestration** these enable.
+> single-binary distribution, a strong safety DNA, multi-backend compilation, M:N native concurrency, and the **parallel multi-agent orchestration** these enable.
 
 The core thesis: **mainstream agents have already proven features viable; piling on features is meaningless. Cangjie's unique advantages are the foundation.** Three hard constraints permeate all design:
 
@@ -54,22 +54,16 @@ Mainstream agents rely on sandbox + approval (runtime interception) for plugin s
 
 This is cjh's core distinguishing it from "feature piling". Drawing on Pi's token-saving engineering and OMP's hashline file rewriting, two hard metrics are systematically optimized. See the [Two Hard Metrics](#-two-hard-metrics) section below.
 
-**4. Ultimate goal: agent cluster orchestration (from "single engineer" to "software engineering team")**
+**4. Long-term goal: parallel multi-agent orchestration**
 
-Benchmarking against pi/omp is only the starting point — learning from many agents' strengths to **raise the single-agent capability** (token savings, runtime efficiency). What cjh truly aims for, leveraging Cangjie language characteristics, is **agent cluster orchestration** — amplifying single-agent capability into team-level parallelism.
+Multi-agent collaboration is already a mature industry pattern — OpenAI Swarm (handoff), crewAI, AutoGen, LangGraph and others each have implementations. **cjh claims no conceptual novelty here**; it draws on the pattern and picks its own implementation orientation:
 
-A single agent, however capable, is essentially one engineer — **it can focus on one thing at a time**: while running tests it cannot edit code. Large complex projects are never solo work: project managers, requirement analysts, developers, designers, testers... divided labor, running in parallel.
-
-**cjh's ultimate form is an agent cluster**: one orchestrator agent (the "project manager") coordinates, forking multiple sub-agents on demand — each with an independent workspace and context (like Linux fork: isolated, non-interfering), explicit task contracts, running in parallel, results aggregated for delivery. Workflows can be arbitrarily orchestrated by purpose; each agent configures its own model and capabilities.
-
-| Dimension | Single agent | Agent cluster (cjh ultimate form) |
+| Pattern | Representative | Collaboration model |
 |---|---|---|
-| **Parallelism** | One thing at a time (can't edit while testing) | Test / code / review / docs in parallel |
-| **Context cost** | Global memory per agent, token explodes with scale | Sub-agents keep only task-local memory, **context isolated per task, saving tokens** |
-| **Modularity** | Linear single conversation | Contract-based interfaces → modular development, arbitrary workflow orchestration |
-| **Model config** | Single model | Per-role models (fast for explore, strong for coding, dedicated for review) |
+| Handoff | OpenAI Swarm | **Serial**: one agent hands the conversation to another |
+| Parallel sub-agents | cjh planning (V4) | **Parallel**: orchestrator forks sub-agents with isolated contexts working in parallel |
 
-Cangjie's **M:N lightweight threads** are the native substrate for the cluster: sub-agents are in-process threads with zero scheduling overhead; **static single binary** makes the whole cluster one file — self-built, controllable, lightweight — far superior to bolting together third-party agents of uneven quality.
+cjh's orientation is **parallel sub-agents + context isolation** (Linux-fork-like): sub-agents keep only task-local memory, saving tokens by isolating context per task; testing/coding/review can proceed in parallel. This orientation is naturally supported by Cangjie's characteristics — **M:N lightweight threads** make sub-agents in-process threads with zero scheduling overhead; **static single binary** keeps the whole multi-agent system in one file. The real combined advantage is the landing of "parallel + context isolation + in-process zero overhead + single-file distribution" together, not the concept itself. (V4 planned; the `task` tool already provides explore/worker foundations.)
 
 ## 🌟 Why cjh
 
@@ -509,7 +503,7 @@ cjh has a built-in MCP client supporting stdio transport + JSON-RPC 2.0. After c
 
 - [ ] **V2b Step 3**: WASM tool sandbox + central registry + `cjh install`
 - [ ] **Web TLS**: `ServerBuilder.tlsConfig` support
-- [ ] **V4 agent cluster orchestration** (core differentiation): orchestrator + parallel sub-agents (Linux-fork-style isolated workspaces/contexts) + role model (PM/research/coding/testing/review) + contract interfaces + workflow DSL + per-agent model routing + HarmonyOS native
+- [ ] **V4 parallel multi-agent orchestration** (drawing on mature patterns like swarm; orientation: parallel sub-agents + context isolation): orchestrator + parallel sub-agents (Linux-fork-style isolated workspaces/contexts) + role model (PM/research/coding/testing/review) + contract interfaces + workflow DSL + per-agent model routing + HarmonyOS native
 
 ## 📚 Docs
 
