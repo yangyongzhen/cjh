@@ -2,6 +2,7 @@ package cjcfg
 
 import std.collection.*
 import stdx.encoding.json.*
+import cjutil.*
 
 /**
  * 能力安全检查决策

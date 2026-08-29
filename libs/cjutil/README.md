@@ -15,6 +15,7 @@
 | **HTTP 客户端** | `http_client.cj` | 带超时/重定向/SSRF 防护的 HTTP 请求 |
 | **JSON 修复** | `jsonrepair.cj` | 损坏 JSON 的智能修复（截断/尾逗号/单引号等） |
 | **SSRF 防护** | `ssrf.cj` | 私网 IP/域名检测（Web 抓取安全） |
+| **跨平台 FFI** | `env_ffi.cj` | `EnvFfi`：getenv / 运行时 chdir / 跨平台 homeDir（Windows USERPROFILE → POSIX HOME） |
 
 ## 快速开始
 
