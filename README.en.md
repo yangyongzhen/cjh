@@ -453,6 +453,7 @@ cjh has a built-in MCP client supporting stdio transport + JSON-RPC 2.0. After c
 | v1.2.3 | SSE idle timeout + tool result truncation & backtrack + MCP protocol support + 6 themes |
 | **v1.3.0** | **Web support + plugin trust chain (SHA256 + SM2 signature) + require_signature config** |
 | v1.3.1 | **LLM efficiency triple fix** (compaction into loop + real-usage trigger + keep tuning, prompt peak 42.9K→9.4K) + **216 unit tests green** + 13 latent bugs fixed (incl. TUI: markdown code-block, Tab re-open, backspace log crash) + build.cj renames artifact to `cjh` |
+| **v1.3.2** | **P0+P1 optimization**: bash timeout + Ctrl+C interrupt + persistent bash session + cross-session project memory + fast-model routing + 429 key fallback + compaction keeps tool results + SQLite read + prompt tuning + **static-linked single-file release** (228 tests + 36 PTY green) |
 
 ## 🗺️ Roadmap
 

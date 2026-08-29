@@ -16,7 +16,7 @@ package cjterm
 public class Logo {
     // cjh 项目版本号（与根 cjpm.toml 的 version 字段保持同步；
     // 标题栏展示用，发版时一并更新）
-    public static const VERSION: String = "v1.3.1"
+    public static const VERSION: String = "v1.3.2"
     // UTF-8 版：box-drawing CJ（C 蓝 + J 青）。J 顶钩 ██╗ + 底钩 ╚═╝，
     // 钩子特征鲜明，绝不会误读为 I（旧 ASCII 竖线字形 |_| 正是 CI 误读根源）
     private static let C_BOX_LINES: Array<String> = [
