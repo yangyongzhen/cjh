@@ -65,6 +65,8 @@ Multi-agent collaboration is already a mature industry pattern — OpenAI Swarm 
 
 cjh's orientation is **parallel sub-agents + context isolation** (Linux-fork-like): sub-agents keep only task-local memory, saving tokens by isolating context per task; testing/coding/review can proceed in parallel. This orientation is naturally supported by Cangjie's characteristics — **M:N lightweight threads** make sub-agents in-process threads with zero scheduling overhead; **static single binary** keeps the whole multi-agent system in one file. The real combined advantage is the landing of "parallel + context isolation + in-process zero overhead + single-file distribution" together, not the concept itself. (V4 planned; the `task` tool already provides explore/worker foundations.)
 
+**Saving tokens is the core goal of division-of-labor parallelism, not a byproduct.** Handing a whole task to a single agent means one entity is omniscient from start to finish — every step carries the global context, and tokens keep growing with task size. The common sense of team collaboration is that each person only needs to know the part relevant to their role — information distributed on demand should cost *less* overall. cjh's parallel sub-agents isolate context per task: each carries only task-local memory, aiming for **the same task with fewer tokens**. This is the essential difference from swarm-style handoff (the whole conversation is passed along, history keeps accumulating): the latter improves throughput, the former also optimizes cost.
+
 ## 🌟 Why cjh
 
 | | |
