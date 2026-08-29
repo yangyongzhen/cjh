@@ -83,6 +83,9 @@ public class CjhConfig {
     public var summaryModel: String = ""
     public var summaryBaseUrl: String = ""
     public var summaryApiKey: String = ""
+    // 备用 API key（P1-5 429 fallback）：401/429/5xx 时轮换重试。
+    // settings.json "fallback_api_keys": [...] 或 env CJH_FALLBACK_KEYS="k2,k3" 逗号分隔。
+    public var fallbackApiKeys: ArrayList<String> = ArrayList<String>()
     // 三域 capability 安全模型（settings.json "capability": {...}；未配置=宽松模式）
     public var capability: Capability = Capability.fromJson(None)
     // Compaction：消息条数超阈值触发 LLM 摘要压缩早期历史（0=禁用，对齐 pi 自动摘要）
@@ -520,6 +523,21 @@ public class CjhConfig {
                     if (let Some(v) <- obj.get("summary_api_key")) {
                         match (v.kind()) {
                             case JsonKind.JsString => this.summaryApiKey = v.asString().getValue()
+                            case _ => ()
+                        }
+                    }
+                    if (let Some(v) <- obj.get("fallback_api_keys")) {
+                        match (v.kind()) {
+                            case JsonKind.JsArray =>
+                                let arr = v.asArray()
+                                for (i in 0..arr.size()) {
+                                    if (let Some(item) <- arr.get(i)) {
+                                        match (item.kind()) {
+                                            case JsonKind.JsString => this.fallbackApiKeys.add(item.asString().getValue())
+                                            case _ => ()
+                                        }
+                                    }
+                                }
                             case _ => ()
                         }
                     }

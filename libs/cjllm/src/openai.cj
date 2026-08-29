@@ -18,6 +18,8 @@ public class OpenAiProvider <: LlmProvider {
     public let baseUrl: String
     public let apiKey: String
     public let model: String
+    // 备用 key（P1-5 429 fallback）：401/429/5xx 时轮换重试，防限流中断任务
+    public var fallbackKeys: ArrayList<String> = ArrayList<String>()
     public var temperature: Float64 = 0.7
     public var maxTokens: Int64 = 4096
 
@@ -31,6 +33,29 @@ public class OpenAiProvider <: LlmProvider {
         // 和 setGlobalLogger(NoopLogger())，污染 TUI 输入框。
         // warmup 只是省首次 TLS 冷启动的优化，不值得引入 WARN 污染。
         // 首次 chatStream 会正常建连，TLS 冷启动开销用户感知不明显。
+    }
+
+    public init(baseUrl: String, apiKey: String, model: String, fallbackKeys: ArrayList<String>) {
+        this.baseUrl = baseUrl
+        this.apiKey = apiKey
+        this.model = model
+        for (k in fallbackKeys) {
+            if (k.size > 0) {
+                this.fallbackKeys.add(k)
+            }
+        }
+    }
+
+    /**
+     * 全部 key（主 key + 备用），轮换顺序
+     */
+    public func allKeys(): ArrayList<String> {
+        var keys = ArrayList<String>()
+        keys.add(this.apiKey)
+        for (k in this.fallbackKeys) {
+            keys.add(k)
+        }
+        return keys
     }
 
     /**
@@ -158,26 +183,38 @@ public class OpenAiProvider <: LlmProvider {
             .tlsConfig(tlsConfig)
             .readTimeout(Duration.second * 600)
             .build()
-        let req = HttpRequestBuilder()
-            .post()
-            .url(this.endpointUrl())
-            .header("Content-Type", "application/json")
-            .header("Authorization", "Bearer ${this.apiKey}")
-            .body(body.toJsonString())
-            .build()
 
-        let resp = client.send(req)
-        let status = resp.status
-        if (status != 200) {
-            // 读取错误体
-            var errBuf = Array<Byte>(4096, repeat: 0)
-            var err = ""
-            let n = resp.body.read(errBuf)
-            if (n > 0) {
-                err = safeFromUtf8(errBuf[0..n])
+        // P1-5 key 轮换：401/429/5xx → 换备用 key 重试（防限流中断任务）
+        let keys = this.allKeys()
+        var lastErr = ""
+        for (ki in 0..keys.size) {
+            let key = keys[ki]
+            let req = HttpRequestBuilder()
+                .post()
+                .url(this.endpointUrl())
+                .header("Content-Type", "application/json")
+                .header("Authorization", "Bearer ${key}")
+                .body(body.toJsonString())
+                .build()
+            let resp = client.send(req)
+            let status = resp.status
+            if (status != 200) {
+                // 读取错误体
+                var errBuf = Array<Byte>(4096, repeat: 0)
+                var err = ""
+                let n = resp.body.read(errBuf)
+                if (n > 0) {
+                    err = safeFromUtf8(errBuf[0..n])
+                }
+                lastErr = "HTTP ${status}: ${err}"
+                // 认证/限流/服务端错误：换 key 重试；其他 4xx 业务错误直接抛出
+                if (status == 401 || status == 429 || status >= 500) {
+                    if (ki < keys.size - 1) {
+                        continue  // 换下一个 key
+                    }
+                }
+                throw LlmException(lastErr)
             }
-            throw LlmException("HTTP ${status}: ${err}")
-        }
 
         // SSE 解析
         let acc = StreamAccumulator()
@@ -207,6 +244,9 @@ public class OpenAiProvider <: LlmProvider {
         let modelResp = acc.finish()
         modelResp.timedOut = parser.timedOut
         return modelResp
+            }  // for key 轮换循环
+        // 不可达兜底：循环内 200 已 return，所有 key 失败已 throw
+        throw LlmException(lastErr)
     }
 }
 

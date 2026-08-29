@@ -60,7 +60,9 @@ func makeProvider(cfg: CjhConfig): LlmProvider {
     } else if (protocol == "gemini") {
         throw LlmException("Gemini 原生协议暂未支持。请改用 OpenAI 兼容端点（Google 提供 generativelanguage.googleapis.com/v1beta/openai），或选择 openai/anthropic 协议")
     } else {
-        p = OpenAiProvider(cfg.baseUrl, cfg.apiKey, cfg.model)
+        let oa = OpenAiProvider(cfg.baseUrl, cfg.apiKey, cfg.model)
+        applyFallbackKeys(oa, cfg)
+        p = oa
     }
     // 应用采样参数（/settings 调整后重建 provider 时生效）
     match (p) {
@@ -135,8 +137,32 @@ func makeSummaryProvider(cfg: CjhConfig): Option<LlmProvider> {
     }
     let base = if (cfg.summaryBaseUrl.size > 0) { cfg.summaryBaseUrl } else { cfg.baseUrl }
     let key = if (cfg.summaryApiKey.size > 0) { cfg.summaryApiKey } else { cfg.apiKey }
-    let p: LlmProvider = OpenAiProvider(base, key, cfg.summaryModel)
-    return Some(p)
+    let oa = OpenAiProvider(base, key, cfg.summaryModel)
+    applyFallbackKeys(oa, cfg)
+    return Some(oa)
+}
+
+/**
+ * 应用备用 key（P1-5 429 fallback）：
+ * settings.json fallback_api_keys 数组 + env CJH_FALLBACK_KEYS（逗号分隔）合并。
+ */
+func applyFallbackKeys(oa: OpenAiProvider, cfg: CjhConfig): Unit {
+    // 配置数组
+    for (k in cfg.fallbackApiKeys) {
+        if (k.size > 0) {
+            oa.fallbackKeys.add(k)
+        }
+    }
+    // env 逗号分隔追加
+    let envKeys = readEnv("CJH_FALLBACK_KEYS")
+    if (envKeys.isSome()) {
+        for (k in envKeys.getOrThrow().split(",", -1)) {
+            let t = k.trimAscii()
+            if (t.size > 0) {
+                oa.fallbackKeys.add(t)
+            }
+        }
+    }
 }
 
 /**
