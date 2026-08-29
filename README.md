@@ -76,14 +76,14 @@ LLM API 按 token 计费，coding agent 多轮工具调用累积 token 消耗惊
 | 优化手段 | 实现方式 | 效果 |
 |---|---|---|
 | **工具结果截断与回溯** | 超阈值工具结果保留头尾 + **完整落盘** `~/.cjh/spill/<sessionId>/<toolCallId>.txt` + 省略标记含落盘路径，模型可用 `read_file` 按需读回 | 避免像某些 agent（如 d'sh）只取开头和结尾丢失中间信息；落盘回溯既省 token 又不丢信息 |
-| **自动 Compaction** | 消息条数超阈值触发 LLM 摘要压缩早期历史，`compactThreshold` / `compactKeep` 可配 | 长会话不爆上下文窗口，省 token 又防溢出 |
+| **自动 Compaction** | 消息条数或估算 token 超阈值触发 LLM 摘要压缩早期历史，`compactThreshold` / `compact_token_threshold` / `compactKeep` 可配 | 长会话不爆上下文窗口，省 token 又防溢出 |
 | **prompt cache 利用** | DeepSeek `prompt_cache_hit_tokens` + Anthropic `cache_read_input_tokens` 统计与展示 | 利用 Provider 的 prompt 缓存，重复前缀不重复计费 |
 | **回合总结条** | 每轮结束显示 `✓ 2 rounds · 3 tools · 42.6s · 1.53K tokens · 99% cached` | token 消耗实时可见，便于人工干预 |
 
 **工具结果截断与回溯的精妙设计**：不同于简单截断（只保留前 N 行），cjh 采用 **头尾保留 + 中间落盘** 策略。模型看到结果的开头和结尾（保留上下文连贯性），中间完整内容落盘到 `~/.cjh/spill/`，省略标记中包含落盘路径。当模型需要中间信息时，可用 `read_file` 按需读回。这样既大幅省 token，又不丢失任何信息——**这是 cjh 区别于简单截断 agent 的核心设计**。
 
 工具差异化阈值（避免一刀切）：
-- `bash`：8000 字符
+- `bash`：2000 字符（激进截断——bash 输出常占 prompt 大头，完整结果落盘可回溯）
 - `list_dir`：4000 字符
 - 默认：6000 字符
 
@@ -109,6 +109,23 @@ coding agent 的执行效率直接决定用户等待时间。cjh 从三个维度
 - `parallelSavedMs`：并发相比串行节省的毫秒数
 - `maxParallelism`：最大并发度（单组最多工具数）
 
+### 📊 实测基准（2026-08-29，真实 LLM 任务）
+
+> 任务：优化 shooter HTML 小游戏（deepseek-v4-flash），对比优化前后同一任务 240-300s 窗口数据。
+
+| 指标 | 优化前 | 优化后 | 说明 |
+|---|---|---|---|
+| prompt 峰值 | 42.9K token（无上限爬升） | **9.4K**（压缩后重置 5-7K） | 历史压缩机制修复（见下） |
+| 同窗口轮次 | 48 轮 / 300s | 15 轮 / 240s | 单轮耗时降为 2-5s（此前 5-22s） |
+| 压缩触发 | 从不触发 | 每 ~5 轮自动压缩 | 双阈值：消息条数 OR 真实 prompt token |
+| 工具执行耗时 | <100ms | <100ms | 框架本身非瓶颈（实测） |
+| 并行工具批 | 偶发 | 实测 3 路并行 read_file | V2d DAG 引擎 |
+
+**历史压缩机制的三次迭代修复**（`docs/疑难问题-LLM工具调用效率低.md`）：
+1. 压缩检查从 `run()` 开头移入**每轮循环**——原实现单次任务几十轮内从不复查
+2. 触发信号用 provider 返回的**真实 `usage.promptTokens`**——字符估算实测 7x 低估
+3. `compactKeep` 12→6——否则压缩删不掉足够消息、prompt 无法重置
+
 ## 📸 界面预览
 
 ### TUI 终端界面
@@ -131,10 +148,10 @@ coding agent 的执行效率直接决定用户等待时间。cjh 从三个维度
 
 - **多轮工具调用循环**：消息历史 → LLM → 工具调用 → 结果回填 → 再调用，支持复杂任务编排
 - **三域 Capability 安全模型**：commands / tools / resources 白名单 + 危险操作审批链
-- **自动 Compaction**：消息条数超阈值自动 LLM 摘要压缩早期历史
+- **自动 Compaction**：消息条数或估算 prompt token（真实 `usage.promptTokens`）超阈值自动 LLM 摘要压缩早期历史，`compactThreshold` / `compact_token_threshold` / `compactKeep` 可配
 - **项目指令**：自动加载 `AGENTS.md` / `.atomcode.md` 项目指令注入 system prompt
 
-### 工具系统（7 个内置 + 可扩展）
+### 工具系统（14 个内置 + 可扩展）
 
 | 工具 | 说明 |
 |---|---|
@@ -277,7 +294,7 @@ CJH_MOCK=1 ./target/release/bin/cjh
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                    cjh 主入口 (main.cj)                   │
+│             cjh 主入口 (entries.cj + main.cj)             │
 │              CLI / TUI / JSON / Web / Mock               │
 ├─────────────────────────────────────────────────────────┤
 │  TUI 层 (tui/)          │  Web 层 (web/)                │
@@ -371,6 +388,33 @@ cjh 内置 MCP 客户端，支持 stdio 传输 + JSON-RPC 2.0。配置 `mcp_serv
 }
 ```
 
+## 🧪 测试与质量保证
+
+**182 个单元测试全绿**（4 包 25 个测试类，`cjpm test` 一键运行），覆盖全部 14 个内置工具 + Agent 核心 + 基础设施：
+
+| 测试域 | 覆盖 |
+|---|---|
+| 工具主路径 | bash / write / append / edit / grep / glob / list_dir / hashline / todo / registry 增删改查 + 错误路径 |
+| 工具边界 | read 大文件流式/offset 越界/二进制容错、grep 目录递归与 .git 跳过、glob 深嵌套/忽略目录、edit 中文/emoji/多行、hashline CRLF/单行/哈希碰撞/多锚点偏移 |
+| Agent 端到端 | DAG 并行批（实测 3 路并发）、写读同 path 串行、工具结果截断 + spill 落盘完整 |
+| 基础设施 | 会话保存/恢复/分支、技能 frontmatter 解析、UTF-8 容错解码/字节安全截断、WebBudget 预算、BM25 检索、web_search 路由降级链、KeyRotator 轮换 |
+| 纯函数 | ToolResultTruncator 阈值/头尾/落盘、parseSgJsonLine、escapeRegex、formatToolArgs |
+
+**CI 门禁（强制，见 `AGENTS.md`）**：`cjpm test` 全绿是唯一交付凭证；新功能/修复必须带测试；bug 修复先写复现测试再修。
+
+**测试的价值——实测揪出 10+ 个潜伏 bug**（详见 `docs/开发文档与踩坑记录.md` 3.9 节）：
+
+| Bug | 影响 |
+|---|---|
+| `edit` 替换毁文件 | 逐字节 append 把 Byte 当十进制整数输出——**edit 工具此前从未真正工作过** |
+| `hashline` 必抛异常 | FNV-1a 用 UInt32 乘法溢出——**hashline 此前从未可用过** |
+| grep/glob 目录搜索不递归 | 误用 `Directory.walk`（非递归 + false 终止遍历）——目录搜索只覆盖第一层 |
+| append_file 静默创建 | 对不存在文件自动建文件，与 spec 不符 |
+| capability 资源检查缺口 | 4 个写工具跳过 fs 白名单检查（安全模型漏洞） |
+| 会话 ID 毫秒碰撞 | save/saveFork 同毫秒生成相同 ID 互相覆盖 |
+| tool 消息丢 name 字段 | 会话恢复后工具名丢失 |
+| glob/list_dir 静态状态竞态 | V2d 并发 + 子代理共享 registry 时互相踩踏 |
+
 ## ⌨️ 斜杠命令
 
 | 命令 | 说明 |
@@ -400,6 +444,7 @@ cjh 内置 MCP 客户端，支持 stdio 传输 + JSON-RPC 2.0。配置 `mcp_serv
 | v1.2.2 | 回合总结条 + /compact + /tree + /fork |
 | v1.2.3 | SSE 空闲超时 + 工具结果截断与回溯 + MCP 协议支持 + 6 套主题 |
 | **v1.3.0** | **Web 支持 + 插件信任链（SHA256 + SM2 签名）+ require_signature 配置** |
+| v1.3.1 | **LLM 效率三连修复**（compaction 检查入循环 + 真实 usage 触发 + keep 调优，prompt 峰值 42.9K→9.4K）+ **182 单测全绿** + 修复 10+ 潜伏 bug + build.cj 产物改名 cjh |
 
 ## 🗺️ 路线图
 
@@ -428,10 +473,13 @@ cjh 内置 MCP 客户端，支持 stdio 传输 + JSON-RPC 2.0。配置 `mcp_serv
 ## 📚 文档
 
 - [方案与架构设计 v2](docs/方案与架构设计-v2.md) — 项目设计与架构
+- [实现方案与交接](docs/实现方案与交接.md) — 架构与代码地图（新开发者接手入口）
 - [cjh 功能清单](docs/cjh功能清单.md) — 完整功能列表
+- [疑难问题-LLM工具调用效率低](docs/疑难问题-LLM工具调用效率低.md) — 效率优化过程与实测数据
 - [插件系统实现方案](docs/插件系统实现方案.md) — 插件系统设计
 - [插件签名与贡献指南](docs/插件签名与贡献指南.md) — 信任链与插件发布
 - [Web 支持实现方案](docs/Web支持实现方案.md) — Web Server 设计
+- [Web搜索与抓取工具设计](docs/Web搜索与抓取工具设计.md) — 搜索降级链与 key rotation
 - [进度记录](docs/进度记录.md) — 开发进度与状态追踪
 - [开发文档与踩坑记录](docs/开发文档与踩坑记录.md) — 仓颉工程踩坑经验
 - [Pi agent 的核心卖点](docs/pi agent的核心卖点.md) — 省 token 设计借鉴
@@ -484,16 +532,24 @@ registry.register(GrepTool())
 ```
 cjh/
 ├── src/                    # 主程序
-│   ├── agent/loop.cj       # Agent 主循环 + DAG 并发调度
-│   ├── tools/              # 工具系统（内置工具 + 插件 + MCP）
+│   ├── entries.cj          # 业务装配入口（CLI/TUI/JSON/Web/Mock 分流）
+│   ├── main.cj             # 程序入口（provider 工厂 + 模式分发）
+│   ├── agent/              # Agent 主循环 + DAG 并发调度 + 工具截断器
+│   ├── tools/              # 工具系统（14 内置工具 + 插件 + MCP）
 │   ├── tui/                # TUI 应用层
 │   ├── web/                # Web Server（HTTP + WS + REST + 前端）
-│   └── main.cj             # CLI/TUI/JSON/Web/Mock 入口
+│   ├── gateway/            # Channel 抽象（IM/Web 渠道网关）
+│   ├── skills.cj           # 技能系统（frontmatter 解析 + 指令注入）
+│   ├── ast_grep.cj         # AST 搜索工具（sg CLI + grep 降级）
+│   ├── tests/              # 单元测试（工具/会话/截断器/路由，141 用例）
+│   └── core_funcs_test.cj  # 根包纯函数测试（skills/tool_format/ast_grep/task）
 ├── libs/                   # 独立可复用库
 │   ├── cjterm/             # 终端 UI 库（ANSI / 差分渲染 / termios / 主题）
 │   ├── cjllm/              # LLM 协议库（OpenAI / Anthropic / Ollama / SSE）
 │   ├── cjcfg/              # 配置库（settings.json / auth.json / 会话）
-│   └── cjutil/             # 工具库（SHA256 / SM2 / UTF-8 / JSON 修复 / 日志）
+│   ├── cjutil/             # 工具库（SHA256 / SM2 / UTF-8 / JSON 修复 / BM25）
+│   └── cjlog/              # 日志库
+├── build.cj                # cjpm 构建钩子（产物 main → 复制为 cjh）
 ├── example/                # 示例
 │   ├── plugins/            # 插件示例（echo-test / log-pruner / signed-demo）
 │   └── mcp/                # MCP 服务器示例

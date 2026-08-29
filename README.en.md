@@ -76,14 +76,14 @@ LLM APIs charge per token, and coding agents' multi-turn tool calls accumulate s
 | Optimization | Implementation | Effect |
 |---|---|---|
 | **Tool result truncation & backtrack** | Results exceeding threshold keep head+tail + **full spill** to `~/.cjh/spill/<sessionId>/<toolCallId>.txt` + ellipsis marker contains spill path, model can use `read_file` to read back on demand | Avoids losing middle information like some agents (e.g., d'sh) that only keep head and tail; spill-backtrack saves tokens without losing info |
-| **Auto Compaction** | Message count exceeding threshold triggers LLM summary compression of early history, `compactThreshold` / `compactKeep` configurable | Long sessions don't blow context window, saves tokens and prevents overflow |
+| **Auto Compaction** | Message count OR estimated prompt tokens (real `usage.promptTokens`) exceeding threshold triggers LLM summary compression, `compactThreshold` / `compact_token_threshold` / `compactKeep` configurable | Long sessions don't blow context window, saves tokens and prevents overflow |
 | **Prompt cache utilization** | DeepSeek `prompt_cache_hit_tokens` + Anthropic `cache_read_input_tokens` stats and display | Leverages Provider's prompt cache, repeated prefixes not repeatedly billed |
-| **Round summary bar** | End of each round shows `✓ 2 rounds · 3 tools · 42.6s · 1.53K tokens · 99% cached` | Token consumption visible in real time,便于人工干预 |
+| **Round summary bar** | End of each round shows `✓ 2 rounds · 3 tools · 42.6s · 1.53K tokens · 99% cached` | Token consumption visible in real time, enabling manual intervention |
 
 **The exquisite design of tool result truncation & backtrack**: Unlike simple truncation (only keeping first N lines), cjh adopts a **head+tail retention + middle spill** strategy. The model sees the beginning and end of the result (preserving context coherence), while the complete middle content spills to `~/.cjh/spill/`, with the ellipsis marker containing the spill path. When the model needs middle info, it can use `read_file` to read it back on demand. This both drastically saves tokens and loses no information — **this is cjh's core design distinguishing it from simple truncation agents**.
 
 Tool-specific thresholds (avoiding one-size-fits-all):
-- `bash`: 8000 chars
+- `bash`: 2000 chars (aggressive truncation — bash output often dominates prompt size; the full result is spilled to disk and can be read back)
 - `list_dir`: 4000 chars
 - default: 6000 chars
 
@@ -109,6 +109,23 @@ Performance baseline measurement 3D stats:
 - `parallelSavedMs`: milliseconds saved by concurrency vs serial
 - `maxParallelism`: maximum concurrency (most tools in a single group)
 
+### 📊 Measured Benchmarks (2026-08-29, real LLM task)
+
+> Task: optimize a shooter HTML game (deepseek-v4-flash). Same task, before vs after optimization, 240-300s window.
+
+| Metric | Before | After | Note |
+|---|---|---|---|
+| Prompt peak | 42.9K tokens (unbounded growth) | **9.4K** (reset to 5-7K after compaction) | History compaction fixed (below) |
+| Rounds in window | 48 / 300s | 15 / 240s | Per-round latency 2-5s (was 5-22s) |
+| Compaction trigger | never | every ~5 rounds | Dual threshold: message count OR real prompt tokens |
+| Tool execution | <100ms | <100ms | The framework is not the bottleneck (measured) |
+| Parallel tool batch | occasional | measured 3-way parallel read_file | V2d DAG engine |
+
+**Three iterations of history-compaction fixes** (`docs/疑难问题-LLM工具调用效率低.md`):
+1. Compaction check moved from `run()` start into **every loop round** — previously never re-checked during a multi-round task
+2. Trigger signal uses the provider's real `usage.promptTokens` — char estimation measured 7x undercount
+3. `compactKeep` 12→6 — otherwise compaction couldn't remove enough messages to reset prompt
+
 ## 📸 Interface Preview
 
 ### TUI Terminal Interface
@@ -131,20 +148,25 @@ Built-in HTTP Server + WebSocket streaming conversation + REST API + frontend SP
 
 - **Multi-turn tool call loop**: message history → LLM → tool call → result feedback → re-call, supporting complex task orchestration
 - **Three-domain Capability security model**: commands / tools / resources whitelist + dangerous operation approval chain
-- **Auto Compaction**: automatically triggers LLM summary compression for early history when message count exceeds threshold
+- **Auto Compaction**: LLM summary compression of early history when message count or real prompt tokens (`usage.promptTokens`) exceed thresholds (`compactThreshold` / `compact_token_threshold` / `compactKeep`)
 - **Project instructions**: auto-loads `AGENTS.md` / `.atomcode.md` project instructions injected into system prompt
 
-### Tool System (7 built-in + extensible)
+### Tool System (14 built-in + extensible)
 
 | Tool | Description |
 |---|---|
 | `bash` | Execute shell commands, capture stdout/stderr |
 | `read_file` | Read file, large files return symbol skeleton, offset/limit expand on demand |
-| `write_file` | Write file (create/overwrite) |
+| `write_file` | Write file (create/overwrite, complete content in one call) |
+| `append_file` | Append to existing file (continue after write_file truncation) |
+| `edit` | str_replace exact replacement, unique-match safety check, replace_all |
 | `hashline_edit` | Line number anchor `@@N` + content verification editing |
 | `grep` | Recursive directory tree search, gitignore-aware |
+| `glob` | Filename glob matching (`**` / `*` / `?`), gitignore-aware |
 | `list_dir` | List directory tree |
+| `ast_grep` | AST structural search (ast-grep CLI, falls back to grep) |
 | `todo_write` | LLM manages task list via tool calls |
+| `task` | Delegate to subagent (explore read-only / worker writable) |
 | `web_search` | Web search, multi-backend routing (Tavily/Exa/SearXNG/DDG) + per-engine key rotation |
 | `web_fetch` | Fetch web page, 3-tier degradation chain (Cangjie HTTP → curl → Firecrawl) + SSRF guard |
 
@@ -245,22 +267,22 @@ export CJH_MODEL=deepseek-chat
 
 ```bash
 # TUI mode (default)
-./target/release/bin/main
+./target/release/bin/cjh
 
 # CLI mode (plain text interaction)
-./target/release/bin/main --cli
+./target/release/bin/cjh --cli
 
 # JSON headless mode (script integration)
-./target/release/bin/main --mode json "Search for TODO with grep"
+./target/release/bin/cjh --mode json "Search for TODO with grep"
 
 # Restore historical session
-./target/release/bin/main --resume <session-id>
+./target/release/bin/cjh --resume <session-id>
 
 # Mock mode (demo without API Key)
-CJH_MOCK=1 ./target/release/bin/main
+CJH_MOCK=1 ./target/release/bin/cjh
 
 # Web mode (remote Agent driving)
-./target/release/bin/main web --port 8765 --token my-secret
+./target/release/bin/cjh web --port 8765 --token my-secret
 ```
 
 ### Environment Variables
@@ -278,7 +300,7 @@ CJH_MOCK=1 ./target/release/bin/main
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                    cjh main entry (main.cj)              │
+│          cjh main entry (entries.cj + main.cj)           │
 │              CLI / TUI / JSON / Web / Mock               │
 ├─────────────────────────────────────────────────────────┤
 │  TUI Layer (tui/)       │  Web Layer (web/)             │
@@ -372,6 +394,33 @@ cjh has a built-in MCP client supporting stdio transport + JSON-RPC 2.0. After c
 }
 ```
 
+## 🧪 Testing & Quality Assurance
+
+**182 unit tests, all green** (4 packages, 25 test classes, one-shot `cjpm test`), covering all 14 built-in tools + Agent core + infrastructure:
+
+| Test domain | Coverage |
+|---|---|
+| Tool main paths | bash / write / append / edit / grep / glob / list_dir / hashline / todo / registry — CRUD + error paths |
+| Tool edge cases | read large-file streaming/offset-out-of-range/binary tolerance, grep dir recursion + .git skip, glob deep nesting/ignored dirs, edit Chinese/emoji/multiline, hashline CRLF/single-line/hash collision/multi-anchor offset |
+| Agent end-to-end | DAG parallel batch (measured 3-way concurrency), write-then-read same-path serial, tool result truncation + full spill |
+| Infrastructure | session save/restore/fork, skill frontmatter parsing, UTF-8 tolerant decode/byte-safe truncation, WebBudget, BM25 retrieval, web_search degradation chain, KeyRotator |
+| Pure functions | ToolResultTruncator thresholds/head-tail/spill, parseSgJsonLine, escapeRegex, formatToolArgs |
+
+**CI gate (mandatory, see `AGENTS.md`)**: `cjpm test` all-green is the sole delivery credential; new features/fixes must ship with tests; bug fixes require a reproducing test written first.
+
+**The value of tests — 10+ latent bugs caught (see `docs/开发文档与踩坑记录.md` §3.9)**:
+
+| Bug | Impact |
+|---|---|
+| `edit` replacement corrupts files | byte-wise append output decimal integers — **the edit tool had never actually worked** |
+| `hashline` always threw | FNV-1a UInt32 multiply overflow — **hashline had never been usable** |
+| grep/glob dir search not recursive | misused `Directory.walk` (non-recursive + false stops walk) — only top level searched |
+| append_file silently created files | auto-created missing files, contradicting its spec |
+| capability resource-check gap | 4 write tools skipped fs whitelist (security-model hole) |
+| session ID millisecond collision | save/saveFork same-ms IDs overwrote each other |
+| tool messages lost `name` | tool names missing after session restore |
+| glob/list_dir static-state race | concurrent calls clobbered each other (V2d + shared registry) |
+
 ## ⌨️ Slash Commands
 
 | Command | Description |
@@ -401,6 +450,7 @@ cjh has a built-in MCP client supporting stdio transport + JSON-RPC 2.0. After c
 | v1.2.2 | Round summary bar + /compact + /tree + /fork |
 | v1.2.3 | SSE idle timeout + tool result truncation & backtrack + MCP protocol support + 6 themes |
 | **v1.3.0** | **Web support + plugin trust chain (SHA256 + SM2 signature) + require_signature config** |
+| v1.3.1 | **LLM efficiency triple fix** (compaction into loop + real-usage trigger + keep tuning, prompt peak 42.9K→9.4K) + **182 unit tests green** + 10+ latent bugs fixed + build.cj renames artifact to `cjh` |
 
 ## 🗺️ Roadmap
 
@@ -429,10 +479,13 @@ cjh has a built-in MCP client supporting stdio transport + JSON-RPC 2.0. After c
 ## 📚 Docs
 
 - [Architecture & Design v2](docs/方案与架构设计-v2.md) — Project design and architecture
+- [Implementation & Handover](docs/实现方案与交接.md) — Architecture and code map (onboarding entry)
 - [Feature Checklist](docs/cjh功能清单.md) — Complete feature list
+- [LLM Tool-Call Efficiency](docs/疑难问题-LLM工具调用效率低.md) — Optimization process and measured data
 - [Plugin System Implementation](docs/插件系统实现方案.md) — Plugin system design
 - [Plugin Signing & Contribution Guide](docs/插件签名与贡献指南.md) — Trust chain and plugin publishing
 - [Web Support Implementation](docs/Web支持实现方案.md) — Web Server design
+- [Web Search & Fetch Design](docs/Web搜索与抓取工具设计.md) — Search degradation chain & key rotation
 - [Progress Log](docs/进度记录.md) — Development progress and status tracking
 - [Dev Docs & Pitfall Records](docs/开发文档与踩坑记录.md) — Cangjie engineering pitfalls
 
@@ -485,7 +538,10 @@ cjh/
 │   ├── tools/              # Tool system (built-in tools + plugins + MCP)
 │   ├── tui/                # TUI application layer
 │   ├── web/                # Web Server (HTTP + WS + REST + frontend)
-│   └── main.cj             # CLI/TUI/JSON/Web/Mock entry
+│   ├── entries.cj          # assembly entry (CLI/TUI/JSON/Web/Mock)
+│   ├── main.cj             # program entry (provider factory + dispatch)
+│   ├── tests/              # unit tests (tools/session/truncator/router)
+│   └── core_funcs_test.cj  # root-package pure-function tests
 ├── libs/                   # Independent reusable libraries
 │   ├── cjterm/             # Terminal UI library (ANSI / diff rendering / termios / themes)
 │   ├── cjllm/              # LLM protocol library (OpenAI / Anthropic / Ollama / SSE)

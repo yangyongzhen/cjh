@@ -1,9 +1,9 @@
 # 疑难问题：LLM 工具调用效率低
 
-> **状态**：待优化（已做多轮修复，仍未达到 AtomCode 水平）
+> **状态**：5.1 短期优化已实施并验证（prompt 已受控在 ~10K，压缩机制修复；剩余瓶颈在模型侧）
 > **优先级**：高
 > **最后更新**：2026-08-29
-> **相关提交**：`61015d7` `b80253b` `950b048` `2032d96` `1e67c67`
+> **相关提交**：`61015d7` `b80253b` `950b048` `2032d96` `1e67c67`（第三轮优化在工作区，未提交）
 
 ## 一、问题描述
 
@@ -84,6 +84,33 @@ CJH_LOG_LEVEL=INFO bash -c \
 - ❌ **LLM 单轮"思考"耗时极高**：第 3 轮 29436ms、第 10 轮 15365ms、第 21 轮 23395ms——LLM 在单轮里生成大量 completion token（1481-3187），可能在写大段代码或做复杂推理
 - ❌ **仍然每轮 1 个工具居多**：23 轮里只有 3 轮是 toolCalls=2
 
+### 2.5 第三次采集（第三轮优化后）
+
+第三轮优化（工作区未提交）实施内容与发现的新根因：
+
+| # | 修复 | 文件 | 说明 |
+|---|------|------|------|
+| 1 | **压缩检查移入主循环** | `agent/loop.cj` | **关键 bug**：原 `maybeCompact()` 只在 `run()` 开头调一次，长任务几十轮内从不复查——修复前 48 轮 prompt 涨到 31K token 却一次都没压缩 |
+| 2 | **token 触发改用真实 usage** | `agent/loop.cj` | 新增 `compactTokenThreshold`（默认 8000）+ `lastPromptTokens` 记录 provider 返回的真实 `usage.promptTokens`。字符估算 `/4` 严重低估（**实测 7x 偏差**：16 条消息估算 1910，真实 prompt 13099）——漏算了工具 JSON schema（~3.5K）+ 每条消息 JSON 序列化开销 |
+| 3 | **compactKeep 12→6** | `loop.cj` / `config.cj` | keep=12 时压缩只删 0-4 条消息，prompt 无法重置（压缩后仍 8-13K 继续爬升）；6 条可重置到 3-4K |
+| 4 | **压缩后重置 lastPromptTokens** | `agent/loop.cj` | 防止压缩后基于陈旧测量值（>阈值）下一轮再次压缩造成 churn |
+| 5 | **bash 截断 8000→2000** | `agent/loop.cj` | 激进截断（完整结果仍落盘 spill 可回溯） |
+| 6 | **系统提示词限制单轮输出** | `cjcfg/config.cj` | "Keep responses short"段：调工具时只写一行说明，禁止长篇推理/代码倾倒 |
+| 7 | **工具描述去 skeleton 策略** | `tools/builtin.cj` | **发现残留**：`950b048` 只改了系统提示词，但 write_file/append_file 的**工具描述**仍教"骨架+多段 append_file"，LLM 每轮调用都会看到——这是 10+ 轮 append 行为持续存在的直接原因 |
+| 8 | **mock 验证门修复** | `verify.cj` | mock provider 第 1 轮已改并行（read_file+grep=2 调用），`verify.cj` 仍断言 3 次 → 恒失败（基线即失败，与本次无关但顺手修复） |
+
+**修复后基准**（同任务，240s 窗口）：
+
+| 指标 | 修复前（48 轮/300s） | 修复后（15 轮/240s） |
+|------|---------------------|---------------------|
+| prompt 峰值 | 42.9K（无上限爬升） | **9.4K**（压缩后重置 5.2-7.3K） |
+| 压缩触发 | 从不 | 每 ~5 轮，7 次 |
+| 批量调用 | 偶发 | 偶发（tc=2/3 出现） |
+
+**仍然存在的瓶颈（模型侧，属 5.2 中期项）**：
+- 单轮 completion 仍可达 16K（= max_tokens 上限，71s/轮）——deepseek-v4-flash 生成大段内容时截断 → 触发续写循环
+- 压缩摘要 LLM 调用本身耗时 10-100s（模型慢 + 代理慢）
+
 ## 三、根因深度分析
 
 ### 3.1 历史消息压缩阈值设计错误
@@ -94,7 +121,13 @@ CJH_LOG_LEVEL=INFO bash -c \
 - 消息条数到 30 时，prompt token 已涨到 15-20K
 - 压缩触发太晚，前 30 条消息已经占用大量上下文
 
-**正确做法**：压缩应该基于 **prompt token 估算**，而非消息条数。例如 prompt 超过 8000 token 就触发压缩。
+**正确做法**：压缩应该基于 **prompt token**，而非消息条数。第三轮优化实测发现三个叠加问题：
+
+1. **压缩检查只在 `run()` 开头执行一次**：单次任务跑几十轮，循环内从不复查 → 阈值设得再对也触发不了（48 轮 0 次压缩的直接原因）。修复：移入主循环每轮 LLM 请求前检查。
+2. **字符估算 `/4` 严重低估**：实测 16 条消息估算 1910 vs 真实 prompt 13099（7x 偏差）。原因：漏算工具 JSON schema（全量工具注册表 ~3.5K token）+ 每条消息的 JSON 序列化开销。修复：直接采用 provider 返回的真实 `usage.promptTokens`（`lastPromptTokens`），首轮无测量时退回估算。
+3. **compactKeep=12 过大**：token 阈值 8000 触发时历史仅 12-16 条，`size-keep` 只删 0-4 条，prompt 无法重置（压缩后 8-13K 继续爬升）。修复：默认 6，压缩后重置到 3-4K。
+
+**结论**：压缩应基于 **prompt token 阈值（真实 usage）**，且检查必须**每轮**执行，keep 必须足够小让压缩真正重置 prompt。
 
 ### 3.2 LLM 单轮耗时极高
 
@@ -157,22 +190,26 @@ cat ~/.cjh/logs/cjh.log
 
 ## 五、优化方向
 
-### 5.1 短期（低风险，快收益）
+### 5.1 短期（低风险，快收益）—— ✅ 已全部实施（2026-08-29，工作区）
 
-1. **压缩阈值改为 token 估算**
-   - `maybeCompact()` 里加 prompt token 估算（消息总字符数 / 4）
-   - 超过 8000 token 就触发压缩，不等消息条数到 30
-   - 文件：`src/agent/loop.cj` 的 `maybeCompact()` 函数
+1. **压缩阈值改为 token 触发**（已实施，比原方案更进一步）
+   - 新增 `compactTokenThreshold`（默认 8000，settings.json 可配）
+   - 触发信号用 provider 返回的**真实 `usage.promptTokens`**（`lastPromptTokens`），而非字符估算 `/4`——实测估算 7x 低估（漏算工具 schema + JSON 开销）
+   - **压缩检查移入主循环每轮执行**（原实现只在 `run()` 开头调一次，长任务从不触发）
+   - `compactKeep` 默认 12→6（否则压缩删不掉足够消息、prompt 无法重置）
+   - 压缩成功后重置 `lastPromptTokens=0` 防 churn
+   - 文件：`src/agent/loop.cj`
 
-2. **系统提示词限制单轮输出**
-   - 加"Keep each response concise: call the tool, add a one-line explanation. Do not write long reasoning or code explanations in the response text."
-   - 减少 LLM 单轮 completion token，降低耗时
-   - 文件：`libs/cjcfg/src/config.cj` 的 `systemPrompt`
+2. **系统提示词限制单轮输出**（已实施）
+   - 新增 "## Keep responses short" 段：调工具时最多一行说明，禁止长篇推理/代码倾倒
+   - 同时修复 **write_file/append_file 工具描述残留的 skeleton 策略**（`950b048` 只改了系统提示词，工具描述仍在教"骨架+多段 append"，是 10+ 轮 append 的直接原因）
+   - 文件：`libs/cjcfg/src/config.cj`、`src/tools/builtin.cj`
 
-3. **工具结果更激进地截断**
-   - bash 结果超过 2000 字符就截断（当前是 8000）
-   - 减少 tool_result 占用的上下文
+3. **工具结果更激进地截断**（已实施）
+   - bash 截断 8000→2000 字符（完整结果仍落盘 spill，可 read_file 回溯）
    - 文件：`src/agent/loop.cj` 的 `toolResultMaxChars()`
+
+> 附：`verify.cj` mock 门修复（mock 第 1 轮已并行 read_file+grep=2 调用，断言 3→4）。新增 `src/agent/compact_test.cj` 5 个压缩阈值单测。
 
 ### 5.2 中期（需要验证）
 
@@ -219,11 +256,14 @@ cat ~/.cjh/logs/cjh.log
 
 ## 七、下一步行动
 
-1. 实施 5.1 的三项短期优化
-2. 重新跑基准测试，对比指标
-3. 如果仍未达标，实施 5.2 的中期优化
+1. ~~实施 5.1 的三项短期优化~~ ✅ 已完成（含压缩检查移入循环、真实 usage 触发、keep 调优、工具描述去 skeleton）
+2. ~~重新跑基准测试，对比指标~~ ✅ prompt 峰值 42.9K→9.4K，压缩机制生效
+3. **实施 5.2 中期优化**（剩余瓶颈全在模型侧）：
+   - 优先验证更快的模型（glm-4.6 等）——单轮 completion 16K/max_tokens 截断 + 71s 轮次是当前最大耗时项
+   - compaction 摘要调用耗时 10-100s，可考虑摘要用快模型（模型路由，5.3）
 4. 持续记录日志，追踪改善趋势
 
 ---
 
 > **备注**：本文档随优化进展持续更新。每次修改后记录日期和变更内容。
+> **2026-08-29 第三轮优化**：压缩机制修复（检查入循环 + 真实 usage 触发 + keep 6 + 防 churn）、bash 截断 2000、系统提示词限输出、工具描述去 skeleton、mock 门修复、5 个压缩单测。基准：prompt 峰值 42.9K→9.4K，15 轮/240s。剩余瓶颈为模型侧（单轮 16K completion 截断、摘要调用慢）。

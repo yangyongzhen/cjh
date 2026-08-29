@@ -112,7 +112,7 @@
 | **V2d 并发执行** | Read vs. Write 分类调度，全 read-only 批次 spawn 并发，含 state-modifying 整批串行 |
 | **CjhTool 接口** | `isReadOnly()` 分类，DeclarativeTool 声明式工具 |
 | **ToolRegistry** | 工具注册 + 按名查找 + read-only 分类 |
-| **工具结果截断+落盘+回溯** | 超阈值工具结果保留头尾 + 完整落盘 `~/.cjh/spill/<sessionId>/<toolCallId>.txt` + 省略标记含落盘路径，模型可用 `read_file` 按需读回；工具差异化阈值（bash 8000/list_dir 4000/默认 6000） |
+| **工具结果截断+落盘+回溯** | 超阈值工具结果保留头尾 + 完整落盘 `~/.cjh/spill/<sessionId>/<toolCallId>.txt` + 省略标记含落盘路径，模型可用 `read_file` 按需读回；工具差异化阈值（bash 2000/list_dir 4000/默认 6000，read_file 不截断） |
 
 ## 六、记忆与会话管理
 
@@ -121,7 +121,7 @@
 | **树形会话** | 会话分支/fork，parent 链追踪，`/tree` 树形列示 |
 | **会话恢复** | `--resume <id>` 恢复历史会话 |
 | **会话列表** | `--list` 列出所有会话 |
-| **自动 Compaction** | 消息条数超阈值触发 LLM 摘要压缩早期历史，`compactThreshold`/`compactKeep` 配置 |
+| **自动 Compaction** | 消息条数或估算 prompt token（真实 `usage.promptTokens`）超阈值触发 LLM 摘要压缩早期历史，`compactThreshold`/`compact_token_threshold`/`compactKeep` 配置 |
 | **手动 Compaction** | `/compact` 命令强制压缩历史 |
 | **项目指令** | `loadProjectInstructions` 逐级查 AGENTS.md |
 
