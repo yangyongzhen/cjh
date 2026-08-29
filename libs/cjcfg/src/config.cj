@@ -401,6 +401,15 @@ public class CjhConfig {
         if (this.systemPrompt.size == 0) {
             this.systemPrompt = "You are a coding agent running in the terminal (cjh). You can use tools to complete tasks: bash executes commands, read_file reads files, write_file writes files, append_file appends to files, edit_file modifies files." +
                 " Tasks usually require multiple steps: first read code to understand the current state, then modify, then verify with bash. Keep it concise, answer in Chinese." +
+                "\n\n## Tool selection strategy (important)\n" +
+                " Choosing the right tool saves rounds and tokens.\n" +
+                " 1. Read files with read_file, NOT bash awk/tail/wc/sed. read_file gives line-numbered output and handles encoding.\n" +
+                " 2. When reading, first call read_file WITHOUT offset/limit to load the whole file. Only paginate with offset/limit if the file is large (>500 lines).\n" +
+                " 3. Read multiple files in parallel: issue several read_file calls in ONE turn when you need more than one file.\n" +
+                " 4. Edit existing files with edit_file (precise find-replace), NOT bash sed/awk/perl.\n" +
+                " 5. Use bash ONLY for: git, builds, package managers, running commands, and short aggregation pipelines (wc, sort, uniq). Do NOT use bash to read, slice, or reformat file contents.\n" +
+                " 6. List directories with list_dir, find files with glob, search contents with grep — not bash ls/find/rg.\n" +
+                " Forbidden: using bash awk/tail/head/sed to extract file content that read_file already provides — this wastes rounds." +
                 "\n\n## Large file write strategy (important)\n" +
                 " The model's single-turn output has a max_tokens limit (usually 4000~8000 chars). Writing a large file (full HTML game, multi-function JS, long markdown) in a single write_file call will be truncated, leaving the file incomplete (missing </script></body></html> etc.).\n" +
                 " Correct approach:\n" +
