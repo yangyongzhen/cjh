@@ -15,20 +15,30 @@ package cjh.web
 
 import std.collection.*
 import std.convert.*
+import std.env.*
 import std.fs.*
 import stdx.encoding.json.*
 import stdx.net.http.*
 import cjcfg.*
 import cjutil.*
+import cjh.tools.*
 
 /**
  * REST API 处理器：统一处理所有 /api 路由
  */
 public class RestApi <: HttpRequestHandler {
     private let config: CjhConfig
+    // 工具注册表（工作区切换时重置持久 bash 会话 cwd）
+    private let registry: ?ToolRegistry
 
     public init(config: CjhConfig) {
         this.config = config
+        this.registry = None
+    }
+
+    public init(config: CjhConfig, registry: ToolRegistry) {
+        this.config = config
+        this.registry = Some(registry)
     }
 
     public func handle(ctx: HttpContext): Unit {
@@ -42,6 +52,8 @@ public class RestApi <: HttpRequestHandler {
             case "/api/mcp" => this.handleListMcp(ctx)
             case "/api/settings" => this.handleSettings(ctx)
             case "/api/workspaces" => this.handleWorkspaces(ctx)
+            case "/api/workspaces/switch" => this.handleWorkspaceSwitch(ctx)
+            case "/api/fs/list" => this.handleFsList(ctx)
             case _ => this.handleNotFound(ctx)
         }
     }
@@ -499,6 +511,122 @@ public class RestApi <: HttpRequestHandler {
     }
 
     /**
+     * POST /api/workspaces/switch → 切换工作区（真正生效）
+     *
+     * body: {path}。执行：
+     * 1. chdir 切换进程 cwd（后续相对路径工具立即生效）
+     * 2. 更新工作区 lastAccess（最近访问排序）
+     * 3. 重置持久 bash 会话（其 cwd 独立于进程 chdir）
+     */
+    private func handleWorkspaceSwitch(ctx: HttpContext): Unit {
+        let res = ctx.responseBuilder
+        res.header("Content-Type", "application/json; charset=utf-8")
+        let bodyStr = readBody(ctx)
+        if (bodyStr.size == 0) {
+            res.body("{\"ok\":false,\"error\":\"empty body\"}".toArray())
+            return
+        }
+        var path = ""
+        try {
+            let parsed = JsonValue.fromStr(bodyStr)
+            if (!isObj(parsed)) {
+                res.body("{\"ok\":false,\"error\":\"body must be object\"}".toArray())
+                return
+            }
+            let obj = parsed.asObject()
+            if (let Some(v) <- obj.get("path")) {
+                if (isStr(v)) { path = v.asString().getValue() }
+            }
+        } catch (e: Exception) {
+            res.body("{\"ok\":false,\"error\":\"parse failed\"}".toArray())
+            return
+        }
+        if (path.size == 0 || !exists(path) || FileInfo(path).isDirectory() == false) {
+            res.body("{\"ok\":false,\"error\":\"invalid path: ${path}\"}".toArray())
+            return
+        }
+        // 1. chdir 切换进程 cwd
+        if (!EnvFfi.changeWorkingDirectory(path)) {
+            res.body("{\"ok\":false,\"error\":\"chdir failed: ${path}\"}".toArray())
+            return
+        }
+        // 2. 更新工作区访问时间
+        let mgr = WorkspaceManager(this.config.configDir)
+        mgr.add(path, "")
+        mgr.touch(path)
+        mgr.save()
+        // 3. 重置持久 bash 会话（cwd 独立于进程 chdir）
+        match (this.registry) {
+            case Some(r) =>
+                match (r.getTool("bash")) {
+                    case Some(t: BashTool) => t.resetSession()
+                    case _ => ()
+                }
+            case None => ()
+        }
+        res.body("{\"ok\":true}".toArray())
+    }
+
+    /**
+     * GET /api/fs/list?path=/xxx → 列出目录（供前端工作区目录选择器）
+     *
+     * 返回：{ "path": "/xxx", "dirs": ["a","b"], "files": ["f.txt"] }
+     * 每项含绝对路径：dirs 返回 {name, path}，files 返回 {name, path}
+     */
+    private func handleFsList(ctx: HttpContext): Unit {
+        let res = ctx.responseBuilder
+        res.header("Content-Type", "application/json; charset=utf-8")
+        // 解析 query 参数 path（默认当前 cwd）
+        var dirPath = getWorkingDirectory().toString()
+        let queryOpt = ctx.request.url.query
+        if (queryOpt.isSome()) {
+            let query = queryOpt.getOrThrow()
+            if (query.contains("path=")) {
+                let idx = query.indexOf("path=")
+                if (idx.isSome()) {
+                    dirPath = query[(idx.getOrThrow() + 5)..query.size]
+                }
+            }
+        }
+        if (!exists(dirPath) || FileInfo(dirPath).isDirectory() == false) {
+            var err = JsonObject()
+            err.put("ok", JsonBool(false))
+            err.put("error", JsonString("not a directory: ${dirPath}"))
+            res.body(err.toJsonString().toArray())
+            return
+        }
+        let dirsArr = JsonArray()
+        let filesArr = JsonArray()
+        try {
+            Directory.walk(dirPath, { fi =>
+                if (fi.name.startsWith(".")) {
+                    return true  // 跳过隐藏
+                }
+                var item = JsonObject()
+                item.put("name", JsonString(fi.name))
+                item.put("path", JsonString("${fi.path}"))
+                if (fi.isDirectory()) {
+                    dirsArr.add(item)
+                } else {
+                    filesArr.add(item)
+                }
+                return true
+            })
+        } catch (e: Exception) {
+            var err = JsonObject()
+            err.put("ok", JsonBool(false))
+            err.put("error", JsonString("list failed: ${e}"))
+            res.body(err.toJsonString().toArray())
+            return
+        }
+        var obj = JsonObject()
+        obj.put("path", JsonString(dirPath))
+        obj.put("dirs", dirsArr)
+        obj.put("files", filesArr)
+        res.body(obj.toJsonString().toArray())
+    }
+
+    /**
      * 读取 HTTP 请求体为 String
      */
     private func readBody(ctx: HttpContext): String {
@@ -531,7 +659,7 @@ public class RestApi <: HttpRequestHandler {
 /**
  * JsonKind 判断辅助（仓颉 enum 不能直接 ==）
  */
-func isObj(v: JsonValue): Bool {
+public func isObj(v: JsonValue): Bool {
     match (v.kind()) {
         case JsonKind.JsObject => return true
         case _ => ()
@@ -539,7 +667,7 @@ func isObj(v: JsonValue): Bool {
     return false
 }
 
-func isStr(v: JsonValue): Bool {
+public func isStr(v: JsonValue): Bool {
     match (v.kind()) {
         case JsonKind.JsString => return true
         case _ => ()
@@ -547,7 +675,7 @@ func isStr(v: JsonValue): Bool {
     return false
 }
 
-func isInt(v: JsonValue): Bool {
+public func isInt(v: JsonValue): Bool {
     match (v.kind()) {
         case JsonKind.JsInt => return true
         case _ => ()
@@ -555,7 +683,7 @@ func isInt(v: JsonValue): Bool {
     return false
 }
 
-func isFloat(v: JsonValue): Bool {
+public func isFloat(v: JsonValue): Bool {
     match (v.kind()) {
         case JsonKind.JsFloat => return true
         case _ => ()
@@ -563,7 +691,7 @@ func isFloat(v: JsonValue): Bool {
     return false
 }
 
-func isBool(v: JsonValue): Bool {
+public func isBool(v: JsonValue): Bool {
     match (v.kind()) {
         case JsonKind.JsBool => return true
         case _ => ()
@@ -575,7 +703,7 @@ func isBool(v: JsonValue): Bool {
  * 统计 JSON 数组字符串里的对象数（技能 tools 字段）
  * 简单实现：数 '{' 的个数（顶层）
  */
-func countJsonObjects(s: String): Int64 {
+public func countJsonObjects(s: String): Int64 {
     var count: Int64 = 0
     var depth: Int64 = 0
     for (i in 0..s.size) {
@@ -593,7 +721,7 @@ func countJsonObjects(s: String): Int64 {
 /**
  * 判断技能是否启用（enabled 为空时全部启用）
  */
-func isSkillEnabled(name: String, enabled: ArrayList<String>): Bool {
+public func isSkillEnabled(name: String, enabled: ArrayList<String>): Bool {
     if (enabled.size == 0) {
         return true
     }
@@ -608,7 +736,7 @@ func isSkillEnabled(name: String, enabled: ArrayList<String>): Bool {
 /**
  * API Key 脱敏：保留前 4 后 4，中间用 **** 替换
  */
-func maskApiKey(key: String): String {
+public func maskApiKey(key: String): String {
     if (key.size <= 8) {
         return if (key.size == 0) { "" } else { "****" }
     }
@@ -618,7 +746,7 @@ func maskApiKey(key: String): String {
 /**
  * ArrayList<String> → JsonArray
  */
-func jsonArrFromStrings(list: ArrayList<String>): JsonArray {
+public func jsonArrFromStrings(list: ArrayList<String>): JsonArray {
     let arr = JsonArray()
     for (i in 0..list.size) {
         arr.add(JsonString(list[i]))

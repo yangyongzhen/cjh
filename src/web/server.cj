@@ -97,8 +97,8 @@ public class WebDistributor <: HttpRequestDistributor {
         this.wsHandler = WsHandler(this.config, this.gateway)
         // WebHandler 实例（统一 HTTP 处理）
         this.webHandler = WebHandler(this.config)
-        // RestApi 实例（/api/* 路由）
-        this.restApi = RestApi(this.config)
+        // RestApi 实例（/api/* 路由）；registry 供工作区切换重置 bash 会话
+        this.restApi = RestApi(this.config, this.registry)
     }
     /**
      * 分发请求：按 path 查路由表，未找到返回 404

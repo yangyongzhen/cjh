@@ -173,7 +173,19 @@ public class StaticAssets {
             <div class="modal-body">
                 <div class="config-row">
                     <label>路径（绝对路径）</label>
-                    <input type="text" id="workspace-path-input" placeholder="/home/user/project">
+                    <div style="display:flex;gap:6px">
+                        <input type="text" id="workspace-path-input" placeholder="/home/user/project" style="flex:1">
+                        <button class="btn-icon" onclick="openDirBrowser()" title="浏览目录">📁</button>
+                    </div>
+                </div>
+                <!-- 目录浏览选择器 -->
+                <div id="dir-browser" class="dir-browser hidden">
+                    <div id="dir-browser-path" class="dir-browser-path"></div>
+                    <div id="dir-browser-list" class="dir-browser-list"></div>
+                    <div class="dir-browser-actions">
+                        <button class="config-save-btn" onclick="useCurrentDir()">选择当前目录</button>
+                        <button onclick="dirUp()">⬆ 上一级</button>
+                    </div>
                 </div>
                 <div class="config-row">
                     <label>名称（可选）</label>
@@ -383,6 +395,14 @@ function loadWorkspaces() {
                 });
                 list.appendChild(item);
             });
+            // 高亮当前工作区（对比 cwd）
+            fetch('/api/fs/list').then(r => r.json()).then(function(fs) {
+                if (!fs.error) {
+                    document.querySelectorAll('.workspace-item').forEach(function(el) {
+                        el.classList.toggle('active', el.dataset.path === fs.path);
+                    });
+                }
+            }).catch(function() {});
         })
         .catch(function(e) {
             console.error('[Workspaces] 加载失败:', e);
@@ -391,26 +411,101 @@ function loadWorkspaces() {
 }
 
 /**
- * 切换工作区：POST /api/workspaces 更新访问时间 + 提示
- * 注意：cjh web 启动后 cwd 已固定，切换工作区仅记录意图，
- * 需重启 cjh web --bind 在新 cwd 才真正生效（受限于仓颉进程模型）。
+ * 切换工作区：POST /api/workspaces/switch —— 后端 chdir 真正切换 cwd，
+ * 后续相对路径工具（bash/read_file 等）立即在新工作区工作。
  */
 function switchWorkspace(path, name) {
-    fetch('/api/workspaces', {
+    fetch('/api/workspaces/switch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: path, name: name })
-    }).then(function() {
-        // 刷新列表（排序可能变化）
-        loadWorkspaces();
-        document.getElementById('workspace-list').dataset.loaded = '1';
-        // 提示用户重启
+        body: JSON.stringify({ path: path })
+    }).then(r => r.json()).then(function(data) {
         let list = document.getElementById('workspace-list');
         let tip = document.createElement('div');
         tip.className = 'workspace-tip';
-        tip.textContent = '已选择「' + name + '」\n重启 cjh web 在该目录生效';
+        if (data.ok) {
+            // 高亮当前工作区
+            document.querySelectorAll('.workspace-item').forEach(function(el) {
+                el.classList.toggle('active', el.dataset.path === path);
+            });
+            tip.textContent = '✓ 已切换至「' + name + '」';
+        } else {
+            tip.style.color = 'var(--error)';
+            tip.textContent = '切换失败: ' + (data.error || '未知错误');
+        }
+        list.insertBefore(tip, list.firstChild);
+        loadWorkspaces();  // 刷新排序
+    }).catch(function(e) {
+        let list = document.getElementById('workspace-list');
+        let tip = document.createElement('div');
+        tip.className = 'workspace-tip';
+        tip.style.color = 'var(--error)';
+        tip.textContent = '切换失败: ' + e;
         list.insertBefore(tip, list.firstChild);
     });
+}
+
+/* ====== 目录浏览选择器 ====== */
+var browsePath = '';
+
+/**
+ * 打开目录浏览：从路径输入框当前值（或根目录）开始列目录
+ */
+function openDirBrowser() {
+    let input = document.getElementById('workspace-path-input').value;
+    browsePath = input && input.trim().length > 0 ? input.trim() : '/';
+    loadDirList();
+    document.getElementById('dir-browser').classList.remove('hidden');
+}
+
+/**
+ * 加载当前 browsePath 的目录列表（/api/fs/list）
+ */
+function loadDirList() {
+    document.getElementById('dir-browser-path').textContent = '当前: ' + browsePath;
+    fetch('/api/fs/list?path=' + encodeURIComponent(browsePath))
+        .then(r => r.json())
+        .then(function(data) {
+            let list = document.getElementById('dir-browser-list');
+            if (data.error) {
+                list.innerHTML = '<div class="empty">' + escapeHtml(data.error) + '</div>';
+                return;
+            }
+            list.innerHTML = '';
+            if (!data.dirs || data.dirs.length === 0) {
+                list.innerHTML = '<div class="empty">无子目录</div>';
+                return;
+            }
+            data.dirs.forEach(function(d) {
+                let item = document.createElement('div');
+                item.className = 'dir-item';
+                item.textContent = '📁 ' + d.name;
+                item.title = d.path;
+                item.onclick = function() { browsePath = d.path; loadDirList(); };
+                list.appendChild(item);
+            });
+        })
+        .catch(function(e) {
+            document.getElementById('dir-browser-list').innerHTML = '<div class="empty">加载失败: ' + e + '</div>';
+        });
+}
+
+/**
+ * 上一级目录
+ */
+function dirUp() {
+    if (browsePath === '/' || browsePath.length === 0) { return; }
+    let idx = browsePath.lastIndexOf('/');
+    browsePath = idx > 0 ? browsePath.slice(0, idx) : '/';
+    loadDirList();
+}
+
+/**
+ * 选择当前浏览目录：填入路径输入框，关闭浏览器
+ */
+function useCurrentDir() {
+    document.getElementById('workspace-path-input').value = browsePath;
+    document.getElementById('dir-browser').classList.add('hidden');
 }
 
 /**
@@ -1482,6 +1577,49 @@ body {
     white-space: pre-line;
     line-height: 1.5;
     border-bottom: 1px solid var(--border);
+}
+.workspace-item.active {
+    background: var(--bg-tertiary);
+    border-left: 3px solid var(--accent);
+}
+.workspace-item.active .workspace-name { color: var(--accent); }
+
+/* ====== 目录浏览选择器 ====== */
+.dir-browser {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin: 8px 0;
+    background: var(--bg-secondary);
+}
+.dir-browser-path {
+    padding: 8px 10px;
+    font-family: monospace;
+    font-size: 11px;
+    color: var(--accent);
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.dir-browser-list {
+    max-height: 180px;
+    overflow-y: auto;
+    padding: 4px 0;
+}
+.dir-item {
+    padding: 6px 12px;
+    font-size: 12px;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.dir-item:hover { background: var(--bg-tertiary); color: var(--accent); }
+.dir-browser-actions {
+    display: flex;
+    gap: 8px;
+    padding: 8px 10px;
+    border-top: 1px solid var(--border);
 }
 
 /* ====== 配置表单 ====== */
