@@ -22,6 +22,9 @@ public class AgentConfig {
     public let capability: Capability
     // Compaction 阈值：消息条数超过该值触发历史摘要压缩（0=禁用，对齐 pi）
     public let compactThreshold: Int64
+    // Compaction token 阈值：估算 prompt token 超过该值也触发压缩（0=禁用）
+    // 消息条数阈值对长 tool_result 不敏感，token 估算兜底避免 prompt 膨胀
+    public let compactTokenThreshold: Int64
     // 压缩时保留的最近消息条数
     public let compactKeep: Int64
     // 工具结果截断阈值（字符数，0 或负数=禁用截断）
@@ -36,7 +39,8 @@ public class AgentConfig {
         this.maxIterations = maxIterations
         this.capability = Capability()
         this.compactThreshold = 0
-        this.compactKeep = 12
+        this.compactTokenThreshold = 8000
+        this.compactKeep = 6
         this.toolResultMaxChars = 6000
         this.spillDir = ""
         this.sessionId = ""
@@ -47,7 +51,8 @@ public class AgentConfig {
         this.maxIterations = maxIterations
         this.capability = capability
         this.compactThreshold = 0
-        this.compactKeep = 12
+        this.compactTokenThreshold = 8000
+        this.compactKeep = 6
         this.toolResultMaxChars = 6000
         this.spillDir = ""
         this.sessionId = ""
@@ -59,6 +64,7 @@ public class AgentConfig {
         this.maxIterations = maxIterations
         this.capability = capability
         this.compactThreshold = compactThreshold
+        this.compactTokenThreshold = 8000
         this.compactKeep = compactKeep
         this.toolResultMaxChars = 6000
         this.spillDir = ""
@@ -72,6 +78,21 @@ public class AgentConfig {
         this.maxIterations = maxIterations
         this.capability = capability
         this.compactThreshold = compactThreshold
+        this.compactTokenThreshold = 8000
+        this.compactKeep = compactKeep
+        this.toolResultMaxChars = toolResultMaxChars
+        this.spillDir = spillDir
+        this.sessionId = sessionId
+    }
+
+    public init(systemPrompt: String, maxIterations: Int64, capability: Capability,
+        compactThreshold: Int64, compactTokenThreshold: Int64, compactKeep: Int64,
+        toolResultMaxChars: Int64, spillDir: String, sessionId: String) {
+        this.systemPrompt = systemPrompt
+        this.maxIterations = maxIterations
+        this.capability = capability
+        this.compactThreshold = compactThreshold
+        this.compactTokenThreshold = compactTokenThreshold
         this.compactKeep = compactKeep
         this.toolResultMaxChars = toolResultMaxChars
         this.spillDir = spillDir
@@ -152,6 +173,10 @@ public class Agent {
     private let tools: ToolRegistry
     private let config: AgentConfig
     private var messages: ArrayList<ChatMessage>
+    // 上一轮 LLM 响应的真实 prompt token（usage.promptTokens）。
+    // 压缩触发用它而非字符估算——估算对中文/JSON 开销严重低估（实测 6.5x 偏差），
+    // 真实用量是 provider 已返回的精确值。0=尚未有测量（首轮前）。
+    private var lastPromptTokens: Int64 = 0
     // 内置任务列表（对齐 Claude Code TodoWrite，TUI Tasks 面板数据源）
     private var todos: ArrayList<TodoItem> = ArrayList<TodoItem>()
     private var nextTodoId: Int64 = 1
@@ -308,8 +333,6 @@ public class Agent {
      */
     public func run(userInput: String): RunSummary {
         this.messages.add(ChatMessage("user", userInput))
-        // 长会话：超阈值先压缩早期历史（LLM 摘要），避免 token 爆炸
-        this.maybeCompact()
 
         // 回合统计收集
         let summary = RunSummary()
@@ -321,6 +344,12 @@ public class Agent {
         while (iterations < this.config.maxIterations) {
             iterations += 1
             summary.rounds = iterations
+
+            // 长会话压缩：每轮发起 LLM 请求前检查历史是否超阈值
+            // （消息条数 或 估算 token 任一超限即 LLM 摘要压缩早期历史）。
+            // 必须放在循环内——单次 run() 可能跑几十轮，prompt 随轮次膨胀，
+            // 只在 run() 开头检查的话压缩永远不会触发（实测 48 轮 prompt 涨到 31K token）
+            this.maybeCompact()
 
             // 顶层兜底：LLM 响应解析可能抛 IllegalArgumentException（非法 UTF-8 字节）
             // 不让它崩 TUI，转成错误消息返回
@@ -347,6 +376,8 @@ public class Agent {
             summary.promptTokens += response.usage.promptTokens
             summary.completionTokens += response.usage.completionTokens
             summary.cachedTokens += response.usage.cachedTokens
+            // 记录真实 prompt token（压缩触发依据；首轮为 0 时用字符估算兜底）
+            this.lastPromptTokens = response.usage.promptTokens
             this.onTokens(response.usage.promptTokens + response.usage.completionTokens)
             Log.info("第 ${iterations} 轮完成 | 耗时 ${roundMs}ms | prompt ${response.usage.promptTokens} completion ${response.usage.completionTokens} cached ${response.usage.cachedTokens} | toolCalls ${response.toolCalls.size} | textLen ${response.text.size} | truncated ${response.truncated} | timedOut ${response.timedOut}")
 
@@ -586,93 +617,24 @@ public class Agent {
     }
 
     /**
-     * 工具差异化截断阈值（对标 Pi v0.13.2）
-     * bash 输出可能很长；list_dir 目录树过长；grep 搜索结果多
-     */
-    private func toolResultMaxChars(toolName: String): Int64 {
-        // 全局禁用截断（0 或负数）→ 返回一个大数，等价于不截断
-        if (this.config.toolResultMaxChars <= 0) {
-            return Int64.Max
-        }
-        match (toolName) {
-            case "bash" => if (this.config.toolResultMaxChars >= 8000) { this.config.toolResultMaxChars } else { 8000 }
-            case "list_dir" => 4000
-            // read_file 是按需读取工具，LLM 已通过 offset/limit 控制读取量；
-            // 截断会导致 LLM 看到不完整内容，反复重读，浪费轮次
-            case "read_file" => Int64.Max
-            case _ => this.config.toolResultMaxChars
-        }
-    }
-
-    /**
-     * 落盘文件路径：spillDir/<sessionId>/<toolCallId>.txt
-     */
-    private func spillPath(toolCallId: String): String {
-        return this.config.spillDir + "/" + this.config.sessionId + "/" + toolCallId + ".txt"
-    }
-
-    /**
-     * 落盘写入完整工具结果
-     */
-    private func writeSpill(path: String, content: String): Unit {
-        try {
-            // 从完整路径里取出目录部分（最后一次 "/" 之前）
-            match (path.lastIndexOf("/")) {
-                case Some(dirEnd) =>
-                    let dir = path[0..dirEnd]
-                    if (!exists(dir)) {
-                        Directory.create(dir, recursive: true)
-                    }
-                case None => ()
-            }
-            File.writeTo(path, content.toArray())
-        } catch (e: Exception) {
-            Log.warn("spill 落盘失败: ${e}")
-            // 落盘失败不影响截断本身，只是丢了回溯路径
-        }
-    }
-
-    /**
-     * Tool Output 压缩 Hook：tool_result 过长时裁剪成 Head/Tail 摘要，
-     * 避免巨大 tool 结果（如 read_file 读了个几千行日志）冲垮前缀缓存或 token 预算。
-     *
-     * 截断 + 落盘 + 回溯钥匙（对标 Pi spill extension）：
-     * - 超过阈值的工具结果保留头尾 + 中间省略标记
-     * - 完整结果落盘到 spillDir/<sessionId>/<toolCallId>.txt
-     * - 省略标记包含落盘文件路径（这把「钥匙」），模型可用 read_file 按需读回
+     * Tool Output 压缩 Hook（逻辑在 ToolResultTruncator，含落盘回溯钥匙）
      */
     private func truncateToolResult(content: String, toolName: String, toolCallId: String): String {
-        let maxChars = this.toolResultMaxChars(toolName)
-        // 按 Rune（字符）计数，避免按字节切片截断在多字节 UTF-8 中间
-        let runes = content.toRuneArray()
-        let charCount = Int64(runes.size)
-        if (maxChars <= 0 || charCount <= maxChars) {
-            return content
-        }
-        let headLen: Int64 = maxChars / 2
-        let tailLen: Int64 = maxChars - headLen
-        var headSb = StringBuilder()
-        for (i in 0..Int64(headLen)) {
-            headSb.append(String(runes[i]))
-        }
-        let tailStart = charCount - tailLen
-        var tailSb = StringBuilder()
-        for (i in Int64(tailStart)..charCount) {
-            tailSb.append(String(runes[i]))
-        }
-        let skipped = charCount - maxChars
+        return ToolResultTruncator.truncate(content, toolName, this.config.toolResultMaxChars,
+            this.config.spillDir, this.config.sessionId, toolCallId)
+    }
 
-        // 落盘完整结果（回溯路径）
-        var spillHint = ""
-        if (this.config.spillDir.size > 0 && this.config.sessionId.size > 0) {
-            let spillPath = this.spillPath(toolCallId)
-            this.writeSpill(spillPath, content)
-            spillHint = "，完整结果已保存：" + spillPath + "，可用 read_file 读取"
+    /**
+     * 消息历史 token 粗估：content 字符数 / 4 + 每条消息固定开销。
+     * 中文单字≈1 token、英文≈4 字符/token，混合内容按 /4 是保守下界，
+     * 用于压缩触发判断（无需精确，只需量级正确）。
+     */
+    private func estimateMessagesTokens(): Int64 {
+        var total: Int64 = 0
+        for (m in this.messages) {
+            total += m.content.size / 4 + 8  // +8 近似 role/name/tool_call_id 开销
         }
-
-        return headSb.toString()
-            + "\n\n…[已截断 " + skipped.toString() + " 字符" + spillHint + "]…\n\n"
-            + tailSb.toString()
+        return total
     }
 
     /**
@@ -681,11 +643,20 @@ public class Agent {
      * 触发后调用链 = 摘要请求（无工具）→ 重建 messages = system + 摘要 + 近期历史
      */
     private func maybeCompact(): Unit {
-        if (this.config.compactThreshold <= 0) {
+        if (this.config.compactThreshold <= 0 && this.config.compactTokenThreshold <= 0) {
             return
         }
-        // 消息数 = system + 对话；超过阈值才压缩
-        if (this.messages.size <= this.config.compactThreshold) {
+        // 双阈值触发（任一超限即压缩）：
+        //  1. 消息条数阈值：compactThreshold（对齐 pi 自动摘要）
+        //  2. token 估算阈值：compactTokenThreshold——长 tool_result 时消息条数涨得慢
+        //     但 prompt 已膨胀，靠字符数估算兜底（实测 30 条消息时 prompt 已 15-20K token）
+        let msgCount: Int64 = this.messages.size
+        let overCount: Bool = this.config.compactThreshold > 0 && msgCount > this.config.compactThreshold
+        // token 触发：优先用上一轮 provider 返回的真实 prompt token（精确）；
+        // 首轮前无测量时退化为字符估算（/4，保守）
+        let triggerTokens = if (this.lastPromptTokens > 0) { this.lastPromptTokens } else { this.estimateMessagesTokens() }
+        let overTokens: Bool = this.config.compactTokenThreshold > 0 && triggerTokens > this.config.compactTokenThreshold
+        if (!overCount && !overTokens) {
             return
         }
         let keep = if (this.config.compactKeep >= 2) { this.config.compactKeep } else { 2 }
@@ -724,6 +695,9 @@ public class Agent {
             newMsgs.add(this.messages[i])
         }
         this.messages = newMsgs
+        // 重置真实 prompt token 记录：压缩后旧测量值已失真（>阈值），
+        // 不重置会导致下一轮基于陈旧值再次压缩（churn）
+        this.lastPromptTokens = 0
         this.onDelta("\n\n_[会话历史已自动压缩：${compactEnd - 1} 条早期消息 → 摘要]_")
     }
 
@@ -753,12 +727,12 @@ public class Agent {
      */
     private func extractResourceAccess(tc: ToolCall): (String, Bool) {
         match (tc.name) {
-            case "read_file" | "grep" | "list_dir" =>
+            case "read_file" | "grep" | "list_dir" | "glob" =>
                 match (tc.arguments.get("path")) {
                     case Some(p) => return (p.asString().getValue(), false)
                     case None => return ("", false)
                 }
-            case "write_file" | "append_file" | "edit_file" =>
+            case "write_file" | "append_file" | "edit_file" | "hashline_edit" =>
                 match (tc.arguments.get("path")) {
                     case Some(p) => return (p.asString().getValue(), true)
                     case None => return ("", true)
@@ -914,9 +888,15 @@ public class Agent {
             }
         }
         let path = args.get("path")
-        if (path.isSome() && (name == "read_file" || name == "write_file" || name == "grep" || name == "list_dir")) {
+        // 资源域检查覆盖全部带 path 参数的工具：
+        // 读：read_file/grep/list_dir/glob；写：write_file/append_file/edit_file/hashline_edit
+        // （原实现漏掉 append_file/edit_file/hashline_edit/glob，写文件只按读检查——安全缺口）
+        if (path.isSome() && (name == "read_file" || name == "write_file" || name == "grep" ||
+            name == "list_dir" || name == "glob" || name == "append_file" ||
+            name == "edit_file" || name == "hashline_edit")) {
             let p = path.getOrThrow().asString().getValue()
-            let isWrite = (name == "write_file")
+            let isWrite = (name == "write_file" || name == "append_file" ||
+                name == "edit_file" || name == "hashline_edit")
             match (cap.checkPath(p, isWrite)) {
                 case CapDecision.Allow => ()
                 case CapDecision.Deny(reason) =>

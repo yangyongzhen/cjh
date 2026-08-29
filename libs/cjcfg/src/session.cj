@@ -249,16 +249,21 @@ public class SessionStore {
         }
     }
 
+    // 会话 ID 进程内计数器：时间戳秒.毫秒在同毫秒内会碰撞
+    // （实测 save 与 saveFork 连续调用生成相同 ID，后者覆盖前者）
+    private static var idCounter: Int64 = 0
+
     /**
-     * 生成新会话 ID（时间戳格式 s<秒>.<毫秒>）
+     * 生成新会话 ID（时间戳格式 s<秒>.<毫秒>.<计数器>）
      * 供外部预生成（如工具结果落盘需要会话 ID 时）
      */
     public func newSessionId(): String {
         let now = DateTime.now()
         let ts = now.toUnixTimeStamp()
-        // 紧凑：秒.毫秒
+        // 紧凑：秒.毫秒.计数器（计数器保证进程内唯一）
         let secs = ts.toSeconds()
         let millis = ts.toMilliseconds() - secs * 1000
-        return "s" + secs.toString() + "." + millis.toString()
+        SessionStore.idCounter += 1
+        return "s" + secs.toString() + "." + millis.toString() + "." + SessionStore.idCounter.toString()
     }
 }

@@ -47,6 +47,11 @@ public class ChatMessage {
         if (this.role == "tool") {
             obj.put("tool_call_id", JsonString(this.toolCallId))
             obj.put("content", JsonString(this.content))
+            // 工具名必须持久化：session 保存/恢复循环依赖它，
+            // 原实现漏写导致 tool 消息恢复后 name 丢失
+            if (this.name.size > 0) {
+                obj.put("name", JsonString(this.name))
+            }
         } else {
             obj.put("content", JsonString(this.content))
             if (this.toolCalls.size > 0) {

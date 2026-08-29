@@ -57,11 +57,12 @@ func runMockVerify(): Int64 {
     println("=== 最终答复 ===")
     println(summary.reply)
 
-    if (VerifyState.toolCalls == 3 && summary.reply.contains("验证完成")) {
-        println("\n✅ 验证通过：工具调用链完整（read_file → grep → list_dir → 最终答复）")
+    if (VerifyState.toolCalls == 4 && summary.reply.contains("验证完成")) {
+        // mock 第 1 轮返回 read_file+grep 两个并行调用，全链 = 2+1+1 = 4 次
+        println("\n✅ 验证通过：工具调用链完整（read_file+grep 并行 → grep → list_dir → 最终答复）")
         return 0
     } else {
-        println("\n❌ 验证失败：工具调用=${VerifyState.toolCalls}（期望 3）")
+        println("\n❌ 验证失败：工具调用=${VerifyState.toolCalls}（期望 4）")
         return 1
     }
 }

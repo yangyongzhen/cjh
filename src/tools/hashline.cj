@@ -306,7 +306,8 @@ public class HashlineEditParser {
  * 4. 定位失败（哈希不匹配或碰撞）→ 拒绝整个 patch
  *
  * 多锚点处理：每个锚点独立定位，操作按锚点顺序应用
- * 行号偏移：Insert/Delete 会改变后续行号，用"已处理行数"跟踪
+ * 行号偏移：Insert/Delete 会改变后续行号，apply 内用 lineOffset 累计校正
+ * （模型引用读文件时的原始行号，前序锚点的增删后必须偏移定位）
  */
 public class HashlineEditApplier {
     /**
@@ -325,13 +326,17 @@ public class HashlineEditApplier {
             lines.add(line)
         }
 
+        // 行号偏移跟踪：模型引用的是读文件时的原始行号（1-based）。
+        // 前一个锚点的 Insert(+1)/Delete(-1) 会移动后续行，必须按累计偏移校正锚点位置，
+        // 否则多锚点 patch 中 @@N 会定位到错误行（实测：插入后再 @@4 定位到偏移前的第 3 行）。
+        var lineOffset: Int64 = 0
         var appliedCount: Int64 = 0
         var i = 0
         while (i < ops.size) {
             match (ops[i]) {
                 case LineAnchor(lineNo, expected) =>
-                    // 行号锚点：1-based → 0-based
-                    let lineIdx: Int64 = lineNo - 1
+                    // 行号锚点：1-based → 0-based + 累计偏移
+                    let lineIdx: Int64 = lineNo - 1 + lineOffset
                     if (lineIdx < 0 || lineIdx >= Int64(lines.size)) {
                         return ApplyResult.ApplyError("行号 ${lineNo} 超出范围（文件共 ${lines.size} 行）")
                     }
@@ -340,6 +345,7 @@ public class HashlineEditApplier {
                         return ApplyResult.ApplyError(
                             "行号 ${lineNo} 内容不匹配：期望「${expected}」，实际「${lines[lineIdx]}」")
                     }
+                    // 块内插入位置追踪：同锚点多次 Insert 必须依次排后（fixed lineIdx 会颠倒顺序）
                     var insertAfterLine: Int64 = lineIdx
                     i += 1
                     while (i < ops.size) {
@@ -347,6 +353,7 @@ public class HashlineEditApplier {
                             case Insert(content) =>
                                 lines = ArrayListOps.insertAfter(lines, insertAfterLine, content)
                                 insertAfterLine += 1
+                                lineOffset += 1
                                 appliedCount += 1
                                 i += 1
                             case Delete(oldContent) =>
@@ -356,6 +363,7 @@ public class HashlineEditApplier {
                                         "删除内容不匹配：期望「${oldContent}」，实际「${lines[lineIdx]}」")
                                 }
                                 lines = ArrayListOps.removeAt(lines, lineIdx)
+                                lineOffset -= 1
                                 appliedCount += 1
                                 i += 1
                             case Replace(oldContent, newContent) =>
@@ -372,7 +380,7 @@ public class HashlineEditApplier {
                         }
                     }
                 case HashAnchor(hash) =>
-                    // 哈希锚点：行内容 FNV-1a 低 16 位 == hash
+                    // 哈希锚点：行内容 FNV-1a 低 16 位 == hash（内容定位，天然抗行号偏移）
                     let locateResult = HashlineHash.locate(lines, hash)
                     match (locateResult) {
                         case LocateError(reason) =>
@@ -385,6 +393,7 @@ public class HashlineEditApplier {
                                     case Insert(content) =>
                                         lines = ArrayListOps.insertAfter(lines, insertAfterLine, content)
                                         insertAfterLine += 1
+                                        lineOffset += 1
                                         appliedCount += 1
                                         i += 1
                                     case Delete(oldContent) =>
@@ -393,6 +402,7 @@ public class HashlineEditApplier {
                                                 "删除内容不匹配：期望「${oldContent}」，实际「${lines[lineIdx]}」")
                                         }
                                         lines = ArrayListOps.removeAt(lines, lineIdx)
+                                        lineOffset -= 1
                                         appliedCount += 1
                                         i += 1
                                     case Replace(oldContent, newContent) =>
@@ -469,13 +479,16 @@ public class HashlineHash {
      */
     public static func hashLine(line: String): String {
         let bytes = line.toArray()
-        var hash: UInt32 = 2166136261
+        // FNV-1a 32-bit：全程用 UInt64 运算，每步 & 0xFFFFFFFF 截断到 32 位。
+        // 原实现用 UInt32 直接乘法，hash * 16777619 溢出 UInt32 上限，
+        // 仓颉默认溢出检查直接抛 OverflowException（实测触发）。
+        var hash: UInt64 = 2166136261
         for (b in bytes) {
-            hash = hash ^ UInt32(b)
-            hash = hash * UInt32(16777619)
+            hash = hash ^ UInt64(b)
+            hash = (hash * UInt64(16777619)) & UInt64(0xFFFFFFFF)
         }
         // 取低 16 位，转 4 hex
-        let low16 = hash & UInt32(0xFFFF)
+        let low16 = hash & UInt64(0xFFFF)
         return toHex4(low16)
     }
 
@@ -504,11 +517,10 @@ public class HashlineHash {
     }
 
     /**
-     * UInt32 低 16 位转 4 hex 字符
+     * 低 16 位转 4 hex 字符
      */
-    private static func toHex4(value: UInt32): String {
+    private static func toHex4(v: UInt64): String {
         let hexChars = "0123456789abcdef"
-        let v = UInt64(value)
         let c3 = hexChars[Int64((v >> 12) & UInt64(0xF))]
         let c2 = hexChars[Int64((v >> 8) & UInt64(0xF))]
         let c1 = hexChars[Int64((v >> 4) & UInt64(0xF))]

@@ -78,8 +78,12 @@ public class CjhConfig {
     public var capability: Capability = Capability.fromJson(None)
     // Compaction：消息条数超阈值触发 LLM 摘要压缩早期历史（0=禁用，对齐 pi 自动摘要）
     public var compactThreshold: Int64 = 30
-    // 压缩时保留的最近消息条数
-    public var compactKeep: Int64 = 12
+    // Compaction token 阈值：估算 prompt token 超阈值也触发压缩（0=禁用）
+    // 消息条数阈值对长 tool_result 不敏感，token 估算兜底避免 prompt 膨胀
+    public var compactTokenThreshold: Int64 = 8000
+    // 压缩时保留的最近消息条数（token 阈值 8000 下保留 12 条会导致压缩只删 0-4 条、
+    // prompt 无法重置——实测压缩后仍 8-13K 继续爬升；6 条可重置到 3-4K）
+    public var compactKeep: Int64 = 6
     // 启用的技能白名单（settings.json "enabled_skills": [...]；空=全部启用）
     public var enabledSkills: ArrayList<String> = ArrayList<String>()
     // TUI 主题（settings.json "theme": "starfrost"|"classic"|...；空=starfrost 默认）
@@ -192,7 +196,8 @@ public class CjhConfig {
   "theme": "starfrost",
   "tool_result_max_chars": 6000,
   "compact_threshold": 0,
-  "compact_keep": 12,
+  "compact_token_threshold": 8000,
+  "compact_keep": 6,
 
   "enabled_skills": [],
   "enabled_plugins": [],
@@ -341,6 +346,7 @@ public class CjhConfig {
         root.put("temperature", JsonFloat(this.temperature))
         root.put("max_tokens", JsonInt(this.maxTokens))
         root.put("compact_threshold", JsonInt(this.compactThreshold))
+        root.put("compact_token_threshold", JsonInt(this.compactTokenThreshold))
         root.put("compact_keep", JsonInt(this.compactKeep))
         root.put("tool_result_max_chars", JsonInt(this.toolResultMaxChars))
         root.put("theme", JsonString(this.theme))
@@ -401,6 +407,9 @@ public class CjhConfig {
         if (this.systemPrompt.size == 0) {
             this.systemPrompt = "You are a coding agent running in the terminal (cjh). You can use tools to complete tasks: bash executes commands, read_file reads files, write_file writes files, append_file appends to files, edit_file modifies files." +
                 " Tasks usually require multiple steps: first read code to understand the current state, then modify, then verify with bash. Keep it concise, answer in Chinese." +
+                "\n\n## Keep responses short (important)\n" +
+                " When calling tools, write at most ONE short line of explanation — no long reasoning, no multi-paragraph plans, no code dumps in the response text. " +
+                " Put the actual work in tool calls, not in prose. Every extra token costs time and money." +
                 "\n\n## Tool selection (read this carefully)\n" +
                 " Pick the BEST tool on the first try — switching tools mid-task wastes rounds.\n" +
                 " 1. read_file is the PRIMARY way to read files. Call it WITHOUT offset/limit first to load the whole file; only paginate with offset/limit if the file is large (>500 lines).\n" +
@@ -468,10 +477,16 @@ public class CjhConfig {
                     if (let Some(v) <- obj.get("capability")) {
                         this.capability = Capability.fromJson(Some(v))
                     }
-                    // Compaction：消息条数阈值（0=禁用）+ 保留最近条数
+                    // Compaction：消息条数阈值（0=禁用）+ token 估算阈值 + 保留最近条数
                     if (let Some(v) <- obj.get("compact_threshold")) {
                         match (v.kind()) {
                             case JsonKind.JsInt => this.compactThreshold = v.asInt().getValue()
+                            case _ => ()
+                        }
+                    }
+                    if (let Some(v) <- obj.get("compact_token_threshold")) {
+                        match (v.kind()) {
+                            case JsonKind.JsInt => this.compactTokenThreshold = v.asInt().getValue()
                             case _ => ()
                         }
                     }

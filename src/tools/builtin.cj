@@ -395,11 +395,9 @@ public class WriteTool <: CjhTool {
         props.add("content", JsonSchema.str("File content (overwrites existing)"))
         let schema = JsonSchema.object(props, ArrayList<String>(["path", "content"]))
         return ToolSpec("write_file",
-            "Create or overwrite a file. WARNING: single-call content must NOT exceed 150 lines / 4000 chars, " +
-            "otherwise the model's max_tokens will truncate it and leave the file incomplete. " +
-            "Write strategy: (1) small file (HTML/CSS snippet, config, single function) -> write_file in one call; " +
-            "(2) large file (full HTML game, multi-function JS, long markdown) -> first use write_file to write the skeleton " +
-            "(HTML head + empty body/script tags), then call append_file multiple times to append <style>, <script>, etc. " +
+            "Create or overwrite a file. Write the COMPLETE file in ONE call — do not split content into a skeleton + multiple appends. " +
+            "Very large content (e.g. a full HTML game, >4000 chars) may be truncated by the model's max_tokens; " +
+            "if the file ends up incomplete, continue with append_file to finish it. " +
             "path and content MUST be passed together in the same call.",
             schema)
     }
@@ -428,7 +426,7 @@ public class WriteTool <: CjhTool {
         if (content.size > 4000 || lines > 150) {
             try {
                 File.writeTo(path, content.toArray())
-                return ToolResult("Written ${path} (${content.size} chars).\nWARNING: content exceeds the recommended limit (${lines} lines / ${content.size} chars); risk of max_tokens truncation. If the file turns out incomplete, switch to: write_file for the skeleton + append_file for incremental chunks.", false)
+                return ToolResult("Written ${path} (${content.size} chars).\nWARNING: content exceeds the recommended limit (${lines} lines / ${content.size} chars); risk of max_tokens truncation. If the file turns out incomplete, continue with append_file to finish it.", false)
             } catch (e: Exception) {
                 return ToolResult("Write failed: ${e}", true)
             }
@@ -445,11 +443,10 @@ public class WriteTool <: CjhTool {
 /**
  * append_file 工具：向文件末尾追加内容（增量写入）
  *
- * 设计动机：DeepSeek 等模型单轮 max_tokens 装不下完整 HTML 游戏（通常 5000+ 字符）。
- * 一次性 write_file 会被截断，导致文件不完整（缺 </script></body></html>）。
- * 业界 CLI（Aider/Cursor）的解法：write_file 写骨架，append_file 多段追加。
- *
- * 配合 system prompt 的"骨架 + 增量"写入策略，断绝 LLM 全量重写的死循环。
+ * 设计动机：write_file 单次调用受 max_tokens 限制，超大文件（5000+ 字符）
+ * 可能被截断导致文件不完整（缺 </script></body></html>）。
+ * 策略：write_file 一次写完整文件；仅当写入被截断（文件不完整）时，
+ * 用 append_file 继续补齐剩余部分——不鼓励主动拆分（拆分多轮低效）。
  */
 
 /**
@@ -503,9 +500,9 @@ public class AppendFileTool <: CjhTool {
         let schema = JsonSchema.object(props, ArrayList<String>(["path", "content"]))
         return ToolSpec("append_file",
             "Append content to the end of an existing file (incremental write). " +
-            "Used for multi-chunk writing of large files: first create the skeleton with write_file, " +
-            "then call append_file multiple times to append each part. " +
-            "Single-call content should stay under 150 lines / 4000 chars; exceeding this risks truncation. " +
+            "Use ONLY to continue a file that a previous write_file call left incomplete (truncated), " +
+            "or to add a small piece to an existing file. Do NOT use it as the primary way to write a new file " +
+            "-- write_file writes the complete file in one call. " +
             "Fails if the file does not exist -- create it with write_file first.",
             schema)
     }
@@ -524,6 +521,11 @@ public class AppendFileTool <: CjhTool {
                 "Append the ACTUAL file content (HTML/JS/text), not its byte values.",
                 true)
         }
+        // OpenMode.Append 对不存在的文件会静默创建，与 spec "Fails if the file does not exist" 不符
+        // ——必须显式校验，避免模型以为在补写旧文件、实际悄悄建了新文件
+        if (!exists(path)) {
+            return ToolResult("Error: cannot append to ${path} (file does not exist). Create it with write_file first.", true)
+        }
         try {
             // 增量写：OpenMode.Append 只写新增内容，O(1) 每次调用
             // 不再读全文→拼接→写全文（旧实现 O(n)，大文件极慢）
@@ -532,8 +534,8 @@ public class AppendFileTool <: CjhTool {
             f.close()
             return ToolResult("Appended ${content.size} chars to ${path}", false)
         } catch (e: Exception) {
-            // 文件不存在或打开失败
-            return ToolResult("Error: cannot append to ${path} (file may not exist). Create the skeleton with write_file first. Detail: ${e}", true)
+            // 打开失败
+            return ToolResult("Error: cannot append to ${path} (file may not exist). Create it with write_file first. Detail: ${e}", true)
         }
     }
 }
@@ -662,56 +664,68 @@ public class GrepTool <: CjhTool {
 
     /**
      * 递归搜索目录树
+     *
+     * 注意：Directory.walk 是非递归的（只遍历直接子项），且回调返回 false
+     * 会终止整个遍历——必须自己显式递归子目录，忽略目录只跳过不终止。
      */
     private func searchDirectory(dirPath: String, regex: Regex, contextLines: Int64, pattern: String): ToolResult {
         let state = GrepWalkState()
-        Directory.walk(dirPath, { fi =>
-            let name = fi.name
-            if (state.shouldIgnore(name)) {
-                return false  // 跳过忽略目录
-            }
-            // 只搜文本文件（跳过二进制）
-            if (!fi.isDirectory()) {
-                if (state.isTextFile(name)) {
-                    try {
-                        let content = safeFromUtf8(File.readFrom(fi.path))
-                        let lines = content.split("\n", -1)
-                        var i: Int64 = 0
-                        var hasMatch: Bool = false
-                        while (i < Int64(lines.size)) {
-                            let line = lines[i]
-                            if (regex.matches(line)) {
-                                if (!hasMatch) {
-                                    state.result.append("\n=== ${fi.path} ===\n")
-                                    hasMatch = true
-                                    state.fileCount += 1
-                                }
-                                state.result.append("${i + 1}: ${line}\n")
-                                // 上下文行
-                                if (contextLines > 0) {
-                                    var j: Int64 = i - contextLines
-                                    while (j <= i + contextLines) {
-                                        if (j >= 0 && j < Int64(lines.size) && j != i) {
-                                            state.result.append("${j + 1}- ${lines[j]}\n")
-                                        }
-                                        j += 1
-                                    }
-                                }
-                                state.totalCount += 1
-                            }
-                            i += 1
-                        }
-                    } catch (e: Exception) {
-                        // 跳过无法读取的文件
-                    }
-                }
-            }
-            return true
-        })
+        this.searchDirRecursive(dirPath, regex, contextLines, pattern, state)
         if (state.totalCount == 0) {
             return ToolResult("未找到匹配", false)
         }
         return ToolResult("在 ${state.fileCount} 个文件中匹配 ${state.totalCount} 行：\n${state.result.toString()}", false)
+    }
+
+    /**
+     * 目录树显式递归：walk 只给直接子项，子目录内容需递归进入
+     */
+    private func searchDirRecursive(dirPath: String, regex: Regex, contextLines: Int64,
+        pattern: String, state: GrepWalkState): Unit {
+        Directory.walk(dirPath, { fi =>
+            let name = fi.name
+            if (state.shouldIgnore(name)) {
+                return true  // 忽略目录/文件：跳过但继续遍历（返回 false 会终止整个 walk）
+            }
+            if (fi.isDirectory()) {
+                // 递归进入子目录（Directory.walk 非递归，不自动下钻）
+                this.searchDirRecursive("${fi.path}", regex, contextLines, pattern, state)
+            } else if (state.isTextFile(name)) {
+                // 只搜文本文件（跳过二进制）
+                try {
+                    let content = safeFromUtf8(File.readFrom(fi.path))
+                    let lines = content.split("\n", -1)
+                    var i: Int64 = 0
+                    var hasMatch: Bool = false
+                    while (i < Int64(lines.size)) {
+                        let line = lines[i]
+                        if (regex.matches(line)) {
+                            if (!hasMatch) {
+                                state.result.append("\n=== ${fi.path} ===\n")
+                                hasMatch = true
+                                state.fileCount += 1
+                            }
+                            state.result.append("${i + 1}: ${line}\n")
+                            // 上下文行
+                            if (contextLines > 0) {
+                                var j: Int64 = i - contextLines
+                                while (j <= i + contextLines) {
+                                    if (j >= 0 && j < Int64(lines.size) && j != i) {
+                                        state.result.append("${j + 1}- ${lines[j]}\n")
+                                    }
+                                    j += 1
+                                }
+                            }
+                            state.totalCount += 1
+                        }
+                        i += 1
+                    }
+                } catch (e: Exception) {
+                    // 跳过无法读取的文件
+                }
+            }
+            return true
+        })
     }
 
     /**
@@ -811,31 +825,31 @@ public class ListDirTool <: CjhTool {
         }
         let path = args.get("path").getOrThrow().asString().getValue()
         try {
-            ListDirState.result = ""
-            ListDirState.count = 0
+            // 每调用独立状态：静态字段在多线程并发（V2d 并行工具 + 子代理）下会互相踩踏
+            let st = ListDirCallState()
             Directory.walk(path, { fi =>
                 var line = fi.name
                 if (fi.isDirectory()) {
                     line += "/"
                 }
-                if (ListDirState.count < 50) {
-                    ListDirState.result += line + "\n"
+                if (st.count < 50) {
+                    st.result += line + "\n"
                 }
-                ListDirState.count += 1
+                st.count += 1
                 return true
             })
             var extra = ""
-            if (ListDirState.count > 50) {
-                extra = "…（共 ${ListDirState.count} 项，仅显示前 50）\n"
+            if (st.count > 50) {
+                extra = "…（共 ${st.count} 项，仅显示前 50）\n"
             }
-            return ToolResult("目录 ${path}（${ListDirState.count} 项）：\n${extra}${ListDirState.result}", false)
+            return ToolResult("目录 ${path}（${st.count} 项）：\n${extra}${st.result}", false)
         } catch (e: Exception) {
             return ToolResult("列出目录失败: ${e}", true)
         }
     }
 }
 
-class ListDirState {
-    static var result: String = ""
-    static var count: Int64 = 0
+class ListDirCallState {
+    public var result: String = ""
+    public var count: Int64 = 0
 }

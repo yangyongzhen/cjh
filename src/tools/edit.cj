@@ -281,33 +281,39 @@ func countOccurrences(text: String, sub: String): Int64 {
  * - replaceAll=false: 只替换第一个匹配 (调用方已确保唯一性)
  */
 func replaceString(text: String, oldStr: String, newStr: String, replaceAll: Bool): String {
+    // 整段切片替换：text[i] 返回 Byte，逐字节 append 会把字节当整数输出十进制
+    // （实测 "let x = 1" 变 "101010810111632..."），必须按 UTF-8 安全的 String 切片整段追加。
+    // 切片边界 lastCopy/i 均为匹配边界或 0，不会切在多字节字符中间。
     var result = StringBuilder()
     var i: Int64 = 0
+    var lastCopy: Int64 = 0
     let tn = text.size
     let sn = oldStr.size
-    var replaced: Bool = false
-    while (i < tn) {
-        // 检查从 i 开始是否匹配 oldStr
-        if ((!replaced || replaceAll) && i <= tn - sn) {
-            var found: Bool = true
-            var j: Int64 = 0
-            while (j < sn) {
-                if (text[i + j] != oldStr[j]) {
-                    found = false
-                    break
-                }
-                j += 1
+    while (i <= tn - sn) {
+        var found: Bool = true
+        var j: Int64 = 0
+        while (j < sn) {
+            if (text[i + j] != oldStr[j]) {
+                found = false
+                break
             }
-            if (found) {
-                result.append(newStr)
-                i += sn
-                replaced = true
-                continue
-            }
+            j += 1
         }
-        result.append(text[i])
-        i += 1
+        if (found) {
+            result.append(text[lastCopy..i])  // 未匹配前缀整段拷贝
+            result.append(newStr)
+            i += sn
+            lastCopy = i
+            if (!replaceAll) {
+                // 只替换第一个：剩余部分整段追加后返回
+                result.append(text[lastCopy..tn])
+                return result.toString()
+            }
+        } else {
+            i += 1
+        }
     }
+    result.append(text[lastCopy..tn])
     return result.toString()
 }
 

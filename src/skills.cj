@@ -55,7 +55,7 @@ func loadProjectInstructions(): String {
  *      结束的所有行合并为 value（保留 JSON 数组字面量）
  * 标量值做 trimAscii；多行块保留原始缩进与换行，由调用方按 JSON 解析。
  */
-func parseFrontmatter(fm: String): HashMap<String, String> {
+public func parseFrontmatter(fm: String): HashMap<String, String> {
     let result = HashMap<String, String>()
     let lines = fm.split("\n", -1)
     var i = 0
@@ -117,7 +117,7 @@ func parseFrontmatter(fm: String): HashMap<String, String> {
  * 统计 frontmatter tools 段里声明的工具数（JSON 数组长度）。
  * 解析失败或非数组返回 0。
  */
-func countSkillTools(toolsStr: String): Int64 {
+public func countSkillTools(toolsStr: String): Int64 {
     try {
         let v = JsonValue.fromStr(toolsStr)
         match (v.kind()) {
@@ -132,7 +132,7 @@ func countSkillTools(toolsStr: String): Int64 {
 /**
  * 技能是否启用（enabledSkills 空=全部启用；非空=白名单）
  */
-func skillEnabled(name: String, enabled: ArrayList<String>): Bool {
+public func skillEnabled(name: String, enabled: ArrayList<String>): Bool {
     if (enabled.size == 0) {
         return true
     }
@@ -218,7 +218,7 @@ func listSkills(skillsDir: String, enabled: ArrayList<String>, tui: TuiApp): Uni
  * frontmatter 声明 name/description + 正文为指令），把所有技能指令拼接返回；
  * 目录不存在或无技能返回 ""。技能指令注入 system prompt（按需能力，不破缓存）。
  */
-func loadSkills(skillsDir: String, enabled: ArrayList<String>): String {
+public func loadSkills(skillsDir: String, enabled: ArrayList<String>): String {
     if (!exists(skillsDir)) {
         return ""
     }

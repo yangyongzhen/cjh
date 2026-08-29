@@ -65,45 +65,28 @@ public class GlobTool <: CjhTool {
         let normalizedBase = normalizePath(basePath)
 
         try {
-            GlobState.matches = ArrayList<String>()
-            GlobState.count = 0
-            GlobState.pattern = pattern
-            GlobState.basePath = normalizedBase
+            // 每调用独立状态（对齐 GrepTool 的 GrepWalkState）：
+            // 静态字段在多线程并发（V2d 并行工具 + 子代理共享 registry）下会互相踩踏
+            let st = GlobCallState()
+            st.pattern = pattern
+            st.basePath = normalizedBase
 
-            // Directory.walk 递归遍历整个目录树
-            // 回调返回 true 继续遍历，false 停止
-            // 注意：lambda 不能捕获 mutable 局部变量，通过 GlobState 静态字段访问
-            Directory.walk(GlobState.basePath, { fi =>
-                let name = fi.name
-                // 跳过隐藏文件和忽略目录
-                if (shouldSkip(name)) {
-                    return false  // 不进入此目录的子项
-                }
-                if (!fi.isDirectory()) {
-                    // 文件：计算相对路径，检查 glob 匹配
-                    let absPath = "${fi.path}"
-                    let relPath = makeRelative(GlobState.basePath, absPath)
-                    if (globMatchDirect(GlobState.pattern, 0, relPath, 0)) {
-                        if (GlobState.count < 200) {
-                            GlobState.matches.add(relPath)
-                        }
-                        GlobState.count += 1
-                    }
-                }
-                return true
-            })
+            // 显式递归遍历目录树：Directory.walk 非递归（只给直接子项），
+            // 回调返回 false 会终止整个遍历——子目录必须自己递归进入，
+            // 隐藏/忽略目录只跳过不终止。
+            walkTree(st.basePath, st)
 
             var result = StringBuilder()
-            if (GlobState.matches.size == 0) {
+            if (st.matches.size == 0) {
                 result.append("没有文件匹配模式: ${pattern}\n")
             } else {
-                result.append("匹配 ${GlobState.matches.size} 个文件（模式: ${pattern}）：\n")
-                for (m in GlobState.matches) {
+                result.append("匹配 ${st.matches.size} 个文件（模式: ${pattern}）：\n")
+                for (m in st.matches) {
                     result.append(m)
                     result.append("\n")
                 }
-                if (GlobState.count > 200) {
-                    result.append("…（共 ${GlobState.count} 个匹配，仅显示前 200）\n")
+                if (st.count > 200) {
+                    result.append("…（共 ${st.count} 个匹配，仅显示前 200）\n")
                 }
             }
             return ToolResult(result.toString(), false)
@@ -139,13 +122,44 @@ func normalizePath(p: String): String {
 }
 
 /**
- * glob 状态（仓颉 lambda 不能捕获 mutable 变量，用静态字段）
+ * glob 每调用状态（捕获 let 引用而非静态字段，避免并发竞态）
  */
-class GlobState {
-    static var matches: ArrayList<String> = ArrayList<String>()
-    static var count: Int64 = 0
-    static var pattern: String = ""
-    static var basePath: String = "."
+class GlobCallState {
+    public var matches: ArrayList<String> = ArrayList<String>()
+    public var count: Int64 = 0
+    public var pattern: String = ""
+    public var basePath: String = "."
+}
+
+/**
+ * 目录树显式递归遍历（Directory.walk 非递归，子目录需手动下钻）
+ *
+ * 约定：
+ * - 隐藏文件/忽略目录（.git/target 等）→ 跳过但继续遍历（返回 true）
+ * - 递归进入子目录，文件按相对路径匹配 glob 模式
+ */
+func walkTree(dir: String, st: GlobCallState): Unit {
+    Directory.walk(dir, { fi =>
+        let name = fi.name
+        // 跳过隐藏文件和忽略目录（返回 true 继续，false 会终止整个 walk）
+        if (shouldSkip(name)) {
+            return true
+        }
+        if (fi.isDirectory()) {
+            walkTree("${fi.path}", st)
+        } else {
+            // 文件：计算相对路径，检查 glob 匹配
+            let absPath = "${fi.path}"
+            let relPath = makeRelative(st.basePath, absPath)
+            if (globMatchDirect(st.pattern, 0, relPath, 0)) {
+                if (st.count < 200) {
+                    st.matches.add(relPath)
+                }
+                st.count += 1
+            }
+        }
+        return true
+    })
 }
 
 /**

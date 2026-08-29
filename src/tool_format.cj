@@ -16,7 +16,7 @@ import cjutil.*
  *   grep 等多字段 → 主字段值 + 其余 "key: value" 平铺
  * 字符串值取原始文本（避免 toJsonString 的 \u0026 等 JSON 转义），超长截断。
  */
-func formatToolArgs(name: String, args: JsonObject): String {
+public func formatToolArgs(name: String, args: JsonObject): String {
     let fields = args.getFields()
     if (fields.size == 0) {
         return ""
@@ -48,7 +48,7 @@ func formatToolArgs(name: String, args: JsonObject): String {
 /**
  * 单值紧凑显示：字符串取原始文本（无引号/转义），超长截断
  */
-func shortArgValue(v: JsonValue): String {
+public func shortArgValue(v: JsonValue): String {
     var raw = ""
     match (v.kind()) {
         case JsonKind.JsString => raw = v.asString().getValue()
