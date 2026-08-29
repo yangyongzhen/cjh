@@ -84,6 +84,8 @@ func runWeb(args: Array<String>): Int64 {
     registry.register(GrepTool())
     registry.register(ListDirTool())
     registry.register(HashlineEditTool())
+    registry.register(GlobTool())
+    registry.register(EditTool())
     registerWebTools(cjhCfg, registry)
     loadSkillTools(cjhCfg.skillsDir, registry, cjhCfg.enabledSkills)
     let pluginManager = loadPlugins(cjhCfg.pluginsDir, registry, cjhCfg.enabledPlugins, cjhCfg.requireSignature)
@@ -138,6 +140,8 @@ func runCli(sessionId: String): Int64 {
     registry.register(GrepTool())
     registry.register(ListDirTool())
     registry.register(HashlineEditTool())
+    registry.register(GlobTool())
+    registry.register(EditTool())
 
     // 配置加载
     let cjhCfg = CjhConfig()
@@ -276,6 +280,8 @@ func runJson(prompt: String, sessionId: String): Int64 {
     registry.register(GrepTool())
     registry.register(ListDirTool())
     registry.register(HashlineEditTool())
+    registry.register(GlobTool())
+    registry.register(EditTool())
 
     let cjhCfg = CjhConfig()
     cjhCfg.ensureDirs()
@@ -438,6 +444,8 @@ func runTui(sessionId: String): Int64 {
     registry.register(GrepTool())
     registry.register(ListDirTool())
     registry.register(HashlineEditTool())
+    registry.register(GlobTool())
+    registry.register(EditTool())
     mark("builtin tools registered")
 
     // 配置加载
