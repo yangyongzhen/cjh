@@ -412,6 +412,16 @@ public class WriteTool <: CjhTool {
         }
         let path = args.get("path").getOrThrow().asString().getValue()
         let content = args.get("content").getOrThrow().asString().getValue()
+        // 防 LLM 幻觉：拒绝写入纯 ASCII 数字串（如 "6033687967848980..."）
+        // 这是 LLM 把字符转 ASCII 码值拼接的幻觉行为，不是合法文件内容
+        if (isAsciiDigitGarbage(content)) {
+            return ToolResult(
+                "ERROR: content looks like ASCII-encoded digit garbage " +
+                "(long run of digits with no letters/newlines). " +
+                "This usually means you accidentally converted text to ASCII codes. " +
+                "Write the ACTUAL file content (HTML/JS/text), not its byte values.",
+                true)
+        }
         // 软约束：超长 content 警告但不阻断（让 LLM 自行决定是否拆分）
         let lines = content.split('\n').size
         if (content.size > 4000 || lines > 150) {
@@ -440,6 +450,44 @@ public class WriteTool <: CjhTool {
  *
  * 配合 system prompt 的"骨架 + 增量"写入策略，断绝 LLM 全量重写的死循环。
  */
+
+/**
+ * 检测 LLM 幻觉产物：纯 ASCII 数字串
+ *
+ * LLM 偶尔会把文本转成 ASCII 码值拼接（如 "6033687967848980..."），
+ * 再用 write_file/append_file 写入。这种内容是垃圾，应拒绝写入。
+ *
+ * 判定标准（同时满足）：
+ * - 内容长度 > 100（短数字串如 "123" 可能合法）
+ * - 字母字符占比 < 1%（正常代码/文本至少有字母）
+ * - 换行符数量 < 2（正常代码有多行）
+ */
+private func isAsciiDigitGarbage(content: String): Bool {
+    let n = content.size
+    if (n < 100) {
+        return false
+    }
+    var digitCount: Int64 = 0
+    var letterCount: Int64 = 0
+    var newlineCount: Int64 = 0
+    var i = 0
+    while (i < n) {
+        let c = content[i]
+        if (c >= UInt8(48) && c <= UInt8(57)) {  // '0'-'9'
+            digitCount += 1
+        } else if ((c >= UInt8(65) && c <= UInt8(90)) || (c >= UInt8(97) && c <= UInt8(122))) {  // A-Z, a-z
+            letterCount += 1
+        } else if (c == UInt8(10)) {  // '\n'
+            newlineCount += 1
+        }
+        i += 1
+    }
+    // 数字占比 > 80% 且字母占比 < 1% → 纯数字垃圾
+    let digitRatio = Float64(digitCount) / Float64(n)
+    let letterRatio = Float64(letterCount) / Float64(n)
+    return (digitRatio > 0.80 && letterRatio < 0.01 && newlineCount < 2)
+}
+
 public class AppendFileTool <: CjhTool {
     public init() {}
 
@@ -467,6 +515,14 @@ public class AppendFileTool <: CjhTool {
         }
         let path = args.get("path").getOrThrow().asString().getValue()
         let content = args.get("content").getOrThrow().asString().getValue()
+        // 防 LLM 幻觉：拒绝追加纯 ASCII 数字串
+        if (isAsciiDigitGarbage(content)) {
+            return ToolResult(
+                "ERROR: content looks like ASCII-encoded digit garbage " +
+                "(long run of digits with no letters/newlines). " +
+                "Append the ACTUAL file content (HTML/JS/text), not its byte values.",
+                true)
+        }
         try {
             // 增量写：OpenMode.Append 只写新增内容，O(1) 每次调用
             // 不再读全文→拼接→写全文（旧实现 O(n)，大文件极慢）
