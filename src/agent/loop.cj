@@ -325,6 +325,9 @@ public class Agent {
             // 顶层兜底：LLM 响应解析可能抛 IllegalArgumentException（非法 UTF-8 字节）
             // 不让它崩 TUI，转成错误消息返回
             let response: ModelResponse
+            let roundStart = DateTime.now()
+            let msgCount = Int64(this.messages.size)
+            Log.info("=== 第 ${iterations} 轮开始 | 消息数 ${msgCount} | 历史 token ~${summary.promptTokens} ===")
             try {
                 this.onThinking()
                 response = this.provider.chatStream(this.messages, this.tools.specs(), { delta =>
@@ -339,11 +342,13 @@ public class Agent {
                 summary.reply = "[LLM 调用异常: ${e}]"
                 return summary
             }
+            let roundMs = (DateTime.now() - roundStart).toMilliseconds()
             // 累计 token 用量
             summary.promptTokens += response.usage.promptTokens
             summary.completionTokens += response.usage.completionTokens
             summary.cachedTokens += response.usage.cachedTokens
             this.onTokens(response.usage.promptTokens + response.usage.completionTokens)
+            Log.info("第 ${iterations} 轮完成 | 耗时 ${roundMs}ms | prompt ${response.usage.promptTokens} completion ${response.usage.completionTokens} cached ${response.usage.cachedTokens} | toolCalls ${response.toolCalls.size} | textLen ${response.text.size} | truncated ${response.truncated} | timedOut ${response.timedOut}")
 
             // SSE 空闲超时：网络 60s 无新数据，已收文本/tool_calls 保留
             // 给 LLM 注入提示，让它在下一轮知道发生了超时
@@ -387,7 +392,10 @@ public class Agent {
                         let i = group[0]
                         let tc = toolCalls[i]
                         this.onToolStart(tc.name, tc.arguments)
+                        let toolT0 = DateTime.now()
                         var result = this.executeGuarded(tc.name, tc.arguments)
+                        let toolMs = (DateTime.now() - toolT0).toMilliseconds()
+                        Log.info("  工具 ${tc.name} | 耗时 ${toolMs}ms | 结果 ${result.content.size} chars | isError ${result.isError}")
                         if (response.truncated && (tc.name == "write_file" || tc.name == "edit_file")) {
                             result = ToolResult(result.content + "\n\n⚠️ 截断警告：本轮 LLM 输出被 max_tokens 强制截断，上面写入的文件内容【不完整】。\n请【立即】按以下步骤修复（不要再用 write_file 重写整个文件，那会再次截断）：\n1. 调用 read_file 读取刚写入的文件，确认截断位置\n2. 调用 edit_file，old_string 填文件末尾最后几个有效字符，new_string 续写剩余部分\n3. 重复 1-2 直到文件完整闭合（HTML 需 </script></body></html>）\n务必分多次小段续写，每段 new_string 控制在 ~1500 字符以内。", true)
                         }
@@ -417,6 +425,7 @@ public class Agent {
                             let (idx, result, dur) = futures[k].get()
                             serialMs += dur
                             let tc = toolCalls[idx]
+                            Log.info("  工具 ${tc.name} (并发) | 耗时 ${dur}ms | 结果 ${result.content.size} chars | isError ${result.isError}")
                             var r = result
                             if (response.truncated && (tc.name == "write_file" || tc.name == "edit_file")) {
                                 r = ToolResult(r.content + "\n\n⚠️ 截断警告：本轮 LLM 输出被 max_tokens 强制截断，上面写入的文件内容【不完整】。\n请【立即】按以下步骤修复（不要再用 write_file 重写整个文件，那会再次截断）：\n1. 调用 read_file 读取刚写入的文件，确认截断位置\n2. 调用 edit_file，old_string 填文件末尾最后几个有效字符，new_string 续写剩余部分\n3. 重复 1-2 直到文件完整闭合（HTML 需 </script></body></html>）\n务必分多次小段续写，每段 new_string 控制在 ~1500 字符以内。", true)
