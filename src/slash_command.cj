@@ -30,7 +30,7 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
             tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /new           开始新会话" + Ansi.reset())
             tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /resume [id]   恢复历史会话（无 id 时列出）" + Ansi.reset())
             tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /model [id|#]  列出/切换模型" + Ansi.reset())
-            tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /provider [name] [key]  切换 provider（deepseek/openai/glm/qwen/kimi/doubao/siliconflow/ollama）" + Ansi.reset())
+            tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /provider [name] [key]  切换 provider（deepseek/openai/glm/qwen/kimi/doubao/siliconflow/ollama；无参弹窗可配 custom 自定义端点+协议）" + Ansi.reset())
             tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /skills        列出技能与启用状态" + Ansi.reset())
             tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /compact       手动压缩历史（LLM 摘要早期消息）" + Ansi.reset())
             tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /tree          树形列示会话分支" + Ansi.reset())
@@ -48,19 +48,19 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
                 var key = if (parts.size > 2) { parts[2] } else { "" }
                 match (name) {
                     case "deepseek" =>
-                        applyProvider(cfg, agent, tui, "DeepSeek", "https://api.deepseek.com/v1/chat/completions", "deepseek-chat", key)
+                        applyProvider(cfg, agent, tui, "DeepSeek", "https://api.deepseek.com/v1/chat/completions", "deepseek-chat", key, "openai")
                     case "openai" =>
-                        applyProvider(cfg, agent, tui, "OpenAI", "https://api.openai.com/v1/chat/completions", "gpt-4o-mini", key)
+                        applyProvider(cfg, agent, tui, "OpenAI", "https://api.openai.com/v1/chat/completions", "gpt-4o-mini", key, "openai")
                     case "glm" =>
-                        applyProvider(cfg, agent, tui, "GLM", "https://open.bigmodel.cn/api/paas/v4/chat/completions", "glm-4-flash", key)
+                        applyProvider(cfg, agent, tui, "GLM", "https://open.bigmodel.cn/api/paas/v4/chat/completions", "glm-4-flash", key, "openai")
                     case "qwen" =>
-                        applyProvider(cfg, agent, tui, "Qwen", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus", key)
+                        applyProvider(cfg, agent, tui, "Qwen", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus", key, "openai")
                     case "kimi" =>
-                        applyProvider(cfg, agent, tui, "Kimi", "https://api.moonshot.cn/v1", "moonshot-v1-8k", key)
+                        applyProvider(cfg, agent, tui, "Kimi", "https://api.moonshot.cn/v1", "moonshot-v1-8k", key, "openai")
                     case "doubao" =>
-                        applyProvider(cfg, agent, tui, "Doubao", "https://ark.cn-beijing.volces.com/api/v3", "doubao-1-5-pro-32k-250115", key)
+                        applyProvider(cfg, agent, tui, "Doubao", "https://ark.cn-beijing.volces.com/api/v3", "doubao-1-5-pro-32k-250115", key, "openai")
                     case "siliconflow" =>
-                        applyProvider(cfg, agent, tui, "SiliconFlow", "https://api.siliconflow.cn/v1", "deepseek-ai/DeepSeek-V3", key)
+                        applyProvider(cfg, agent, tui, "SiliconFlow", "https://api.siliconflow.cn/v1", "deepseek-ai/DeepSeek-V3", key, "openai")
                     case "ollama" =>
                         // 本地 Ollama：无需 API Key，默认 llama3.2 模型
                         // 用法：/provider ollama [model] [api_key]
@@ -73,13 +73,13 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
                         } else {
                             key = ""
                         }
-                        applyProvider(cfg, agent, tui, "Ollama", "http://localhost:11434/v1", ollamaModel, key)
+                        applyProvider(cfg, agent, tui, "Ollama", "http://localhost:11434/v1", ollamaModel, key, "openai")
                     case _ =>
                         tui.appendOutput(Ansi.fg(Ansi.THEME_ERR) + "[未知 provider: ${name}；/provider 查看预设列表]" + Ansi.reset())
                 }
             } else {
                 // 无参数：弹出 provider 配置表单（参考 omp sign-in 弹窗）
-                tui.showProviderDialog(cfg.baseUrl, cfg.model, cfg.apiKey)
+                tui.showProviderDialog(cfg.baseUrl, cfg.model, cfg.apiKey, cfg.providerProtocol)
             }
         case "/model" =>
             let parts = args.split(" ", -1)

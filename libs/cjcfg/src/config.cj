@@ -74,6 +74,10 @@ public class CjhConfig {
     public var maxTokens: Int64 = 16384
     // 可选模型列表（settings.json "models": [...]；/model 可切换）
     public var models: ArrayList<ModelEntry> = ArrayList<ModelEntry>()
+    // 接入协议（settings.json "provider_protocol"；""=自动按 CJH_PROVIDER/env 现有逻辑）：
+    //   "openai"=OpenAI 兼容 / "anthropic"=Anthropic Messages / "gemini"=预留（暂未实现）
+    // 用于聚合/自定义端点（custom provider）选择接入协议
+    public var providerProtocol: String = ""
     // 三域 capability 安全模型（settings.json "capability": {...}；未配置=宽松模式）
     public var capability: Capability = Capability.fromJson(None)
     // Compaction：消息条数超阈值触发 LLM 摘要压缩早期历史（0=禁用，对齐 pi 自动摘要）
@@ -188,6 +192,7 @@ public class CjhConfig {
 
   "base_url": "https://api.openai.com/v1/chat/completions",
   "model": "gpt-4o-mini",
+  "provider_protocol": "",
   "max_iterations": 10,
   "temperature": 0.7,
   "max_tokens": 16384,
@@ -274,6 +279,29 @@ public class CjhConfig {
     }
 
     /**
+     * 写回接入协议（provider 配置表单）：更新 settings.json 的 provider_protocol 字段，
+     * 保留其他字段（读-改-写）。"" = 自动按现有逻辑。
+     */
+    public func saveProviderProtocol(protocol: String): Unit {
+        this.ensureDir(this.configDir)
+        var root = JsonObject()
+        if (exists(this.settingsPath)) {
+            try {
+                let json = JsonValue.fromStr(String.fromUtf8(File.readFrom(this.settingsPath)))
+                match (json.kind()) {
+                    case JsonKind.JsObject => root = json.asObject()
+                    case _ => ()
+                }
+            } catch (e: Exception) {
+                eprintln("[cjh] settings.json 解析失败，重建: ${e}")
+            }
+        }
+        root.put("provider_protocol", JsonString(protocol))
+        File.writeTo(this.settingsPath, root.toJsonString().toArray())
+        this.providerProtocol = protocol
+    }
+
+    /**
      * 写回 TUI 主题（/theme 命令）：更新 settings.json 的 theme 字段，
      * 保留文件里已有的其他字段（读-改-写）。文件不存在则先建模板再更新。
      */
@@ -341,6 +369,7 @@ public class CjhConfig {
         // 写入所有可编辑字段
         root.put("base_url", JsonString(this.baseUrl))
         root.put("model", JsonString(this.model))
+        root.put("provider_protocol", JsonString(this.providerProtocol))
         root.put("max_iterations", JsonInt(this.maxIterations))
         root.put("system_prompt", JsonString(this.systemPrompt))
         root.put("temperature", JsonFloat(this.temperature))
@@ -445,6 +474,12 @@ public class CjhConfig {
                     if (let Some(v) <- obj.get("model")) {
                         match (v.kind()) {
                             case JsonKind.JsString => this.model = v.asString().getValue()
+                            case _ => ()
+                        }
+                    }
+                    if (let Some(v) <- obj.get("provider_protocol")) {
+                        match (v.kind()) {
+                            case JsonKind.JsString => this.providerProtocol = v.asString().getValue()
                             case _ => ()
                         }
                     }

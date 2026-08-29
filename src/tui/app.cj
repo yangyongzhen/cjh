@@ -104,8 +104,8 @@ public class TuiApp {
     // 事件回调：提交输入时触发（外部接线）
     public var onSubmit: (String) -> Unit = { _ => }
 
-    // provider 配置表单提交回调（外部接线；参数：provider/baseUrl/model/apiKey）
-    public var onProviderSubmit: (String, String, String, String) -> Unit = { _, _, _, _ => }
+    // provider 配置表单提交回调（外部接线；参数：provider/baseUrl/model/apiKey/protocol）
+    public var onProviderSubmit: (String, String, String, String, String) -> Unit = { _, _, _, _, _ => }
 
     // 主题确认回调（外部接线；参数：主题名）—— Enter 确认时触发，写回 settings.json
     public var onThemeApply: (String) -> Unit = { _ => }
@@ -145,9 +145,9 @@ public class TuiApp {
         this.providerDialog.onSubmit = { values =>
             this.providerDialog.hide()
             this.markDirty()
-            // 转发：index 0=provider 1=base_url 2=model 3=api_key
-            if (values.size >= 4) {
-                this.onProviderSubmit(values[0], values[1], values[2], values[3])
+            // 转发：index 0=provider 1=protocol 2=base_url 3=model 4=api_key
+            if (values.size >= 5) {
+                this.onProviderSubmit(values[0], values[2], values[3], values[4], values[1])
             }
         }
         this.providerDialog.onCancel = { =>
@@ -485,15 +485,19 @@ public class TuiApp {
      *
      * 默认值策略：
      * - Provider select：按当前 base_url 推断（openai.com/bigmodel.cn/deepseek.com/
-     *   dashscope/moonshot.cn/volces.com/siliconflow.cn 匹配；未匹配默认 deepseek）
-     * - 端点/模型：**预填当前真实配置**（体现 deepseek-v4-flash 等实际使用的值，
-     *   而非仅预设）——切换 ←→ 到其他家时联动覆盖为该家预设
+     *   dashscope/moonshot.cn/volces.com/siliconflow.cn 匹配；**未匹配 = custom 自定义**
+     *   ——聚合/中转平台（如 taotoken.net）显示 custom，端点/模型保留真实配置）
+     * - 协议字段：custom 时可选择接入协议（openai=OpenAI 兼容 / anthropic=Messages /
+     *   gemini 预留）；预设 provider 固定 openai
+     * - 端点/模型：**预填当前真实配置**（体现 deepseek-v4-flash 等实际使用的值）——
+     *   切换 ←→ 到其他预设时联动覆盖为该家预设；切到 custom 时保持不覆盖
      * - API Key **不预填**（各家 key 独立且敏感，预填会误导——切到未配置的
      *   家仍显示当前 key 的星号）；留空保存时 applyProvider 保留原 key
      */
-    public func showProviderDialog(currentBaseUrl: String, currentModel: String, currentApiKey: String): Unit {
-        // 根据当前 base_url 推断 provider（预设匹配；未匹配默认 deepseek）
-        var provider = "deepseek"
+    public func showProviderDialog(currentBaseUrl: String, currentModel: String, currentApiKey: String,
+        currentProtocol: String): Unit {
+        // 根据当前 base_url 推断 provider（预设匹配；未匹配 = custom 自定义/聚合）
+        var provider = "custom"
         if (currentBaseUrl.contains("openai.com")) {
             provider = "openai"
         } else if (currentBaseUrl.contains("bigmodel.cn")) {
@@ -511,7 +515,7 @@ public class TuiApp {
         }
 
         this.providerDialog.clearFields()
-        // 字段 0：Provider（select，含各家预设）
+        // 字段 0：Provider（select，含各家预设 + custom 自定义）
         let providers = ArrayList<String>()
         providers.add("deepseek")
         providers.add("openai")
@@ -520,25 +524,49 @@ public class TuiApp {
         providers.add("kimi")
         providers.add("doubao")
         providers.add("siliconflow")
+        providers.add("custom")
         this.providerDialog.addSelectField("Provider", providers)
-        // 字段 1：API 端点（text）
+        // 字段 1：接入协议（select：openai / anthropic / gemini 预留）
+        let protocols = ArrayList<String>()
+        protocols.add("openai")
+        protocols.add("anthropic")
+        protocols.add("gemini")
+        this.providerDialog.addSelectField("协议", protocols)
+        // 字段 2：API 端点（text）
         this.providerDialog.addField("API 端点", "https://api.openai.com/v1/chat/completions", false)
-        // 字段 2：模型（text）
+        // 字段 3：模型（text）
         this.providerDialog.addField("模型", "gpt-4o-mini", false)
-        // 字段 3：API Key（secret）
+        // 字段 4：API Key（secret）
         this.providerDialog.addField("API Key", "sk-xxxx", true)
         // select 初始选中 = 推断的 provider（value 必须在 options 中）
         this.providerDialog.setFieldValue(0, provider)
+        // 协议字段：仅 custom（自定义/聚合端点）可见——预设家均为 OpenAI 兼容，无需选择
+        // 初始值：当前配置的 provider_protocol（"" → openai）
+        let initProtocol = if (currentProtocol.size > 0) { currentProtocol } else { "openai" }
+        this.providerDialog.setFieldValue(1, initProtocol)
+        if (provider == "custom") {
+            this.providerDialog.setFieldVisible(1, true)
+        } else {
+            this.providerDialog.setFieldVisible(1, false)
+        }
         // 端点/模型预填当前真实配置（体现实际使用的模型，如 deepseek-v4-flash）
-        this.providerDialog.setFieldValue(1, currentBaseUrl)
-        this.providerDialog.setFieldValue(2, currentModel)
+        this.providerDialog.setFieldValue(2, currentBaseUrl)
+        this.providerDialog.setFieldValue(3, currentModel)
         // API Key 不预填（placeholder "sk-xxxx"；各家 key 独立，预填易误导）
-        // select 联动：切换 Provider 时填充对应 baseUrl/model 预设
+        // select 联动：切换 Provider 时填充对应 baseUrl/model 预设；custom 保持不覆盖
         this.providerDialog.onSelectChange = { index, value =>
             if (index == 0) {
-                let (b, m) = TuiApp.providerPresets(value)
-                this.providerDialog.setFieldValue(1, b)
-                this.providerDialog.setFieldValue(2, m)
+                if (value == "custom") {
+                    // 自定义/聚合：端点/模型/协议保持用户输入，不覆盖；显示协议字段
+                    this.providerDialog.setFieldVisible(1, true)
+                } else {
+                    let (b, m) = TuiApp.providerPresets(value)
+                    this.providerDialog.setFieldValue(2, b)
+                    this.providerDialog.setFieldValue(3, m)
+                    // 预设家均为 OpenAI 兼容协议：固定 openai 且隐藏协议字段
+                    this.providerDialog.setFieldValue(1, "openai")
+                    this.providerDialog.setFieldVisible(1, false)
+                }
                 this.markDirty()
             }
         }

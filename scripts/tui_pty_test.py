@@ -331,10 +331,39 @@ def test_provider_dialog_aggregator() -> None:
         s.expect("配置 Provider")
         s.read_available(0.5)
         buf = strip_ansi(s.buf)
-        # 聚合端点未匹配预设 → Provider 默认 deepseek，但端点/模型体现真实配置
+        # 聚合端点未匹配预设 → Provider=custom（自定义），端点/模型体现真实配置，协议 openai
         check("聚合端点体现在弹窗", "taotoken.net" in buf, f"(buf尾部: {buf[-200:]})")
         check("真实模型体现在弹窗", "deepseek-v4-flash" in buf, f"(buf尾部: {buf[-200:]})")
-        check("Provider 推断为 deepseek", "deepseek" in buf)
+        check("Provider 显示 custom（自定义/聚合）", "custom" in buf)
+        check("协议=openai", "openai" in buf)
+        s.send_esc_seq("\x1b")
+        s.read_available(0.3)
+        s.send_key(3)
+        s.wait_exit()
+    finally:
+        s.close()
+
+
+def test_provider_dialog_protocol() -> None:
+    print("[场景8] Provider 弹窗-协议切换：custom 下 openai ↔ anthropic")
+    cfg = make_config_dir(base_url="https://taotoken.net/api", model="deepseek-v4-flash")
+    s = PtuSession(cfg)
+    try:
+        s.expect("cjh")
+        time.sleep(0.5)
+        s.send("/provider\n")
+        s.expect("配置 Provider")
+        s.read_available(0.5)
+        # ↓ 到协议字段（焦点 0 Provider → 1 协议），→ 切到 anthropic
+        s.send_key(9)            # Tab → 协议字段
+        s.read_available(0.3)
+        s.send_esc_seq("\x1b[C") # → anthropic
+        s.expect("anthropic")
+        check("协议切到 anthropic", True)
+        # 切回 openai
+        s.send_esc_seq("\x1b[D")
+        s.expect("openai")
+        check("协议切回 openai", True)
         s.send_esc_seq("\x1b")
         s.read_available(0.3)
         s.send_key(3)
@@ -356,6 +385,7 @@ def main() -> None:
     test_approval_no()
     test_provider_dialog()
     test_provider_dialog_aggregator()
+    test_provider_dialog_protocol()
     print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
     sys.exit(1 if FAIL else 0)
 

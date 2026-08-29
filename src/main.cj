@@ -38,6 +38,10 @@ func makeProvider(cfg: CjhConfig): LlmProvider {
         throw LlmException(
             "未配置 API Key。请在 ${cfg.authPath} 的 api_key 字段填写，或设置 OPENAI_API_KEY / DEEPSEEK_API_KEY / DASHSCOPE_API_KEY / CJH_API_KEY 环境变量")
     }
+    // 协议选择（优先级）：CJH_PROVIDER 环境变量 > settings.json provider_protocol > 默认 OpenAI
+    // provider_protocol 支持聚合/自定义端点（custom provider）指定接入协议：
+    //   "anthropic"=Anthropic Messages；"openai"/"" = OpenAI 兼容；"gemini" 预留（未实现）
+    let protocol = if (providerName.size > 0) { providerName } else { cfg.providerProtocol }
     var p: LlmProvider
     if (isOllama) {
         // Ollama 端点：base_url 已指向 localhost/127.0.0.1 时优先用配置；
@@ -49,10 +53,12 @@ func makeProvider(cfg: CjhConfig): LlmProvider {
             "http://localhost:11434/v1"
         }
         p = OllamaProvider(ollamaBase, cfg.apiKey, cfg.model)
-    } else if (providerName == "anthropic") {
+    } else if (protocol == "anthropic") {
         let anthropicKey = readEnv("ANTHROPIC_API_KEY") ?? readEnv("ANTHROPIC_AUTH_TOKEN") ?? cfg.apiKey
         let anthropicBase = readEnv("ANTHROPIC_BASE_URL") ?? "https://api.anthropic.com/v1/messages"
         p = AnthropicProvider(anthropicBase, anthropicKey, cfg.model)
+    } else if (protocol == "gemini") {
+        throw LlmException("Gemini 原生协议暂未支持。请改用 OpenAI 兼容端点（Google 提供 generativelanguage.googleapis.com/v1beta/openai），或选择 openai/anthropic 协议")
     } else {
         p = OpenAiProvider(cfg.baseUrl, cfg.apiKey, cfg.model)
     }

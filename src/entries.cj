@@ -701,7 +701,7 @@ func runTui(sessionId: String): Int64 {
 
         SessionState.current = curSessionId
         // provider 配置表单提交回调：写回 settings/auth，重建 provider 热切换
-        tui.onProviderSubmit = { provider, baseUrl, model, apiKey =>
+        tui.onProviderSubmit = { provider, baseUrl, model, apiKey, protocol =>
             // provider 字段用于预设匹配（空则按 base_url/model 直接写）
             var label = provider
             if (label.size == 0) {
@@ -709,6 +709,7 @@ func runTui(sessionId: String): Int64 {
             }
             try {
                 cjhCfg.saveProvider(baseUrl, model)
+                cjhCfg.saveProviderProtocol(protocol)
                 if (apiKey.size > 0) {
                     cjhCfg.saveApiKey(apiKey)
                 }
@@ -827,9 +828,12 @@ func depthOf(id: String, store: SessionStore): Int64 {
  * 应用 provider 预设：写回 settings（base_url/model）+ 可选 auth（api_key），
  * 重建 provider 热切换。返回是否成功（失败时 TUI 已输出原因）。
  */
-func applyProvider(cfg: CjhConfig, agent: Agent, tui: TuiApp, label: String, baseUrl: String, model: String, apiKey: String): Bool {
+func applyProvider(cfg: CjhConfig, agent: Agent, tui: TuiApp, label: String, baseUrl: String, model: String, apiKey: String, protocol: String): Bool {
     try {
         cfg.saveProvider(baseUrl, model)
+        if (protocol.size > 0) {
+            cfg.saveProviderProtocol(protocol)
+        }
         if (apiKey.size > 0) {
             cfg.saveApiKey(apiKey)
         }

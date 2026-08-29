@@ -32,6 +32,9 @@ public class FormDialog <: Component {
     private var secrets: ArrayList<Bool> = ArrayList<Bool>()
     private var selects: ArrayList<ArrayList<String>> = ArrayList<ArrayList<String>>()
     private var values: ArrayList<String> = ArrayList<String>()
+    // 字段可见性（true=渲染可聚焦；false=隐藏但值保留，提交仍含该值）
+    // 用于"协议"等仅特定场景需要的字段（如 custom provider 才选协议）
+    private var fieldVisible: ArrayList<Bool> = ArrayList<Bool>()
 
     private var focus: Int64 = 0
     private var boxW: Int64 = 60
@@ -57,6 +60,7 @@ public class FormDialog <: Component {
         this.secrets = ArrayList<Bool>()
         this.selects = ArrayList<ArrayList<String>>()
         this.values = ArrayList<String>()
+        this.fieldVisible = ArrayList<Bool>()
         this.focus = 0
     }
 
@@ -69,6 +73,7 @@ public class FormDialog <: Component {
         this.secrets.add(secret)
         this.selects.add(ArrayList<String>())
         this.values.add("")
+        this.fieldVisible.add(true)
     }
 
     /**
@@ -80,6 +85,57 @@ public class FormDialog <: Component {
         this.secrets.add(false)
         this.selects.add(options)
         this.values.add(if (options.size > 0) { options[0] } else { "" })
+        this.fieldVisible.add(true)
+    }
+
+    /**
+     * 设置字段可见性：隐藏字段不渲染、不可聚焦，但值保留（提交仍含该值）。
+     * 用于"协议"等仅特定场景需要的字段。
+     */
+    public func setFieldVisible(index: Int64, visible: Bool): Unit {
+        if (index < 0 || index >= this.fieldVisible.size) {
+            return
+        }
+        this.fieldVisible[index] = visible
+        // 隐藏当前聚焦字段时，焦点移到下一个可见字段
+        if (!visible && this.focus == index) {
+            let next = this.nextVisibleIndex(index)
+            if (next >= 0) {
+                this.focus = next
+            }
+        }
+    }
+
+    /**
+     * 字段是否可见
+     */
+    public func isFieldVisible(index: Int64): Bool {
+        if (index < 0 || index >= this.fieldVisible.size) {
+            return false
+        }
+        return this.fieldVisible[index]
+    }
+
+    /**
+     * 从 start 起找下一个可见字段（循环），无可见字段返回 -1
+     */
+    private func nextVisibleIndex(start: Int64): Int64 {
+        if (this.labels.size == 0) {
+            return -1
+        }
+        var i: Int64 = start + 1
+        var tried: Int64 = 0
+        while (tried < this.labels.size) {
+            if (i >= this.labels.size) {
+                i = 0
+            }
+            if (this.fieldVisible[i]) {
+                return i
+            }
+            i += 1
+            tried += 1
+        }
+        return -1
     }
 
     /**
@@ -223,6 +279,10 @@ public class FormDialog <: Component {
         // ── 字段内容行 ──
         var curRow: Int64 = row + 1
         for (i in 0..this.labels.size) {
+            // 隐藏字段不渲染（如预设 provider 下的协议字段）
+            if (!this.fieldVisible[i]) {
+                continue
+            }
             let isFocus = (i == this.focus)
             let label = this.labels[i]
             let labelW = FormDialog.displayWidth(label)
@@ -343,22 +403,31 @@ public class FormDialog <: Component {
             this.onCancel()
             return true
         }
-        // Tab / ↓ → 下一字段
+        // Tab / ↓ → 下一字段（跳过隐藏字段）
         if (key.isTab || key.isArrowDown) {
             if (this.labels.size > 0) {
-                this.focus += 1
-                if (this.focus >= this.labels.size) {
-                    this.focus = 0
+                let next = this.nextVisibleIndex(this.focus)
+                if (next >= 0) {
+                    this.focus = next
                 }
             }
             return true
         }
-        // ↑ → 上一字段
+        // ↑ → 上一字段（反向找上一个可见字段）
         if (key.isArrowUp) {
             if (this.labels.size > 0) {
-                this.focus -= 1
-                if (this.focus < 0) {
-                    this.focus = this.labels.size - 1
+                var i: Int64 = this.focus - 1
+                var tried: Int64 = 0
+                while (tried < this.labels.size) {
+                    if (i < 0) {
+                        i = this.labels.size - 1
+                    }
+                    if (this.fieldVisible[i]) {
+                        this.focus = i
+                        break
+                    }
+                    i -= 1
+                    tried += 1
                 }
             }
             return true
