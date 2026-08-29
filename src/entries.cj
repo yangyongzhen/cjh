@@ -86,6 +86,7 @@ func runWeb(args: Array<String>): Int64 {
     registry.register(HashlineEditTool())
     registry.register(GlobTool())
     registry.register(EditTool())
+    registry.register(AstGrepTool())
     registerWebTools(cjhCfg, registry)
     loadSkillTools(cjhCfg.skillsDir, registry, cjhCfg.enabledSkills)
     let pluginManager = loadPlugins(cjhCfg.pluginsDir, registry, cjhCfg.enabledPlugins, cjhCfg.requireSignature)
@@ -142,6 +143,7 @@ func runCli(sessionId: String): Int64 {
     registry.register(HashlineEditTool())
     registry.register(GlobTool())
     registry.register(EditTool())
+    registry.register(AstGrepTool())
 
     // 配置加载
     let cjhCfg = CjhConfig()
@@ -282,6 +284,7 @@ func runJson(prompt: String, sessionId: String): Int64 {
     registry.register(HashlineEditTool())
     registry.register(GlobTool())
     registry.register(EditTool())
+    registry.register(AstGrepTool())
 
     let cjhCfg = CjhConfig()
     cjhCfg.ensureDirs()
@@ -341,6 +344,11 @@ func runJson(prompt: String, sessionId: String): Int64 {
                 return result
             }
         ))
+
+        // TaskTool：派发子代理执行独立任务（spawnFn 回调注入）
+        registry.register(TaskTool({ description, prompt, subagentType =>
+            spawnSubagent(provider, registry, config, description, prompt, subagentType)
+        }))
 
         // 恢复会话（--resume <id>）
         var curId = sessionId
@@ -446,6 +454,7 @@ func runTui(sessionId: String): Int64 {
     registry.register(HashlineEditTool())
     registry.register(GlobTool())
     registry.register(EditTool())
+    registry.register(AstGrepTool())
     mark("builtin tools registered")
 
     // 配置加载
@@ -518,6 +527,11 @@ func runTui(sessionId: String): Int64 {
                 return result
             }
         ))
+        // TaskTool：派发子代理执行独立任务（spawnFn 回调注入）
+        registry.register(TaskTool({ description, prompt, subagentType =>
+            spawnSubagent(provider, registry, config, description, prompt, subagentType)
+        }))
+
         // 线程安全的输出队列（agent 在调用线程运行，输出经队列到 TUI）
         let tui = TuiApp()
         tuiOpt = Some(tui)
@@ -826,4 +840,92 @@ func listSessions(): Int64 {
     println("--------------------------------")
     println("恢复: cjh --resume <会话ID>")
     return 0
+}
+
+/**
+ * 派发子代理执行独立任务
+ *
+ * 创建一个临时 Agent，用相同 provider 和 tools，跑一轮独立对话，返回结果。
+ * 子代理有独立的 messages 历史，不影响主对话。
+ * 子代理 max_iterations 限制为 5（避免失控）。
+ *
+ * @param provider 父 Agent 的 provider（复用连接）
+ * @param registry 父 Agent 的工具注册表（复用工具）
+ * @param config 父 Agent 的配置（复用 system prompt）
+ * @param description 3-5 词任务标签
+ * @param prompt 完整任务指令
+ * @param subagentType "explore"（只读）或 "worker"（可写）
+ * @return TaskSpawnResult 子代理执行结果
+ */
+func spawnSubagent(provider: LlmProvider, registry: ToolRegistry, config: AgentConfig,
+    description: String, prompt: String, subagentType: String): TaskSpawnResult {
+    // 构造子代理 system prompt
+    let systemPrompt = buildSubagentPrompt(subagentType)
+
+    // 创建子 Agent：复用父 Agent 的 provider 和 tools，max_iterations 限制为 5
+    let subConfig = AgentConfig(systemPrompt, 5)
+    let subAgent = Agent(provider, registry, subConfig)
+
+    // 子代理不需要 TUI 回调，默认空回调即可
+    // 运行子代理
+    let summary = subAgent.run(prompt)
+
+    // 提取子代理的最终回复文本
+    let resultText = extractSubagentResult(subAgent)
+
+    return TaskSpawnResult(resultText, summary.rounds,
+        summary.promptTokens, summary.completionTokens)
+}
+
+/**
+ * 构造子代理 system prompt
+ *
+ * explore: 只读调查，不修改文件，汇报发现
+ * worker: 可以修改文件，完成任务后汇报
+ */
+func buildSubagentPrompt(subagentType: String): String {
+    var sb = StringBuilder()
+    sb.append("你是一个专门执行独立任务的子代理.\n\n")
+    match (subagentType) {
+        case "explore" =>
+            sb.append("你的职责是只读调查. 你可以:\n")
+            sb.append("- 读取文件 (read_file, glob, grep, list_dir)\n")
+            sb.append("- 执行只读命令 (bash 里只读操作)\n")
+            sb.append("- 搜索代码结构\n\n")
+            sb.append("你不能:\n")
+            sb.append("- 修改任何文件 (write_file, edit, append_file, hashline_edit 禁用)\n")
+            sb.append("- 执行有副作用的命令 (git commit, rm, etc.)\n\n")
+            sb.append("完成后汇报你的发现, 不要做任何修改.\n")
+        case "worker" =>
+            sb.append("你的职责是完成指定任务. 你可以:\n")
+            sb.append("- 读取和修改文件\n")
+            sb.append("- 执行命令\n")
+            sb.append("- 使用所有可用工具\n\n")
+            sb.append("完成任务后汇报你做了什么.\n")
+        case _ =>
+            sb.append("完成指定任务并汇报结果.\n")
+    }
+    sb.append("\n注意:\n")
+    sb.append("- 你有独立的对话历史, 看不到主会话的上下文\n")
+    sb.append("- 最多 5 次迭代, 高效完成任务\n")
+    sb.append("- 不要请求用户确认, 自主决策\n")
+    return sb.toString()
+}
+
+/**
+ * 提取子代理的最终回复文本
+ *
+ * 子代理 run 后，messages 里最后一条 assistant 消息就是最终回复。
+ */
+func extractSubagentResult(subAgent: Agent): String {
+    let msgs = subAgent.getMessages()
+    var i = msgs.size - 1
+    while (i >= 0) {
+        let m = msgs[i]
+        if (m.role == "assistant" && m.content.size > 0) {
+            return m.content
+        }
+        i -= 1
+    }
+    return "(子代理未产生回复文本)"
 }

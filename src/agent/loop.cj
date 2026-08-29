@@ -189,6 +189,27 @@ public class Agent {
     }
 
     /**
+     * 获取 provider（子代理派发用）
+     */
+    public func getProvider(): LlmProvider {
+        return this.provider
+    }
+
+    /**
+     * 获取工具注册表（子代理派发用）
+     */
+    public func getTools(): ToolRegistry {
+        return this.tools
+    }
+
+    /**
+     * 获取消息历史（子代理结果提取用）
+     */
+    public func getMessages(): ArrayList<ChatMessage> {
+        return this.messages
+    }
+
+    /**
      * 注入插件管理器（V2b Step 2：事件钩子）
      * Agent 在工具结果回填前触发 on_tool_result 钩子，允许插件拦截/改写结果。
      */
