@@ -56,14 +56,13 @@ public class Ansi {
 }
 
 /**
- * 终端尺寸查询（FFI ioctl TIOCGWINSZ）
+ * 终端尺寸查询（每帧实时，resize 感知）
  */
 public class TermSize {
+    // 共享实例（size() 无状态，避免每帧 new backend）
+    private static let shared: Term = Term()
+
     public static func get(): (Int64, Int64) {
-        let t = Term()
-        let (rows, cols) = t.size()
-        // 缓存到静态字段：后续 Stderr.suppress() 后 size() 直接返回缓存值
-        Term.prefetch(rows, cols)
-        return (rows, cols)
+        return TermSize.shared.size()
     }
 }

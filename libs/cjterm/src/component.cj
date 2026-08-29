@@ -55,9 +55,14 @@ public class TuiCanvas {
     // 列偏移：内容区左侧预留列数（Box 内嵌子组件时设置，子组件 setLine/setCursor
     // 自动左移 offsetCol 列，避免覆盖左/右边框）
     private var offsetCol: Int64 = 0
+    // 上一帧尺寸（自感知 resize：外部 sizeChanged 标志可能被主循环先行消耗）
+    private var lastRows: Int64 = -1
+    private var lastCols: Int64 = -1
 
     /**
      * 开始新帧。sizeChanged 为 true（首帧或终端尺寸变化）时清空缓存强制全量重绘。
+     * 额外自感知 rows/cols 变化：即使外部标志未置位（如主循环已先行调用
+     * Term.sizeChanged()），尺寸变化同样清缓存，避免差分缓存错位。
      */
     public func begin(rows: Int64, cols: Int64, sizeChanged: Bool): Unit {
         this.rows = rows
@@ -66,8 +71,10 @@ public class TuiCanvas {
         for (i in 0..rows) {
             this.lines.add("")
         }
-        if (sizeChanged) {
+        if (sizeChanged || rows != this.lastRows || cols != this.lastCols) {
             this.prevLines = ArrayList<String>()
+            this.lastRows = rows
+            this.lastCols = cols
         }
         this.offsetCol = 0
     }
