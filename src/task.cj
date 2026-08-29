@@ -68,6 +68,24 @@ public class TaskTool <: CjhTool {
             }
         }
 
+        // 校验 subagent_type
+        if (subagentType != "explore" && subagentType != "worker") {
+            return ToolResult(
+                "无效的 subagent_type: '${subagentType}'.\n" +
+                "有效值: explore (只读调查) 或 worker (可写, 完成任务).\n" +
+                "默认 explore.", true)
+        }
+
+        // 校验 prompt 非空
+        if (prompt.size == 0) {
+            return ToolResult("prompt 不能为空. 请提供完整的子任务指令.", true)
+        }
+
+        // 校验 description 非空
+        if (description.size == 0) {
+            return ToolResult("description 不能为空. 请提供 3-5 词的任务标签.", true)
+        }
+
         try {
             let result = this.spawnFn(description, prompt, subagentType)
             var sb = StringBuilder()

@@ -47,6 +47,9 @@ public class GlobTool <: CjhTool {
             return ToolResult("缺少参数: pattern", true)
         }
         let pattern = args.get("pattern").getOrThrow().asString().getValue()
+        if (pattern.size == 0) {
+            return ToolResult("pattern 不能为空. 示例: '**/*.ts' 匹配所有 .ts 文件.", true)
+        }
         var basePath = "."
         if (let Some(p) <- args.get("path")) {
             match (p.kind()) {
@@ -58,11 +61,14 @@ public class GlobTool <: CjhTool {
             return ToolResult("基础路径不存在: ${basePath}", true)
         }
 
+        // 规范化 basePath：去掉 ./ 前缀和尾部 /
+        let normalizedBase = normalizePath(basePath)
+
         try {
             GlobState.matches = ArrayList<String>()
             GlobState.count = 0
             GlobState.pattern = pattern
-            GlobState.basePath = basePath
+            GlobState.basePath = normalizedBase
 
             // Directory.walk 递归遍历整个目录树
             // 回调返回 true 继续遍历，false 停止
@@ -96,12 +102,40 @@ public class GlobTool <: CjhTool {
                     result.append(m)
                     result.append("\n")
                 }
+                if (GlobState.count > 200) {
+                    result.append("…（共 ${GlobState.count} 个匹配，仅显示前 200）\n")
+                }
             }
             return ToolResult(result.toString(), false)
         } catch (e: Exception) {
             return ToolResult("glob 失败: ${e}", true)
         }
     }
+}
+
+/**
+ * 规范化路径：去掉 ./ 前缀和尾部 /
+ *
+ * "./src" → "src"
+ * "src/" → "src"
+ * "." → "."
+ * "/" → "/"
+ */
+func normalizePath(p: String): String {
+    var s = p
+    // 去掉 ./ 前缀
+    if (s.startsWith("./")) {
+        s = s[2..s.size]
+    }
+    // 去掉尾部 / (但保留根路径 /)
+    if (s.size > 1 && s.endsWith("/")) {
+        s = s[0..s.size - 1]
+    }
+    // 空字符串视为当前目录
+    if (s.size == 0) {
+        s = "."
+    }
+    return s
 }
 
 /**
@@ -134,21 +168,92 @@ func shouldSkip(name: String): Bool {
 /**
  * 计算相对于 basePath 的路径
  *
- * Directory.walk 回调里 fi.path 是绝对路径，
- * 需要转为相对路径用于 glob 匹配和输出。
+ * Directory.walk 回调里 fi.path 可能是:
+ * - 绝对路径: /root/test/cj/cjh/src/tools/builtin.cj
+ * - 相对路径: src/tools/builtin.cj (相对于 cwd)
+ *
+ * 需要转为相对于 basePath 的路径用于 glob 匹配和输出.
+ * 策略:
+ * 1. 尝试 basePath + "/" 前缀匹配 (fi.path 是相对路径的情况)
+ * 2. 尝试规范化 basePath 后的前缀匹配
+ * 3. 如果都不匹配, 从 absPath 中提取文件名部分
  */
 func makeRelative(basePath: String, absPath: String): String {
-    // 简单实现：如果 absPath 以 basePath + "/" 开头，截掉前缀
+    // 情况 1: fi.path 是相对路径, 以 basePath + "/" 开头
     let prefix = basePath + "/"
     if (absPath.startsWith(prefix)) {
         return absPath[prefix.size..absPath.size]
     }
-    // 如果 absPath 以 basePath 开头（basePath 就是 absPath）
+
+    // 情况 2: absPath == basePath (basePath 就是 absPath)
     if (absPath == basePath) {
         return "."
     }
-    // 其他情况返回原始路径
+
+    // 情况 3: fi.path 是绝对路径, 需要找到 basePath 在 absPath 中的位置
+    // 例如 basePath="src/tools", absPath="/root/test/cj/cjh/src/tools/builtin.cj"
+    // absPath 中 "src/tools/" 之后的部分就是相对路径
+    let basePathNorm = normalizePath(basePath)
+    let basePathLast: String = lastPathComponent(basePathNorm)
+    // 在 absPath 中查找 basePathLast + "/" 的位置
+    let searchKey = basePathLast + "/"
+    let idx: Int64 = indexOfString(absPath, searchKey)
+    if (idx >= 0) {
+        // 找到了, 返回 searchKey 之后的部分
+        let afterKey = idx + searchKey.size
+        if (afterKey <= absPath.size) {
+            return absPath[afterKey..absPath.size]
+        }
+    }
+
+    // 情况 4: 都不匹配, 返回原始路径 (降级)
     return absPath
+}
+
+/**
+ * 获取路径的最后一个组件
+ * "src/tools" -> "tools"
+ * "src" -> "src"
+ */
+func lastPathComponent(p: String): String {
+    var i: Int64 = p.size - 1
+    while (i >= 0) {
+        if (p[i] == 47u8) {  // '/'
+            return p[(i + 1)..p.size]
+        }
+        i -= 1
+    }
+    return p
+}
+
+/**
+ * 在字符串 s 中查找子串 sub 的首次出现位置, 未找到返回 -1
+ */
+func indexOfString(s: String, sub: String): Int64 {
+    if (sub.size == 0) {
+        return 0
+    }
+    if (s.size < sub.size) {
+        return -1
+    }
+    var i: Int64 = 0
+    let limit: Int64 = s.size - sub.size
+    while (i <= limit) {
+        var found: Bool = true
+        var j: Int64 = 0
+        while (j < sub.size) {
+            if (s[i + j] != sub[j]) {
+                found = false
+                break
+            }
+            j += 1
+        }
+        if (found) {
+            return i
+        }
+        i += 1
+    }
+    return -1
 }
 
 /**

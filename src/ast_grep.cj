@@ -76,7 +76,27 @@ public class AstGrepTool <: CjhTool {
         }
 
         if (pattern.size == 0) {
-            return ToolResult("pattern 不能为空", true)
+            return ToolResult("pattern 不能为空. 请提供 AST 模式, 例如 'fn $NAME($$$) { $$$ }'.", true)
+        }
+
+        // 校验 lang
+        let supportedLangs = ["rust", "typescript", "ts", "python", "py", "go", "java", "c", "cpp", "cangjie", "cj", "javascript", "js"]
+        var langSupported: Bool = false
+        for (sl in supportedLangs) {
+            if (lang == sl) {
+                langSupported = true
+                break
+            }
+        }
+        if (!langSupported) {
+            return ToolResult(
+                "不支持的 lang: '${lang}'.\n" +
+                "支持的语言: rust, typescript/ts, python/py, go, java, c, cpp, cangjie/cj, javascript/js.\n" +
+                "如果是其他语言, 可以用 grep 工具做文本搜索.", true)
+        }
+
+        if (!exists(basePath)) {
+            return ToolResult("基础路径不存在: ${basePath}", true)
         }
 
         // 尝试用 ast-grep CLI (sg)

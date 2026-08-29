@@ -142,9 +142,14 @@ coding agent 的执行效率直接决定用户等待时间。cjh 从三个维度
 | `read_file` | 读取文件，大文件返回符号摘要，offset/limit 按需展开 |
 | `write_file` | 写入文件（创建/覆盖） |
 | `hashline_edit` | 行号锚点 `@@N` + 内容验证编辑（借鉴 OMP） |
+| `edit` | str_replace 精确替换，old_string 必须唯一（或 replace_all=true） |
 | `grep` | 目录树递归搜索，gitignore 感知 |
+| `glob` | 文件名模式匹配，支持 `**` 跨目录（借鉴 OMP） |
+| `ast_grep` | AST 结构搜索，调 ast-grep CLI（sg），降级 grep |
 | `list_dir` | 列出目录树 |
+| `append_file` | 追加写入文件，OpenMode.Append 增量写 |
 | `todo_write` | LLM 通过工具调用管理任务列表 |
+| `task` | 派发子代理执行独立任务，explore（只读）/ worker（可写） |
 | `web_search` | 联网搜索，多后端路由（Tavily/Exa/SearXNG/DDG）+ per-engine key rotation |
 | `web_fetch` | 抓取网页，三级降级链（仓颉 HTTP → curl → Firecrawl）+ SSRF 防护 |
 
