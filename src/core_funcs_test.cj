@@ -205,7 +205,8 @@ public class CoreTaskToolTest {
         let result = tool.execute(args)
         @Assert(result.isError, false)
         @Assert(result.content.contains("子代理结果"), true)
-        @Assert(result.content.contains("迭代次数: 3"), true)
+        @Assert(result.content.contains("迭代 3"), true)
+        @Assert(result.content.contains("=== 子代理结果结束 ==="), true)
     }
 
     @TestCase
