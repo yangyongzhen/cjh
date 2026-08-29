@@ -193,10 +193,11 @@ public class ReadTool <: CjhTool {
         offset: Int64, limit: Int64, totalLines: Int64,
         readStart: Int64, readEnd: Int64): ToolResult {
         var hints = repeatHint
-        // 截断提示：已读范围未覆盖全文时，告知总行数 + 剩余 + 下一段 offset
+        // 分段读取提示：已读范围未覆盖全文时，告知总行数 + 剩余 + 下一段 offset
+        // 注意：这是 LLM 自己传 offset/limit 导致的分段，不是 read_file 截断
         if (totalLines > 0 && readEnd < totalLines) {
             let remaining = totalLines - readEnd
-            hints += "\n[提示] 文件共 ${totalLines} 行，已读 ${readStart}-${readEnd}，剩余 ${remaining} 行。用 offset=${readEnd + 1} 读取下一段。"
+            hints += "\n[提示] 你用了 offset+limit 分段读取。文件共 ${totalLines} 行，本次读了 ${readStart}-${readEnd}，还剩 ${remaining} 行。用 offset=${readEnd + 1} 读下一段，或省略 offset+limit 一次读全文。"
         }
         if (hints.size > 0) {
             return ToolResult(result.content + hints, result.isError)
