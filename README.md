@@ -447,6 +447,7 @@ cjh 内置 MCP 客户端，支持 stdio 传输 + JSON-RPC 2.0。配置 `mcp_serv
 | v1.2.3 | SSE 空闲超时 + 工具结果截断与回溯 + MCP 协议支持 + 6 套主题 |
 | **v1.3.0** | **Web 支持 + 插件信任链（SHA256 + SM2 签名）+ require_signature 配置** |
 | v1.3.1 | **LLM 效率三连修复**（compaction 检查入循环 + 真实 usage 触发 + keep 调优，prompt 峰值 42.9K→9.4K）+ **216 单测全绿** + 修复 13 个潜伏 bug（含 TUI：markdown 代码块失效/Tab 补全重开/退格崩日志）+ build.cj 产物改名 cjh |
+| **v1.3.2** | **P0+P1 优化**：bash 超时 + Ctrl+C 中断当前轮 + 持久 bash 会话 + 跨会话项目记忆 + 摘要快模型路由 + 429 备用 key 轮换 + compaction 保留工具结果 + read SQLite + 提示词优化 + **静态链接单文件发布**（228 单测 + 36 PTY 全绿） |
 
 ## 🗺️ 路线图
 
