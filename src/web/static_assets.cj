@@ -55,7 +55,7 @@ public class StaticAssets {
                     <option value="solarized">Solarized</option>
                     <option value="monokai">Monokai</option>
                 </select>
-                <button id="config-btn" class="btn-icon" title="配置">⚙</button>
+                <button id="config-btn" class="btn-icon config-btn" title="配置">⚙ 配置</button>
             </div>
         </header>
 
@@ -233,6 +233,65 @@ function connectWebSocket() {
         console.log('[WS] 连接已关闭，3秒后重连');
         setTimeout(connectWebSocket, 3000);
     };
+}
+
+// ====== 模型选择器（右上角下拉） ======
+
+/**
+ * 加载 /api/models 填充右上角模型下拉，选中当前模型；
+ * 切换时 POST /api/settings 更新 model（模型带 baseUrl 时联动更新端点=切厂家）。
+ */
+function loadModelSelector() {
+    fetch('/api/models')
+        .then(r => r.json())
+        .then(function(data) {
+            let sel = document.getElementById('model-selector');
+            sel.innerHTML = '';
+            if (!data.models || data.models.length === 0) {
+                sel.innerHTML = '<option value="">无模型配置</option>';
+                return;
+            }
+            let hasCurrent = false;
+            data.models.forEach(function(m) {
+                let o = document.createElement('option');
+                o.value = m.id;
+                o.textContent = m.name || m.id;
+                if (m.id === data.current) { o.selected = true; hasCurrent = true; }
+                sel.appendChild(o);
+            });
+            // 当前模型不在列表 → 置顶显示（含端点提示）
+            if (!hasCurrent && data.current) {
+                let o = document.createElement('option');
+                o.value = data.current;
+                o.textContent = data.current + '（当前）';
+                o.selected = true;
+                sel.insertBefore(o, sel.firstChild);
+            }
+            // 切换：POST model（联动 baseUrl）
+            sel.onchange = function() {
+                let model = sel.value;
+                let found = null;
+                data.models.forEach(function(m) { if (m.id === model) { found = m; } });
+                let payload = { model: model };
+                if (found && found.baseUrl) { payload.baseUrl = found.baseUrl; }
+                fetch('/api/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                }).then(r => r.json()).then(function(d) {
+                    if (!d.ok) {
+                        showError('模型切换失败: ' + (d.error || ''));
+                        loadModelSelector();  // 还原
+                    }
+                }).catch(function(e) {
+                    showError('模型切换失败: ' + e);
+                });
+            };
+        })
+        .catch(function(e) {
+            document.getElementById('model-selector').innerHTML = '<option value="">模型加载失败</option>';
+            console.error('[ModelSelector] 加载失败:', e);
+        });
 }
 
 // ====== 消息发送 ======
@@ -592,6 +651,7 @@ function loadConfig() {
         // 分组渲染
         let groups = [
             { title: 'Provider', fields: [
+                { key: 'provider', label: '厂家', type: 'providerSelect' },
                 { key: 'baseUrl', label: 'API 端点', type: 'text' },
                 { key: 'model', label: '模型', type: 'select' },
                 { key: 'apiKey', label: 'API Key', type: 'password' }
@@ -610,18 +670,29 @@ function loadConfig() {
                 { key: 'webAuthToken', label: '鉴权 token', type: 'text' }
             ]}
         ];
-        // 构建模型选项数组
+        // 构建模型选项数组（保留 baseUrl 供厂家联动）
         let modelOptions = [];
         if (modelsData.models && modelsData.models.length > 0) {
             modelsData.models.forEach(function(m) {
-                modelOptions.push({ value: m.id, label: m.name || m.id });
+                modelOptions.push({ value: m.id, label: m.name || m.id, baseUrl: m.baseUrl || '' });
             });
         }
         // 确保当前模型在选项里
         let currentModel = data.model || modelsData.current || '';
         if (currentModel && !modelOptions.some(function(o) { return o.value === currentModel; })) {
-            modelOptions.unshift({ value: currentModel, label: currentModel + '（当前）' });
+            modelOptions.unshift({ value: currentModel, label: currentModel + '（当前）', baseUrl: '' });
         }
+        // 构建厂家选项（按 baseUrl 去重；空端点归为"当前端点"）
+        let providerOptions = [];
+        let providerMap = {};
+        modelOptions.forEach(function(o) {
+            let key = o.baseUrl || '';
+            if (!providerMap[key]) {
+                providerMap[key] = true;
+                let label = key ? key.replace(/^https?:\/\//, '').split('/')[0] : '（沿用当前端点）';
+                providerOptions.push({ value: key, label: label + (key ? ' · ' + key : '') });
+            }
+        });
         groups.forEach(function(g) {
             let groupDiv = document.createElement('div');
             groupDiv.className = 'config-group';
@@ -630,7 +701,17 @@ function loadConfig() {
                 let row = document.createElement('div');
                 row.className = 'config-row';
                 let val = data[f.key] !== undefined ? data[f.key] : '';
-                if (f.type === 'select') {
+                if (f.type === 'providerSelect') {
+                    // 厂家下拉：按端点去重，选择后回填 API 端点输入框（纯联动，不参与保存）
+                    let optsHtml = '<option value="">（不修改端点）</option>';
+                    providerOptions.forEach(function(p) {
+                        let selected = (p.value === val) ? ' selected' : '';
+                        optsHtml += '<option value="' + escapeHtml(p.value) + '"' + selected + '>' +
+                                    escapeHtml(p.label) + '</option>';
+                    });
+                    row.innerHTML = '<label>' + escapeHtml(f.label) + '</label>' +
+                                   '<select id="config-provider-select">' + optsHtml + '</select>';
+                } else if (f.type === 'select') {
                     // 下拉框渲染
                     let optsHtml = '';
                     modelOptions.forEach(function(o) {
@@ -656,12 +737,26 @@ function loadConfig() {
             });
             form.appendChild(groupDiv);
         });
+        // 联动：厂家下拉 → 回填 API 端点；模型下拉 → 带 baseUrl 时回填端点
+        let baseUrlInput = form.querySelector('input[data-key="baseUrl"]');
+        let providerSelect = document.getElementById('config-provider-select');
+        if (providerSelect && baseUrlInput) {
+            providerSelect.addEventListener('change', function() {
+                if (providerSelect.value) { baseUrlInput.value = providerSelect.value; }
+            });
+        }
         // 自定义模型输入联动：select 改变时清空 custom；custom 输入时覆盖 select
         let modelSelect = form.querySelector('select[data-key="model"]');
         let modelCustom = form.querySelector('.config-custom-input');
         if (modelSelect && modelCustom) {
             modelSelect.addEventListener('change', function() {
                 modelCustom.value = '';
+                // 选中模型带端点 → 联动回填（切换厂家）
+                let chosen = null;
+                modelOptions.forEach(function(o) { if (o.value === modelSelect.value) { chosen = o; } });
+                if (chosen && chosen.baseUrl && baseUrlInput) {
+                    baseUrlInput.value = chosen.baseUrl;
+                }
             });
             modelCustom.addEventListener('input', function() {
                 // 把自定义值写回 select 的 dataset，saveConfig 时优先取 custom
@@ -1132,6 +1227,7 @@ function toggleTaskPanel() {
 // ====== 事件绑定 ======
 document.addEventListener('DOMContentLoaded', function() {
     connectWebSocket();
+    loadModelSelector();
 
     // 侧边栏 tab 切换
     document.querySelectorAll('.sidebar-tab').forEach(function(btn) {
@@ -1369,6 +1465,18 @@ body {
     border-radius: 4px;
     font-size: 13px;
     cursor: pointer;
+}
+/* 配置按钮：带文字更醒目 */
+.config-btn {
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px 10px;
+    font-size: 13px;
+    background: var(--bg-tertiary);
+}
+.config-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
 }
 
 .app-main {
