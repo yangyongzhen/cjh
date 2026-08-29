@@ -259,19 +259,23 @@ coding agent 的执行效率直接决定用户等待时间。cjh 从三个维度
 ### 构建
 
 ```bash
-# 激活仓颉环境（设 PATH + LD_LIBRARY_PATH，含 stdx 动态库）
+# 激活仓颉环境（设 PATH；构建为静态链接单文件，无需运行时库）
 source cj-env.sh
 
-# 构建（产物为 cjh）
+# 构建（产物为 cjh，静态单文件零依赖，直接运行）
 cjpm build
+
+# 单元测试（自动切动态配置：静态链接下测试框架 double free 崩溃）
+./scripts/test.sh          # 全量
+./scripts/test.sh --filter "*Workspace*"   # 单用例
 ```
 
 ### 各平台打包
 
 | 平台 | 命令 | 产物 | 说明 |
 |---|---|---|---|
-| Linux（静态单文件） | 切静态配置（`--static --static-std --static-libs`）→ `cjpm build` | `dist/linux/cjh-<ver>-linux-x64` | 单文件零依赖（含仓颉运行时+stdx），直接分发运行。构建后切回动态配置（静态下 `cjpm test` 会 double free，详见 docs/开发文档与踩坑记录.md §3.10） |
-| Windows | `cjpm build --target x86_64-pc-windows-gnu` | `dist/windows/cjh-<ver>-windows-x64.exe` | Linux 上交叉编译直接产出 PE 可执行文件（已实测）。**前提**：`~/.cangjie/stdx/` 装有 `cangjie-stdx-windows-x64-<ver>`（gitcode.com/Cangjie/cangjie_stdx/releases 下载，与 Linux 版同版本）；**部署**：`dist/windows/` 已含全部依赖 DLL（libcangjie-runtime.dll + libstdx*.dll 等），整目录拷贝即用，无需安装 |
+| Linux（静态单文件，默认） | `cjpm build`（cjpm.toml 已默认 `--static`） | `dist/linux/cjh-<ver>-linux-x64` | 单文件零依赖（含仓颉运行时+stdx，仅依赖系统 libc），直接分发运行，无需环境变量 |
+| Windows | `cjpm build --target x86_64-pc-windows-gnu` | `dist/windows/cjh-<ver>-windows-x64.exe` | Linux 上交叉编译直接产出 PE 可执行文件（已实测）。**前提**：`~/.cangjie/stdx/` 装有 `cangjie-stdx-windows-x64-<ver>`（gitcode.com/Cangjie/cangjie_stdx/releases 下载，与 Linux 版同版本）；**部署**：`dist/windows/` 已含全部依赖 DLL（依赖闭包 42 个，libcangjie-runtime + libstdx* 等），整目录拷贝即用 |
 | macOS | POSIX 后端直通，同 Linux 源码 | — | 需 macOS 环境构建（termios 兼容，`@When` 自动选 POSIX 后端） |
 
 > 跨平台原理：终端层 `TerminalBackend` 抽象（`@When[os == ...]` 条件编译选后端，Windows 用 Win32 Console API + VT 输出，Linux/macOS 用 termios），一份源码多平台二进制。详见 [跨平台终端层设计方案](docs/跨平台终端层设计方案.md)。

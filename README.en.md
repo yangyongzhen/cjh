@@ -260,19 +260,23 @@ Built-in HTTP Server + WebSocket streaming conversation + REST API + frontend SP
 ### Build
 
 ```bash
-# Activate Cangjie environment (sets PATH + LD_LIBRARY_PATH incl. stdx)
+# Activate Cangjie environment (sets PATH; build is static-linked single file, no runtime libs needed)
 source cj-env.sh
 
-# Build (produces cjh)
+# Build (produces cjh, static single file, zero deps)
 cjpm build
+
+# Unit tests (auto-switches to dynamic config: test framework double-free crashes under static linking)
+./scripts/test.sh          # all
+./scripts/test.sh --filter "*Workspace*"   # single case
 ```
 
 ### Packaging per platform
 
 | Platform | Command | Artifact | Notes |
 |---|---|---|---|
-| Linux (static single file) | switch to static config (`--static --static-std --static-libs`) → `cjpm build` | `dist/linux/cjh-<ver>-linux-x64` | Single file, zero deps (Cangjie runtime + stdx included). Switch back to dynamic config afterwards (`cjpm test` crashes with double free under static linking — see docs/开发文档与踩坑记录.md §3.10) |
-| Windows | `cjpm build --target x86_64-pc-windows-gnu` | `dist/windows/cjh-<ver>-windows-x64.exe` | Cross-compiled directly on Linux to a PE executable (verified). **Prerequisite**: `cangjie-stdx-windows-x64-<ver>` installed under `~/.cangjie/stdx/` (download from gitcode.com/Cangjie/cangjie_stdx/releases, same version as Linux). **Deploy**: `dist/windows/` already bundles all required DLLs (`libcangjie-runtime.dll` + `libstdx*.dll` etc.) — copy the whole directory, no install needed |
+| Linux (static single file, default) | `cjpm build` (cjpm.toml defaults to `--static`) | `dist/linux/cjh-<ver>-linux-x64` | Single file, zero deps (Cangjie runtime + stdx included; only system libc), run directly, no env vars needed |
+| Windows | `cjpm build --target x86_64-pc-windows-gnu` | `dist/windows/cjh-<ver>-windows-x64.exe` | Cross-compiled directly on Linux to a PE executable (verified). **Prerequisite**: `cangjie-stdx-windows-x64-<ver>` installed under `~/.cangjie/stdx/` (download from gitcode.com/Cangjie/cangjie_stdx/releases, same version as Linux). **Deploy**: `dist/windows/` already bundles all required DLLs (dependency closure of 42, libcangjie-runtime + libstdx* etc.) — copy the whole directory, no install needed |
 | macOS | POSIX backend passthrough, same source tree | — | Build on macOS (termios-compatible, `@When` auto-selects POSIX backend) |
 
 > Cross-platform principle: terminal-layer `TerminalBackend` abstraction (`@When[os == ...]` conditional compilation selects the backend; Windows uses Win32 Console API + VT output, Linux/macOS use termios) — one source tree, multi-platform binaries. See [design](docs/跨平台终端层设计方案.md).
