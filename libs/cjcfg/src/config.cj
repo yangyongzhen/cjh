@@ -482,6 +482,13 @@ public class CjhConfig {
     }
 
     public func loadSettings(): Unit {
+        // 幂等：重复加载前重置累积列表（CjhConfig() 构造 + 显式 loadSettings 可能各调一次，
+        // 不清空会导致 models/enabledSkills 等重复）
+        this.models = ArrayList<ModelEntry>()
+        this.fallbackApiKeys = ArrayList<String>()
+        this.enabledSkills = ArrayList<String>()
+        this.enabledPlugins = ArrayList<String>()
+        this.mcpServers = ArrayList<McpServerConfig>()
         if (!exists(this.settingsPath)) {
             return
         }
