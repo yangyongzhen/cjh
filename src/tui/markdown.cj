@@ -12,14 +12,20 @@ import cjterm.*
  * - 保持其余文本原样
  *
  * 用法：对 onDelta 的每个增量片段调用 process()，返回渲染后的 ANSI 字符串。
+ *
+ * 反引号状态机（v2，修复三连代码块失效）：
+ * 连续反引号先累积计数（跨帧保留），遇到非反引号字符时统一 flush：
+ *   count >= 3 → 代码块开/关切换
+ *   count 1-2  → 行内代码开/关切换
+ * 旧实现逐字符处理，第 2 个反引号就开代码块、第 3 个立即关闭，
+ * ``` 代码块渲染完全失效且 inlineCodeOn 状态残留。
  */
 public class MarkdownRender {
     private var boldOn: Bool = false
     private var inlineCodeOn: Bool = false
     private var codeBlockOn: Bool = false
-    private var pendingStar: Bool = false   // 等下一个 * 确认 **
-    private var pendingBacktick: Bool = false
-    private var codeBlockStart: Bool = false  // 遇到 ``` 且还没确定
+    private var pendingStar: Bool = false      // 等下一个 * 确认 **
+    private var tickCount: Int64 = 0           // 未决反引号计数（跨帧累积，遇非反引号 flush）
 
     public init() {}
 
@@ -34,6 +40,13 @@ public class MarkdownRender {
         var sb = StringBuilder()
         for (r in delta.toRuneArray()) {
             let s = r.toString()
+            if (s == "`") {
+                // 累积反引号，不立即输出（需等序列结束才知道是行内还是代码块）
+                this.tickCount += 1
+                continue
+            }
+            // 遇到非反引号：先 flush 累积的反引号
+            this.flushTicks(sb)
             if (s == "*") {
                 if (this.pendingStar) {
                     // ** 成对 → 切换粗体
@@ -50,41 +63,34 @@ public class MarkdownRender {
                 sb.append("*")
                 this.pendingStar = false
             }
-            if (s == "`") {
-                // 三连 ` 是代码块，单 ` 是行内代码（简化：按连续个数切换）
-                if (this.codeBlockStart) {
-                    // ``` 闭合
-                    this.codeBlockOn = !this.codeBlockOn
-                    sb.append(Ansi.reset())
-                    this.codeBlockStart = false
-                } else if (this.pendingBacktick) {
-                    // `` 可能是代码块开始
-                    this.codeBlockStart = true
-                    this.codeBlockOn = true
-                    sb.append(Ansi.fg(Ansi.THEME_MUTED))
-                    this.pendingBacktick = false
-                } else {
-                    this.pendingBacktick = true
-                    // 先按行内代码处理，若下一帧是 ` 再转代码块
-                    this.inlineCodeOn = !this.inlineCodeOn
-                    sb.append(if (this.inlineCodeOn) { Ansi.fg(Ansi.THEME_ACCENT) } else { Ansi.reset() })
-                }
-                continue
-            }
-            if (this.pendingBacktick) {
-                sb.append("`")
-                this.pendingBacktick = false
-            }
             sb.append(s)
         }
         return sb.toString()
     }
 
     /**
-     * 流式结束时调用：关闭所有未闭合状态，返回收尾 ANSI
+     * 处理累积的反引号：>=3 切代码块，1-2 切行内代码
+     */
+    private func flushTicks(sb: StringBuilder): Unit {
+        if (this.tickCount == 0) {
+            return
+        }
+        if (this.tickCount >= 3) {
+            this.codeBlockOn = !this.codeBlockOn
+            sb.append(if (this.codeBlockOn) { Ansi.fg(Ansi.THEME_MUTED) } else { Ansi.reset() })
+        } else {
+            this.inlineCodeOn = !this.inlineCodeOn
+            sb.append(if (this.inlineCodeOn) { Ansi.fg(Ansi.THEME_ACCENT) } else { Ansi.reset() })
+        }
+        this.tickCount = 0
+    }
+
+    /**
+     * 流式结束时调用：flush 未决反引号 + 关闭所有未闭合状态，返回收尾 ANSI
      */
     public func finish(): String {
         var sb = StringBuilder()
+        this.flushTicks(sb)
         if (this.codeBlockOn) {
             sb.append(Ansi.reset())
             this.codeBlockOn = false

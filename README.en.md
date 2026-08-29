@@ -396,7 +396,7 @@ cjh has a built-in MCP client supporting stdio transport + JSON-RPC 2.0. After c
 
 ## 🧪 Testing & Quality Assurance
 
-**182 unit tests, all green** (4 packages, 25 test classes, one-shot `cjpm test`), covering all 14 built-in tools + Agent core + infrastructure:
+**202 unit tests, all green** (4 packages, 25 test classes, one-shot `cjpm test`), covering all 14 built-in tools + Agent core + TUI rendering + infrastructure:
 
 | Test domain | Coverage |
 |---|---|
@@ -405,6 +405,7 @@ cjh has a built-in MCP client supporting stdio transport + JSON-RPC 2.0. After c
 | Agent end-to-end | DAG parallel batch (measured 3-way concurrency), write-then-read same-path serial, tool result truncation + full spill |
 | Infrastructure | session save/restore/fork, skill frontmatter parsing, UTF-8 tolerant decode/byte-safe truncation, WebBudget, BM25 retrieval, web_search degradation chain, KeyRotator |
 | Pure functions | ToolResultTruncator thresholds/head-tail/spill, parseSgJsonLine, escapeRegex, formatToolArgs |
+| **TUI rendering** | Markdown bold/inline-code/code-block/cross-frame streaming/finish reset, Screen diff rendering (changed lines/Chinese/clone), Ansi sequences |
 
 **CI gate (mandatory, see `AGENTS.md`)**: `cjpm test` all-green is the sole delivery credential; new features/fixes must ship with tests; bug fixes require a reproducing test written first.
 
@@ -450,7 +451,7 @@ cjh has a built-in MCP client supporting stdio transport + JSON-RPC 2.0. After c
 | v1.2.2 | Round summary bar + /compact + /tree + /fork |
 | v1.2.3 | SSE idle timeout + tool result truncation & backtrack + MCP protocol support + 6 themes |
 | **v1.3.0** | **Web support + plugin trust chain (SHA256 + SM2 signature) + require_signature config** |
-| v1.3.1 | **LLM efficiency triple fix** (compaction into loop + real-usage trigger + keep tuning, prompt peak 42.9K→9.4K) + **182 unit tests green** + 10+ latent bugs fixed + build.cj renames artifact to `cjh` |
+| v1.3.1 | **LLM efficiency triple fix** (compaction into loop + real-usage trigger + keep tuning, prompt peak 42.9K→9.4K) + **202 unit tests green** + 11 latent bugs fixed (incl. TUI markdown code-block rendering) + build.cj renames artifact to `cjh` |
 
 ## 🗺️ Roadmap
 

@@ -390,7 +390,7 @@ cjh 内置 MCP 客户端，支持 stdio 传输 + JSON-RPC 2.0。配置 `mcp_serv
 
 ## 🧪 测试与质量保证
 
-**182 个单元测试全绿**（4 包 25 个测试类，`cjpm test` 一键运行），覆盖全部 14 个内置工具 + Agent 核心 + 基础设施：
+**202 个单元测试全绿**（4 包 25 个测试类，`cjpm test` 一键运行），覆盖全部 14 个内置工具 + Agent 核心 + TUI 渲染 + 基础设施：
 
 | 测试域 | 覆盖 |
 |---|---|
@@ -399,6 +399,7 @@ cjh 内置 MCP 客户端，支持 stdio 传输 + JSON-RPC 2.0。配置 `mcp_serv
 | Agent 端到端 | DAG 并行批（实测 3 路并发）、写读同 path 串行、工具结果截断 + spill 落盘完整 |
 | 基础设施 | 会话保存/恢复/分支、技能 frontmatter 解析、UTF-8 容错解码/字节安全截断、WebBudget 预算、BM25 检索、web_search 路由降级链、KeyRotator 轮换 |
 | 纯函数 | ToolResultTruncator 阈值/头尾/落盘、parseSgJsonLine、escapeRegex、formatToolArgs |
+| **TUI 渲染** | Markdown 粗体/行内代码/代码块/跨帧流式/finish 复位、Screen 差分渲染（变化行/中文/clone）、Ansi 转义序列 |
 
 **CI 门禁（强制，见 `AGENTS.md`）**：`cjpm test` 全绿是唯一交付凭证；新功能/修复必须带测试；bug 修复先写复现测试再修。
 
@@ -444,7 +445,7 @@ cjh 内置 MCP 客户端，支持 stdio 传输 + JSON-RPC 2.0。配置 `mcp_serv
 | v1.2.2 | 回合总结条 + /compact + /tree + /fork |
 | v1.2.3 | SSE 空闲超时 + 工具结果截断与回溯 + MCP 协议支持 + 6 套主题 |
 | **v1.3.0** | **Web 支持 + 插件信任链（SHA256 + SM2 签名）+ require_signature 配置** |
-| v1.3.1 | **LLM 效率三连修复**（compaction 检查入循环 + 真实 usage 触发 + keep 调优，prompt 峰值 42.9K→9.4K）+ **182 单测全绿** + 修复 10+ 潜伏 bug + build.cj 产物改名 cjh |
+| v1.3.1 | **LLM 效率三连修复**（compaction 检查入循环 + 真实 usage 触发 + keep 调优，prompt 峰值 42.9K→9.4K）+ **202 单测全绿** + 修复 11 个潜伏 bug（含 TUI markdown 代码块渲染失效）+ build.cj 产物改名 cjh |
 
 ## 🗺️ 路线图
 
