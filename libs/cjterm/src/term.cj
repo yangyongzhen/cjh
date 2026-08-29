@@ -1,6 +1,7 @@
 package cjterm
 
 import std.convert.Parsable
+import std.time.*
 
 /**
  * termios 纯 FFI 实现（直接调 libc，无外部 .so 依赖）
@@ -90,6 +91,9 @@ public class KeyEvent {
     public let mouseButton: Int64  // 0=左 1=中 2=右（低 2 位）；64=滚轮上 65=滚轮下
     public let mouseX: Int64       // 1-based 列
     public let mouseY: Int64       // 1-based 行
+    // 粘贴事件（bracketed paste ESC[200~...ESC[201~）：text=整段粘贴内容，
+    // 含换行/转义也不逐键解析（防粘贴内容触发 Enter/Esc 穿透弹窗）
+    public let isPaste: Bool
 
     public init(ch: Int32) {
         this.ch = ch
@@ -112,6 +116,34 @@ public class KeyEvent {
         this.mouseButton = -1
         this.mouseX = -1
         this.mouseY = -1
+        this.isPaste = false
+    }
+
+    /**
+     * 粘贴事件构造：整段文本整体追加（不做按键语义解析）
+     */
+    public init(pasteText: String) {
+        this.ch = 0
+        this.isEsc = false
+        this.isEnter = false
+        this.isCtrlC = false
+        this.isBackspace = false
+        this.isTab = false
+        this.isArrowUp = false
+        this.isArrowDown = false
+        this.isArrowLeft = false
+        this.isArrowRight = false
+        this.isPageUp = false
+        this.isPageDown = false
+        this.isCtrlU = false
+        this.isCtrlD = false
+        this.escapeSeq = ""
+        this.text = pasteText
+        this.isMouse = false
+        this.mouseButton = -1
+        this.mouseX = -1
+        this.mouseY = -1
+        this.isPaste = true
     }
 
     public init(ch: Int32, seq: String) {
@@ -133,6 +165,7 @@ public class KeyEvent {
         // 若是转义序列则 text 为空（非输入字符）；否则为输入字符
         this.escapeSeq = if (seq.startsWith(TermEsc.ESC)) { seq } else { "" }
         this.text = if (seq.startsWith(TermEsc.ESC)) { "" } else { seq }
+        this.isPaste = false
         // SGR 鼠标：ESC[<b;x;yM（按下）或 m（释放）
         if (seq.startsWith(TermEsc.ESC + "[<")) {
             let body = seq[3..seq.size - 1]
@@ -521,6 +554,13 @@ public class Term {
                             LibC.free(b2)
                         }
                     }
+                    // bracketed paste 开始标记 ESC[200~：整段读取直到 ESC[201~，
+                    // 作为单次粘贴事件（内容含换行/转义也不逐键解析）
+                    if (seq == TermEsc.ESC + "[200~") {
+                        let pasteText = this.readBracketedPaste()
+                        LibC.free(buf)
+                        return Some(KeyEvent(pasteText))
+                    }
                     LibC.free(buf)
                     return Some(KeyEvent(ch, seq))
                 }
@@ -529,6 +569,90 @@ public class Term {
             }
             return None
         }
+    }
+
+    /**
+     * 读取 bracketed paste 内容：从 ESC[200~ 后持续读取，直到 ESC[201~ 结束标记。
+     *
+     * 防御（实测：终端未发闭合标记时会把后续按键吞进粘贴体，方向键变 DDDD 字符）：
+     * - 总超时 1.5s + 内容上限 64KB：防未闭合时无限吞后续输入
+     * - 返回前剥离 ESC 控制序列：粘贴体只保留纯文本
+     */
+    private func readBracketedPaste(): String {
+        var sb = StringBuilder()
+        let term = TermEsc.ESC + "[201~"
+        let start = DateTime.now()
+        while (true) {
+            if (!this.waitInput(200)) {
+                break  // 无更多输入：粘贴结束（或未闭合）
+            }
+            // 总超时：未闭合时防止吞掉后续按键输入
+            if ((DateTime.now() - start).toMilliseconds() > 1500) {
+                break
+            }
+            unsafe {
+                if (let b <- LibC.malloc<UInt8>(count: 1)) {
+                    let n = read(STDIN, b, 1)
+                    if (n <= 0) {
+                        LibC.free(b)
+                        break
+                    }
+                    sb.append(Rune(Int32(b.read(0))).toString())
+                    LibC.free(b)
+                }
+            }
+            // 内容上限：极端大粘贴体强制截断
+            if (sb.toString().size > 65536) {
+                break
+            }
+            // 尾部匹配结束标记（可能跨多次 read，用 endsWith 检测）
+            let s = sb.toString()
+            if (s.endsWith(term)) {
+                let cut = s.size - term.size
+                if (cut <= 0) {
+                    return ""
+                }
+                return stripEscapeSequences(s[0..cut])
+            }
+        }
+        // 未闭合：去掉可能的尾部残缺结束标记字节，返回剩余（剥离控制序列）
+        let s = sb.toString()
+        if (s.endsWith(term)) {
+            return stripEscapeSequences(s[0..s.size - term.size])
+        }
+        return stripEscapeSequences(s)
+    }
+
+    /**
+     * 剥离 ESC 控制序列：粘贴体只保留纯文本（防方向键序列 ESC[D 被吞后
+     * 渲染成 D/C 字母、或颜色序列污染字段值）
+     */
+    private static func stripEscapeSequences(s: String): String {
+        var sb = StringBuilder()
+        let runes = s.toRuneArray()
+        var i: Int64 = 0
+        while (i < runes.size) {
+            if (UInt32(runes[i]) == 27) {  // ESC：跳过整个序列
+                // ESC [ ... 字母（CSI）或 ESC 单字符
+                i += 1
+                if (i < runes.size && UInt32(runes[i]) == 91) {  // '['
+                    i += 1
+                    while (i < runes.size) {
+                        let v = UInt32(runes[i])
+                        i += 1
+                        if (v >= 64 && v <= 126) {  // 终结字母
+                            break
+                        }
+                    }
+                } else if (i < runes.size) {
+                    i += 1  // ESC + 单字符（如 ESC O）
+                }
+            } else {
+                sb.append(String(runes[i]))
+                i += 1
+            }
+        }
+        return sb.toString()
     }
 
     /**

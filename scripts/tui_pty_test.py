@@ -372,6 +372,39 @@ def test_provider_dialog_protocol() -> None:
         s.close()
 
 
+def test_provider_paste() -> None:
+    print("[场景9] Provider 弹窗-粘贴：内容进弹窗字段，不穿透主输入框/不误提交")
+    # 聚合端点（custom）：弹窗含协议字段，Tab 两次到端点字段
+    cfg = make_config_dir(base_url="https://taotoken.net/api", model="deepseek-v4-flash")
+    s = PtuSession(cfg)
+    try:
+        s.expect("cjh")
+        time.sleep(0.5)
+        s.send("/provider\n")
+        s.expect("配置 Provider")
+        s.read_available(0.3)
+        # Tab × 2：Provider(0) → 协议(1) → 端点(2)
+        s.send_key(9)
+        s.read_available(0.2)
+        s.send_key(9)
+        s.read_available(0.2)
+        # bracketed paste：ESC[200~ 内容（含换行！） ESC[201~
+        # 换行不得触发 Enter 提交、内容不得穿透到主输入框
+        s.send("\x1b[200~https://api.example.com/v1\n\x1b[201~")
+        s.expect("api.example.com")
+        s.read_available(0.5)
+        buf = strip_ansi(s.buf)
+        check("粘贴内容进入弹窗端点字段", "api.example.com" in buf, f"(buf尾部: {buf[-250:]})")
+        check("弹窗未被粘贴换行提交（仍打开）", "配置 Provider" in buf)
+        check("粘贴内容未穿透主输入框", "❯ api.example.com" not in buf)
+        s.send_esc_seq("\x1b")  # 关闭弹窗（Esc 应仍可用）
+        s.read_available(0.3)
+        s.send_key(3)
+        s.wait_exit()
+    finally:
+        s.close()
+
+
 def main() -> None:
     if not os.path.exists(BIN):
         print(f"错误：未找到 {BIN}，请先 cjpm build")
@@ -386,6 +419,7 @@ def main() -> None:
     test_provider_dialog()
     test_provider_dialog_aggregator()
     test_provider_dialog_protocol()
+    test_provider_paste()
     print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
     sys.exit(1 if FAIL else 0)
 

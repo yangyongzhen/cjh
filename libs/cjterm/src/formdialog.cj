@@ -486,6 +486,16 @@ public class FormDialog <: Component {
             }
             return true
         }
+        // 粘贴事件：整段**替换**当前字段值（配置字段语义：粘贴即填入我的配置，
+        // 而非追加在预填值后面）。单行文本字段剥离换行（端点/模型/key 单行，
+        // 避免 \n 渲染换行错位）。bracketed paste 含换行也不触发 Enter/提交。
+        if (key.isPaste) {
+            if (this.focus < this.values.size && !this.isSelect(this.focus)) {
+                let cleaned = key.text.replace("\n", "").replace("\r", "")
+                this.values[this.focus] = cleaned
+            }
+            return true
+        }
         // 可打印字符：追加到当前字段（select 字段忽略）
         if (key.text.size > 0 && !key.isEsc && !key.isEnter && !key.isBackspace &&
             !key.isTab && !key.isArrowUp && !key.isArrowDown && !key.isArrowLeft && !key.isArrowRight) {

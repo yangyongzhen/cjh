@@ -225,6 +225,10 @@ public class TuiApp {
         // 滚轮恢复终端原生滚动行为。
         print(Ansi.clearScreen(), flush: true)
         print(Ansi.hideCursor(), flush: true)
+        // 注意：不强制发送 ESC[?2004h 开启 bracketed paste——实测部分真实终端
+        // 开启后粘贴闭合检测失败，readBracketedPaste 吞后续按键（Backspace/方向键
+        // 变 DDDD、删不掉）。保持默认裸流粘贴（逐字符，行为可预期）；
+        // 若终端自行发送 ESC[200~ 包裹，readKey 仍识别为单次粘贴事件。
         this.render()
 
         // 动态状态行计时刷新：agent 执行中时每秒强制 markDirty，

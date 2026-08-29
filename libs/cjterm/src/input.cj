@@ -105,6 +105,15 @@ public class InputBox <: Component {
             }
             return true
         }
+        // 粘贴事件：整段追加（bracketed paste 含换行也不触发 Enter 提交）。
+        // 单行输入框剥离换行（多行内容贴到单行框时保持单行）
+        if (key.isPaste) {
+            if (key.text.size > 0) {
+                this.text_ += key.text.replace("\n", "").replace("\r", "")
+                this.onChange(this.text_)
+            }
+            return true
+        }
         // 可打印字符（含中文等多字节 UTF-8；排除控制键）
         if (key.text.size > 0 && !key.isEsc && !key.isEnter && !key.isBackspace) {
             this.text_ += key.text

@@ -205,6 +205,15 @@ public class MultiLineEditor <: Component {
             this.onChange(this.text())
             return true
         }
+        // 粘贴事件：整段在光标处插入（含换行按文本插入，不拆行触发语义——bracketed paste）
+        if (key.isPaste) {
+            if (key.text.size > 0) {
+                this.lines[this.row] = this.insertAtRunes(this.lines[this.row], this.col, key.text)
+                this.col += this.runeCount(key.text)
+                this.onChange(this.text())
+            }
+            return true
+        }
         // 可打印字符：在光标处插入（UTF-8 多字节安全）
         if (key.text.size > 0 && !key.isEsc && !key.isEnter && !key.isBackspace) {
             this.lines[this.row] = this.insertAtRunes(this.lines[this.row], this.col, key.text)
