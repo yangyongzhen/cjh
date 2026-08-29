@@ -36,4 +36,21 @@ public class EnvFfi {
             return r == 0
         }
     }
+
+    /**
+     * 跨平台用户主目录：
+     *   Windows → USERPROFILE（C:\Users\<name>，无 HOME 环境变量）
+     *   POSIX   → HOME
+     *   均缺失  → /root（极端兜底）
+     */
+    public static func homeDir(): String {
+        let up = getenv("USERPROFILE")
+        if (up.isSome()) {
+            let v = up.getOrThrow()
+            if (v.size > 0) {
+                return v
+            }
+        }
+        return getenv("HOME") ?? "/root"
+    }
 }

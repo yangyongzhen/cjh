@@ -314,11 +314,11 @@ public class Capability {
      */
     private static func normalizePath(path: String): String {
         if (path.startsWith("$HOME")) {
-            let home = EnvFfi.getenv("HOME") ?? "/root"
+            let home = EnvFfi.homeDir()
             return home + path[5..path.size]
         }
         if (path.startsWith("~/")) {
-            let home = EnvFfi.getenv("HOME") ?? "/root"
+            let home = EnvFfi.homeDir()
             return home + path[1..path.size]
         }
         return path
