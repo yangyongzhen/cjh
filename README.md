@@ -86,7 +86,7 @@ dsh 的插件生态强大，但 Node/npm 依赖树是隐形门槛。cjh 用仓�
 | **多 Provider 开箱即用** | OpenAI / DeepSeek / GLM / Anthropic / Ollama 全兼容，`/provider` 热切换。 |
 | **插件信任链** | SHA256 校验和 + SM2 国密签名验证（仓颉 `stdx.crypto` 原生），防供应链投毒。 |
 | **Web 原生支持** | 内置 HTTP Server + WebSocket 流式对话 + REST API + 前端 SPA，远程驱动 Agent。 |
-| **跨平台原生** | 仓颉多后端编译 + 终端层平台抽象（POSIX/Win32 后端条件编译，VT 输出统一），一份源码出多平台二进制，单文件分发不变（[方案](docs/跨平台终端层设计方案.md)，规划中）。 |
+| **跨平台原生** | 仓颉多后端编译 + 终端层平台抽象（POSIX/Win32 后端条件编译，VT 输出统一），一份源码出多平台二进制：Linux 静态单文件 + Windows 交叉编译 exe 已实测产出，macOS 直通（[方案](docs/跨平台终端层设计方案.md)）。 |
 
 ## 🎯 两大硬性指标
 
@@ -253,18 +253,28 @@ coding agent 的执行效率直接决定用户等待时间。cjh 从三个维度
 ### 环境要求
 
 - 仓颉 SDK 1.0.5+（`cjc` / `cjpm`）
-- stdx 扩展标准库
-- Linux（本项目纯终端，无 GUI 依赖）
+- stdx 扩展标准库（Linux 版开发；打包其他平台需对应平台版，见下）
+- Linux（开发环境；支持交叉打包 Windows，见下）
 
 ### 构建
 
 ```bash
-# 激活仓颉环境
-source /path/to/cj-env.sh
+# 激活仓颉环境（设 PATH + LD_LIBRARY_PATH，含 stdx 动态库）
+source cj-env.sh
 
 # 构建（产物为 cjh）
 cjpm build
 ```
+
+### 各平台打包
+
+| 平台 | 命令 | 产物 | 说明 |
+|---|---|---|---|
+| Linux（静态单文件） | 切静态配置（`--static --static-std --static-libs`）→ `cjpm build` | `dist/cjh-<ver>-linux-x64` | 单文件零依赖（含仓颉运行时+stdx），直接分发运行。构建后切回动态配置（静态下 `cjpm test` 会 double free，详见 docs/开发文档与踩坑记录.md §3.10） |
+| Windows | `cjpm build --target x86_64-pc-windows-gnu` | `dist/cjh-<ver>-windows-x64.exe` | Linux 上交叉编译直接产出 PE 可执行文件（已实测）。**前提**：`~/.cangjie/stdx/` 装有 `cangjie-stdx-windows-x64-<ver>`（gitcode.com/Cangjie/cangjie_stdx/releases 下载，与 Linux 版同版本）；**部署**：exe 需与 stdx Windows 包的 DLL（`libcangjie-runtime.dll`、`libstdx*.dll`）同目录 |
+| macOS | POSIX 后端直通，同 Linux 源码 | — | 需 macOS 环境构建（termios 兼容，`@When` 自动选 POSIX 后端） |
+
+> 跨平台原理：终端层 `TerminalBackend` 抽象（`@When[os == ...]` 条件编译选后端，Windows 用 Win32 Console API + VT 输出，Linux/macOS 用 termios），一份源码多平台二进制。详见 [跨平台终端层设计方案](docs/跨平台终端层设计方案.md)。
 
 ### 配置
 
