@@ -314,6 +314,9 @@ public class Agent {
         let summary = RunSummary()
         let startTime = DateTime.now()
         var iterations: Int64 = 0
+        // 空响应重试计数（LLM 返回无 text 且无 tool_calls 时重试，超过 maxEmptyRetries 才退出）
+        var emptyRetries: Int64 = 0
+        let maxEmptyRetries: Int64 = 3
         while (iterations < this.config.maxIterations) {
             iterations += 1
             summary.rounds = iterations
@@ -469,9 +472,19 @@ public class Agent {
                 this.messages.add(ChatMessage("assistant", response.text))
                 this.onAssistantText(response.text)
             } else {
-                // LLM 返回空响应（无 text 且无 tool_calls）：提示用户而非静默退出
-                Log.error("LLM 返回空响应（无 text 且无 tool_calls），回合 ${iterations} 提前结束")
-                this.onAssistantText("\n[空响应] LLM 未返回文本或工具调用，回合结束。")
+                // LLM 返回空响应（无 text 且无 tool_calls）：重试，超过 maxEmptyRetries 才退出
+                emptyRetries += 1
+                if (emptyRetries <= maxEmptyRetries) {
+                    Log.warn("LLM 返回空响应，重试 ${emptyRetries}/${maxEmptyRetries}")
+                    this.messages.add(ChatMessage("user",
+                        "[System Notice] Your previous response was empty (no text and no tool calls). " +
+                        "Please continue the task and provide a response."))
+                    // 不消耗 iterations，回 while 顶部重试
+                    iterations -= 1
+                    continue
+                }
+                Log.error("LLM 连续 ${maxEmptyRetries} 次返回空响应，放弃重试")
+                this.onAssistantText("\n[空响应] LLM 连续 ${maxEmptyRetries} 次未返回内容，回合结束。")
             }
             // 回合结束：计算耗时，回填 reply，返回 summary（onRunComplete 由调用方在 setAgentRunning(false) 后触发）
             let durationMs = (DateTime.now() - startTime).toMilliseconds()

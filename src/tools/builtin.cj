@@ -8,6 +8,7 @@ import cjutil.*
 import std.regex.*
 import std.io.*
 import std.convert.*
+import std.sync.*
 import cjllm.ToolSpec
 
 /**
@@ -67,6 +68,10 @@ public class BashTool <: CjhTool {
  * 效率收益（omp 实测）：省一半上下文 Token
  */
 public class ReadTool <: CjhTool {
+    // 重复读追踪：path → 已读次数（静态共享，跨工具实例）
+    static let readCountMap: HashMap<String, Int64> = HashMap<String, Int64>()
+    static let readCountLock: Mutex = Mutex()
+
     public init() {}
 
     public func isReadOnly(): Bool {
@@ -77,11 +82,14 @@ public class ReadTool <: CjhTool {
         var props = HashMap<String, JsonValue>()
         props.add("path", JsonSchema.str("File path to read"))
         props.add("offset", JsonSchema.str("Start line (1-based, default 1)"))
-        props.add("limit", JsonSchema.str("Number of lines to return (default: structured summary or full file)"))
+        props.add("limit", JsonSchema.str("Number of lines to return (default: 200 for large files, full for small)"))
         let schema = JsonSchema.object(props, ArrayList<String>(["path"]))
         return ToolSpec("read_file",
-            "Read a file. By default returns a structured summary (function/class names + comments, saves tokens); " +
-            "with offset+limit returns the specified line range; small files (<200 lines) return the full content.",
+            "Read a file. Returns line-numbered content (format: <N>\\t<content>). " +
+            "Default behavior: small files (<200 lines) return full content; " +
+            "larger files return the first 200 lines -- use offset+limit to read other sections. " +
+            "Pass offset=1 limit=50 to read lines 1-50. " +
+            "Avoid reading the same file repeatedly; if you need a different section, use offset+limit.",
             schema)
     }
 
@@ -107,6 +115,8 @@ public class ReadTool <: CjhTool {
                 case _ => ()
             }
         }
+        // 重复读计数 + 提示
+        let repeatHint = trackReadCount(path)
         try {
             // 大文件优化：用 FileInfo.size 判断，避免 File.readFrom 全文加载
             let fi = FileInfo(path)
@@ -115,7 +125,8 @@ public class ReadTool <: CjhTool {
             let largeThreshold: Int64 = 262144
             if (fileSize > largeThreshold) {
                 // 大文件：流式逐行读取，不加载全文到 Array<String>
-                return readLargeFile(path, offset, limit)
+                let result = readLargeFile(path, offset, limit)
+                return appendHints(result, repeatHint, offset, limit)
             }
             // 小文件：一次读完
             let bytes = File.readFrom(path)
@@ -123,16 +134,60 @@ public class ReadTool <: CjhTool {
             let lines = content.split("\n", -1)
             // 有 offset 或 limit → 按需展开行段
             if (offset > 0 || limit > 0) {
-                return readRange(lines, offset, limit)
+                let result = readRange(lines, offset, limit)
+                return appendHints(result, repeatHint, offset, limit)
             }
-            // 无 offset/limit：大文件返回摘要，小文件返回全文
+            // 无 offset/limit：大文件默认读前 200 行，小文件返回全文
             if (lines.size > 200) {
-                return readSummary(lines)
+                let result = readRange(lines, 1, 200)
+                return appendHints(result, repeatHint, offset, limit)
             }
-            return ToolResult(content, false)
+            // 小文件全文（带行号前缀，与 readRange 格式统一）
+            var numbered = StringBuilder()
+            var i: Int64 = 0
+            while (i < Int64(lines.size)) {
+                numbered.append("${i + 1}\t${lines[i]}\n")
+                i += 1
+            }
+            return appendHints(ToolResult(numbered.toString(), false), repeatHint, offset, limit)
         } catch (e: Exception) {
             return ToolResult("读取失败: ${e}", true)
         }
+    }
+
+    /**
+     * 重复读追踪：同一文件读 ≥3 次时返回提示
+     * 对齐 omp REPEAT_READ_HINT_THRESHOLD=3
+     */
+    private func trackReadCount(path: String): String {
+        readCountLock.lock()
+        var count: Int64 = 0
+        match (readCountMap.get(path)) {
+            case Some(v) => count = v
+            case None => count = 0
+        }
+        readCountMap[path] = count + 1
+        readCountLock.unlock()
+        if (count + 1 >= 3) {
+            return "\n[提示] 你已读取 ${path} ${count + 1} 次。如需其他段落，请用 offset+limit 指定行范围，避免重复全量读取。"
+        }
+        return ""
+    }
+
+    /**
+     * 在工具结果末尾追加提示（重复读提示、分段读提示）
+     */
+    private func appendHints(result: ToolResult, repeatHint: String,
+        offset: Int64, limit: Int64): ToolResult {
+        var hints = repeatHint
+        // 无 offset/limit 且结果较长时，提示用 offset+limit 翻页
+        if (offset == 0 && limit == 0 && result.content.size > 2000) {
+            hints += "\n[提示] 内容较长。如需后续段落，用 offset=N 读取第 N 行之后的内容。"
+        }
+        if (hints.size > 0) {
+            return ToolResult(result.content + hints, result.isError)
+        }
+        return result
     }
 
     /**
