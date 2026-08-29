@@ -6,7 +6,7 @@
 
 Describe tasks in natural language → the Agent understands intent, plans autonomously, calls tools, observes results, and iterates until done. The entire workflow is rendered live in a TUI, and can also be driven remotely via Web.
 
-cjh is not a simple LLM wrapper. It draws on the design essence of [Pi](docs/pi agent的核心卖点.md) (token-saving engineering) and [OMP](docs/omp agent的核心卖点.md) (hashline file rewriting), natively implemented in Cangjie as a coding agent harness optimized for two hard metrics: **token efficiency** + **execution speed**.
+**cjh is a coding agent harness natively implemented in Cangjie**: single-binary zero-dependency distribution (one file = one agent), a plugin trust chain backed by language-level memory safety, and systematic engineering optimization around two hard metrics: **token efficiency** + **execution speed**. Driven both from the TUI and remotely via Web, cjh is evolving toward **agent-cluster orchestration** — scaling from a single engineer to a software-engineering team working in parallel.
 
 [Project Intent](#-project-intent-not-just-another-agent) · [Features](#-features) · [Two Hard Metrics](#-two-hard-metrics) · [Quick Start](#-quick-start) · [Architecture](#-architecture) · [Plugin Ecosystem](#-plugin-ecosystem--trust-chain) · [Docs](#-docs) · [Roadmap](#-roadmap)
 
@@ -16,9 +16,9 @@ cjh is not a simple LLM wrapper. It draws on the design essence of [Pi](docs/pi 
 
 ## 🎯 Project Intent: Not Just Another Agent
 
-> There are many agent solutions today — codex, claude, deepseek's dsh, pi, omp, etc.
-> Just implementing one in Cangjie isn't really innovation; that wouldn't be very novel.
-> If we're going to do this, let's do it with the attitude of making the best — to embody Cangjie's unique advantages and build our own distinctive character.
+> The coding-agent space already has mature solutions — codex, claude code, deepseek's dsh, pi, omp, and more — with features proven viable.
+> **Building yet another "same agent in Cangjie" has no value.** cjh's foundation is the differentiation only Cangjie can provide:
+> single-binary distribution, a strong safety DNA, multi-backend compilation, M:N native concurrency, and the **agent-cluster orchestration** these enable.
 
 The core thesis: **mainstream agents have already proven features viable; piling on features is meaningless. Cangjie's unique advantages are the foundation.** Three hard constraints permeate all design:
 
@@ -38,9 +38,9 @@ Cangjie's characteristics happen to hit 4 of the above pain points. This is "why
 | **M:N lightweight threads + high performance** | Context management, concurrency | Native concurrent processing of streaming/multi-agent, low overhead |
 | **Domestic root technology** | Xinchu/self-controllable | Government, finance and other sensitive scenarios with no foreign runtime dependencies |
 
-### cjh's Differentiated Answer
+### cjh's Differentiation
 
-Facing the question "dsh's plugin mechanism is very powerful, so what are your advantages?", cjh's answer is:
+Facing mature mainstream agents, cjh's differentiation is:
 
 **1. Cangjie single binary → plugins with zero dependency, distribute and use**
 
@@ -54,7 +54,7 @@ Mainstream agents rely on sandbox + approval (runtime interception) for plugin s
 
 This is cjh's core distinguishing it from "feature piling". Drawing on Pi's token-saving engineering and OMP's hashline file rewriting, two hard metrics are systematically optimized. See the [Two Hard Metrics](#-two-hard-metrics) section below.
 
-**4. Ultimate vision: agent cluster orchestration (from "single engineer" to "software engineering team")**
+**4. Ultimate goal: agent cluster orchestration (from "single engineer" to "software engineering team")**
 
 Benchmarking against pi/omp is only the starting point — learning from many agents' strengths to **raise the single-agent capability** (token savings, runtime efficiency). What cjh truly aims for, leveraging Cangjie language characteristics, is **agent cluster orchestration** — amplifying single-agent capability into team-level parallelism.
 
