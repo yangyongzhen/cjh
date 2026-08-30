@@ -51,102 +51,6 @@ public class OutputView <: Component {
         this.thinkingTokens = tokens
     }
 
-    // ===== 思考内容技术元素高亮 =====
-    // 方案 A：只高亮技术关键点（路径/文件名/数字/代码标识符）用青色，
-    // 自然语言保持灰色——信息密度高且不打断阅读（词级关键词标绿太刺眼）
-
-    /**
-     * 思考行技术元素高亮：
-     *   - 数字（含小数）→ 青
-     *   - 路径（含 /）→ 青
-     *   - 文件/扩展名（word.ext，常见扩展）→ 青
-     *   - 代码标识符（含 _ 或驼峰）→ 青
-     *   - 其余（自然语言/中文）→ 保持灰色
-     * 输入为纯文本行（折行后），输出带 ANSI 色。
-     */
-    private func highlightThinking(line: String): String {
-        let runes = line.toRuneArray()
-        var sb = StringBuilder()
-        var i: Int64 = 0
-        while (i < runes.size) {
-            let ch = runes[i]
-            // 技术 token 字符集：字母/数字/下划线/斜杠/点/连字符
-            if (isTechChar(ch)) {
-                var token = StringBuilder()
-                var isAllDigit: Bool = true
-                var hasSlash: Bool = false
-                var hasUnderscore: Bool = false
-                var hasCamel: Bool = false
-                var hasDot: Bool = false
-                var prevLower: Bool = false
-                while (i < runes.size && isTechChar(runes[i])) {
-                    let c = runes[i]
-                    token.append(String(c))
-                    let v = UInt32(c)
-                    if (v >= 48 && v <= 57 || v == 46) {
-                        if (v == 46) { hasDot = true }
-                    } else {
-                        isAllDigit = false
-                    }
-                    if (v == 47) { hasSlash = true }       // '/'
-                    if (v == 95) { hasUnderscore = true }  // '_'
-                    if (v == 46) { hasDot = true }         // '.'
-                    if (v >= 65 && v <= 90) {              // 大写：驼峰检测
-                        if (prevLower) { hasCamel = true }
-                    }
-                    prevLower = (v >= 97 && v <= 122)
-                    i += 1
-                }
-                let tokenStr = token.toString()
-                var isFile: Bool = false
-                // word.ext：扩展名匹配
-                if (hasDot && !hasSlash && !isAllDigit) {
-                    let dotIdx = tokenStr.lastIndexOf(".")
-                    if (dotIdx.isSome()) {
-                        let ext = tokenStr[(dotIdx.getOrThrow() + 1)..tokenStr.size]
-                        if (isKnownExt(ext)) {
-                            isFile = true
-                        }
-                    }
-                }
-                let isTech = isAllDigit || hasSlash || hasUnderscore || hasCamel || isFile
-                if (isTech) {
-                    sb.append(Ansi.fg(Ansi.THEME_ACCENT) + tokenStr + Ansi.reset())
-                } else {
-                    sb.append(tokenStr)
-                }
-                continue
-            }
-            sb.append(String(ch))
-            i += 1
-        }
-        return sb.toString()
-    }
-
-    /**
-     * 技术 token 字符：字母/数字/下划线/斜杠/点/连字符
-     */
-    private func isTechChar(ch: Rune): Bool {
-        let v = UInt32(ch)
-        return (v >= 48 && v <= 57) || (v >= 65 && v <= 90) ||
-            (v >= 97 && v <= 122) || v == 95 || v == 47 || v == 46 || v == 45
-    }
-
-    /**
-     * 常见文件扩展名
-     */
-    private func isKnownExt(ext: String): Bool {
-        let exts = ["cj", "cangjie", "js", "ts", "html", "css", "py", "rs", "go",
-            "java", "c", "h", "cpp", "sh", "bash", "json", "toml", "yaml", "yml",
-            "md", "txt", "log", "sql", "db", "png", "jpg", "svg", "xml", "ini"]
-        for (e in exts) {
-            if (ext == e) {
-                return true
-            }
-        }
-        return false
-    }
-
     /**
      * 追加一行到输出区（自动补 \n）
      */
@@ -247,14 +151,14 @@ public class OutputView <: Component {
                 for (r in this.thinkingText.toRuneArray()) {
                     let ch = r.toString()
                     if (ch == "\n") {
-                        outLines.add(Ansi.fg(Ansi.THEME_MUTED) + "› " + this.highlightThinking(cur) + Ansi.reset())
+                        outLines.add(Ansi.fg(Ansi.THEME_MUTED) + Ansi.italic() + "› " + cur + Ansi.reset())
                         cur = ""
                         curW = 0
                         continue
                     }
                     let chW: Int64 = TuiCanvas.displayWidth(ch)
                     if (curW + chW > contentW) {
-                        outLines.add(Ansi.fg(Ansi.THEME_MUTED) + "› " + this.highlightThinking(cur) + Ansi.reset())
+                        outLines.add(Ansi.fg(Ansi.THEME_MUTED) + Ansi.italic() + "› " + cur + Ansi.reset())
                         cur = ch
                         curW = chW
                     } else {
@@ -263,7 +167,7 @@ public class OutputView <: Component {
                     }
                 }
                 if (cur.size > 0) {
-                    outLines.add(Ansi.fg(Ansi.THEME_MUTED) + "› " + this.highlightThinking(cur) + Ansi.reset())
+                    outLines.add(Ansi.fg(Ansi.THEME_MUTED) + Ansi.italic() + "› " + cur + Ansi.reset())
                 }
             } else {
                 if (this.thinkingDone) {

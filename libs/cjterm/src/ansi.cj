@@ -15,6 +15,7 @@ public class Ansi {
     public static func showCursor(): String { return Ansi.esc() + "[?25h" }
     public static func reset(): String { return Ansi.esc() + "[0m" }
     public static func bold(): String { return Ansi.esc() + "[1m" }
+    public static func italic(): String { return Ansi.esc() + "[3m" }
     public static func dim(): String { return Ansi.esc() + "[2m" }
     public static func fg(code: Int64): String { return Ansi.esc() + "[38;5;${code}m" }
     public static func bg(code: Int64): String { return Ansi.esc() + "[48;5;${code}m" }
