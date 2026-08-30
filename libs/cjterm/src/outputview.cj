@@ -1,5 +1,7 @@
 package cjterm
 
+import std.collection.*
+
 /**
  * OutputView：对话输出区组件（行集合 + 滚动 + 流式段）
  *
@@ -16,8 +18,29 @@ public class OutputView <: Component {
     // 流式段起点（output 中的字节偏移；-1 表示无活动流式段）
     private var streamStartPos: Int64 = -1
     private var scrollOffset: Int64 = 0
+    // 思考块（消息流成员，pi transcript 模式）：
+    // 渲染时作为消息末尾的合成段（折叠 1 行 / 展开全文），随输出滚动回看；
+    // 不写入 output（会话存档不含思考过程）
+    public var thinkingText: String = ""
+    public var thinkingExpanded: Bool = false
+    public var thinkingDone: Bool = false
 
     public init() {}
+
+    /**
+     * 设置思考块内容（reasoning_content 累积）
+     */
+    public func setThinking(text: String, done: Bool): Unit {
+        this.thinkingText = text
+        this.thinkingDone = done
+    }
+
+    /**
+     * 切换思考块展开/折叠
+     */
+    public func toggleThinking(): Unit {
+        this.thinkingExpanded = !this.thinkingExpanded
+    }
 
     /**
      * 追加一行到输出区（自动补 \n）
@@ -103,7 +126,45 @@ public class OutputView <: Component {
     }
 
     public override func render(canvas: TuiCanvas, row: Int64, width: Int64, height: Int64): Int64 {
-        let outLines = this.output.toString().split("\n", -1)
+        // 消息流行：output 基础行 + 思考块合成段（消息末尾）
+        var outLines = ArrayList<String>()
+        for (l in this.output.toString().split("\n", -1)) {
+            outLines.add(l)
+        }
+        // 思考块：折叠 1 行 / 展开全部内容行（前缀 "› "），作为消息流成员
+        if (this.thinkingText.size > 0) {
+            if (this.thinkingExpanded) {
+                let status: String = if (this.thinkingDone) { "思考过程 · Ctrl+T 折叠" } else { "思考中… · Ctrl+T 折叠" }
+                outLines.add(Ansi.fg(Ansi.THEME_MUTED) + "💭 " + status + Ansi.reset())
+                let contentW: Int64 = if (width > 4) { width - 4 } else { 10 }
+                var cur: String = ""
+                var curW: Int64 = 0
+                for (r in this.thinkingText.toRuneArray()) {
+                    let ch = r.toString()
+                    if (ch == "\n") {
+                        outLines.add(Ansi.fg(Ansi.THEME_MUTED) + "› " + cur + Ansi.reset())
+                        cur = ""
+                        curW = 0
+                        continue
+                    }
+                    let chW: Int64 = TuiCanvas.displayWidth(ch)
+                    if (curW + chW > contentW) {
+                        outLines.add(Ansi.fg(Ansi.THEME_MUTED) + "› " + cur + Ansi.reset())
+                        cur = ch
+                        curW = chW
+                    } else {
+                        cur += ch
+                        curW += chW
+                    }
+                }
+                if (cur.size > 0) {
+                    outLines.add(Ansi.fg(Ansi.THEME_MUTED) + "› " + cur + Ansi.reset())
+                }
+            } else {
+                let status: String = if (this.thinkingDone) { "思考过程 · Ctrl+T 查看" } else { "思考中… · Ctrl+T 展开" }
+                outLines.add(Ansi.fg(Ansi.THEME_MUTED) + "💭 " + status + Ansi.reset())
+            }
+        }
         // 滚动边界修正：最多滚到"最后一行可见"
         let maxOffset = if (outLines.size > height) { outLines.size - height } else { 0 }
         if (this.scrollOffset > maxOffset) {

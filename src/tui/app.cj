@@ -66,8 +66,6 @@ public class TuiApp {
     private var reasoningDone: Bool = false
     // 思考内容上限（防内存膨胀；超出截断保留尾部）
     private let reasoningMaxChars: Int64 = 8192
-    // 思考块滚动偏移（0=最新尾部；>0=向上滚动看更早内容）
-    private var reasoningScrollOffset: Int64 = 0
     // 输入队列：Agent 执行期间提交的消息排队，执行完毕后自动处理
     private var inputQueue: ArrayList<String> = ArrayList<String>()
     private var inputQueueLock: Mutex = Mutex()
@@ -378,10 +376,8 @@ public class TuiApp {
     }
 
     /**
-     * 追加思考内容到缓冲（reasoning_content 增量回调）
-     *
-     * 内容保留全文（上限 reasoningMaxChars 截断保留尾部），
-     * 默认折叠显示，Ctrl+T 展开查看完整思考过程。
+     * 追加思考内容（reasoning_content 增量）——方案 B：思考并入消息流
+     * 累积到 OutputView 的思考块（折叠/展开段），渲染在消息末尾，随输出滚动
      */
     public func appendReasoning(text: String): Unit {
         if (text.size == 0) { return }
@@ -397,18 +393,19 @@ public class TuiApp {
             let cut = this.reasoningBuffer.size - this.reasoningMaxChars
             this.reasoningBuffer = this.reasoningBuffer[cut..this.reasoningBuffer.size]
         }
+        this.outputView.setThinking(this.reasoningBuffer, this.reasoningDone)
         this.reasoningLock.unlock()
         this.markDirty()
     }
 
     /**
-     * 思考结束标记（正式 content 开始调用）。
-     * 内容保留（可 Ctrl+T 展开回看），仅切换折叠条文案。
+     * 思考结束标记（正式 content 开始调用）。内容保留（可 Ctrl+T 展开回看）
      */
     public func clearReasoning(): Unit {
         this.reasoningLock.lock()
         if (this.reasoningBuffer.size > 0 && !this.reasoningDone) {
             this.reasoningDone = true
+            this.outputView.setThinking(this.reasoningBuffer, true)
             this.reasoningLock.unlock()
             this.markDirty()
         } else {
@@ -422,9 +419,7 @@ public class TuiApp {
     public func toggleReasoning(): Unit {
         this.reasoningLock.lock()
         this.reasoningExpanded = !this.reasoningExpanded
-        if (this.reasoningExpanded) {
-            this.reasoningScrollOffset = 0  // 展开时从最新内容开始
-        }
+        this.outputView.toggleThinking()
         this.reasoningLock.unlock()
         this.markDirty()
     }
@@ -849,25 +844,6 @@ public class TuiApp {
             this.toggleReasoning()
             return
         }
-        // 思考块展开态：PageUp/PageDown 滚动思考内容（优先于输出区滚动）
-        this.reasoningLock.lock()
-        let thinkingFocused: Bool = this.reasoningExpanded && this.reasoningBuffer.size > 0
-        this.reasoningLock.unlock()
-        if (thinkingFocused) {
-            if (key.isPageUp) {
-                this.reasoningScrollOffset += 3
-                this.markDirty()
-                return
-            }
-            if (key.isPageDown) {
-                this.reasoningScrollOffset -= 3
-                if (this.reasoningScrollOffset < 0) {
-                    this.reasoningScrollOffset = 0
-                }
-                this.markDirty()
-                return
-            }
-        }
         // Ctrl+C（P0-2）：审批等待中→拒绝审批；agent 忙→中断当前轮；
         // 空闲→第一次确认、第二次退出（防误触丢会话）
         if (key.isCtrlC) {
@@ -1207,30 +1183,14 @@ public class TuiApp {
             // 无 agent 运行时，agentRow 不使用，仅用于 outH 计算
             let agentRow: Int64 = if (agentBusy) { statusRow - 1 - tasksH - 1 } else { -1 }
 
-            // 思考块：reasoningBuffer 非空时显示。
-            // 方案 A（覆盖层）：思考块渲染在输出区底部（覆盖消息末尾 N 行），
-            // 消息区高度恒定不挤压——消除"消息被截断两截"的断裂感。
-            //   agent 执行中 → 覆盖输出区底部（动态状态行上方）
-            //   agent 空闲（思考结束）→ 覆盖输出区底部（状态栏上方），可回看
-            this.reasoningLock.lock()
-            let hasReasoning: Bool = this.reasoningBuffer.size > 0
-            let reasoningExpanded: Bool = this.reasoningExpanded
-            let reasoningDone: Bool = this.reasoningDone
-            this.reasoningLock.unlock()
-            let reasoningH: Int64 = if (hasReasoning) {
-                if (reasoningExpanded) { 12 } else { 1 }
-            } else { 0 }
-
-            // 输出区可用高度：8 .. outBottom（恒定，不受思考块影响）
+            // 思考块（方案 B）：作为消息流成员由 OutputView 渲染（折叠/展开段），
+            // 不再占用独立布局区域——消息区高度恒定，思考随输出滚动回看
+            // 输出区可用高度：8 .. outBottom（恒定）
             // agent 执行中：动态状态行上方；空闲：状态栏上方
             let outBottom: Int64 = if (agentBusy && agentRow >= 8) {
                 agentRow - 1
             } else { statusRow - 1 }
             let outH: Int64 = if (outBottom - 8 + 1 > 0) { outBottom - 8 + 1 } else { 0 }
-            // 思考块渲染位置：输出区底部向上 N 行（覆盖消息末尾）
-            let reasoningRow: Int64 = if (hasReasoning && outBottom >= 8) {
-                outBottom - reasoningH + 1
-            } else { -1 }
 
             // 输出区（对话 / 帮助视图，无边框全宽）
             if (this.viewMode == 1) {
@@ -1251,10 +1211,6 @@ public class TuiApp {
                 if (agentBusy && agentRow >= 8) {
                     this.spinner.tick()
                     this.renderAgentStatus(this.canvas, agentRow, cols)
-                }
-                // 思考块：reasoningBuffer 非空时渲染（agent 忙/空闲均显示，空闲可回看）
-                if (hasReasoning && reasoningRow >= 8) {
-                    this.renderReasoningWindow(this.canvas, reasoningRow, cols)
                 }
             }
         }
@@ -1336,85 +1292,6 @@ public class TuiApp {
      * 截断策略：按显示宽度（displayWidth）计算，CJK/emoji 占 2 列；
      * 超出 2 行 × (cols-2) 时只显示最后 2 行。
      */
-    /**
-     * 渲染思考块（pi 风格）：
-     *   折叠：1 行提示条（思考中/可查看 + Ctrl+T 提示）
-     *   展开：渲染完整思考内容（最多 8 行，超出显示尾部 + 省略标记）
-     */
-    private func renderReasoningWindow(canvas: TuiCanvas, row: Int64, cols: Int64): Unit {
-        this.reasoningLock.lock()
-        let buf: String = this.reasoningBuffer
-        let expanded: Bool = this.reasoningExpanded
-        let done: Bool = this.reasoningDone
-        this.reasoningLock.unlock()
-        if (buf.size == 0) { return }
-
-        let contentW: Int64 = if (cols > 4) { cols - 4 } else { 10 }
-
-        // 折叠态：1 行提示条
-        if (!expanded) {
-            let status: String = if (done) { "思考过程" } else { "思考中…" }
-            let hint: String = "💭 " + status + " · Ctrl+T " + (if (done) { "查看" } else { "展开" })
-            canvas.setLine(row, Ansi.fg(Ansi.THEME_MUTED) + hint + Ansi.reset())
-            return
-        }
-
-        // 展开态：按宽度折算渲染思考内容（最多 12 行，PageUp/PageDown 滚动）
-        var displayLines: ArrayList<String> = ArrayList<String>()
-        var curLine: String = ""
-        var curWidth: Int64 = 0
-        for (r in buf.toRuneArray()) {
-            let ch = r.toString()
-            if (ch == "\n") {
-                displayLines.add(curLine)
-                curLine = ""
-                curWidth = 0
-                continue
-            }
-            let chW: Int64 = TuiCanvas.displayWidth(ch)
-            if (curWidth + chW > contentW) {
-                displayLines.add(curLine)
-                curLine = ch
-                curWidth = chW
-            } else {
-                curLine += ch
-                curWidth += chW
-            }
-        }
-        if (curLine.size > 0) {
-            displayLines.add(curLine)
-        }
-        // 滚动窗口：显示尾部 (maxLines - 1) 行向上偏移 scrollOffset；PageUp/PageDown 滚动
-        let maxLines: Int64 = 12
-        var scroll: Int64 = this.reasoningScrollOffset
-        // 限制滚动范围：不能滚过开头
-        let maxScroll: Int64 = if (displayLines.size > maxLines - 1) {
-            displayLines.size - (maxLines - 1)
-        } else { 0 }
-        if (scroll > maxScroll) {
-            scroll = maxScroll
-            this.reasoningScrollOffset = scroll
-        }
-        let windowEnd: Int64 = displayLines.size - scroll
-        let windowStart: Int64 = if (windowEnd - (maxLines - 1) > 0) {
-            windowEnd - (maxLines - 1)
-        } else { 0 }
-        let truncatedTop: Bool = windowStart > 0
-        let truncatedBottom: Bool = scroll > 0
-        // 标题行：滚动提示（当前窗口位置）
-        var title: String = "💭 思考过程 · Ctrl+T 折叠"
-        if (truncatedTop || truncatedBottom) {
-            title += " · PgUp/PgDn 滚动"
-        }
-        canvas.setLine(row, Ansi.fg(Ansi.THEME_MUTED) + title + Ansi.reset())
-        var rIdx: Int64 = 0
-        for (i in windowStart..windowEnd) {
-            if (rIdx >= maxLines - 1) { break }
-            canvas.setLine(row + 1 + rIdx, Ansi.fg(Ansi.THEME_MUTED) + "› " + displayLines[i] + Ansi.reset())
-            rIdx += 1
-        }
-    }
-
     /**
      * 帮助视图内容（无边框全宽渲染）
      */
