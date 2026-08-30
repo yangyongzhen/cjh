@@ -54,6 +54,13 @@ public interface LlmProvider {
     public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
         onDelta: (String) -> Unit, onReasoning: (String) -> Unit,
         onTokenEstimate: (Int64) -> Unit, isCancelled: () -> Bool): ModelResponse
+
+    /**
+     * 中止当前流式请求（用户中断时主动关闭连接，打断阻塞的流读取）。
+     * 默认空实现；各 provider 保存当前 Client 并 close。
+     */
+    public func abort(): Unit {
+    }
 }
 
 /**

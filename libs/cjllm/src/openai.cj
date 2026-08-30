@@ -1,6 +1,7 @@
 package cjllm
 
 import stdx.encoding.json.*
+import std.sync.*
 import stdx.net.http.*
 import stdx.net.tls.*
 import stdx.crypto.x509.X509Certificate
@@ -22,6 +23,9 @@ public class OpenAiProvider <: LlmProvider {
     public var fallbackKeys: ArrayList<String> = ArrayList<String>()
     public var temperature: Float64 = 0.7
     public var maxTokens: Int64 = 4096
+    // 当前流式请求的 Client（abort 时 close 打断阻塞 read）
+    private var currentClient: ?Client = None
+    private var clientLock: Mutex = Mutex()
 
     public init(baseUrl: String, apiKey: String, model: String) {
         this.baseUrl = baseUrl
@@ -67,6 +71,24 @@ public class OpenAiProvider <: LlmProvider {
      * sendRequestTimeout WARN，该 WARN 写到 /dev/tty，绕过所有 fd 重定向，
      * 污染 TUI 输入框。
      */
+    /**
+     * 中止当前流式请求：关闭连接打断阻塞的流读取（用户中断时由 agent 调用）
+     */
+    public func abort(): Unit {
+        this.clientLock.lock()
+        let c = this.currentClient
+        this.clientLock.unlock()
+        match (c) {
+            case Some(cl) =>
+                try {
+                    cl.close()
+                } catch (e: Exception) {
+                    // 关闭失败忽略（连接可能已结束）
+                }
+            case None => ()
+        }
+    }
+
     public func warmup(): Unit {
         try {
             var tlsConfig = TlsClientConfig()
@@ -183,6 +205,10 @@ public class OpenAiProvider <: LlmProvider {
             .tlsConfig(tlsConfig)
             .readTimeout(Duration.second * 300)
             .build()
+        // 保存当前 client（abort 时 close）
+        this.clientLock.lock()
+        this.currentClient = Some(client)
+        this.clientLock.unlock()
 
         // P1-5 key 轮换：401/429/5xx → 换备用 key 重试（防限流中断任务）
         let keys = this.allKeys()

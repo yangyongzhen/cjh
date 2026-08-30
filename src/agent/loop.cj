@@ -303,6 +303,13 @@ public class Agent {
         } finally {
             this.interruptLock.unlock()
         }
+        // 主动关闭当前 LLM 流连接：打断阻塞的流读取（否则中断要等 readTimeout
+        // 才生效，用户看到"正在停止…"一直挂着、消息排队僵持）
+        try {
+            this.provider.abort()
+        } catch (e: Exception) {
+            Log.warn("Agent.interrupt abort provider 异常: ${e}")
+        }
     }
 
     /**

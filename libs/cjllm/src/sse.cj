@@ -74,8 +74,11 @@ public class SseParser {
             this.flushRemaining()
             this.onDone()
         } catch (e: Exception) {
-            Log.error("[SSE] run() caught exception", e)
-            this.onError(e.toString())
+            // 用户中断（abort 关闭连接）→ 保留已收数据正常结束，不报错
+            Log.warn("[SSE] run() caught exception (may be user abort): ${e}")
+            this.timedOut = true
+            this.flushRemaining()
+            this.onDone()
         }
     }
 
