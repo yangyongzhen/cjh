@@ -188,7 +188,7 @@ public class ReadTool <: CjhTool {
             }
         }
         // 重复读计数 + 提示
-        let repeatHint = trackReadCount(path)
+        let repeatHint = trackReadCount(path, offset > 0 || limit > 0)
         // 默认 limit：无 offset/limit 时读前 500 行（够覆盖大多数源文件，省轮次）
         let defaultLimit: Int64 = 500
         // SQLite 数据库：P1-7 统一读取接口——.db/.sqlite/.sqlite3 走 sqlite3 CLI
@@ -293,10 +293,15 @@ public class ReadTool <: CjhTool {
     }
 
     /**
-     * 重复读追踪：同一文件读 ≥3 次时返回提示
-     * 对齐 omp REPEAT_READ_HINT_THRESHOLD=3
+     * 重复读追踪：同一文件全量读 ≥5 次时返回提示
+     * 对齐 omp REPEAT_READ_HINT_THRESHOLD（分段读不计数——offset+limit
+     * 是正常高效操作，只有"无参数全量重读"才是 token 浪费）
+     * @param segmented 本次是否 offset/limit 分段读（分段不计数不提示）
      */
-    private func trackReadCount(path: String): String {
+    private func trackReadCount(path: String, segmented: Bool): String {
+        if (segmented) {
+            return ""  // 分段读：正常操作，不打扰
+        }
         readCountLock.lock()
         var count: Int64 = 0
         match (readCountMap.get(path)) {
@@ -305,8 +310,8 @@ public class ReadTool <: CjhTool {
         }
         readCountMap[path] = count + 1
         readCountLock.unlock()
-        if (count + 1 >= 3) {
-            return "\n[提示] 你已读取 ${path} ${count + 1} 次。如需其他段落，请用 offset+limit 指定行范围，避免重复全量读取。"
+        if (count + 1 >= 5) {
+            return "\n[提示] 该文件已全量读取 ${count + 1} 次。如需某段内容，用 offset+limit 指定行范围。"
         }
         return ""
     }
@@ -325,11 +330,14 @@ public class ReadTool <: CjhTool {
         offset: Int64, limit: Int64, totalLines: Int64,
         readStart: Int64, readEnd: Int64): ToolResult {
         var hints = repeatHint
-        // 分段读取提示：已读范围未覆盖全文时，告知总行数 + 剩余 + 下一段 offset
+        // 分段读取提示：已读范围未覆盖全文时，告知剩余行数 + 下一段 offset
         // 注意：这是 LLM 自己传 offset/limit 导致的分段，不是 read_file 截断
+        // 精简：仅剩较多（>50 行）时提示，快读完时模型自然收尾
         if (totalLines > 0 && readEnd < totalLines) {
             let remaining = totalLines - readEnd
-            hints += "\n[提示] 你用了 offset+limit 分段读取。文件共 ${totalLines} 行，本次读了 ${readStart}-${readEnd}，还剩 ${remaining} 行。用 offset=${readEnd + 1} 读下一段，或省略 offset+limit 一次读全文。"
+            if (remaining > 50) {
+                hints += "\n[提示] 剩余 ${remaining} 行，下一段 offset=${readEnd + 1}"
+            }
         }
         if (hints.size > 0) {
             return ToolResult(result.content + hints, result.isError)
