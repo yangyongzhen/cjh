@@ -51,17 +51,17 @@ public class OutputView <: Component {
         this.thinkingTokens = tokens
     }
 
-    // ===== 思考内容关键词高亮 =====
-    // 推理关键词（绿色）：分析/计划/步骤等——让思考过程可扫读，避免全灰
-    private static let THINK_KEYWORDS: Array<String> = [
-        "分析", "计划", "步骤", "验证", "检查", "测试", "实现", "设计",
-        "优化", "修复", "注意", "错误", "完成", "需要", "确认", "定位",
-        "读取", "查找", "替换", "修改", "构建", "运行", "确保", "考虑",
-        "问题", "方案", "原因", "影响", "目标", "结果", "然后", "首先",
-    ]
+    // ===== 思考内容技术元素高亮 =====
+    // 方案 A：只高亮技术关键点（路径/文件名/数字/代码标识符）用青色，
+    // 自然语言保持灰色——信息密度高且不打断阅读（词级关键词标绿太刺眼）
 
     /**
-     * 思考行关键词高亮：数字（青）、推理关键词（绿）、其余保持灰色。
+     * 思考行技术元素高亮：
+     *   - 数字（含小数）→ 青
+     *   - 路径（含 /）→ 青
+     *   - 文件/扩展名（word.ext，常见扩展）→ 青
+     *   - 代码标识符（含 _ 或驼峰）→ 青
+     *   - 其余（自然语言/中文）→ 保持灰色
      * 输入为纯文本行（折行后），输出带 ANSI 色。
      */
     private func highlightThinking(line: String): String {
@@ -70,44 +70,81 @@ public class OutputView <: Component {
         var i: Int64 = 0
         while (i < runes.size) {
             let ch = runes[i]
-            // 数字（含小数点）：青色
-            if (UInt32(ch) >= 48 && UInt32(ch) <= 57) {
-                var num = ""
-                while (i < runes.size &&
-                    ((UInt32(runes[i]) >= 48 && UInt32(runes[i]) <= 57) || UInt32(runes[i]) == 46)) {
-                    num += String(runes[i])
+            // 技术 token 字符集：字母/数字/下划线/斜杠/点/连字符
+            if (isTechChar(ch)) {
+                var token = StringBuilder()
+                var isAllDigit: Bool = true
+                var hasSlash: Bool = false
+                var hasUnderscore: Bool = false
+                var hasCamel: Bool = false
+                var hasDot: Bool = false
+                var prevLower: Bool = false
+                while (i < runes.size && isTechChar(runes[i])) {
+                    let c = runes[i]
+                    token.append(String(c))
+                    let v = UInt32(c)
+                    if (v >= 48 && v <= 57 || v == 46) {
+                        if (v == 46) { hasDot = true }
+                    } else {
+                        isAllDigit = false
+                    }
+                    if (v == 47) { hasSlash = true }       // '/'
+                    if (v == 95) { hasUnderscore = true }  // '_'
+                    if (v == 46) { hasDot = true }         // '.'
+                    if (v >= 65 && v <= 90) {              // 大写：驼峰检测
+                        if (prevLower) { hasCamel = true }
+                    }
+                    prevLower = (v >= 97 && v <= 122)
                     i += 1
                 }
-                sb.append(Ansi.fg(Ansi.THEME_ACCENT) + num + Ansi.reset())
-                continue
-            }
-            // 推理关键词（最长匹配）：绿色
-            var matched: Bool = false
-            for (kw in OutputView.THINK_KEYWORDS) {
-                let kwRunes = kw.toRuneArray()
-                if (i + kwRunes.size <= runes.size) {
-                    var eq: Bool = true
-                    for (k in 0..kwRunes.size) {
-                        if (runes[i + k] != kwRunes[k]) {
-                            eq = false
-                            break
+                let tokenStr = token.toString()
+                var isFile: Bool = false
+                // word.ext：扩展名匹配
+                if (hasDot && !hasSlash && !isAllDigit) {
+                    let dotIdx = tokenStr.lastIndexOf(".")
+                    if (dotIdx.isSome()) {
+                        let ext = tokenStr[(dotIdx.getOrThrow() + 1)..tokenStr.size]
+                        if (isKnownExt(ext)) {
+                            isFile = true
                         }
                     }
-                    if (eq) {
-                        sb.append(Ansi.fg(Ansi.THEME_OK) + kw + Ansi.reset())
-                        i += kwRunes.size
-                        matched = true
-                        break
-                    }
                 }
-            }
-            if (matched) {
+                let isTech = isAllDigit || hasSlash || hasUnderscore || hasCamel || isFile
+                if (isTech) {
+                    sb.append(Ansi.fg(Ansi.THEME_ACCENT) + tokenStr + Ansi.reset())
+                } else {
+                    sb.append(tokenStr)
+                }
                 continue
             }
             sb.append(String(ch))
             i += 1
         }
         return sb.toString()
+    }
+
+    /**
+     * 技术 token 字符：字母/数字/下划线/斜杠/点/连字符
+     */
+    private func isTechChar(ch: Rune): Bool {
+        let v = UInt32(ch)
+        return (v >= 48 && v <= 57) || (v >= 65 && v <= 90) ||
+            (v >= 97 && v <= 122) || v == 95 || v == 47 || v == 46 || v == 45
+    }
+
+    /**
+     * 常见文件扩展名
+     */
+    private func isKnownExt(ext: String): Bool {
+        let exts = ["cj", "cangjie", "js", "ts", "html", "css", "py", "rs", "go",
+            "java", "c", "h", "cpp", "sh", "bash", "json", "toml", "yaml", "yml",
+            "md", "txt", "log", "sql", "db", "png", "jpg", "svg", "xml", "ini"]
+        for (e in exts) {
+            if (ext == e) {
+                return true
+            }
+        }
+        return false
     }
 
     /**
