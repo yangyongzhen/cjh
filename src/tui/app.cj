@@ -455,6 +455,12 @@ public class TuiApp {
             this.agentPromptTokens = estimate
         }
         this.agentTokenLock.unlock()
+        // 思考中 token 计数同步到思考块折叠行（显示增长）
+        this.reasoningLock.lock()
+        if (this.reasoningBuffer.size > 0 && !this.reasoningDone) {
+            this.outputView.setThinkingTokens(estimate)
+        }
+        this.reasoningLock.unlock()
         this.markDirty()
     }
 

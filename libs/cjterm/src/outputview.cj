@@ -24,6 +24,8 @@ public class OutputView <: Component {
     public var thinkingText: String = ""
     public var thinkingExpanded: Bool = false
     public var thinkingDone: Bool = false
+    // 思考中已消耗 token（流式估算，折叠行显示增长——动态且稳定）
+    public var thinkingTokens: Int64 = 0
 
     public init() {}
 
@@ -40,6 +42,13 @@ public class OutputView <: Component {
      */
     public func toggleThinking(): Unit {
         this.thinkingExpanded = !this.thinkingExpanded
+    }
+
+    /**
+     * 设置思考中 token 计数（折叠行显示增长）
+     */
+    public func setThinkingTokens(tokens: Int64): Unit {
+        this.thinkingTokens = tokens
     }
 
     // ===== 思考内容关键词高亮 =====
@@ -223,30 +232,11 @@ public class OutputView <: Component {
                 if (this.thinkingDone) {
                     outLines.add(Ansi.fg(Ansi.THEME_MUTED) + "💭 思考过程 · Ctrl+T 查看" + Ansi.reset())
                 } else {
-                    // 思考中：折叠行显示最新思考片段（动态滚动），体现思考在推进
-                    let maxW: Int64 = if (width > 18) { width - 18 } else { 10 }
-                    var snippet: String = ""
-                    var sw: Int64 = 0
-                    let runes = this.thinkingText.toRuneArray()
-                    var i = runes.size - 1
-                    // 从尾部取最新片段（跳过末尾换行）
-                    while (i >= 0 && sw < maxW) {
-                        let ch = runes[i].toString()
-                        if (ch == "\n" && snippet.size == 0) {
-                            i -= 1
-                            continue
-                        }
-                        let cw = TuiCanvas.displayWidth(ch)
-                        if (sw + cw > maxW) {
-                            break
-                        }
-                        snippet = ch + snippet
-                        sw += cw
-                        i -= 1
-                    }
+                    // 思考中：显示 token 计数增长（+ 动态状态行 spinner），
+                    // 不做内容滚动——尾部窗口逐字符前进会碎片闪烁（用户实测）
                     var label = "💭 思考中…"
-                    if (snippet.size > 0) {
-                        label = "💭 " + snippet
+                    if (this.thinkingTokens > 0) {
+                        label = "💭 思考中… (↑ ${this.thinkingTokens} tokens)"
                     }
                     outLines.add(Ansi.fg(Ansi.THEME_WARN) + label + Ansi.reset() +
                         Ansi.fg(Ansi.THEME_MUTED) + " · Ctrl+T 展开" + Ansi.reset())
