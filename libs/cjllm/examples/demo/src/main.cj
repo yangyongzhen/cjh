@@ -15,7 +15,8 @@ main(): Int64 {
     let resp = provider.chatStream(msgs, tools,
         { text => print(text) },
         { r => () },
-        { est => () })
+        { est => () },
+        { => false })
 
     println("")
     println("工具调用数: ${resp.toolCalls.size}")

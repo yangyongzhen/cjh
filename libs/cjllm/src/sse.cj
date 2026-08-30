@@ -32,11 +32,26 @@ public class SseParser {
     }
 
     /**
-     * 阻塞读取并解析整个流，直到 EOF
+     * 取消解析：流读取循环在下一轮检查后提前结束（保留已收数据）。
+     * 用途：用户 Ctrl+C 中断——onEvent 回调检测到取消请求时调用。
+     */
+    public var cancelled: Bool = false
+
+    public func cancel(): Unit {
+        this.cancelled = true
+    }
+
+    /**
+     * 阻塞读取并解析整个流，直到 EOF 或取消
      */
     public func run(): Unit {
         try {
             while (true) {
+                if (this.cancelled) {
+                    // 取消：保留已收数据（flush 后结束，不抛异常）
+                    this.flushRemaining()
+                    break
+                }
                 let n = this.input.read(this.buffer)
                 if (n <= 0) {
                     // EOF：flush 剩余

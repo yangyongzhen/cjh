@@ -48,11 +48,12 @@ public interface LlmProvider {
      * @param onDelta  文本增量回调
      * @param onReasoning  思考增量回调（reasoning_content，glm-5.3-flash 等模型会先输出思考过程）
      * @param onTokenEstimate  流式逐帧 token 估算回调（prompt 估算 + completion 字符数粗估）
+     * @param isCancelled 取消回调（用户中断时返回 true；流式解析每帧检查后提前结束）
      * @return 完整响应（含工具调用）
      */
     public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
         onDelta: (String) -> Unit, onReasoning: (String) -> Unit,
-        onTokenEstimate: (Int64) -> Unit): ModelResponse
+        onTokenEstimate: (Int64) -> Unit, isCancelled: () -> Bool): ModelResponse
 }
 
 /**
