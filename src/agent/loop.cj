@@ -469,6 +469,11 @@ public class Agent {
      * 追加用户消息并运行，返回回合统计（含最终文本答复 summary.reply）
      */
     public func run(userInput: String): RunSummary {
+        // 新一轮开始：清除上次中断状态（否则 interruptFlag 残留 true，
+        // 后续所有消息立即命中"已中断"——用户实测的"再也不回复"bug）
+        this.interruptLock.lock()
+        this.interruptFlag = false
+        this.interruptLock.unlock()
         this.messages.add(ChatMessage("user", userInput))
 
         // 回合统计收集

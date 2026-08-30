@@ -289,3 +289,27 @@ public class HookExemptTest {
         @Assert(Agent.isHookExempt("grep"), false)
     }
 }
+
+/**
+ * 中断状态重置测试：中断后新一轮 run 必须正常执行（flag 不清除 = 永不复原）
+ */
+@Test
+public class InterruptResetTest {
+    @TestCase
+    public func testInterruptThenNewRunWorks(): Unit {
+        let provider = MockProvider("/tmp/cjh_int_reset.txt")
+        let registry = ToolRegistry()
+        registry.register(BashTool())
+        let config = AgentConfig("reset test", 10, Capability(),
+            0, 0, 6, 2000, "/tmp/cjh_int_spill", "sess-reset")
+        let agent = Agent(provider, registry, config)
+        // 第一轮：运行中中断
+        agent.interrupt()
+        let s1 = agent.run("第一轮")
+        @Assert(s1.rounds >= 0, true)  // 中断返回（rounds 可能 0）
+        // 第二轮：flag 必须已重置，正常执行
+        let s2 = agent.run("第二轮")
+        @Assert(s2.rounds > 0, true)   // 正常跑完（MockProvider 4 轮工具循环）
+        @Assert(s2.reply.contains("FINAL-DONE"), true)
+    }
+}
