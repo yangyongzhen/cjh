@@ -194,16 +194,17 @@ public class OpenAiProvider <: LlmProvider {
         var tlsConfig = TlsClientConfig()
         tlsConfig.verifyMode = CertificateVerifyMode.CustomCA(X509Certificate.systemRootCerts())
         tlsConfig.domain = Some(this.sniHost())
-        // SSE 流式响应：readTimeout 是"读取一个响应的最大时长"——绝对超时
-        // DeepSeek 长 completions 思考阶段可能 >60s 才到第一个 chunk，
-        // 故放宽到 10 分钟，避免长任务被切断导致最后一帧 usage 丢失（token=0）
+        // SSE 流式响应：readTimeout 是"读取整个响应的最大时长"——绝对超时
+        // 90s：正常流式（含 reasoning 帧）期间持续有数据；模型输出完成但流
+        // 未关闭（服务端未发 [DONE]）时 90s 兜底释放，避免 Streaming 无限卡
+        // （stdx 无 per-read 超时，阻塞 read 无法中途打断，只能整体兜底）
         // 注：readTimer 在请求正常完成后会被取消，不会触发 WARN；
         // 只有 warmup 那种"fire and forget"的请求才会让 readTimer 跑到超时
         // Client 不能缓存复用：stdx.net.http 的 Client 在 send 完成后会被关闭，
         // 复用已关闭的 Client 会报 "send body failed, since closed"
         let client = ClientBuilder()
             .tlsConfig(tlsConfig)
-            .readTimeout(Duration.second * 300)
+            .readTimeout(Duration.second * 90)
             .build()
         // 保存当前 client（abort 时 close）
         this.clientLock.lock()

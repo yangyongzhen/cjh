@@ -287,7 +287,7 @@ public class TuiApp {
                 if (idleSecs > this.idleTimeoutSecs && !this.idleWarned) {
                     this.idleWarned = true
                     this.appendOutput(Ansi.fg(Ansi.THEME_WARN) +
-                        "⚠️ 模型 ${idleSecs}s 无响应（可能停滞），已请求中断。有数据恢复则立即停止；连接超时后自动释放。" +
+                        "⚠️ 模型 ${idleSecs}s 无响应（可能停滞），已请求中断。有数据恢复则立即停止；流连接约 90s 超时后自动释放。" +
                         Ansi.reset())
                     this.onInterrupt()
                 }
