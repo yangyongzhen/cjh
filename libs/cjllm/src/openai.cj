@@ -181,7 +181,7 @@ public class OpenAiProvider <: LlmProvider {
         // 复用已关闭的 Client 会报 "send body failed, since closed"
         let client = ClientBuilder()
             .tlsConfig(tlsConfig)
-            .readTimeout(Duration.second * 600)
+            .readTimeout(Duration.second * 300)
             .build()
 
         // P1-5 key 轮换：401/429/5xx → 换备用 key 重试（防限流中断任务）

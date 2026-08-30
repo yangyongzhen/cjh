@@ -592,10 +592,12 @@ func runTui(sessionId: String): Int64 {
                 }
             }
             tui.setAgentState("Streaming…")
+            tui.markAgentActivity()
         }
         agent.onReasoning = { r =>
             if (r.size > 0) {
                 tui.appendReasoning(r)
+                tui.markAgentActivity()
             }
         }
         agent.onThinking = { =>
