@@ -42,6 +42,65 @@ public class OutputView <: Component {
         this.thinkingExpanded = !this.thinkingExpanded
     }
 
+    // ===== 思考内容关键词高亮 =====
+    // 推理关键词（绿色）：分析/计划/步骤等——让思考过程可扫读，避免全灰
+    private static let THINK_KEYWORDS: Array<String> = [
+        "分析", "计划", "步骤", "验证", "检查", "测试", "实现", "设计",
+        "优化", "修复", "注意", "错误", "完成", "需要", "确认", "定位",
+        "读取", "查找", "替换", "修改", "构建", "运行", "确保", "考虑",
+        "问题", "方案", "原因", "影响", "目标", "结果", "然后", "首先",
+    ]
+
+    /**
+     * 思考行关键词高亮：数字（青）、推理关键词（绿）、其余保持灰色。
+     * 输入为纯文本行（折行后），输出带 ANSI 色。
+     */
+    private func highlightThinking(line: String): String {
+        let runes = line.toRuneArray()
+        var sb = StringBuilder()
+        var i: Int64 = 0
+        while (i < runes.size) {
+            let ch = runes[i]
+            // 数字（含小数点）：青色
+            if (UInt32(ch) >= 48 && UInt32(ch) <= 57) {
+                var num = ""
+                while (i < runes.size &&
+                    ((UInt32(runes[i]) >= 48 && UInt32(runes[i]) <= 57) || UInt32(runes[i]) == 46)) {
+                    num += String(runes[i])
+                    i += 1
+                }
+                sb.append(Ansi.fg(Ansi.THEME_ACCENT) + num + Ansi.reset())
+                continue
+            }
+            // 推理关键词（最长匹配）：绿色
+            var matched: Bool = false
+            for (kw in OutputView.THINK_KEYWORDS) {
+                let kwRunes = kw.toRuneArray()
+                if (i + kwRunes.size <= runes.size) {
+                    var eq: Bool = true
+                    for (k in 0..kwRunes.size) {
+                        if (runes[i + k] != kwRunes[k]) {
+                            eq = false
+                            break
+                        }
+                    }
+                    if (eq) {
+                        sb.append(Ansi.fg(Ansi.THEME_OK) + kw + Ansi.reset())
+                        i += kwRunes.size
+                        matched = true
+                        break
+                    }
+                }
+            }
+            if (matched) {
+                continue
+            }
+            sb.append(String(ch))
+            i += 1
+        }
+        return sb.toString()
+    }
+
     /**
      * 追加一行到输出区（自动补 \n）
      */
@@ -142,14 +201,14 @@ public class OutputView <: Component {
                 for (r in this.thinkingText.toRuneArray()) {
                     let ch = r.toString()
                     if (ch == "\n") {
-                        outLines.add(Ansi.fg(Ansi.THEME_MUTED) + "› " + cur + Ansi.reset())
+                        outLines.add(Ansi.fg(Ansi.THEME_MUTED) + "› " + this.highlightThinking(cur) + Ansi.reset())
                         cur = ""
                         curW = 0
                         continue
                     }
                     let chW: Int64 = TuiCanvas.displayWidth(ch)
                     if (curW + chW > contentW) {
-                        outLines.add(Ansi.fg(Ansi.THEME_MUTED) + "› " + cur + Ansi.reset())
+                        outLines.add(Ansi.fg(Ansi.THEME_MUTED) + "› " + this.highlightThinking(cur) + Ansi.reset())
                         cur = ch
                         curW = chW
                     } else {
@@ -158,11 +217,40 @@ public class OutputView <: Component {
                     }
                 }
                 if (cur.size > 0) {
-                    outLines.add(Ansi.fg(Ansi.THEME_MUTED) + "› " + cur + Ansi.reset())
+                    outLines.add(Ansi.fg(Ansi.THEME_MUTED) + "› " + this.highlightThinking(cur) + Ansi.reset())
                 }
             } else {
-                let status: String = if (this.thinkingDone) { "思考过程 · Ctrl+T 查看" } else { "思考中… · Ctrl+T 展开" }
-                outLines.add(Ansi.fg(Ansi.THEME_MUTED) + "💭 " + status + Ansi.reset())
+                if (this.thinkingDone) {
+                    outLines.add(Ansi.fg(Ansi.THEME_MUTED) + "💭 思考过程 · Ctrl+T 查看" + Ansi.reset())
+                } else {
+                    // 思考中：折叠行显示最新思考片段（动态滚动），体现思考在推进
+                    let maxW: Int64 = if (width > 18) { width - 18 } else { 10 }
+                    var snippet: String = ""
+                    var sw: Int64 = 0
+                    let runes = this.thinkingText.toRuneArray()
+                    var i = runes.size - 1
+                    // 从尾部取最新片段（跳过末尾换行）
+                    while (i >= 0 && sw < maxW) {
+                        let ch = runes[i].toString()
+                        if (ch == "\n" && snippet.size == 0) {
+                            i -= 1
+                            continue
+                        }
+                        let cw = TuiCanvas.displayWidth(ch)
+                        if (sw + cw > maxW) {
+                            break
+                        }
+                        snippet = ch + snippet
+                        sw += cw
+                        i -= 1
+                    }
+                    var label = "💭 思考中…"
+                    if (snippet.size > 0) {
+                        label = "💭 " + snippet
+                    }
+                    outLines.add(Ansi.fg(Ansi.THEME_WARN) + label + Ansi.reset() +
+                        Ansi.fg(Ansi.THEME_MUTED) + " · Ctrl+T 展开" + Ansi.reset())
+                }
             }
         }
         // 滚动边界修正：最多滚到"最后一行可见"
