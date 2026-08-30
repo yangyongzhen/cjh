@@ -29,7 +29,7 @@ class FlowProvider <: LlmProvider {
 
     public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
         onDelta: (String) -> Unit, onReasoning: (String) -> Unit,
-        onTokenEstimate: (Int64) -> Unit): ModelResponse {
+        onTokenEstimate: (Int64) -> Unit, isCancelled: () -> Bool): ModelResponse {
         callCount += 1
         match (callCount) {
             case 1 =>
@@ -159,7 +159,7 @@ class SerialWriteProvider <: LlmProvider {
 
     public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
         onDelta: (String) -> Unit, onReasoning: (String) -> Unit,
-        onTokenEstimate: (Int64) -> Unit): ModelResponse {
+        onTokenEstimate: (Int64) -> Unit, isCancelled: () -> Bool): ModelResponse {
         callCount += 1
         match (callCount) {
             case 1 =>
@@ -175,5 +175,98 @@ class SerialWriteProvider <: LlmProvider {
             case _ =>
                 return ModelResponse("serial done", ArrayList<ToolCall>())
         }
+    }
+}
+
+/**
+ * Agent 事件钩子（Claude Code 式）测试：6 类事件全部触发 + payload 内容
+ */
+@Test
+public class AgentHookTest {
+    private func buildHookAgent(provider: LlmProvider): Agent {
+        let registry = ToolRegistry()
+        registry.register(BashTool())
+        registry.register(ReadTool())
+        let config = AgentConfig("hook test", 10, Capability(),
+            0, 0, 6, 2000, "/tmp/cjh_hook_spill", "sess-hook")
+        return Agent(provider, registry, config)
+    }
+
+    @TestCase
+    public func testAllHooksFire(): Unit {
+        // MockProvider：有流式 onDelta（最终答复）+ 思考流 onReasoning + 4 轮工具循环
+        let provider = MockProvider("/tmp/cjh_hook_verify.txt")
+        let agent = this.buildHookAgent(provider)
+        // 事件计数器
+        let preCount = Array<Int64>(1, repeat: 0)
+        let postCount = Array<Int64>(1, repeat: 0)
+        let deltaCount = Array<Int64>(1, repeat: 0)
+        let reasoningCount = Array<Int64>(1, repeat: 0)
+        let stopCount = Array<Int64>(1, repeat: 0)
+        let lastPreTool = StringBuilder()
+        let lastPostTool = StringBuilder()
+        let lastDelta = StringBuilder()
+        let lastReasoning = StringBuilder()
+        // 注册 6 类钩子
+        agent.addHook(AgentHook.PreToolUse, { p =>
+            preCount[0] += 1
+            if (p.get("tool").isSome()) {
+                let v = p.get("tool").getOrThrow()
+                match (v.kind()) {
+                    case JsonKind.JsString => lastPreTool.append(v.asString().getValue())
+                    case _ => ()
+                }
+            }
+        })
+        agent.addHook(AgentHook.PostToolUse, { p =>
+            postCount[0] += 1
+            if (p.get("tool").isSome()) {
+                let v = p.get("tool").getOrThrow()
+                match (v.kind()) {
+                    case JsonKind.JsString => lastPostTool.append(v.asString().getValue())
+                    case _ => ()
+                }
+            }
+        })
+        agent.addHook(AgentHook.ChatDelta, { p =>
+            deltaCount[0] += 1
+            if (p.get("delta").isSome()) {
+                let v = p.get("delta").getOrThrow()
+                match (v.kind()) {
+                    case JsonKind.JsString => lastDelta.append(v.asString().getValue())
+                    case _ => ()
+                }
+            }
+        })
+        agent.addHook(AgentHook.Reasoning, { p =>
+            reasoningCount[0] += 1
+            if (p.get("delta").isSome()) {
+                let v = p.get("delta").getOrThrow()
+                match (v.kind()) {
+                    case JsonKind.JsString => lastReasoning.append(v.asString().getValue())
+                    case _ => ()
+                }
+            }
+        })
+        agent.addHook(AgentHook.Stop, { p =>
+            stopCount[0] += 1
+        })
+        agent.addHook(AgentHook.Interrupt, { p =>
+            preCount[0] += 1000  // 不应触发（无中断）
+        })
+        // 跑完整回合（FlowProvider：工具调用 → 最终答复）
+        let summary = agent.run("hook 测试")
+        @Assert(preCount[0] > 0, true)             // PreToolUse 触发
+        @Assert(postCount[0] > 0, true)            // PostToolUse 触发
+        @Assert(postCount[0] == preCount[0], true) // 工具前后成对
+        @Assert(deltaCount[0] > 0, true)           // ChatDelta 触发（流式文本）
+        @Assert(reasoningCount[0] > 0, true)       // Reasoning 触发（mock 思考流）
+        @Assert(stopCount[0] == 1, true)           // Stop 触发一次
+        @Assert(preCount[0] < 1000, true)          // Interrupt 未误触发
+        @Assert(lastPreTool.toString().size > 0, true)     // payload 含工具名
+        @Assert(lastPostTool.toString().size > 0, true)
+        @Assert(lastDelta.toString().size > 0, true)
+        @Assert(lastReasoning.toString().size > 0, true)
+        @Assert(summary.rounds > 0, true)
     }
 }

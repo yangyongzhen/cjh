@@ -13,6 +13,43 @@ import cjutil.*
 import std.sync.*
 
 /**
+ * Agent 生命周期事件钩子（Claude Code 式，统一事件化）
+ *
+ * 事件触发点（Agent.run 内部）：
+ *   - PreToolUse   工具执行前（payload: {tool, args}）
+ *   - PostToolUse  工具执行后（payload: {tool, result}）
+ *   - ChatDelta    流式文本增量（payload: {delta}）
+ *   - Reasoning    思考增量（payload: {delta}）
+ *   - Stop         回合完成（payload: {rounds, toolCalls, durationMs, reply}）
+ *   - Interrupt    用户中断（payload: {}）
+ *
+ * 注册：agent.addHook(AgentHook.PreToolUse, { payload => ... })
+ * 本阶段为通知型钩子（观察/联动）；阻断/改参由 onApproval 审批链承担。
+ */
+public enum AgentHook {
+    | PreToolUse
+    | PostToolUse
+    | ChatDelta
+    | Reasoning
+    | Stop
+    | Interrupt
+}
+
+/**
+ * 事件名（注册表键）
+ */
+public func hookName(hook: AgentHook): String {
+    match (hook) {
+        case AgentHook.PreToolUse => return "PreToolUse"
+        case AgentHook.PostToolUse => return "PostToolUse"
+        case AgentHook.ChatDelta => return "ChatDelta"
+        case AgentHook.Reasoning => return "Reasoning"
+        case AgentHook.Stop => return "Stop"
+        case AgentHook.Interrupt => return "Interrupt"
+    }
+}
+
+/**
  * Agent 配置
  */
 public class AgentConfig {
@@ -207,6 +244,46 @@ public class Agent {
     // 回合结束回调（渲染回合总结条：轮数/工具数/耗时/token用量/缓存命中率）
     public var onRunComplete: (RunSummary) -> Unit = { s => }
 
+    // ==================== Agent 事件钩子（Claude Code 式，统一事件化 + 外部扩展）====================
+    // 内部回调（onX）负责 UI 展示；hook 是外部注册点（插件/工具/宿主代码），
+    // 事件触发时两者都会执行（hook 广播在内部回调之后）。
+    // 事件 payload 统一为 JsonObject，便于外部处理与未来脚本化。
+    // 说明：本阶段为通知型钩子（观察/记录/联动）；阻断/改参能力（Claude Code
+    // PreToolUse 可拒绝）由 onApproval 审批链承担，二期可扩展返回值传播。
+    public var hookHandlers: HashMap<String, ArrayList<(JsonObject) -> Unit>> = HashMap<String, ArrayList<(JsonObject) -> Unit>>()
+
+    /**
+     * 注册事件钩子（可多 handler，按注册顺序触发）
+     */
+    public func addHook(hook: AgentHook, handler: (JsonObject) -> Unit): Unit {
+        let key = hookName(hook)
+        if (this.hookHandlers.contains(key)) {
+            this.hookHandlers.get(key).getOrThrow().add(handler)
+        } else {
+            var list = ArrayList<(JsonObject) -> Unit>()
+            list.add(handler)
+            this.hookHandlers.add(key, list)
+        }
+    }
+
+    /**
+     * 广播事件钩子（通知型）：遍历注册的 handler，异常隔离（单个 handler 失败不影响其他）
+     */
+    private func fireHooks(hook: AgentHook, payload: JsonObject): Unit {
+        let key = hookName(hook)
+        if (!this.hookHandlers.contains(key)) {
+            return
+        }
+        let handlers = this.hookHandlers.get(key).getOrThrow()
+        for (h in handlers) {
+            try {
+                h(payload)
+            } catch (e: Exception) {
+                Log.error("Agent hook ${hookName(hook)} handler 异常: ${e}", e)
+            }
+        }
+    }
+
     public init(provider: LlmProvider, tools: ToolRegistry, config: AgentConfig) {
         this.provider = provider
         this.tools = tools
@@ -384,6 +461,7 @@ public class Agent {
             // P0-2：用户 Ctrl+C 中断——轮次间检查，保留已完成工作
             if (this.isInterrupted()) {
                 Log.warn("Agent.run 被用户中断（${iterations} 轮后）")
+                this.fireHooks(AgentHook.Interrupt, JsonObject())
                 this.onAssistantText("\n_[已中断：保留已完成的工作，可继续提问]_")
                 let d = (DateTime.now() - startTime).toMilliseconds()
                 summary.durationMs = d
@@ -409,11 +487,17 @@ public class Agent {
                 this.onThinking()
                 response = this.provider.chatStream(this.messages, this.tools.specs(), { delta =>
                     this.onDelta(delta)
+                    var p = JsonObject()
+                    p.put("delta", JsonString(delta))
+                    this.fireHooks(AgentHook.ChatDelta, p)
                 }, { r =>
                     this.onReasoning(r)
+                    var p = JsonObject()
+                    p.put("delta", JsonString(r))
+                    this.fireHooks(AgentHook.Reasoning, p)
                 }, { est =>
                     this.onTokenEstimate(est)
-                })
+                }, { => this.isInterrupted() })
             } catch (e: Exception) {
                 Log.error("Agent.run chatStream 异常: ${e}", e)
                 summary.reply = "[LLM 调用异常: ${e}]"
@@ -471,6 +555,10 @@ public class Agent {
                         let i = group[0]
                         let tc = toolCalls[i]
                         this.onToolStart(tc.name, tc.arguments)
+                        var preP = JsonObject()
+                        preP.put("tool", JsonString(tc.name))
+                        preP.put("args", tc.arguments)
+                        this.fireHooks(AgentHook.PreToolUse, preP)
                         let toolT0 = DateTime.now()
                         var result = this.executeGuarded(tc.name, tc.arguments)
                         let toolMs = (DateTime.now() - toolT0).toMilliseconds()
@@ -488,6 +576,10 @@ public class Agent {
                             let i = group[k]
                             let tc = toolCalls[i]
                             this.onToolStart(tc.name, tc.arguments)
+                            var preP2 = JsonObject()
+                            preP2.put("tool", JsonString(tc.name))
+                            preP2.put("args", tc.arguments)
+                            this.fireHooks(AgentHook.PreToolUse, preP2)
                             let localName = tc.name
                             let localArgs = tc.arguments
                             let localIdx = i
@@ -529,6 +621,13 @@ public class Agent {
                     let tc = toolCalls[i]
                     let result = results[i]
                     this.onToolResult(tc.name, result)
+                    var postP = JsonObject()
+                    postP.put("tool", JsonString(tc.name))
+                    var resObj = JsonObject()
+                    resObj.put("content", JsonString(result.content))
+                    resObj.put("is_error", JsonBool(result.isError))
+                    postP.put("result", resObj)
+                    this.fireHooks(AgentHook.PostToolUse, postP)
                     let hookedContent = this.fireToolResultHook(tc.name, result.content)
                     this.messages.add(ChatMessage("tool", truncateToolResult(hookedContent, tc.name, tc.id), tc.id, tc.name))
                 }
@@ -579,6 +678,13 @@ public class Agent {
             let durationMs = (DateTime.now() - startTime).toMilliseconds()
             summary.durationMs = durationMs
             summary.reply = response.text
+            // Stop 事件钩子广播（回合正常完成）
+            var stopP = JsonObject()
+            stopP.put("rounds", JsonInt(iterations))
+            stopP.put("toolCalls", JsonInt(summary.toolCalls))
+            stopP.put("durationMs", JsonInt(durationMs))
+            stopP.put("reply", JsonString(summary.reply))
+            this.fireHooks(AgentHook.Stop, stopP)
             // 正常退出也记日志，方便排查"意外停止"——区分 LLM 主动结束 vs 异常
             // 用 warn 级别确保写入 error.log（info 级别默认 NoopLogger）
             Log.warn("Agent.run 正常结束: ${iterations} rounds, ${summary.toolCalls} tools, ${durationMs}ms")
@@ -644,7 +750,7 @@ public class Agent {
         summaryMsgs.add(ChatMessage("user", sb.toString()))
         var summary = ""
         try {
-            let resp = this.provider.chatStream(summaryMsgs, ArrayList<ToolSpec>(), { _ => }, { _ => }, { _ => })
+            let resp = this.provider.chatStream(summaryMsgs, ArrayList<ToolSpec>(), { _ => }, { _ => }, { _ => }, { => false })
             summary = resp.text
         } catch (e: Exception) {
             return
@@ -734,7 +840,7 @@ public class Agent {
         try {
             // P1-5：摘要走快模型（配置了 summary 时），降低摘要调用耗时
             let sp = if (this.summaryProvider.isSome()) { this.summaryProvider.getOrThrow() } else { this.provider }
-            let resp = sp.chatStream(summaryMsgs, ArrayList<ToolSpec>(), { _ => }, { _ => }, { _ => })
+            let resp = sp.chatStream(summaryMsgs, ArrayList<ToolSpec>(), { _ => }, { _ => }, { _ => }, { => false })
             summary = resp.text
         } catch (e: Exception) {
             // 摘要失败不阻塞主流程（保持原历史继续）
