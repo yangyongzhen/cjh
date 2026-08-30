@@ -4,6 +4,7 @@ import stdx.encoding.json.*
 import stdx.net.http.*
 import std.collection.*
 import std.io.*
+import std.sync.*
 import cjutil.*
 
 /**
@@ -26,6 +27,8 @@ import cjutil.*
  * 由上层 makeProvider → agent.run 捕获并提示 "是否启动 ollama serve？"
  */
 public class OllamaProvider <: LlmProvider {
+    private var currentClient: ?Client = None
+    private var clientLock: Mutex = Mutex()
     public let baseUrl: String
     public let apiKey: String
     public let model: String
@@ -72,6 +75,17 @@ public class OllamaProvider <: LlmProvider {
         return url
     }
 
+    public func abort(): Unit {
+        this.clientLock.lock()
+        let c = this.currentClient
+        this.clientLock.unlock()
+        match (c) {
+            case Some(cl) =>
+                try { cl.close() } catch (e: Exception) { }
+            case None => ()
+        }
+    }
+
     public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
         onDelta: (String) -> Unit, onReasoning: (String) -> Unit,
         onTokenEstimate: (Int64) -> Unit, isCancelled: () -> Bool): ModelResponse {
@@ -98,6 +112,9 @@ public class OllamaProvider <: LlmProvider {
 
         // 本地 Ollama 走 HTTP，不设置 TLS（TLS 配置会导致 SNI/证书不匹配）
         let client = ClientBuilder().readTimeout(Duration.second * 300).build()
+        this.clientLock.lock()
+        this.currentClient = Some(client)
+        this.clientLock.unlock()
         let reqBuilder = HttpRequestBuilder()
             .post()
             .url(this.endpointUrl())

@@ -6,6 +6,7 @@ import stdx.net.tls.*
 import stdx.crypto.x509.X509Certificate
 import std.collection.*
 import std.io.*
+import std.sync.*
 import cjutil.*
 
 /**
@@ -21,6 +22,8 @@ import cjutil.*
  * - tool 结果：以 user 角色 + tool_result block 回传
  */
 public class AnthropicProvider <: LlmProvider {
+    private var currentClient: ?Client = None
+    private var clientLock: Mutex = Mutex()
     public let baseUrl: String
     public let apiKey: String
     public let model: String
@@ -74,6 +77,17 @@ public class AnthropicProvider <: LlmProvider {
             url += "/v1/messages"
         }
         return url
+    }
+
+    public func abort(): Unit {
+        this.clientLock.lock()
+        let c = this.currentClient
+        this.clientLock.unlock()
+        match (c) {
+            case Some(cl) =>
+                try { cl.close() } catch (e: Exception) { }
+            case None => ()
+        }
     }
 
     public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
@@ -162,6 +176,9 @@ public class AnthropicProvider <: LlmProvider {
         tlsConfig.verifyMode = CertificateVerifyMode.CustomCA(X509Certificate.systemRootCerts())
         tlsConfig.domain = Some(this.sniHost())
         let client = ClientBuilder().tlsConfig(tlsConfig).readTimeout(Duration.second * 300).build()
+        this.clientLock.lock()
+        this.currentClient = Some(client)
+        this.clientLock.unlock()
         let req = HttpRequestBuilder()
             .post()
             .url(this.endpointUrl())
