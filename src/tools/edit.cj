@@ -269,10 +269,23 @@ func countOccurrences(text: String, sub: String): Int64 {
             count += 1
             i += sn
         } else {
-            i += 1
+            // 前进到下一个字符边界（UTF-8 多字节按首字节跳），避免窗口从
+            // 多字节字符中间开始导致误匹配
+            i += utf8CharLen(text[i])
         }
     }
     return count
+}
+
+/**
+ * UTF-8 字符字节数（按首字节判断）
+ */
+func utf8CharLen(firstByte: Byte): Int64 {
+    let b = UInt8(firstByte)
+    if (b >= 0xF0) { return 4 }
+    if (b >= 0xE0) { return 3 }
+    if (b >= 0xC0) { return 2 }
+    return 1
 }
 
 /**
@@ -310,7 +323,9 @@ func replaceString(text: String, oldStr: String, newStr: String, replaceAll: Boo
                 return result.toString()
             }
         } else {
-            i += 1
+            // 前进到下一个字符边界：逐字节前进会让 i 落在多字节 UTF-8 字符
+            // （如 ×）中间，text[lastCopy..i] 切片抛 Invalid utf8 byte sequence
+            i += utf8CharLen(text[i])
         }
     }
     result.append(text[lastCopy..tn])
@@ -324,5 +339,14 @@ func truncateForDisplay(s: String): String {
     if (s.size <= 80) {
         return s
     }
-    return s[0..77] + "..."
+    // 字节安全截断：77 字节可能落在多字节 UTF-8 字符中间，递减到合法边界
+    var k: Int64 = 77
+    while (k > 0) {
+        try {
+            return s[0..k] + "..."
+        } catch (e: Exception) {
+            k -= 1
+        }
+    }
+    return "..."
 }
