@@ -56,10 +56,18 @@ public class TuiApp {
     private var agentTokenLock: Mutex = Mutex()
     // Agent 当前执行状态（实时状态行显示用：Thinking/Running bash/Streaming 等）
     private var agentState: String = ""
-    // 思考窗口缓冲：reasoning_content 实时累积，渲染为 1-2 行滚动窗口
-    // 正式 content 开始时清空，窗口消失
+    // 思考窗口缓冲：reasoning_content 实时累积
+    // 升级（pi 风格）：内容保留全文可回看，默认折叠为 1 行，Ctrl+T 展开/折叠
     private var reasoningBuffer: String = ""
     private var reasoningLock: Mutex = Mutex()
+    // 思考块展开状态（Ctrl+T 切换）
+    private var reasoningExpanded: Bool = false
+    // 思考是否已结束（正式 content 开始；结束前显示"思考中"，结束后可回看）
+    private var reasoningDone: Bool = false
+    // 思考内容上限（防内存膨胀；超出截断保留尾部）
+    private let reasoningMaxChars: Int64 = 8192
+    // 思考块滚动偏移（0=最新尾部；>0=向上滚动看更早内容）
+    private var reasoningScrollOffset: Int64 = 0
     // 输入队列：Agent 执行期间提交的消息排队，执行完毕后自动处理
     private var inputQueue: ArrayList<String> = ArrayList<String>()
     private var inputQueueLock: Mutex = Mutex()
@@ -372,46 +380,53 @@ public class TuiApp {
     /**
      * 追加思考内容到缓冲（reasoning_content 增量回调）
      *
-     * 缓冲区按显示宽度限制：超过 2 行 × (cols-2) 时清空重新展示，
-     * 避免缓冲无限增长导致内存膨胀和溢出。
+     * 内容保留全文（上限 reasoningMaxChars 截断保留尾部），
+     * 默认折叠显示，Ctrl+T 展开查看完整思考过程。
      */
     public func appendReasoning(text: String): Unit {
         if (text.size == 0) { return }
         this.reasoningLock.lock()
-        this.reasoningBuffer += text
-        // 计算当前缓冲的显示行数：用换行符分割，每段按显示宽度折算行数
-        let (cols, _) = TermSize.get()
-        let contentW: Int64 = if (cols > 2) { cols - 2 } else { 10 }
-        var totalLines: Int64 = 0
-        for (seg in this.reasoningBuffer.split("\n", -1)) {
-            let w: Int64 = TuiCanvas.displayWidth(seg)
-            // 每段占 ceil(w / contentW) 行，至少 1 行
-            var lines: Int64 = if (contentW > 0) { w / contentW } else { 1 }
-            if (w % contentW != 0 || w == 0) {
-                lines += 1
-            }
-            totalLines += lines
+        // 新一轮思考开始：上一轮已结束（done）则清空重启
+        if (this.reasoningDone && this.reasoningBuffer.size > 0) {
+            this.reasoningBuffer = ""
+            this.reasoningDone = false
         }
-        // 超过 4 行（2 行展示 × 2 倍缓冲）时清空重新展示
-        if (totalLines > 4) {
-            this.reasoningBuffer = text  // 清空，只保留最新增量
+        this.reasoningBuffer += text
+        // 上限保护：超出截断保留尾部（最新思考内容）
+        if (this.reasoningBuffer.size > this.reasoningMaxChars) {
+            let cut = this.reasoningBuffer.size - this.reasoningMaxChars
+            this.reasoningBuffer = this.reasoningBuffer[cut..this.reasoningBuffer.size]
         }
         this.reasoningLock.unlock()
         this.markDirty()
     }
 
     /**
-     * 清空思考缓冲（正式 content 开始时调用，窗口消失）
+     * 思考结束标记（正式 content 开始调用）。
+     * 内容保留（可 Ctrl+T 展开回看），仅切换折叠条文案。
      */
     public func clearReasoning(): Unit {
         this.reasoningLock.lock()
-        if (this.reasoningBuffer.size > 0) {
-            this.reasoningBuffer = ""
+        if (this.reasoningBuffer.size > 0 && !this.reasoningDone) {
+            this.reasoningDone = true
             this.reasoningLock.unlock()
             this.markDirty()
         } else {
             this.reasoningLock.unlock()
         }
+    }
+
+    /**
+     * 切换思考块展开/折叠（Ctrl+T）
+     */
+    public func toggleReasoning(): Unit {
+        this.reasoningLock.lock()
+        this.reasoningExpanded = !this.reasoningExpanded
+        if (this.reasoningExpanded) {
+            this.reasoningScrollOffset = 0  // 展开时从最新内容开始
+        }
+        this.reasoningLock.unlock()
+        this.markDirty()
     }
 
     /**
@@ -829,6 +844,30 @@ public class TuiApp {
      * 单元测试可直接构造 KeyEvent 驱动验证协议（输入/视图/编辑/补全/退出）。
      */
     public func handleKey(key: KeyEvent): Unit {
+        // Ctrl+T：切换思考块展开/折叠（reasoning 内容回看）
+        if (key.ch == 20 && !key.isEsc) {
+            this.toggleReasoning()
+            return
+        }
+        // 思考块展开态：PageUp/PageDown 滚动思考内容（优先于输出区滚动）
+        this.reasoningLock.lock()
+        let thinkingFocused: Bool = this.reasoningExpanded && this.reasoningBuffer.size > 0
+        this.reasoningLock.unlock()
+        if (thinkingFocused) {
+            if (key.isPageUp) {
+                this.reasoningScrollOffset += 3
+                this.markDirty()
+                return
+            }
+            if (key.isPageDown) {
+                this.reasoningScrollOffset -= 3
+                if (this.reasoningScrollOffset < 0) {
+                    this.reasoningScrollOffset = 0
+                }
+                this.markDirty()
+                return
+            }
+        }
         // Ctrl+C（P0-2）：审批等待中→拒绝审批；agent 忙→中断当前轮；
         // 空闲→第一次确认、第二次退出（防误触丢会话）
         if (key.isCtrlC) {
@@ -1168,20 +1207,31 @@ public class TuiApp {
             // 无 agent 运行时，agentRow 不使用，仅用于 outH 计算
             let agentRow: Int64 = if (agentBusy) { statusRow - 1 - tasksH - 1 } else { -1 }
 
-            // 思考窗口：reasoningBuffer 非空时占 2 行内容，紧贴动态状态栏上方（无空行）
+            // 思考块：reasoningBuffer 非空时显示。
+            //   agent 执行中 → 折叠 1 行 / 展开 8 行，紧贴动态状态栏上方
+            //   agent 空闲（思考结束）→ 折叠 1 行 / 展开 8 行，显示在状态栏上方（可回看）
             this.reasoningLock.lock()
             let hasReasoning: Bool = this.reasoningBuffer.size > 0
+            let reasoningExpanded: Bool = this.reasoningExpanded
+            let reasoningDone: Bool = this.reasoningDone
             this.reasoningLock.unlock()
-            let reasoningH: Int64 = if (hasReasoning) { 2 } else { 0 }
-            let reasoningRow: Int64 = if (agentBusy && hasReasoning) { agentRow - reasoningH } else { -1 }
+            let reasoningH: Int64 = if (hasReasoning) {
+                if (reasoningExpanded) { 12 } else { 1 }
+            } else { 0 }
+            // agent 忙：在动态状态行上方；空闲：在状态栏上方（statusRow - 1(间隔) - reasoningH）
+            let reasoningRow: Int64 = if (hasReasoning) {
+                if (agentBusy) { agentRow - reasoningH } else { statusRow - 1 - reasoningH }
+            } else { -1 }
 
             // 输出区可用高度：8 .. outBottom
-            // agent 执行中时为动态状态行/思考窗口预留空间：
-            //   有思考窗口 → outBottom = reasoningRow - 2（输出区与思考窗口间隔 1 空行）
-            //   无思考窗口 → outBottom = agentRow - 1（输出区紧贴动态状态栏）
-            // agent 不在执行时 agentRow=-1，输出区占满 8..statusRow-1
+            // agent 执行中时为动态状态行/思考块预留空间：
+            //   有思考块 → outBottom = reasoningRow - 2（输出区与思考块间隔 1 空行）
+            //   无思考块 → outBottom = agentRow - 1（输出区紧贴动态状态栏）
+            // agent 不在执行时：有思考块（done 回看）→ outBottom = reasoningRow - 2；否则占满 8..statusRow-1
             let outBottom: Int64 = if (agentBusy && agentRow >= 8) {
                 if (hasReasoning && reasoningRow >= 8) { reasoningRow - 2 } else { agentRow - 1 }
+            } else if (hasReasoning && reasoningRow >= 8) {
+                reasoningRow - 2
             } else { statusRow - 1 }
             let outH: Int64 = if (outBottom - 8 + 1 > 0) { outBottom - 8 + 1 } else { 0 }
 
@@ -1205,8 +1255,8 @@ public class TuiApp {
                     this.spinner.tick()
                     this.renderAgentStatus(this.canvas, agentRow, cols)
                 }
-                // 思考窗口：reasoningBuffer 非空时，在动态状态行上方渲染 1-2 行
-                if (agentBusy && hasReasoning && reasoningRow >= 8) {
+                // 思考块：reasoningBuffer 非空时渲染（agent 忙/空闲均显示，空闲可回看）
+                if (hasReasoning && reasoningRow >= 8) {
                     this.renderReasoningWindow(this.canvas, reasoningRow, cols)
                 }
             }
@@ -1289,60 +1339,82 @@ public class TuiApp {
      * 截断策略：按显示宽度（displayWidth）计算，CJK/emoji 占 2 列；
      * 超出 2 行 × (cols-2) 时只显示最后 2 行。
      */
+    /**
+     * 渲染思考块（pi 风格）：
+     *   折叠：1 行提示条（思考中/可查看 + Ctrl+T 提示）
+     *   展开：渲染完整思考内容（最多 8 行，超出显示尾部 + 省略标记）
+     */
     private func renderReasoningWindow(canvas: TuiCanvas, row: Int64, cols: Int64): Unit {
         this.reasoningLock.lock()
         let buf: String = this.reasoningBuffer
+        let expanded: Bool = this.reasoningExpanded
+        let done: Bool = this.reasoningDone
         this.reasoningLock.unlock()
         if (buf.size == 0) { return }
 
-        // 可用内容宽度（留 2 字符给 "› " 前缀）
-        let contentW: Int64 = if (cols > 2) { cols - 2 } else { 10 }
+        let contentW: Int64 = if (cols > 4) { cols - 4 } else { 10 }
 
-        // 按换行符分割，每段按显示宽度折算行数，收集最多 2 行
+        // 折叠态：1 行提示条
+        if (!expanded) {
+            let status: String = if (done) { "思考过程" } else { "思考中…" }
+            let hint: String = "💭 " + status + " · Ctrl+T " + (if (done) { "查看" } else { "展开" })
+            canvas.setLine(row, Ansi.fg(Ansi.THEME_MUTED) + hint + Ansi.reset())
+            return
+        }
+
+        // 展开态：按宽度折算渲染思考内容（最多 12 行，PageUp/PageDown 滚动）
         var displayLines: ArrayList<String> = ArrayList<String>()
         var curLine: String = ""
         var curWidth: Int64 = 0
         for (r in buf.toRuneArray()) {
             let ch = r.toString()
             if (ch == "\n") {
-                // 换行：当前行结束
                 displayLines.add(curLine)
                 curLine = ""
                 curWidth = 0
-                if (displayLines.size >= 2) {
-                    break
-                }
                 continue
             }
             let chW: Int64 = TuiCanvas.displayWidth(ch)
             if (curWidth + chW > contentW) {
-                // 当前行满，结束
                 displayLines.add(curLine)
                 curLine = ch
                 curWidth = chW
-                if (displayLines.size >= 2) {
-                    break
-                }
             } else {
                 curLine += ch
                 curWidth += chW
             }
         }
-        // 添加最后一行（如果有内容且未满 2 行）
-        if (curLine.size > 0 && displayLines.size < 2) {
+        if (curLine.size > 0) {
             displayLines.add(curLine)
         }
-
-        // 渲染最多 2 行
-        var rIdx: Int64 = 0
-        for (line in displayLines) {
-            if (rIdx >= 2) { break }
-            canvas.setLine(row + rIdx, Ansi.fg(Ansi.THEME_MUTED) + "› " + line + Ansi.reset())
-            rIdx += 1
+        // 滚动窗口：显示尾部 (maxLines - 1) 行向上偏移 scrollOffset；PageUp/PageDown 滚动
+        let maxLines: Int64 = 12
+        var scroll: Int64 = this.reasoningScrollOffset
+        // 限制滚动范围：不能滚过开头
+        let maxScroll: Int64 = if (displayLines.size > maxLines - 1) {
+            displayLines.size - (maxLines - 1)
+        } else { 0 }
+        if (scroll > maxScroll) {
+            scroll = maxScroll
+            this.reasoningScrollOffset = scroll
         }
-        // 如果只有 1 行，第 2 行留空
-        if (displayLines.size < 2) {
-            canvas.setLine(row + 1, "")
+        let windowEnd: Int64 = displayLines.size - scroll
+        let windowStart: Int64 = if (windowEnd - (maxLines - 1) > 0) {
+            windowEnd - (maxLines - 1)
+        } else { 0 }
+        let truncatedTop: Bool = windowStart > 0
+        let truncatedBottom: Bool = scroll > 0
+        // 标题行：滚动提示（当前窗口位置）
+        var title: String = "💭 思考过程 · Ctrl+T 折叠"
+        if (truncatedTop || truncatedBottom) {
+            title += " · PgUp/PgDn 滚动"
+        }
+        canvas.setLine(row, Ansi.fg(Ansi.THEME_MUTED) + title + Ansi.reset())
+        var rIdx: Int64 = 0
+        for (i in windowStart..windowEnd) {
+            if (rIdx >= maxLines - 1) { break }
+            canvas.setLine(row + 1 + rIdx, Ansi.fg(Ansi.THEME_MUTED) + "› " + displayLines[i] + Ansi.reset())
+            rIdx += 1
         }
     }
 
@@ -1361,6 +1433,7 @@ public class TuiApp {
         lines.add(Ansi.fg(Ansi.THEME_ACCENT) + "快捷键：" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Tab / ←→       切换视图（对话/帮助）" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Ctrl+E         多行输入编辑" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Ctrl+T         思考过程展开/折叠（推理模型）" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Alt+Enter      多行编辑提交" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Esc            退出多行编辑 / 回对话视图" + Ansi.reset())
         var r: Int64 = 0

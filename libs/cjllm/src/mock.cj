@@ -1,6 +1,8 @@
 package cjllm
 
 import std.collection.*
+import std.time.*
+import std.convert.Parsable
 import stdx.encoding.json.*
 
 /**
@@ -21,7 +23,25 @@ public class MockProvider <: LlmProvider {
 
     public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
         onDelta: (String) -> Unit, onReasoning: (String) -> Unit,
-        onTokenEstimate: (Int64) -> Unit): ModelResponse {
+        onTokenEstimate: (Int64) -> Unit, isCancelled: () -> Bool): ModelResponse {
+        // 模拟推理模型的思考流（reasoning_content 增量，分帧回调）
+        // 用途：TUI 思考块（pi 风格折叠/展开）验证与离线演示
+        onReasoning("分析用户任务，确")
+        onReasoning("定执行计划。先读取文件确认结构，再定位目标内容，最后验证修改。")
+        onReasoning("\n步骤一：梳理需求清单\n- 自动射击或点击射击\n- 敌机多种类型、波次\n- 粒子爆炸效果、星空背景\n- 分数、生命、难度递增\n- 开始界面、暂停、游戏结束界面\n- 移动端触摸支持\n- 音效与背景音乐\n- 双人模式与排行榜\n步骤二：模块划分\n- 渲染引擎\n- 碰撞检测\n- 状态机\n- 输入系统\n- 存档系统\n步骤三：实现顺序\n先引擎后玩法，测试驱动。")
+        onTokenEstimate(50)
+        // 可配置延迟（CJH_MOCK_DELAY_MS>0）：模拟慢 agent，验证 Ctrl+C 中断等交互
+        try {
+            let delayStr = mockGetenv("CJH_MOCK_DELAY_MS") ?? ""
+            if (delayStr.size > 0) {
+                let delay = Int64.parse(delayStr)
+                if (delay > 0) {
+                    sleep(Duration.millisecond * delay)
+                }
+            }
+        } catch (e: Exception) {
+            // 非法延迟配置：忽略
+        }
         this.callCount += 1
         match (this.callCount) {
             case 1 =>
@@ -58,5 +78,19 @@ public class MockProvider <: LlmProvider {
                 onTokenEstimate(100)  // mock 估算值
                 return ModelResponse(finalText, ArrayList<ToolCall>())
         }
+    }
+}
+
+// mock 环境变量读取（零依赖 getenv）
+@C
+foreign func getenv(name: CString): CPointer<UInt8>
+
+private func mockGetenv(name: String): Option<String> {
+    unsafe {
+        let p = getenv(LibC.mallocCString(name))
+        if (p.isNull()) {
+            return None
+        }
+        return Some(CString(p).toString())
     }
 }
