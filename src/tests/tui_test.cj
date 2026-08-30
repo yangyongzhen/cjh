@@ -75,7 +75,10 @@ public class MarkdownRenderTest {
         let f1 = m.process("prefix``")
         @Assert(f1, "prefix")  // 未决反引号不输出
         let f2 = m.process("`code")
-        @Assert(f2, Ansi.fg(Ansi.THEME_MUTED) + "code")  // 第 3 个到达 → 开代码块
+        // 第 3 个到达 → 开代码块；"code" 作为语言标注进入缓冲（待 \n 确定），
+        // 内容延迟输出——markdown 语义（```lang 声明语言）
+        @Assert(f2.contains(Ansi.fg(Ansi.THEME_MUTED)), true)
+        @Assert(f2.contains("code"), false)
         let f3 = m.process("````x")  // 4 个反引号 + x：flush 关闭代码块
         @Assert(f3, Ansi.reset() + "x")
     }
@@ -299,4 +302,64 @@ public class MarkdownTableTest {
         return sb.toString()
     }
 
+}
+
+/**
+ * 代码块语法高亮测试（对齐 OMP：语言标注时高亮，无标注灰底）
+ */
+@Test
+public class MarkdownHighlightTest {
+
+    @TestCase
+    public func testCodeBlockNoLangPlain(): Unit {
+        // 无语言标注：不高亮（防误判，对齐 OMP），灰底
+        let m = MarkdownRender()
+        let out = m.process("```\nlet x = 1\n```") + m.finish()
+        // 无关键字紫色（141）、无字符串绿（108）
+        @Assert(out.contains("38;5;141"), false)
+        @Assert(out.contains("38;5;108"), false)
+        // 灰底（代码块默认 245）
+        @Assert(out.contains("38;5;245"), true)
+    }
+
+    @TestCase
+    public func testCodeBlockPythonHighlight(): Unit {
+        // python 标注：关键字紫、字符串绿、数字青、# 注释
+        let m = MarkdownRender()
+        let f1 = m.process("```python\n")
+        let f2 = m.process("def foo(x):\n")
+        let out = f1 + f2 +
+            m.process("    # 注释内容\n") +
+            m.process("    return x + 42\n") +
+            m.process("```") + m.finish()
+        // 关键字 def → 紫（141）
+        @Assert(out.contains(Ansi.fg(Ansi.THEME_PURPLE) + "def"), true)
+        @Assert(out.contains(Ansi.fg(Ansi.THEME_PURPLE) + "return"), true)
+        // 数字 42 → 青（73）
+        @Assert(out.contains(Ansi.fg(Ansi.THEME_ACCENT) + "42"), true)
+    }
+
+    @TestCase
+    public func testCodeBlockStringComment(): Unit {
+        // 字符串绿 + 注释灰蓝（行注释）
+        let m = MarkdownRender()
+        let out = m.process("```js\n") +
+            m.process("const s = \"hello\"; // 注释\n") +
+            m.process("```") + m.finish()
+        @Assert(out.contains(Ansi.fg(Ansi.THEME_OK) + "\""), true)   // 字符串
+        @Assert(out.contains(Ansi.fg(Ansi.THEME_PURPLE) + "const"), true)
+        // 行注释：// 后内容用 THEME_INFO（103）
+        @Assert(out.contains("38;5;103"), true)
+    }
+
+    @TestCase
+    public func testCodeBlockBlockComment(): Unit {
+        // 块注释 /* */ 完整检测
+        let m = MarkdownRender()
+        let out = m.process("```rust\n") +
+            m.process("/* 块注释 */ let x = 1;\n") +
+            m.process("```") + m.finish()
+        @Assert(out.contains("38;5;103"), true)  // 注释色出现
+        @Assert(out.contains(Ansi.fg(Ansi.THEME_PURPLE) + "let"), true)  // 注释后的关键字正常
+    }
 }
