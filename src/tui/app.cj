@@ -1,6 +1,7 @@
 package cjh.tui
 
 import std.env.*
+import std.convert.Parsable
 import std.fs.*
 import std.sync.*
 import std.time.*
@@ -73,10 +74,12 @@ public class TuiApp {
     private var logger: Logger = NoopLogger()
     // 流式加载指示器（agent 回复中显示）
     private var spinner: Spinner = Spinner()
-    // Agent 最近活动时间（onDelta/onReasoning/onToolStart 更新）：
-    // 空闲检测——模型停滞（无帧）时 60s 无活动 → 自动中断，避免僵持
+    // Agent 最近活动时间（onDelta/onReasoning/onTokenEstimate 更新）：
+    // 空闲检测——模型停滞（无帧）时超时自动中断，避免僵持
     private var agentLastActivity: DateTime = DateTime.now()
     private var idleWarned: Bool = false
+    // 空闲超时秒数（CJH_IDLE_TIMEOUT_SECS 可配，默认 60）
+    private let idleTimeoutSecs: Int64
     // 审批/确认弹窗（替代旧的状态行内联审批 UI）
     private var confirmDialog: ConfirmDialog = ConfirmDialog()
     // provider 配置表单弹窗（/provider 无参数时弹出）
@@ -128,6 +131,20 @@ public class TuiApp {
     public var onSessionResume: (String) -> Unit = { _ => }
 
     public init() {
+        // 空闲超时秒数（CJH_IDLE_TIMEOUT_SECS 可配，默认 60）
+        var to: Int64 = 60
+        try {
+            let v = TermEnv.getenv("CJH_IDLE_TIMEOUT_SECS") ?? ""
+            if (v.size > 0) {
+                let parsed = Int64.parse(v)
+                if (parsed >= 10) {
+                    to = parsed
+                }
+            }
+        } catch (e: Exception) {
+            // 非法配置用默认
+        }
+        this.idleTimeoutSecs = to
         this.term = Term()
         // 流式指示器 / 审批弹窗按终端能力初始化
         this.spinner = Spinner(this.term.isUtf8(), "思考中…")
@@ -264,12 +281,13 @@ public class TuiApp {
                     lastTick = now
                     this.markDirty()
                 }
-                // 空闲检测：60s 无活动（模型停滞、流无帧）→ 自动中断，
+                // 空闲检测：idleTimeoutSecs 无活动（模型停滞、流无帧）→ 自动中断，
                 // 避免 Streaming… 无限计时 + 新消息僵持排队
-                if ((now - this.agentLastActivity).toSeconds() > 60 && !this.idleWarned) {
+                let idleSecs = (now - this.agentLastActivity).toSeconds()
+                if (idleSecs > this.idleTimeoutSecs && !this.idleWarned) {
                     this.idleWarned = true
                     this.appendOutput(Ansi.fg(Ansi.THEME_WARN) +
-                        "⚠️ 模型 60s 无响应（可能停滞），已请求中断。有数据恢复则立即停止；连接超时后自动释放。" +
+                        "⚠️ 模型 ${idleSecs}s 无响应（可能停滞），已请求中断。有数据恢复则立即停止；连接超时后自动释放。" +
                         Ansi.reset())
                     this.onInterrupt()
                 }
