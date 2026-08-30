@@ -266,7 +266,7 @@ cjpm build
 | 平台 | 命令 | 产物 | 说明 |
 |---|---|---|---|
 | Linux（静态单文件，默认） | `cjpm build`（cjpm.toml 已默认 `--static`） | `dist/linux/cjh-<ver>-linux-x64` | 单文件零依赖（含仓颉运行时+stdx，仅依赖系统 libc），直接分发运行，无需环境变量 |
-| Windows | `./scripts/winbuild.sh` | `dist/windows/cjh-<ver>-windows-x64.exe` | Linux 交叉编译 PE（stdx **静态链接**：产物仅依赖系统库 + 2 个 runtime DLL）。**前提**：`~/.cangjie/stdx/` 装 `cangjie-stdx-windows-x64-<ver>`（gitcode.com/Cangjie/cangjie_stdx/releases）。**部署**：`dist/windows/`（exe + libcangjie-runtime.dll + libboundscheck.dll，3 文件）整目录拷贝即用，或直接解压 `dist/cjh-<ver>-windows-x64.zip`（4.8MB）。**单文件 exe 暂不可达**：仓颉 SDK 未提供 Windows 静态 runtime（`libcangjie-runtime.a` 仅 Linux 有），`--static` 仅 Linux 生效——等官方支持（详见踩坑记录 §3.10） |
+| Windows | `./scripts/winbuild.sh` | `dist/windows/cjh-<ver>-windows-x64.exe` | Linux 交叉编译 PE（stdx **静态链接**：产物仅依赖系统库 + 2 个 runtime DLL）。**前提**：`~/.cangjie/stdx/` 装 `cangjie-stdx-windows-x64-<ver>`（gitcode.com/Cangjie/cangjie_stdx/releases）。**部署**：解压 `dist/cjh-<ver>-windows-x64.zip`（7.2MB，含 exe + runtime DLL + **openssl DLL**）——openssl（libcrypto-3-x64.dll/libssl-3-x64.dll）为 WebSocket 握手与 HTTPS 必需，dynamicLoader 运行时按需加载，须与 exe 同目录。**单文件 exe 暂不可达**：仓颉 SDK 未提供 Windows 静态 runtime（`libcangjie-runtime.a` 仅 Linux 有），`--static` 仅 Linux 生效——等官方支持（详见踩坑记录 §3.10） |
 | macOS | POSIX 后端直通，同 Linux 源码 | — | 需 macOS 环境构建（termios 兼容，`@When` 自动选 POSIX 后端） |
 
 > 跨平台原理：终端层 `TerminalBackend` 抽象（`@When[os == ...]` 条件编译选后端，Windows 用 Win32 Console API + VT 输出，Linux/macOS 用 termios），一份源码多平台二进制。详见 [跨平台终端层设计方案](docs/跨平台终端层设计方案.md)。
