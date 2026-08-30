@@ -268,7 +268,8 @@ public class MarkdownTableTest {
         }
         for (w in widths) {
             if (w > 0) {
-                @Assert(maxW - w <= 2, true)  // 行宽一致（无 ANSI 后）
+                eprintln("[tbl] w=${w} max=${maxW} line='${this.stripAnsi(lines[0])}'")
+                @Assert(maxW - w == 0, true)  // 完全对齐（含分隔线）
             }
         }
     }
