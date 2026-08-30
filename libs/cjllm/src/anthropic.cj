@@ -161,7 +161,7 @@ public class AnthropicProvider <: LlmProvider {
         var tlsConfig = TlsClientConfig()
         tlsConfig.verifyMode = CertificateVerifyMode.CustomCA(X509Certificate.systemRootCerts())
         tlsConfig.domain = Some(this.sniHost())
-        let client = ClientBuilder().tlsConfig(tlsConfig).build()
+        let client = ClientBuilder().tlsConfig(tlsConfig).readTimeout(Duration.second * 300).build()
         let req = HttpRequestBuilder()
             .post()
             .url(this.endpointUrl())

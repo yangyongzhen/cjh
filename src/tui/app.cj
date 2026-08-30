@@ -73,6 +73,10 @@ public class TuiApp {
     private var logger: Logger = NoopLogger()
     // 流式加载指示器（agent 回复中显示）
     private var spinner: Spinner = Spinner()
+    // Agent 最近活动时间（onDelta/onReasoning/onToolStart 更新）：
+    // 空闲检测——模型停滞（无帧）时 60s 无活动 → 自动中断，避免僵持
+    private var agentLastActivity: DateTime = DateTime.now()
+    private var idleWarned: Bool = false
     // 审批/确认弹窗（替代旧的状态行内联审批 UI）
     private var confirmDialog: ConfirmDialog = ConfirmDialog()
     // provider 配置表单弹窗（/provider 无参数时弹出）
@@ -260,6 +264,15 @@ public class TuiApp {
                     lastTick = now
                     this.markDirty()
                 }
+                // 空闲检测：60s 无活动（模型停滞、流无帧）→ 自动中断，
+                // 避免 Streaming… 无限计时 + 新消息僵持排队
+                if ((now - this.agentLastActivity).toSeconds() > 60 && !this.idleWarned) {
+                    this.idleWarned = true
+                    this.appendOutput(Ansi.fg(Ansi.THEME_WARN) +
+                        "⚠️ 模型 60s 无响应（可能停滞），已请求中断。有数据恢复则立即停止；连接超时后自动释放。" +
+                        Ansi.reset())
+                    this.onInterrupt()
+                }
             }
             if (this.takeDirty()) {
                 this.render()
@@ -373,6 +386,15 @@ public class TuiApp {
     public func setAgentState(state: String): Unit {
         this.agentState = state
         this.markDirty()
+    }
+
+    /**
+     * 标记 Agent 有活动（流式增量/思考/工具回调调用）。
+     * 供空闲检测：模型停滞（无任何帧）时自动中断，避免"Streaming… 一直计时"僵持
+     */
+    public func markAgentActivity(): Unit {
+        this.agentLastActivity = DateTime.now()
+        this.idleWarned = false
     }
 
     /**

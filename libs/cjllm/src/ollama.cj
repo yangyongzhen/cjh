@@ -97,7 +97,7 @@ public class OllamaProvider <: LlmProvider {
         }
 
         // 本地 Ollama 走 HTTP，不设置 TLS（TLS 配置会导致 SNI/证书不匹配）
-        let client = ClientBuilder().build()
+        let client = ClientBuilder().readTimeout(Duration.second * 300).build()
         let reqBuilder = HttpRequestBuilder()
             .post()
             .url(this.endpointUrl())
