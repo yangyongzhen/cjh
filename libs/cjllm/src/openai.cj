@@ -144,7 +144,7 @@ public class OpenAiProvider <: LlmProvider {
 
     public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
         onDelta: (String) -> Unit, onReasoning: (String) -> Unit,
-        onTokenEstimate: (Int64) -> Unit): ModelResponse {
+        onTokenEstimate: (Int64) -> Unit, isCancelled: () -> Bool): ModelResponse {
         // 构造请求体
         var body = JsonObject()
         body.put("model", JsonString(this.model))
@@ -226,6 +226,11 @@ public class OpenAiProvider <: LlmProvider {
         acc.estimatedPromptTokens = promptChars / 4
         let parser = SseParser(resp.body)
         parser.onEvent = { data =>
+            // 用户 Ctrl+C 中断：提前结束流解析（保留已收内容）
+            if (isCancelled()) {
+                parser.cancel()
+                return
+            }
             acc.feed(data)
             // 实时回调文本增量（仅新增部分）
             let delta = acc.takeDelta()

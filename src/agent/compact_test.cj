@@ -31,7 +31,7 @@ class TextStubProvider <: LlmProvider {
 
     public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
         onDelta: (String) -> Unit, onReasoning: (String) -> Unit,
-        onTokenEstimate: (Int64) -> Unit): ModelResponse {
+        onTokenEstimate: (Int64) -> Unit, isCancelled: () -> Bool): ModelResponse {
         var resp = ModelResponse("压缩摘要 stub 文本", ArrayList<ToolCall>())
         resp.usage.promptTokens = this.usagePromptTokens
         return resp

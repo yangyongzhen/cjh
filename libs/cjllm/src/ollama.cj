@@ -74,7 +74,7 @@ public class OllamaProvider <: LlmProvider {
 
     public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
         onDelta: (String) -> Unit, onReasoning: (String) -> Unit,
-        onTokenEstimate: (Int64) -> Unit): ModelResponse {
+        onTokenEstimate: (Int64) -> Unit, isCancelled: () -> Bool): ModelResponse {
         // 构造请求体（与 OpenAiProvider 一致）
         var body = JsonObject()
         body.put("model", JsonString(this.model))
@@ -131,6 +131,11 @@ public class OllamaProvider <: LlmProvider {
         acc.onTokenEstimate = onTokenEstimate
         let parser = SseParser(resp.body)
         parser.onEvent = { data =>
+            // 用户 Ctrl+C 中断：提前结束流解析（保留已收内容）
+            if (isCancelled()) {
+                parser.cancel()
+                return
+            }
             acc.feed(data)
             let delta = acc.takeDelta()
             if (delta.size > 0) {
