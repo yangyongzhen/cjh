@@ -55,7 +55,7 @@ public class StaticAssets {
                     <option value="solarized">Solarized</option>
                     <option value="monokai">Monokai</option>
                 </select>
-                <button id="config-btn" class="btn-icon config-btn" title="配置">⚙ 配置</button>
+                <button id="config-btn" class="btn-icon config-btn" title="配置">⚙</button>
             </div>
         </header>
 
@@ -1466,17 +1466,19 @@ body {
     font-size: 13px;
     cursor: pointer;
 }
-/* 配置按钮：带文字更醒目 */
+/* 配置按钮：纯图标，醒目易点 */
 .config-btn {
     border: 1px solid var(--border);
     border-radius: 4px;
-    padding: 4px 10px;
-    font-size: 13px;
+    padding: 2px 8px;
+    font-size: 18px;
+    line-height: 1.2;
     background: var(--bg-tertiary);
 }
 .config-btn:hover {
     border-color: var(--accent);
     color: var(--accent);
+    transform: scale(1.1);
 }
 
 .app-main {
