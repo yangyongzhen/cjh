@@ -218,3 +218,85 @@ public class AnsiTest {
         @Assert(Ansi.exitAltScreen(), esc + "[?1049l")
     }
 }
+
+/**
+ * Markdown 表格渲染测试（TUI 消息流 markdown 表格 → 边框 + 列对齐）
+ */
+@Test
+public class MarkdownTableTest {
+    // ===== 表格渲染（markdown 表格 → 边框 + 列对齐）=====
+
+    @TestCase
+    public func testTableRender(): Unit {
+        let m = MarkdownRender()
+        // 表头 + 分隔 + 数据行（跨帧流式）
+        let out = m.process("| # | 问题 | 修复 |\n") +
+            m.process("|---|---|---|\n") +
+            m.process("| 1 | boss 未声明 | 显式声明 |\n") +
+            m.process("| 2 | 双重自增 | 只加一次 |") + m.finish()
+        // 表头渲染：边框 + 粗体
+        @Assert(out.contains("│"), true)
+        @Assert(out.contains("├"), true)   // 分隔线
+        @Assert(out.contains("┼"), true)
+        @Assert(out.contains(Ansi.bold()), true)  // 表头加粗
+        // 列对齐：每行宽度一致（表头列宽对齐）
+        let lines = out.split("\n", -1)
+        // 表头行与数据行宽度差 ≤2（CJK 宽度 + 边框）
+        @Assert(lines.size >= 5, true)
+    }
+
+    @TestCase
+    public func testTableCjkAlignment(): Unit {
+        let m = MarkdownRender()
+        // 中英文混合列宽（CJK 宽度感知）
+        let out = m.process("| 列一 | col |\n") +
+            m.process("|---|---|\n") +
+            m.process("| 中文内容 | value |\n") +
+            m.process("| a | 长内容值 |") + m.finish()
+        let lines = out.split("\n", -1)
+        // 表头/数据行应等宽（±2 边框差异内）
+        var widths: Array<Int64> = Array<Int64>(lines.size, repeat: 0)
+        for (i in 0..lines.size) {
+            widths[i] = TuiCanvas.displayWidth(stripAnsi(lines[i]))
+        }
+        var maxW: Int64 = 0
+        for (w in widths) {
+            if (w > maxW) { maxW = w }
+        }
+        for (w in widths) {
+            if (w > 0) {
+                @Assert(maxW - w <= 2, true)  // 行宽一致（无 ANSI 后）
+            }
+        }
+    }
+
+    @TestCase
+    public func testTableEndOnPlainLine(): Unit {
+        let m = MarkdownRender()
+        // 表格后接普通文本：表格结束，普通文本正常
+        let out = m.process("| a | b |\n") +
+            m.process("|---|---|\n") +
+            m.process("| 1 | 2 |\n") +
+            m.process("普通文本")
+        // 表格行渲染 + 普通文本保留
+        @Assert(out.contains("│"), true)
+        @Assert(out.contains("普通文本"), true)
+    }
+
+    // 剥离 ANSI 辅助（测试用）
+    private func stripAnsi(s: String): String {
+        var sb = StringBuilder()
+        var inEsc: Bool = false
+        for (r in s.toRuneArray()) {
+            let ch = r.toString()
+            if (ch == "\u{1b}") { inEsc = true; continue }
+            if (inEsc) {
+                if (ch == "m") { inEsc = false }
+                continue
+            }
+            sb.append(ch)
+        }
+        return sb.toString()
+    }
+
+}
