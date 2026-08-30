@@ -1208,8 +1208,10 @@ public class TuiApp {
             let agentRow: Int64 = if (agentBusy) { statusRow - 1 - tasksH - 1 } else { -1 }
 
             // 思考块：reasoningBuffer 非空时显示。
-            //   agent 执行中 → 折叠 1 行 / 展开 8 行，紧贴动态状态栏上方
-            //   agent 空闲（思考结束）→ 折叠 1 行 / 展开 8 行，显示在状态栏上方（可回看）
+            // 方案 A（覆盖层）：思考块渲染在输出区底部（覆盖消息末尾 N 行），
+            // 消息区高度恒定不挤压——消除"消息被截断两截"的断裂感。
+            //   agent 执行中 → 覆盖输出区底部（动态状态行上方）
+            //   agent 空闲（思考结束）→ 覆盖输出区底部（状态栏上方），可回看
             this.reasoningLock.lock()
             let hasReasoning: Bool = this.reasoningBuffer.size > 0
             let reasoningExpanded: Bool = this.reasoningExpanded
@@ -1218,22 +1220,17 @@ public class TuiApp {
             let reasoningH: Int64 = if (hasReasoning) {
                 if (reasoningExpanded) { 12 } else { 1 }
             } else { 0 }
-            // agent 忙：在动态状态行上方；空闲：在状态栏上方（statusRow - 1(间隔) - reasoningH）
-            let reasoningRow: Int64 = if (hasReasoning) {
-                if (agentBusy) { agentRow - reasoningH } else { statusRow - 1 - reasoningH }
-            } else { -1 }
 
-            // 输出区可用高度：8 .. outBottom
-            // agent 执行中时为动态状态行/思考块预留空间：
-            //   有思考块 → outBottom = reasoningRow - 2（输出区与思考块间隔 1 空行）
-            //   无思考块 → outBottom = agentRow - 1（输出区紧贴动态状态栏）
-            // agent 不在执行时：有思考块（done 回看）→ outBottom = reasoningRow - 2；否则占满 8..statusRow-1
+            // 输出区可用高度：8 .. outBottom（恒定，不受思考块影响）
+            // agent 执行中：动态状态行上方；空闲：状态栏上方
             let outBottom: Int64 = if (agentBusy && agentRow >= 8) {
-                if (hasReasoning && reasoningRow >= 8) { reasoningRow - 2 } else { agentRow - 1 }
-            } else if (hasReasoning && reasoningRow >= 8) {
-                reasoningRow - 2
+                agentRow - 1
             } else { statusRow - 1 }
             let outH: Int64 = if (outBottom - 8 + 1 > 0) { outBottom - 8 + 1 } else { 0 }
+            // 思考块渲染位置：输出区底部向上 N 行（覆盖消息末尾）
+            let reasoningRow: Int64 = if (hasReasoning && outBottom >= 8) {
+                outBottom - reasoningH + 1
+            } else { -1 }
 
             // 输出区（对话 / 帮助视图，无边框全宽）
             if (this.viewMode == 1) {
