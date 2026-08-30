@@ -64,8 +64,8 @@ public class ReadToolTest {
         @Assert(result.isError, false)
         // 验证默认返回前 500 行
         @Assert(result.content.contains("1\tline0"), true)
-        // 截断提示应包含总行数和下一段 offset
-        @Assert(result.content.contains("文件共"), true)
+        // 分段提示：剩余行数 + 下一段 offset（精简文案）
+        @Assert(result.content.contains("剩余"), true)
         @Assert(result.content.contains("offset="), true)
 
         // 清理
@@ -142,9 +142,17 @@ public class ReadToolTest {
         let r2 = tool.execute(args)
         @Assert(r2.content.contains("[提示]"), false)
 
-        // 第 3 次读：应有提示
+        // 第 3 次读（<5）：仍无提示
         let r3 = tool.execute(args)
-        @Assert(r3.content.contains("[提示]"), true)
+        @Assert(r3.content.contains("[提示]"), false)
+
+        // 第 4 次读（<5）：仍无提示（阈值 5）
+        let r4 = tool.execute(args)
+        @Assert(r4.content.contains("[提示]"), false)
+
+        // 第 5 次读：应有提示
+        let r5 = tool.execute(args)
+        @Assert(r5.content.contains("[提示]"), true)
 
         // 清理
         try { rmFile(path) } catch (e: Exception) {}
