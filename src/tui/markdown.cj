@@ -291,7 +291,12 @@ public class MarkdownRender {
             for (j in 0..pad) {
                 sb.append(" ")
             }
-            sb.append(Ansi.fg(Ansi.THEME_MUTED) + " │ " + Ansi.reset())
+            // 列间 " │ "；最后一列行尾 " │"（去尾空格，与分隔线宽度精确对齐）
+            if (i < this.tableCols - 1) {
+                sb.append(Ansi.fg(Ansi.THEME_MUTED) + " │ " + Ansi.reset())
+            } else {
+                sb.append(Ansi.fg(Ansi.THEME_MUTED) + " │" + Ansi.reset())
+            }
         }
         return sb.toString()
     }
