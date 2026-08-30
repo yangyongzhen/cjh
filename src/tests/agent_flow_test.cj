@@ -270,3 +270,22 @@ public class AgentHookTest {
         @Assert(summary.rounds > 0, true)
     }
 }
+
+/**
+ * on_tool_result 钩子白名单测试：read_file/web_fetch 不被 log-pruner 裁剪
+ */
+@Test
+public class HookExemptTest {
+    @TestCase
+    public func testHookExemptWhitelist(): Unit {
+        // read_file：按需读取工具，截断导致反复重读（用户实测的坑）
+        @Assert(Agent.isHookExempt("read_file"), true)
+        // 结构化抓取正文需完整传 LLM
+        @Assert(Agent.isHookExempt("web_fetch"), true)
+        @Assert(Agent.isHookExempt("web_search"), true)
+        // log-pruner 设计对象：bash 长日志可裁剪
+        @Assert(Agent.isHookExempt("bash"), false)
+        // 其他工具结果默认可被钩子处理
+        @Assert(Agent.isHookExempt("grep"), false)
+    }
+}

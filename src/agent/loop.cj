@@ -318,6 +318,16 @@ public class Agent {
     }
 
     /**
+     * 钩子豁免白名单：这些工具的结果不应被 on_tool_result 钩子（log-pruner）裁剪
+     * - web_fetch/web_search：结构化抓取正文需完整传给 LLM
+     * - read_file：按需读取（offset/limit 控制量），截断导致反复重读
+     */
+    public static func isHookExempt(toolName: String): Bool {
+        return toolName == "web_fetch" || toolName == "web_search" ||
+            toolName == "read_file"
+    }
+
+    /**
      * 运行时切换 provider（/model 命令；历史保留）
      */
     public func setProvider(p: LlmProvider): Unit {
@@ -366,10 +376,14 @@ public class Agent {
      * 返回改写后的 content；无钩子或钩子失败时返回原 content
      */
     private func fireToolResultHook(toolName: String, content: String): String {
-        // web_fetch/web_search 等结构化抓取工具的结果不应被 log-pruner 裁剪：
-        // log-pruner 设计意图是裁剪冗长 bash 日志（>1000 字符截断），
-        // 但 web_fetch 返回的正文需要完整传给 LLM 才能总结。
-        if (toolName == "web_fetch" || toolName == "web_search") {
+        // 白名单：这些工具的结果不应被 log-pruner 等钩子裁剪——
+        //   web_fetch/web_search：结构化抓取正文需完整传给 LLM 才能总结
+        //   read_file：按需读取工具（LLM 已用 offset/limit 控制读取量），
+        //     截断会导致 LLM 看到不完整内容、反复小段重读（用户实测：模型
+        //     被迫 bash sed 分段读，速度/效率骤降）；与内置截断器对
+        //     read_file 不截断（Int64.Max）的设计一致。
+        // log-pruner 设计意图是裁剪冗长 bash 日志（>1000 字符截断）。
+        if (Agent.isHookExempt(toolName)) {
             return content
         }
         match (this.pluginManager) {
