@@ -197,15 +197,16 @@ public class OpenAiProvider <: LlmProvider {
         // SSE 流式响应：readTimeout 是"读取整个响应的最大时长"——绝对超时
         // （stdx 源码核实：readTimer 在 stream end 才 cancel，不随数据重置——
         // 长流式 >90s 会被误切，用户实测 74s 思考+输出被切断）
-        // 600s：覆盖最长合法任务（长思考+长输出）；停滞由上层空闲检测
-        // （60s 无活动 → interrupt + abort 关连接 → read 抛异常立即停）处理
+        // 1200s（20min）：单轮 LLM 调用（思考+输出）几乎不可能超过；
+        // 多轮各自独立预算不累积。停滞由上层空闲检测（60s 无活动 →
+        // interrupt + abort 关连接 → read 抛异常立即停）处理，不依赖此值
         // 注：readTimer 在请求正常完成后会被取消，不会触发 WARN；
         // 只有 warmup 那种"fire and forget"的请求才会让 readTimer 跑到超时
         // Client 不能缓存复用：stdx.net.http 的 Client 在 send 完成后会被关闭，
         // 复用已关闭的 Client 会报 "send body failed, since closed"
         let client = ClientBuilder()
             .tlsConfig(tlsConfig)
-            .readTimeout(Duration.second * 600)
+            .readTimeout(Duration.second * 1200)
             .build()
         // 保存当前 client（abort 时 close）
         this.clientLock.lock()
