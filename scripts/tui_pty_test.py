@@ -92,6 +92,19 @@ class PtuSession:
             + strip_ansi(self.buf)[-500:]
         )
 
+    def expect_count(self, text: str, count: int, timeout: float | None = None) -> str:
+        """等待输出中 text 出现至少 count 次（ANSI 剥离后计数；expect 无位置游标，
+        重复 expect 同一文本会命中同一处，必须计数等待）。"""
+        deadline = time.time() + (timeout or self.timeout)
+        while time.time() < deadline:
+            if strip_ansi(self.buf).count(text) >= count:
+                return self.buf
+            self.read_available(0.2)
+        raise TimeoutError(
+            f"expect '{text}' x{count} 超时。当前缓冲(已剥离 ANSI，尾部 500 字符):\n"
+            + strip_ansi(self.buf)[-500:]
+        )
+
     def send(self, data: str) -> None:
         os.write(self.master, data.encode("utf-8"))
 
@@ -414,6 +427,67 @@ def test_provider_paste() -> None:
         s.close()
 
 
+def test_queue_and_autodequeue() -> None:
+    """[场景10] 输入队列：执行中提交入队（状态行提示，不污染 transcript），
+    执行完自动处理下一条（不重复回显）。"""
+    print("[场景10] 输入队列：执行中提交排队 → 完成后自动发送")
+    cfg = make_config_dir()
+    # 慢 mock（每轮 2.5s 延迟，4 轮 ≈ 10s 忙窗口）保证第二条消息提交时仍在执行；
+    # 必须在 PtuSession 构造前设置（构造时快照 os.environ）
+    os.environ["CJH_MOCK_DELAY_MS"] = "2500"
+    s = PtuSession(cfg)
+    try:
+        s.expect("cjh")
+        time.sleep(1.0)
+        s.send("任务一\n")
+        time.sleep(1.2)  # 等进入执行态（Thinking/Streaming）
+        # 执行中提交第二条：应入队，状态行出现排队提示
+        s.send("任务二\n")
+        s.expect("排队")
+        buf = strip_ansi(s.buf)
+        check("执行中提交显示排队提示", "排队 1 条待发送" in buf, f"(buf尾部: {buf[-300:]})")
+        check("transcript 无'已入队'残留提示", "已入队" not in buf, f"(buf尾部: {buf[-300:]})")
+        # 任务一完成（4 轮工具链）后，排队消息自动发送并完成；
+        # 第二条 run（call 5 = 最终答复）也会输出 FINAL-DONE → 共 2 次
+        s.expect_count("FINAL-DONE", 2, timeout=30)
+        check("排队消息自动发送并完成", True)
+        s.send_key(3)  # 第一次：确认
+        s.send_key(3)  # 第二次：退出
+        s.wait_exit()
+    finally:
+        os.environ.pop("CJH_MOCK_DELAY_MS", None)
+        s.close()
+
+
+def test_interrupt_releases_busy() -> None:
+    """[场景11] Ctrl+C 中断：忙碌中中断 → 回合明确结束（已中断提示）+ 执行锁释放
+    （不再"已请求中断…正在停止"挂死、新消息不再排队）。"""
+    print("[场景11] Ctrl+C 中断释放执行锁 → 后续消息直接执行")
+    cfg = make_config_dir()
+    os.environ["CJH_MOCK_DELAY_MS"] = "3000"  # 慢 mock：每轮 3s，制造忙碌窗口
+    s = PtuSession(cfg)
+    try:
+        s.expect("cjh")
+        time.sleep(1.0)
+        s.send("慢任务\n")
+        time.sleep(1.5)          # 进入执行态（mock 延迟中）
+        s.send_key(3)            # Ctrl+C：忙时中断（不退出）
+        s.expect("已中断", timeout=15)  # 回合明确结束（loop.cj 流中中断标记）
+        check("中断后回合明确结束（已中断提示）", True)
+        s.read_available(0.5)
+        # 执行锁已释放：新消息直接执行（不入队）
+        s.send("快查\n")
+        s.expect("FINAL-DONE", timeout=60)
+        buf = strip_ansi(s.buf)
+        check("中断释放执行锁（新消息未排队）", "排队" not in buf, f"(buf尾部: {buf[-300:]})")
+        s.send_key(3)  # 第一次：确认
+        s.send_key(3)  # 第二次：退出
+        s.wait_exit()
+    finally:
+        os.environ.pop("CJH_MOCK_DELAY_MS", None)
+        s.close()
+
+
 def main() -> None:
     if not os.path.exists(BIN):
         print(f"错误：未找到 {BIN}，请先 cjpm build")
@@ -429,6 +503,8 @@ def main() -> None:
     test_provider_dialog_aggregator()
     test_provider_dialog_protocol()
     test_provider_paste()
+    test_queue_and_autodequeue()
+    test_interrupt_releases_busy()
     print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
     sys.exit(1 if FAIL else 0)
 

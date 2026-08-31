@@ -225,6 +225,90 @@ public class ScreenRenderTest {
     }
 }
 
+/**
+ * OutputView 思考块位置测试：
+ * 思考块渲染在消息流末尾（回复下方）——流式/阅读时输出区锚定底部，
+ * 思考块始终可见；插到回复上方会在长回复增长时先滚出可视区（用户实测反馈）
+ */
+@Test
+public class OutputViewThinkingTest {
+
+    /**
+     * 渲染 OutputView 到 TuiCanvas 并返回行序文本。
+     * flush() 按屏幕行序输出（moveTo + 内容），子串顺序即屏幕行顺序。
+     */
+    private func renderText(ov: OutputView, rows: Int64, cols: Int64): String {
+        let c = TuiCanvas()
+        c.begin(rows, cols, true)
+        ov.render(c, 0, cols, rows)
+        return c.flush()
+    }
+
+    @TestCase
+    public func testThinkingBelowReplyWhenDone(): Unit {
+        // 回合完成：echo + 空行 + 回复；思考块位于回复下方（末尾，底部可见）
+        let ov = OutputView()
+        ov.append("❯ 用户问题")
+        ov.append("")
+        ov.append("最终回复文本")
+        ov.setThinking("分析过程……", true)  // 思考已结束
+        let flushed = this.renderText(ov, 12, 40)
+        let echoIdx = flushed.indexOf("❯ 用户问题")
+        let thinkIdx = flushed.indexOf("💭")
+        let replyIdx = flushed.indexOf("最终回复文本")
+        @Assert(echoIdx.isSome(), true)
+        @Assert(thinkIdx.isSome(), true)
+        @Assert(replyIdx.isSome(), true)
+        // 顺序：用户消息 < 回复 < 思考块（末尾）
+        @Assert(echoIdx.getOrThrow() < replyIdx.getOrThrow(), true)
+        @Assert(replyIdx.getOrThrow() < thinkIdx.getOrThrow(), true)
+    }
+
+    @TestCase
+    public func testThinkingBelowStreamingText(): Unit {
+        // 流式中：内容已 appendDelta 到输出，思考块仍在末尾（流式内容下方）
+        let ov = OutputView()
+        ov.append("❯ 用户问题")
+        ov.append("")
+        ov.appendDelta("流式内容第一段")  // 流式进行中
+        ov.setThinking("正在分析……", false)
+        let flushed = this.renderText(ov, 12, 40)
+        let thinkIdx = flushed.indexOf("💭")
+        let streamIdx = flushed.indexOf("流式内容第一段")
+        @Assert(thinkIdx.isSome(), true)
+        @Assert(streamIdx.isSome(), true)
+        @Assert(streamIdx.getOrThrow() < thinkIdx.getOrThrow(), true)
+    }
+
+    @TestCase
+    public func testThinkingOmpColors(): Unit {
+        // 思考颜色精确对齐 omp（collab-web transcript.css）：
+        // 内容 = --fg-muted ≈ 249 #aaaaaa + 斜体；标签 = --fg-faint ≈ 244 #787878
+        // 比正文素白暗一档（可区分），比中灰 MUTED 亮（不闷）——用户对比 omp 实测认可
+        let ov = OutputView()
+        ov.append("回复文本")
+        ov.setThinking("分析内容……", true)
+        ov.toggleThinking()  // 展开：渲染内容行（前缀 "› "）
+        let flushed = this.renderText(ov, 12, 40)
+        @Assert(flushed.contains(Ansi.fg(249) + Ansi.italic() + "›"), true)  // 内容 omp muted 斜体
+        @Assert(flushed.contains(Ansi.fg(Ansi.COLOR_TEXT) + Ansi.italic() + "›"), false)  // 非正文色
+        @Assert(flushed.contains(Ansi.fg(Ansi.THEME_MUTED) + Ansi.italic() + "›"), false)  // 非中灰
+        @Assert(flushed.contains(Ansi.fg(244) + "💭"), true)  // 标签 omp faint
+    }
+
+    @TestCase
+    public func testNoThinkingNoChange(): Unit {
+        // 无思考内容：输出原样渲染（无 💭 行）
+        let ov = OutputView()
+        ov.append("❯ 用户问题")
+        ov.append("")
+        ov.append("回复文本")
+        let flushed = this.renderText(ov, 12, 40)
+        @Assert(flushed.indexOf("💭").isNone(), true)
+        @Assert(flushed.indexOf("回复文本").isSome(), true)
+    }
+}
+
 @Test
 public class AnsiTest {
 

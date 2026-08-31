@@ -124,7 +124,6 @@ class SessionState {
 
 class StreamState {
     static var active: Bool = false
-    static var md: MarkdownRender = MarkdownRender()
 }
 
 /**

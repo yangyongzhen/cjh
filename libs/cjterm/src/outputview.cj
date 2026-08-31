@@ -51,6 +51,8 @@ public class OutputView <: Component {
     /**
      * 行内 Markdown 渲染：**粗体** → bold；`行内代码` → 青色。
      * 输入为纯文本行（折行后），输出带 ANSI（灰斜体基础 + 行内高亮叠加）。
+     * 颜色对齐 omp（collab-web transcript.css）：内容=--fg-muted(≈249 #aaaaaa)，
+     * 头部=--fg-faint(≈244 #787878)——比正文素白暗一档可区分，又比中灰 MUTED 亮
      */
     private func renderInlineMd(line: String): String {
         let runes = line.toRuneArray()
@@ -60,7 +62,7 @@ public class OutputView <: Component {
         var codeOn: Bool = false
         // 恢复基础样式（行内高亮后回到灰斜体）
         func restore(): String {
-            return Ansi.fg(Ansi.THEME_MUTED) + Ansi.italic()
+            return Ansi.fg(249) + Ansi.italic()
         }
         while (i < runes.size) {
             let ch = runes[i].toString()
@@ -184,7 +186,9 @@ public class OutputView <: Component {
     }
 
     public override func render(canvas: TuiCanvas, row: Int64, width: Int64, height: Int64): Int64 {
-        // 消息流行：output 基础行 + 思考块合成段（消息末尾）
+        // 消息流行：output 基础行 + 思考块合成段（消息流末尾，回复下方）
+        // 位置在回复下方是刻意的：流式时输出区锚定底部，思考块始终可见；
+        // 若插到回复上方，长回复增长时思考块会先滚出可视区（用户实测反馈）
         var outLines = ArrayList<String>()
         for (l in this.output.toString().split("\n", -1)) {
             outLines.add(l)
@@ -193,21 +197,21 @@ public class OutputView <: Component {
         if (this.thinkingText.size > 0) {
             if (this.thinkingExpanded) {
                 let status: String = if (this.thinkingDone) { "思考过程 · Ctrl+T 折叠" } else { "思考中… · Ctrl+T 折叠" }
-                outLines.add(Ansi.fg(Ansi.THEME_MUTED) + "💭 " + status + Ansi.reset())
+                outLines.add(Ansi.fg(244) + "💭 " + status + Ansi.reset())
                 let contentW: Int64 = if (width > 4) { width - 4 } else { 10 }
                 var cur: String = ""
                 var curW: Int64 = 0
                 for (r in this.thinkingText.toRuneArray()) {
                     let ch = r.toString()
                     if (ch == "\n") {
-                        outLines.add(Ansi.fg(Ansi.THEME_MUTED) + Ansi.italic() + "› " + this.renderInlineMd(cur) + Ansi.reset())
+                        outLines.add(Ansi.fg(249) + Ansi.italic() + "› " + this.renderInlineMd(cur) + Ansi.reset())
                         cur = ""
                         curW = 0
                         continue
                     }
                     let chW: Int64 = TuiCanvas.displayWidth(ch)
                     if (curW + chW > contentW) {
-                        outLines.add(Ansi.fg(Ansi.THEME_MUTED) + Ansi.italic() + "› " + this.renderInlineMd(cur) + Ansi.reset())
+                        outLines.add(Ansi.fg(249) + Ansi.italic() + "› " + this.renderInlineMd(cur) + Ansi.reset())
                         cur = ch
                         curW = chW
                     } else {
@@ -216,11 +220,11 @@ public class OutputView <: Component {
                     }
                 }
                 if (cur.size > 0) {
-                    outLines.add(Ansi.fg(Ansi.THEME_MUTED) + Ansi.italic() + "› " + this.renderInlineMd(cur) + Ansi.reset())
+                    outLines.add(Ansi.fg(249) + Ansi.italic() + "› " + this.renderInlineMd(cur) + Ansi.reset())
                 }
             } else {
                 if (this.thinkingDone) {
-                    outLines.add(Ansi.fg(Ansi.THEME_MUTED) + "💭 思考过程 · Ctrl+T 查看" + Ansi.reset())
+                    outLines.add(Ansi.fg(244) + "💭 思考过程 · Ctrl+T 查看" + Ansi.reset())
                 } else {
                     // 思考中：显示 token 计数增长（+ 动态状态行 spinner），
                     // 不做内容滚动——尾部窗口逐字符前进会碎片闪烁（用户实测）
@@ -228,7 +232,7 @@ public class OutputView <: Component {
                     if (this.thinkingTokens > 0) {
                         label = "💭 思考中… (↑ ${this.thinkingTokens} tokens)"
                     }
-                    outLines.add(Ansi.fg(Ansi.THEME_WARN) + label + Ansi.reset() +
+                    outLines.add(Ansi.fg(244) + label + Ansi.reset() +
                         Ansi.fg(Ansi.THEME_MUTED) + " · Ctrl+T 展开" + Ansi.reset())
                 }
             }
