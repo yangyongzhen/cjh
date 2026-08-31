@@ -28,7 +28,7 @@ public class MockProvider <: LlmProvider {
         // 用途：TUI 思考块（pi 风格折叠/展开）验证与离线演示
         onReasoning("分析用户任务，确")
         onReasoning("定执行计划。先读取文件确认结构，再定位目标内容，最后验证修改。")
-        onReasoning("\n步骤一：梳理需求清单\n- 自动射击或点击射击\n- 粒子爆炸效果\n步骤二：检查 src/game.js 第 42 行碰撞检测\n- 读取 /tmp/shooter.html 结构\n- maxTokens=16384 配置\n- 修复 bug_2024 与 gameOver 状态\n步骤三：实现顺序\n先引擎后玩法，测试驱动。")
+        onReasoning("\n步骤一：梳理需求清单\n- **自动射击**或点击射击\n- 粒子爆炸效果\n步骤二：检查 `src/game.js` 第 42 行碰撞检测\n- 读取 /tmp/shooter.html 结构\n- `maxTokens=16384` 配置\n- 修复 bug_2024 与 gameOver 状态\n步骤三：实现顺序\n先引擎后玩法，测试驱动。")
         onTokenEstimate(50)
         // 可配置延迟（CJH_MOCK_DELAY_MS>0）：模拟慢 agent，验证 Ctrl+C 中断等交互
         try {
