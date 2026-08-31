@@ -560,3 +560,93 @@ public class ThinkingMdTest {
         @Assert(flushed.contains("38;5;73"), true)
     }
 }
+
+/**
+ * InputBox 输入历史 + 大粘贴折叠测试（对齐 omp/通用 CLI）
+ */
+@Test
+public class InputBoxHistoryTest {
+
+    @TestCase
+    public func testHistoryUpDown(): Unit {
+        let ib = InputBox()
+        ib.handleKey(KeyEvent(104))  // h
+        ib.handleKey(KeyEvent(105))  // i
+        ib.handleKey(KeyEvent(13))   // Enter 提交 "hi"（app.cj 提交后 clear）
+        ib.clear()
+        ib.handleKey(KeyEvent(119))  // w
+        ib.handleKey(KeyEvent(13))   // Enter 提交 "w"（app.cj 提交后 clear）
+        ib.clear()
+        // ↑：最新 "w"
+        ib.handleKey(KeyEvent(27, TermEsc.UP))
+        @Assert(ib.text(), "w")
+        // ↑：更旧 "hi"
+        ib.handleKey(KeyEvent(27, TermEsc.UP))
+        @Assert(ib.text(), "hi")
+        // ↓：回到 "w"
+        ib.handleKey(KeyEvent(27, TermEsc.DOWN))
+        @Assert(ib.text(), "w")
+        // ↓：回到底部恢复 draft（提交后输入框为空）
+        ib.handleKey(KeyEvent(27, TermEsc.DOWN))
+        @Assert(ib.text(), "")
+    }
+
+    @TestCase
+    public func testHistoryDedupAndCap(): Unit {
+        let ib = InputBox()
+        // 相同内容不重复
+        ib.addToHistory("aaa")
+        ib.addToHistory("aaa")
+        ib.addToHistory("bbb")
+        @Assert(ib.historyList().size, 2)
+        // 上限 50：加入 55 条裁剪
+        let ib2 = InputBox()
+        for (i in 0..55) {
+            ib2.addToHistory("msg-${i}")
+        }
+        @Assert(ib2.historyList().size, 50)
+        @Assert(ib2.historyList()[0], "msg-5")   // 最旧被裁剪
+        @Assert(ib2.historyList()[49], "msg-54") // 最新保留
+    }
+
+    @TestCase
+    public func testHistoryDraftRestore(): Unit {
+        let ib = InputBox()
+        ib.addToHistory("历史一")
+        // 输入半截内容后按 ↑：draft 保存当前输入
+        ib.handleKey(this.keyChar(120))  // x
+        ib.handleKey(KeyEvent(27, TermEsc.UP))
+        @Assert(ib.text(), "历史一")
+        ib.handleKey(KeyEvent(27, TermEsc.DOWN))  // ↓ 回底部恢复 draft
+        @Assert(ib.text(), "x")
+    }
+
+    @TestCase
+    public func testPasteCollapseLarge(): Unit {
+        let ib = InputBox()
+        var big = StringBuilder()
+        for (i in 0..1500) {
+            big.append("长")
+        }
+        ib.handleKey(KeyEvent(big.toString()))  // 大粘贴
+        @Assert(ib.text().startsWith("[Paste #1"), true)  // 折叠 marker
+        @Assert(ib.text().contains("1500"), true)
+        // 提交展开为原文
+        @Assert(ib.expandedText().size, 1500 * 3)  // 原文 3 字节/字（UTF-8）
+        // 退格整体删除 marker（原子）
+        ib.handleKey(KeyEvent(127))
+        @Assert(ib.text(), "")
+    }
+
+    @TestCase
+    public func testPasteSmallNormal(): Unit {
+        let ib = InputBox()
+        ib.handleKey(KeyEvent("hello 世界"))
+        @Assert(ib.text(), "hello 世界")
+        @Assert(ib.expandedText(), "hello 世界")
+    }
+
+    private func keyChar(c: Int32): KeyEvent {
+        return KeyEvent(c, Rune(c).toString())
+    }
+}
