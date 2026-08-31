@@ -16,3 +16,6 @@ cjpm.lock
 .DS_Store
 build-script-cache/
 cangjie-stdx-windows-*.zip
+
+# Python
+__pycache__/
