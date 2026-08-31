@@ -63,7 +63,13 @@ public class SseParser {
                 for (i in 0..n) {
                     chunk[i] = this.buffer[i]
                 }
-                this.feed(chunk)
+                // 协议结束标记（data: [DONE] / event: message_stop）→ 提前结束，
+                // 不等 EOF：服务端/代理输出完可能不关连接（keep-alive），
+                // 继续 read 会挂起直到空闲超时误报"流被切断"
+                let ended = this.feed(chunk)
+                if (ended) {
+                    break
+                }
             }
             this.onDone()
         } catch (e: SocketTimeoutException) {
@@ -88,7 +94,7 @@ public class SseParser {
         }
     }
 
-    private func feed(chunk: Array<Byte>): Unit {
+    private func feed(chunk: Array<Byte>): Bool {
         // 合并 pending + 新块
         var merged = Array<Byte>(this.pending.size + chunk.size, repeat: 0)
         for (i in 0..this.pending.size) {
@@ -145,13 +151,17 @@ public class SseParser {
             if (merged[i] == 10u8) {  // \n
                 if (i + 1 < safeEnd && merged[i + 1] == 10u8) {
                     // 事件结束（\n\n）
-                    this.dispatchEvent(merged, start, i)
+                    if (this.dispatchEvent(merged, start, i)) {
+                        return true
+                    }
                     start = i + 2
                     i = start
                     continue
                 } else if (i > 0 && merged[i - 1] == 13u8 && i + 1 < safeEnd && merged[i + 1] == 10u8) {
                     // 事件结束（\r\n\r\n）
-                    this.dispatchEvent(merged, start, i - 1)
+                    if (this.dispatchEvent(merged, start, i - 1)) {
+                        return true
+                    }
                     start = i + 2
                     i = start
                     continue
@@ -165,11 +175,13 @@ public class SseParser {
             rest[j - start] = merged[j]
         }
         this.pending = rest
+        return false
     }
 
-    private func dispatchEvent(merged: Array<Byte>, start: Int64, endExcl: Int64): Unit {
-        // 解析 data 行
+    private func dispatchEvent(merged: Array<Byte>, start: Int64, endExcl: Int64): Bool {
+        // 解析 data / event 行
         var data = ""
+        var event = ""
         var i = start
         while (i < endExcl) {
             // 取一行
@@ -195,12 +207,17 @@ public class SseParser {
                     data = data + "\n"
                 }
                 data = data + payload
+            } else if (line.startsWith("event:")) {
+                event = line[6..line.size].trimAscii()
             }
             i = lineEnd + 1
         }
         if (data.size > 0) {
             this.onEvent(data)
         }
+        // 协议结束标记：OpenAI 系 data: [DONE]；Anthropic 系 event: message_stop
+        // → 通知 run() 提前结束，不等 EOF（服务端/代理可能 keep-alive 不关连接）
+        return data == "[DONE]" || event == "message_stop"
     }
 
     private func flushRemaining(): Unit {
