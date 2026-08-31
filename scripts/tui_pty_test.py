@@ -193,8 +193,7 @@ def test_startup_and_input() -> None:
         s.expect("4 tools")       # 回合总结条：4 次工具调用（read_file+grep+grep+list_dir）
         check("总结条：4 次工具调用", True)
         # Ctrl+C 退出
-        s.send_key(3)  # 第一次：确认
-        s.send_key(3)  # 第二次：退出
+        s.send_key(3)  # 空闲：一次退出
         code = s.wait_exit()
         check("Ctrl+C 干净退出", code == 0, f"(exit={code})")
     finally:
@@ -218,8 +217,7 @@ def test_slash_completion() -> None:
         buf = strip_ansi(s.buf)
         # Tab 补全后输入框内容为 /theme
         check("补全为 /theme", "/theme" in buf, f"(buf尾部: {buf[-200:]})")
-        s.send_key(3)  # 第一次：确认
-        s.send_key(3)  # 第二次：退出
+        s.send_key(3)  # 空闲：一次退出
         s.wait_exit()
     finally:
         s.close()
@@ -239,8 +237,7 @@ def test_help_view() -> None:
         check("帮助含快捷键说明", "快捷键" in buf, f"(buf尾部: {buf[-200:]})")
         s.send_esc_seq("\x1b")  # Esc 返回对话视图
         s.read_available(0.5)
-        s.send_key(3)  # 第一次：确认
-        s.send_key(3)  # 第二次：退出
+        s.send_key(3)  # 空闲：一次退出
         s.wait_exit()
     finally:
         s.close()
@@ -258,8 +255,7 @@ def test_approval_yes() -> None:
         s.send("y")               # 同意
         s.expect("FINAL-DONE")    # 工具继续执行到最后
         check("同意后继续执行到最终答复", True)
-        s.send_key(3)  # 第一次：确认
-        s.send_key(3)  # 第二次：退出
+        s.send_key(3)  # 空闲：一次退出
         s.wait_exit()
     finally:
         s.close()
@@ -279,8 +275,7 @@ def test_approval_no() -> None:
         s.expect("FINAL-DONE")
         check("拒绝后 agent 继续完成", True)
         check("出现拒绝相关提示", "拒绝" in strip_ansi(s.buf))
-        s.send_key(3)  # 第一次：确认
-        s.send_key(3)  # 第二次：退出
+        s.send_key(3)  # 空闲：一次退出
         s.wait_exit()
     finally:
         s.close()
@@ -331,8 +326,7 @@ def test_provider_dialog() -> None:
         # Esc 关闭
         s.send_esc_seq("\x1b")
         s.read_available(0.3)
-        s.send_key(3)  # 第一次：确认
-        s.send_key(3)  # 第二次：退出
+        s.send_key(3)  # 空闲：一次退出
         s.wait_exit()
     finally:
         s.close()
@@ -357,8 +351,7 @@ def test_provider_dialog_aggregator() -> None:
         check("协议=openai", "openai" in buf)
         s.send_esc_seq("\x1b")
         s.read_available(0.3)
-        s.send_key(3)  # 第一次：确认
-        s.send_key(3)  # 第二次：退出
+        s.send_key(3)  # 空闲：一次退出
         s.wait_exit()
     finally:
         s.close()
@@ -386,8 +379,7 @@ def test_provider_dialog_protocol() -> None:
         check("协议切回 openai", True)
         s.send_esc_seq("\x1b")
         s.read_available(0.3)
-        s.send_key(3)  # 第一次：确认
-        s.send_key(3)  # 第二次：退出
+        s.send_key(3)  # 空闲：一次退出
         s.wait_exit()
     finally:
         s.close()
@@ -420,8 +412,7 @@ def test_provider_paste() -> None:
         check("粘贴内容未穿透主输入框", "❯ api.example.com" not in buf)
         s.send_esc_seq("\x1b")  # 关闭弹窗（Esc 应仍可用）
         s.read_available(0.3)
-        s.send_key(3)  # 第一次：确认
-        s.send_key(3)  # 第二次：退出
+        s.send_key(3)  # 空闲：一次退出
         s.wait_exit()
     finally:
         s.close()
@@ -451,8 +442,7 @@ def test_queue_and_autodequeue() -> None:
         # 第二条 run（call 5 = 最终答复）也会输出 FINAL-DONE → 共 2 次
         s.expect_count("FINAL-DONE", 2, timeout=30)
         check("排队消息自动发送并完成", True)
-        s.send_key(3)  # 第一次：确认
-        s.send_key(3)  # 第二次：退出
+        s.send_key(3)  # 空闲：一次退出
         s.wait_exit()
     finally:
         os.environ.pop("CJH_MOCK_DELAY_MS", None)
@@ -480,8 +470,7 @@ def test_interrupt_releases_busy() -> None:
         s.expect("FINAL-DONE", timeout=60)
         buf = strip_ansi(s.buf)
         check("中断释放执行锁（新消息未排队）", "排队" not in buf, f"(buf尾部: {buf[-300:]})")
-        s.send_key(3)  # 第一次：确认
-        s.send_key(3)  # 第二次：退出
+        s.send_key(3)  # 空闲：一次退出
         s.wait_exit()
     finally:
         os.environ.pop("CJH_MOCK_DELAY_MS", None)

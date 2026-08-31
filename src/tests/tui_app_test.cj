@@ -41,24 +41,26 @@ public class TuiAppKeyTest {
 
     @TestCase
     public func testCtrlCQuits(): Unit {
+        // 空闲：一次 Ctrl+C 直接退出（用户明确要求，无确认环节）
         let (app, _) = this.buildApp()
-        app.handleKey(KeyEvent(3))   // 第一次 Ctrl+C：确认退出（不退出）
-        @Assert(app.testRunning(), true)
-        app.handleKey(KeyEvent(3))   // 第二次：退出
+        app.handleKey(KeyEvent(3))
         @Assert(app.testRunning(), false)
     }
 
     @TestCase
-    public func testCtrlCSingleConfirmsNotQuit(): Unit {
-        // P0-2：空闲第一次 Ctrl+C 只提示确认，不退出（防误触丢会话）
-        let (app, _) = this.buildApp()
+    public func testCtrlCWhileBusyStillRequiresSecondToForceQuit(): Unit {
+        // 任务中两级：第一次打断不退出；第二次才强制退出（与空闲一次退出区分）
+        let app = TuiApp()
+        let forced = ArrayList<Bool>()
+        forced.add(false)
+        app.onForceQuit = { => forced[0] = true }
+        app.setAgentRunning(true)
         app.handleKey(KeyEvent(3))
-        @Assert(app.testRunning(), true)
-        // 其他按键取消退出
-        app.handleKey(this.keyChar(120))  // x
+        @Assert(app.testRunning(), true)   // 忙：第一次不退出
+        @Assert(forced[0], false)
         app.handleKey(KeyEvent(3))
-        app.handleKey(KeyEvent(3))
-        @Assert(app.testRunning(), false)  // 取消后需再按两次
+        @Assert(forced[0], true)           // 忙：第二次强制退出
+        app.setAgentRunning(false)
     }
 
     @TestCase
@@ -73,6 +75,30 @@ public class TuiAppKeyTest {
         app.handleKey(KeyEvent(3))
         app.handleKey(KeyEvent(3))
         @Assert(app.testRunning(), false)
+    }
+
+    @TestCase
+    public func testCtrlCTwoLevelForceQuit(): Unit {
+        // 两级 Ctrl+C：agent 忙时第一次中断、第二次强制退出——
+        // agent 线程可能卡在 OS 深处（connect/DNS/TLS），中断无法保证生效，
+        // 强退是唯一 100% 可靠兜底（用户明确要求：第二次 Ctrl+C 必须能退出）
+        let app = TuiApp()
+        // 仓颉 lambda 不能捕获可变局部变量：用 ArrayList 包装哨兵
+        let forced = ArrayList<Bool>()
+        forced.add(false)
+        app.onForceQuit = { => forced[0] = true }
+        app.setAgentRunning(true)
+        app.handleKey(KeyEvent(3))  // 第一次：请求中断（不退出、不强退）
+        @Assert(forced[0], false)
+        @Assert(app.testRunning(), true)
+        app.handleKey(KeyEvent(3))  // 第二次：强制退出（onForceQuit 触发）
+        @Assert(forced[0], true)
+        // 任务结束后中断标记复位：下次 Ctrl+C 重新从"请求中断"开始（不直接强退）
+        app.setAgentRunning(false)
+        app.setAgentRunning(true)
+        app.handleKey(KeyEvent(3))
+        @Assert(forced[0], true)  // 强退未再触发（复位后第一级是中断）
+        app.setAgentRunning(false)
     }
 
     @TestCase

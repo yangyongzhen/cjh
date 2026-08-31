@@ -12,6 +12,10 @@ import cjterm.*
 import cjh.agent.*
 import cjutil.*
 
+// 强制退出：直接终止进程（agent 线程卡死在 OS 调用时的 100% 兜底）
+@C
+foreign func exit(code: Int32): Unit
+
 /**
  * TUI 应用：对话界面（组件化编排）
  *
@@ -123,8 +127,13 @@ public class TuiApp {
     public var onSubmit: (String) -> Unit = { _ => }
     // 中断回调（P0-2）：Ctrl+C 且 agent 忙时触发，外部接线到 agent.interrupt()
     public var onInterrupt: () -> Unit = { => }
-    // 空闲时第一次 Ctrl+C 的退出确认（再按一次才退出，防误触丢会话）
-    private var quitConfirmPending: Bool = false
+    // 两级 Ctrl+C：agent 忙时第一次请求中断（interruptPending=true），
+    // 第二次强制退出进程——agent 线程可能卡在 OS 深处（connect/DNS/TLS/
+    // 工具子进程），中断无法保证生效，强退是唯一 100% 可靠兜底
+    private var interruptPending: Bool = false
+    // 强制退出回调（测试可注入替换 exit；默认恢复终端 + 退出进程）
+    // 默认空——字段初始化阶段不能调方法（类未构造完），init 里接线
+    public var onForceQuit: () -> Unit = { => }
 
     // provider 配置表单提交回调（外部接线；参数：provider/baseUrl/model/apiKey/protocol）
     public var onProviderSubmit: (String, String, String, String, String) -> Unit = { _, _, _, _, _ => }
@@ -200,6 +209,9 @@ public class TuiApp {
         } catch (e: Exception) {
             this.logger = NoopLogger()
         }
+        // 强制退出默认实现：恢复终端 + 退出进程（须在全部字段初始化后接线，
+        // 测试可注入替换 onForceQuit 避免真退出）
+        this.onForceQuit = { => this.forceQuitImpl() }
         // 输入框回调接线
         // 变更 → 刷新 / 命令候选
         this.inputBox.onChange = { _ =>
@@ -294,6 +306,9 @@ public class TuiApp {
                 let idleSecs = (now - this.agentLastActivity).toSeconds()
                 if (idleSecs > this.idleTimeoutSecs && !this.idleWarned) {
                     this.idleWarned = true
+                    // 看门狗已请求中断：置 interruptPending——若中断未生效
+                    // （线程卡死），用户下次 Ctrl+C 直接强制退出
+                    this.interruptPending = true
                     this.appendOutput(Ansi.fg(Ansi.THEME_WARN) +
                         "⚠️ 模型 ${idleSecs}s 无响应（可能停滞），已请求中断。有数据恢复则立即停止。" +
                         Ansi.reset())
@@ -394,8 +409,28 @@ public class TuiApp {
             this.agentTokenLock.lock()
             this.agentPromptTokens = 0
             this.agentTokenLock.unlock()
+        } else {
+            // 任务结束/中断生效：复位中断标记（下次 Ctrl+C 重新从"请求中断"开始）
+            this.interruptPending = false
         }
         this.markDirty()
+    }
+
+    /**
+     * 强制退出实现：恢复终端（raw mode 解除 + 显示光标）后退出进程。
+     * 不等待 agent 线程——进程退出会终止一切线程
+     */
+    private func forceQuitImpl(): Unit {
+        this.safeLog("info", "Ctrl+C 强制退出：任务未能在中断后停止")
+        try {
+            this.term.disableRaw()
+        } catch (e: Exception) {
+            // 恢复失败忽略
+        }
+        print(Ansi.showCursor(), flush: true)
+        unsafe {
+            exit(0)
+        }
     }
 
     /**
@@ -918,28 +953,24 @@ public class TuiApp {
                 return  // 审批拒绝：不退出、不中断任务
             }
             if (this.isAgentBusy()) {
-                // 中断当前任务轮次（保留已完成工作），不退出 TUI
-                this.quitConfirmPending = false
+                // 两级 Ctrl+C：第一次请求中断（优雅，保留已完成工作）；
+                // 第二次强制退出进程——agent 线程可能卡在 OS 深处
+                // （connect/DNS/TLS/工具子进程），中断无法保证生效
+                if (this.interruptPending) {
+                    this.onForceQuit()
+                    return
+                }
+                this.interruptPending = true
                 this.onInterrupt()
-                this.safeLog("info", "Ctrl+C: 请求中断当前任务")
-                this.appendOutput(Ansi.fg(Ansi.THEME_WARN) + "⏹ 已请求中断当前任务，正在停止…" + Ansi.reset())
+                this.safeLog("info", "Ctrl+C: 请求中断当前任务（再按一次强制退出）")
+                this.appendOutput(Ansi.fg(Ansi.THEME_WARN) +
+                    "⏹ 已请求中断当前任务，正在停止…（再按 Ctrl+C 强制退出）" + Ansi.reset())
                 return
             }
-            // 空闲：第一次确认，第二次退出
-            if (!this.quitConfirmPending) {
-                this.quitConfirmPending = true
-                this.safeLog("info", "Ctrl+C: 空闲，确认退出（再按一次退出）")
-                this.appendOutput(Ansi.fg(Ansi.THEME_WARN) + "再按 Ctrl+C 退出；按其他键取消" + Ansi.reset())
-                this.markDirty()
-                return
-            }
+            // 空闲：一次 Ctrl+C 直接退出（用户明确要求，无确认环节）
+            this.safeLog("info", "Ctrl+C: 空闲，退出")
             this.running = false
             return
-        }
-        // 其他按键清除退出确认（用户按任意键取消退出）
-        if (this.quitConfirmPending) {
-            this.quitConfirmPending = false
-            this.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "[已取消退出]" + Ansi.reset())
         }
         // 审批模式：等待用户 y/n 决策（危险操作审批链）
         this.approvalLock.lock()
