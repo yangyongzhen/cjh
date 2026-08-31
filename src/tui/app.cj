@@ -215,6 +215,8 @@ public class TuiApp {
         // 强制退出默认实现：恢复终端 + 退出进程（须在全部字段初始化后接线，
         // 测试可注入替换 onForceQuit 避免真退出）
         this.onForceQuit = { => this.forceQuitImpl() }
+        // 输入历史：启动加载（↑↓ 切换上次输入，对齐 omp/通用 CLI）
+        this.loadHistory()
         // 输入框回调接线
         // 变更 → 刷新 / 命令候选
         this.inputBox.onChange = { _ =>
@@ -252,7 +254,12 @@ public class TuiApp {
             if (finalLine.size > 0) {
                 this.safeLog("info", "submit: '${finalLine}'")
                 this.appendOutput("")  // 空行：与上一轮回复分隔
-                this.appendOutput(Ansi.fg(Ansi.THEME_ACCENT) + "❯ " + Ansi.reset() + finalLine)
+                // 回显：大粘贴折叠为 [Paste #N] marker（对齐 omp/通用 CLI），
+                // 完整内容随提交进入 agent 会话；历史持久化
+                let echoLine = this.inputBox.lastEchoText()
+                this.appendOutput(Ansi.fg(Ansi.THEME_ACCENT) + "❯ " + Ansi.reset() +
+                    (if (echoLine.size > 0) { echoLine } else { finalLine }))
+                this.saveHistory()
                 this.appendOutput("")  // 空行：分隔用户输入与 Agent 回复
                 // 方案 B：Agent 执行期间提交的消息入队，执行完毕后自动处理。
                 // 不在 transcript 追加"已入队"提示（处理后残留误导，且污染会话存档）——
@@ -337,6 +344,81 @@ public class TuiApp {
         this.term.disableRaw()
         print(Ansi.showCursor(), flush: true)
         print(Ansi.clearScreen(), flush: true)
+    }
+
+    /**
+     * 输入历史持久化文件（~/.cjh/history 或 CJH_CONFIG_DIR/history）
+     */
+    private func historyPath(): String {
+        var dir = ""
+        try {
+            let cfgDir = TermEnv.getenv("CJH_CONFIG_DIR") ?? ""
+            if (cfgDir.size > 0) {
+                dir = cfgDir
+            } else {
+                let home = TermEnv.getenv("HOME") ?? ""
+                if (home.size > 0) {
+                    dir = home + "/.cjh"
+                }
+            }
+        } catch (e: Exception) {
+            dir = ""
+        }
+        if (dir.size == 0) {
+            return "/tmp/cjh_history"  // 兜底
+        }
+        return dir + "/history"
+    }
+
+    /**
+     * 加载输入历史（启动时）：每行一条，旧在前
+     */
+    private func loadHistory(): Unit {
+        try {
+            let f = File(this.historyPath(), OpenMode.Read)
+            var lines = ArrayList<String>()
+            let buf = Array<Byte>(4096, repeat: 0)
+            var pending = ""
+            while (true) {
+                let n = f.read(buf)
+                if (n <= 0) {
+                    break
+                }
+                pending += safeFromUtf8(buf[0..n])
+            }
+            f.close()
+            for (line in pending.split("\n", -1)) {
+                var l = line
+                if (l.size > 0 && l[l.size - 1] == 13u8) {  // 剥 \r
+                    l = l[0..l.size - 1]
+                }
+                if (l.size > 0) {
+                    lines.add(l)
+                }
+            }
+            this.inputBox.setHistory(lines)
+        } catch (e: Exception) {
+            // 无历史文件/读失败：忽略
+        }
+    }
+
+    /**
+     * 保存输入历史（提交后）：整体写文件（上限 50 条，开销可忽略）
+     */
+    private func saveHistory(): Unit {
+        try {
+            let path = this.historyPath()
+            let f = File(path, OpenMode.Write)
+            var sb = StringBuilder()
+            for (h in this.inputBox.historyList()) {
+                sb.append(h)
+                sb.append("\n")
+            }
+            f.write(sb.toString().toArray())
+            f.close()
+        } catch (e: Exception) {
+            // 写失败忽略（历史持久化非关键）
+        }
     }
 
     /**
