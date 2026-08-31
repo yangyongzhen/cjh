@@ -575,7 +575,6 @@ func runTui(sessionId: String): Int64 {
         }
 
         StreamState.active = false
-        StreamState.md = MarkdownRender()
         TuiBridge.app = tui
         agent.onDelta = { d =>
             if (d.size > 0) {
@@ -586,7 +585,11 @@ func runTui(sessionId: String): Int64 {
                         TuiBridge.delta("")
                         StreamState.active = true
                     }
-                    TuiBridge.delta(StreamState.md.process(d))
+                    // 流式期间直出原始文本（不做增量 markdown 渲染）：
+                    // **粗体**/代码块/表格跨帧分片时增量渲染的中间态是残缺 ANSI
+                    // （闪烁 + 显示 `**` 原文），结束再由 onAssistantText 整体
+                    // markdown 渲染替换（endStream），对齐 omp 的流式体验
+                    TuiBridge.delta(d)
                 } catch (e: Exception) {
                     // 流式增量含非法 UTF-8 字节：跳过本帧，不崩 TUI
                 }
@@ -783,9 +786,12 @@ func runTui(sessionId: String): Int64 {
                     agent.onRunComplete(summary)
                 }
                 // 自动处理队列下一条（如果有）
+                // 注意：不在 echo "❯ next"——提交时 inputBox.onSubmit 已回显过，
+                // 这里再 echo 会重复（排队消息在入队瞬间已有一条回显）
                 if (let Some(next) <- tui.dequeueInput()) {
-                    tui.appendOutput(Ansi.fg(Ansi.THEME_ACCENT) + "❯ " + Ansi.reset() + next)
-                    tui.appendOutput("")  // 空行：分隔用户输入与 Agent 回复
+                    // 先置忙再提交：关闭 dequeue→spawn 调度间隙
+                    // （否则该窗口提交的消息看到 busy=false 而绕过队列并发执行）
+                    tui.setAgentRunning(true)
                     tui.onSubmit(next)
                 }
             }

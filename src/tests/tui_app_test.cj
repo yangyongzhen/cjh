@@ -206,4 +206,52 @@ public class TuiAppKeyTest {
         @Assert(app.testInputText(), "o")
         @Assert(app.testRunning(), true)
     }
+
+    @TestCase
+    public func testQueueWhileBusyNoDirectSubmit(): Unit {
+        // 方案 B：agent 执行中提交 → 入队，不直接 onSubmit
+        let (app, submitted) = this.buildApp()
+        app.setAgentRunning(true)
+        app.handleKey(this.keyChar(104))  // h
+        app.handleKey(this.keyChar(105))  // i
+        app.handleKey(KeyEvent(13))       // Enter
+        @Assert(submitted.size, 0)        // busy：不直接提交
+        @Assert(app.queueLength(), 1)     // 已入队
+        @Assert(app.testInputText(), "")  // 输入框已清空
+    }
+
+    @TestCase
+    public func testDequeueAfterRunCompletes(): Unit {
+        // 执行完 setAgentRunning(false) 后出队 → 提交（entries.cj 的自动处理路径）
+        let (app, submitted) = this.buildApp()
+        app.setAgentRunning(true)
+        app.handleKey(this.keyChar(104))  // h
+        app.handleKey(this.keyChar(105))  // i
+        app.handleKey(KeyEvent(13))       // Enter → 入队
+        app.setAgentRunning(false)        // agent 执行完毕
+        let next = app.dequeueInput()
+        @Assert(next.isSome(), true)
+        @Assert(next.getOrThrow(), "hi")
+        @Assert(app.queueLength(), 0)     // 队列已清空
+        app.onSubmit(next.getOrThrow())
+        @Assert(submitted.size, 1)
+    }
+
+    @TestCase
+    public func testDequeueEmptyReturnsNone(): Unit {
+        let (app, _) = this.buildApp()
+        @Assert(app.dequeueInput().isNone(), true)
+    }
+
+    @TestCase
+    public func testSubmitWhileQueueNonEmptyEnqueues(): Unit {
+        // 防并发竞态：run 结束→下一条启动的窗口期（busy=false 但队列非空）
+        // 提交的消息必须入队，不得绕过队列直接 onSubmit（否则与续跑消息并发执行）
+        let (app, submitted) = this.buildApp()
+        app.enqueueInput("先行消息")  // 模拟队列已有待发送消息
+        app.handleKey(this.keyChar(104))  // h
+        app.handleKey(KeyEvent(13))       // Enter
+        @Assert(submitted.size, 0)        // 不直接提交
+        @Assert(app.queueLength(), 2)     // 追加入队
+    }
 }

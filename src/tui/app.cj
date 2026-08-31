@@ -52,6 +52,9 @@ public class TuiApp {
     private var agentRunningLock: Mutex = Mutex()
     // Agent 执行开始时间（实时状态行计时用）
     private var agentStartTime: DateTime = DateTime.now()
+    // Agent 当前 LLM 轮次计数（状态行"第 N 轮"：让用户看到 run 在推进、
+    // 排队消息要等多轮任务结束——队列等待透明化）
+    private var agentRounds: Int64 = 0
     // Agent 执行期间累计输入 token（实时状态行显示用）
     private var agentPromptTokens: Int64 = 0
     private var agentTokenLock: Mutex = Mutex()
@@ -236,12 +239,13 @@ public class TuiApp {
                 this.appendOutput("")  // 空行：与上一轮回复分隔
                 this.appendOutput(Ansi.fg(Ansi.THEME_ACCENT) + "❯ " + Ansi.reset() + finalLine)
                 this.appendOutput("")  // 空行：分隔用户输入与 Agent 回复
-                // 方案 B：Agent 执行期间提交的消息入队，执行完毕后自动处理
-                if (this.isAgentBusy()) {
-                    let qLen: Int64 = this.enqueueInput(finalLine)
-                    let suffix = if (qLen > 1) { "（前面还有 ${qLen - 1} 条）" } else { "" }
-                    this.appendOutput(Ansi.fg(Ansi.THEME_MUTED) +
-                        "  ↳ 已入队，将在当前任务完成后发送${suffix}" + Ansi.reset())
+                // 方案 B：Agent 执行期间提交的消息入队，执行完毕后自动处理。
+                // 不在 transcript 追加"已入队"提示（处理后残留误导，且污染会话存档）——
+                // 排队状态由动态状态行实时显示（"排队 N 条"），agent 结束自动消失。
+                // busy || 队列非空都入队：堵住 run 结束→下一条启动的窗口期
+                // （否则该窗口提交的消息绕过队列、与续跑消息并发执行同一 Agent）
+                if (this.isAgentBusy() || this.queueLength() > 0) {
+                    this.enqueueInput(finalLine)
                 } else {
                     this.onSubmit(finalLine)
                 }
@@ -284,7 +288,9 @@ public class TuiApp {
                     this.markDirty()
                 }
                 // 空闲检测：idleTimeoutSecs 无活动（模型停滞、流无帧）→ 自动中断，
-                // 避免 Streaming… 无限计时 + 新消息僵持排队
+                // 避免 Streaming… 无限计时 + 新消息僵持排队。
+                // 触发后重置计时（重新武装）：若中断未生效（连接/异常路径卡死），
+                // 下个超时周期再次告警+中断，持续升级直到恢复
                 let idleSecs = (now - this.agentLastActivity).toSeconds()
                 if (idleSecs > this.idleTimeoutSecs && !this.idleWarned) {
                     this.idleWarned = true
@@ -292,6 +298,8 @@ public class TuiApp {
                         "⚠️ 模型 ${idleSecs}s 无响应（可能停滞），已请求中断。有数据恢复则立即停止。" +
                         Ansi.reset())
                     this.onInterrupt()
+                    // 重新武装：若仍未恢复，等满一个超时周期再次中断
+                    this.agentLastActivity = now
                 }
             }
             if (this.takeDirty()) {
@@ -382,6 +390,7 @@ public class TuiApp {
         this.agentRunningLock.unlock()
         if (running) {
             this.agentStartTime = DateTime.now()
+            this.agentRounds = 0
             this.agentTokenLock.lock()
             this.agentPromptTokens = 0
             this.agentTokenLock.unlock()
@@ -468,9 +477,11 @@ public class TuiApp {
 
     /**
      * 重置计时器（每轮 LLM 调用前调用，让计时从每轮开始计算）
+     * 同时递增轮次计数（状态行"第 N 轮"）
      */
     public func resetAgentTimer(): Unit {
         this.agentStartTime = DateTime.now()
+        this.agentRounds += 1
         this.markDirty()
     }
 
@@ -1320,12 +1331,24 @@ public class TuiApp {
         let tokens = this.agentPromptTokens
         this.agentTokenLock.unlock()
         let stateLabel = if (this.agentState.size > 0) { this.agentState } else { "Working…" }
+        // 排队消息数（执行期间提交、待自动发送）；0 时不显示
+        let qLen: Int64 = this.queueLength()
         // 配色：spinner 青色动感 · 状态文字亮白醒目 · 计时淡灰辅助 · token 数琥珀金点睛
-        let line = Ansi.fg(Ansi.THEME_ACCENT) + frame + " " + Ansi.reset() +
+        var line = Ansi.fg(Ansi.THEME_ACCENT) + frame + " " + Ansi.reset() +
             Ansi.fg(Ansi.THEME_OK) + stateLabel + Ansi.reset() +
             Ansi.fg(Ansi.THEME_MUTED) + " (" + elapsed.toString() + "s · ↑ " + Ansi.reset() +
             Ansi.fg(Ansi.THEME_WARN) + tokens.toString() + Ansi.reset() +
-            Ansi.fg(Ansi.THEME_MUTED) + " tokens)" + Ansi.reset()
+            Ansi.fg(Ansi.THEME_MUTED) + " tokens" + Ansi.reset()
+        // 多轮任务：显示当前轮次（用户可判断 run 在推进、排队消息还要等几轮）
+        if (this.agentRounds > 1) {
+            line += Ansi.fg(Ansi.THEME_MUTED) + " · 第 " + Ansi.reset() +
+                Ansi.fg(Ansi.THEME_WARN) + this.agentRounds.toString() + Ansi.reset() +
+                Ansi.fg(Ansi.THEME_MUTED) + " 轮" + Ansi.reset()
+        }
+        line += Ansi.fg(Ansi.THEME_MUTED) + ")" + Ansi.reset()
+        if (qLen > 0) {
+            line += Ansi.fg(Ansi.THEME_ACCENT) + " · 📥 排队 ${qLen} 条待发送" + Ansi.reset()
+        }
         canvas.setLine(row, line)
     }
 
