@@ -15,6 +15,8 @@ import std.env.*
 public class StatusBar <: Component {
     private var text: String = ""
     private var model: String = ""
+    // 右侧提示（如滚动位置指示）：render 时附加在横线前，每帧由上层刷新
+    private var rightHint: String = ""
 
     public init() {}
 
@@ -30,6 +32,13 @@ public class StatusBar <: Component {
      */
     public func setModel(name: String): Unit {
         this.model = name
+    }
+
+    /**
+     * 设置右侧提示（滚动指示等；空串不显示）
+     */
+    public func setRightHint(hint: String): Unit {
+        this.rightHint = hint
     }
 
     public func current(): String {
@@ -56,7 +65,12 @@ public class StatusBar <: Component {
             this.text
         }
         // ASCII 上边框：+-- 内容 ->------+（边框蓝色醒目，标识输入框位置）
-        let content = modelPart + dirPart + sep + statusPart
+        let hintPart = if (this.rightHint.size > 0) {
+            Ansi.fg(Ansi.THEME_WARN) + this.rightHint + Ansi.reset()
+        } else {
+            ""
+        }
+        let content = modelPart + dirPart + sep + statusPart + hintPart
         var sb = StringBuilder()
         sb.append(border + "+-- " + Ansi.reset())
         sb.append(content)
