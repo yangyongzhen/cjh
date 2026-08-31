@@ -16,7 +16,7 @@ public class MarkdownRenderTest {
     public func testBold(): Unit {
         let m = MarkdownRender()
         let out = m.process("**bold**")
-        @Assert(out, Ansi.bold() + "bold" + Ansi.reset())
+        @Assert(out, Ansi.bold() + Ansi.fg(Ansi.COLOR_TEXT) + "bold" + Ansi.reset())
     }
 
     @TestCase
@@ -25,7 +25,7 @@ public class MarkdownRenderTest {
         let m = MarkdownRender()
         let f1 = m.process("**bo")
         let f2 = m.process("ld**")
-        @Assert(f1, Ansi.bold() + "bo")
+        @Assert(f1, Ansi.bold() + Ansi.fg(Ansi.COLOR_TEXT) + "bo")
         @Assert(f2, "ld" + Ansi.reset())
     }
 
@@ -33,7 +33,8 @@ public class MarkdownRenderTest {
     public func testSingleStarLiteral(): Unit {
         let m = MarkdownRender()
         let out = m.process("* 列表项")
-        @Assert(out, "* 列表项")  // 单 * 是普通字符
+        @Assert(stripAnsi(out), "* 列表项")  // 单 * 是普通字符
+        @Assert(out.contains(Ansi.fg(Ansi.COLOR_TEXT)), true)  // 普通文本素白
     }
 
     @TestCase
@@ -63,9 +64,10 @@ public class MarkdownRenderTest {
         // 闭合反引号在帧尾：需 finish 或后续字符 flush
         let close = m.process("```") + m.finish()
         @Assert(close, Ansi.reset())
-        // 闭合后状态复位：后续内容无 ANSI
+        // 闭合后状态复位：后续内容为普通文本（素白）
         let after = m.process("done")
-        @Assert(after, "done")
+        @Assert(stripAnsi(after), "done")
+        @Assert(after.contains(Ansi.fg(Ansi.COLOR_TEXT)), true)
     }
 
     @TestCase
@@ -73,21 +75,25 @@ public class MarkdownRenderTest {
         // 流式：三连反引号拆到两帧（帧1 末尾 2 个，帧2 开头 1 个）
         let m = MarkdownRender()
         let f1 = m.process("prefix``")
-        @Assert(f1, "prefix")  // 未决反引号不输出
+        @Assert(stripAnsi(f1), "prefix")  // 未决反引号不输出
+        @Assert(f1.contains(Ansi.fg(Ansi.COLOR_TEXT)), true)
         let f2 = m.process("`code")
         // 第 3 个到达 → 开代码块；"code" 作为语言标注进入缓冲（待 \n 确定），
         // 内容延迟输出——markdown 语义（```lang 声明语言）
         @Assert(f2.contains(Ansi.fg(Ansi.THEME_MUTED)), true)
         @Assert(f2.contains("code"), false)
         let f3 = m.process("````x")  // 4 个反引号 + x：flush 关闭代码块
-        @Assert(f3, Ansi.reset() + "x")
+        @Assert(stripAnsi(f3), "x")
+        @Assert(f3.contains(Ansi.reset()), true)
     }
 
     @TestCase
     public func testMixedContent(): Unit {
         let m = MarkdownRender()
         let out = m.process("**粗体** 和 `code`") + m.finish()
-        @Assert(out, Ansi.bold() + "粗体" + Ansi.reset() + " 和 " + Ansi.fg(Ansi.THEME_ACCENT) + "code" + Ansi.reset())
+        @Assert(stripAnsi(out), "粗体 和 code")
+        @Assert(out.contains(Ansi.fg(Ansi.COLOR_TEXT)), true)  // 粗体/普通文本素白
+        @Assert(out.contains(Ansi.fg(Ansi.THEME_ACCENT)), true)  // 行内代码青色
     }
 
     @TestCase
@@ -95,7 +101,8 @@ public class MarkdownRenderTest {
         // 中文内容不得乱码（Rune 迭代 vs Byte 迭代的回归）
         let m = MarkdownRender()
         let out = m.process("你好世界")
-        @Assert(out, "你好世界")
+        @Assert(stripAnsi(out), "你好世界")
+        @Assert(out.contains(Ansi.fg(Ansi.COLOR_TEXT)), true)
     }
 
     @TestCase
@@ -103,10 +110,11 @@ public class MarkdownRenderTest {
         let m = MarkdownRender()
         m.process("**unclosed")
         let tail = m.finish()
-        @Assert(tail, Ansi.reset())
+        @Assert(stripAnsi(tail), "")  // 无文本残留
+        @Assert(tail.contains(Ansi.reset()), true)  // 未闭合粗体已 reset
         // 复位后可复用
         let after = m.process("ok")
-        @Assert(after, "ok")
+        @Assert(stripAnsi(after), "ok")
     }
 
     @TestCase
@@ -116,6 +124,27 @@ public class MarkdownRenderTest {
         let tail = m.finish()
         // finish 先 flush（开行内代码 accent），再关闭（reset）
         @Assert(tail, Ansi.fg(Ansi.THEME_ACCENT) + Ansi.reset())
+    }
+
+    // 剥离 ANSI 转义（测试辅助：验证文本内容而非精确 ANSI 序列）
+    private func stripAnsi(s: String): String {
+        var sb = StringBuilder()
+        var inEsc: Bool = false
+        for (r in s.toRuneArray()) {
+            let ch = r.toString()
+            if (ch == "\u{1b}") {
+                inEsc = true
+                continue
+            }
+            if (inEsc) {
+                if (ch == "m") {
+                    inEsc = false
+                }
+                continue
+            }
+            sb.append(ch)
+        }
+        return sb.toString()
     }
 }
 
