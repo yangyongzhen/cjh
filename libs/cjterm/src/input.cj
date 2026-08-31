@@ -37,6 +37,9 @@ public class InputBox <: Component {
     private let pasteCollapseChars: Int64 = 1000
     // 最近一次提交的显示文本（折叠 marker 或原文）——供上层回显
     private var lastEcho: String = ""
+    // Ctrl+R 历史搜索模式：输入子串实时过滤历史，↑↓ 浏览匹配（对齐 shell reverse-search）
+    private var searchMode: Bool = false
+    private var searchQuery: String = ""  // 搜索子串（独立于选中项 text_）
 
     public init() {}
 
@@ -189,6 +192,11 @@ public class InputBox <: Component {
     }
 
     public override func handleKey(key: KeyEvent): Bool {
+        // Ctrl+R：历史搜索模式开关（输入子串实时过滤，↑↓ 浏览匹配）
+        if (key.ch == 18 && !key.isEsc) {
+            this.toggleSearch()
+            return true
+        }
         // 历史导航：↑ 上一条 / ↓ 下一条（终端滚轮在非鼠标模式下发 ↑↓ 序列，天然覆盖）
         if (key.isArrowUp) {
             this.historyUp()
@@ -208,6 +216,24 @@ public class InputBox <: Component {
             return true
         }
         if (key.isBackspace) {
+            if (this.searchMode) {
+                // 搜索模式：删 query 尾字符，重新过滤
+                if (this.searchQuery.size > 0) {
+                    var cut = this.searchQuery.size - 1
+                    while (cut >= 0) {
+                        try {
+                            this.searchQuery = this.searchQuery[0..cut]
+                            break
+                        } catch (e: Exception) {
+                            cut -= 1
+                        }
+                    }
+                    this.historyIndex = -1
+                    this.jumpToFirstMatch()
+                }
+                this.onChange(this.text_)
+                return true
+            }
             // 大粘贴 marker 是原子 token：退格整体删除（对齐 omp atomic token）
             let (isMarker, _) = this.parsePasteMarker(this.text_)
             if (isMarker) {
@@ -250,7 +276,12 @@ public class InputBox <: Component {
         if (key.text.size > 0 && !key.isEsc && !key.isEnter && !key.isBackspace) {
             // 编辑内容：退出历史浏览（draft 失效）
             this.historyIndex = -1
-            this.text_ += key.text
+            if (this.searchMode) {
+                this.searchQuery += key.text  // 搜索：输入进 query，实时跳转匹配
+                this.jumpToFirstMatch()
+            } else {
+                this.text_ += key.text
+            }
             this.onChange(this.text_)
             return true
         }
@@ -258,21 +289,65 @@ public class InputBox <: Component {
     }
 
     /**
-     * ↑：上一条历史（首次保存当前输入到 draft；继续↑ 更旧）
+     * 历史搜索模式切换（Ctrl+R）：进入后提示符变 🔍，输入子串实时过滤历史
+     */
+    private func toggleSearch(): Unit {
+        this.searchMode = !this.searchMode
+        if (this.searchMode) {
+            this.promptText = "╰─ 🔍 "
+            this.promptRendered = Ansi.fg(Ansi.THEME_MUTED) + "╰─ " + Ansi.reset() +
+                Ansi.fg(Ansi.THEME_WARN) + "🔍 " + Ansi.reset()
+            this.searchQuery = ""
+            this.historyIndex = -1
+            this.historyDraft = ""
+            this.jumpToFirstMatch()  // 显示最近一条（若历史非空）
+        } else {
+            this.promptText = "╰─ ❯ "
+            this.promptRendered = Ansi.fg(Ansi.THEME_MUTED) + "╰─ " + Ansi.reset() +
+                Ansi.fg(Ansi.THEME_ACCENT) + "❯ " + Ansi.reset()
+            this.searchQuery = ""
+            this.text_ = ""  // 退出搜索：清空（与进入时对称）
+            this.historyIndex = -1
+            this.historyDraft = ""
+        }
+        this.onChange(this.text_)
+    }
+
+    /**
+     * 搜索模式：跳到包含当前子串的最近一条匹配（空子串=最近一条）
+     */
+    private func jumpToFirstMatch(): Unit {
+        if (!this.searchMode) {
+            return
+        }
+        let list = this.filteredHistory()
+        if (list.size == 0) {
+            this.text_ = this.searchQuery  // 无匹配：显示 query
+            this.historyIndex = -1
+            return
+        }
+        this.text_ = list[list.size - 1]  // 最近一条匹配
+        this.historyIndex = 0
+    }
+
+    /**
+     * ↑：上一条历史（首次保存当前输入到 draft；继续↑ 更旧）。
+     * 当前输入以 / 开头 → 只翻 / 命令历史（对齐通用 CLI 的按前缀过滤）
      */
     private func historyUp(): Unit {
-        if (this.history.size == 0) {
+        let list = this.filteredHistory()
+        if (list.size == 0) {
             return
         }
         if (this.historyIndex == -1) {
             this.historyDraft = this.text_  // 保存当前输入，↓ 回底部恢复
             this.historyIndex = 0
-        } else if (this.historyIndex < Int64(this.history.size) - 1) {
+        } else if (this.historyIndex < Int64(list.size) - 1) {
             this.historyIndex += 1
         } else {
             return  // 已到最旧
         }
-        this.text_ = this.history[this.history.size - 1 - this.historyIndex]
+        this.text_ = list[list.size - 1 - this.historyIndex]
         this.onChange(this.text_)
     }
 
@@ -280,16 +355,44 @@ public class InputBox <: Component {
      * ↓：下一条历史；回到底部恢复 draft（当前输入）
      */
     private func historyDown(): Unit {
+        let list = this.filteredHistory()
         if (this.historyIndex == -1) {
             return  // 已在底部
         }
         if (this.historyIndex > 0) {
             this.historyIndex -= 1
-            this.text_ = this.history[this.history.size - 1 - this.historyIndex]
+            this.text_ = list[list.size - 1 - this.historyIndex]
         } else {
             this.historyIndex = -1
             this.text_ = this.historyDraft
         }
         this.onChange(this.text_)
+    }
+
+    /**
+     * 历史过滤：搜索模式 → 包含子串匹配（reverse-search）；
+     * 否则当前输入以 / 开头 → 只返回 / 命令历史（对齐 shell 前缀匹配）
+     */
+    private func filteredHistory(): ArrayList<String> {
+        if (this.searchMode) {
+            var list = ArrayList<String>()
+            for (h in this.history) {
+                if (this.searchQuery.size == 0 || h.contains(this.searchQuery)) {
+                    list.add(h)
+                }
+            }
+            return list
+        }
+        let prefix = if (this.historyDraft.size > 0) { this.historyDraft } else { this.text_ }
+        if (!prefix.startsWith("/")) {
+            return this.history
+        }
+        var list = ArrayList<String>()
+        for (h in this.history) {
+            if (h.startsWith("/")) {
+                list.add(h)
+            }
+        }
+        return list
     }
 }

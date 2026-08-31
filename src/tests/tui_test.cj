@@ -649,4 +649,40 @@ public class InputBoxHistoryTest {
     private func keyChar(c: Int32): KeyEvent {
         return KeyEvent(c, Rune(c).toString())
     }
+
+    @TestCase
+    public func testSlashHistoryFiltered(): Unit {
+        // / 开头输入 → ↑ 只翻 / 命令历史（对齐 shell 前缀过滤）
+        let ib = InputBox()
+        ib.addToHistory("普通消息")
+        ib.addToHistory("/help")
+        ib.addToHistory("/new")
+        ib.handleKey(this.keyChar(47))  // /
+        ib.handleKey(KeyEvent(27, TermEsc.UP))
+        @Assert(ib.text(), "/new")      // 只翻 / 历史（最新 / 命令）
+        ib.handleKey(KeyEvent(27, TermEsc.UP))
+        @Assert(ib.text(), "/help")
+        ib.handleKey(KeyEvent(27, TermEsc.DOWN))
+        @Assert(ib.text(), "/new")
+        ib.handleKey(KeyEvent(27, TermEsc.DOWN))
+        @Assert(ib.text(), "/")         // 回到底部恢复 draft
+    }
+
+    @TestCase
+    public func testCtrlRSearch(): Unit {
+        // Ctrl+R：子串过滤历史，实时跳转最近匹配
+        let ib = InputBox()
+        ib.addToHistory("测试 markdown 渲染")
+        ib.addToHistory("修复 bash 超时")
+        ib.addToHistory("markdown 表格优化")
+        ib.handleKey(KeyEvent(18))              // Ctrl+R 进入搜索
+        @Assert(ib.text(), "markdown 表格优化")  // 空子串：最近一条
+        ib.handleKey(this.keyChar(109))          // m → 子串过滤
+        @Assert(ib.text().contains("markdown"), true)
+        @Assert(ib.text().contains("markdown 表格优化"), true)  // 最近匹配
+        ib.handleKey(KeyEvent(27, TermEsc.UP))   // ↑ 更旧匹配
+        @Assert(ib.text().contains("markdown 渲染"), true)
+        ib.handleKey(KeyEvent(18))               // Ctrl+R 退出搜索
+        @Assert(ib.text(), "")
+    }
 }

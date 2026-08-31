@@ -217,6 +217,8 @@ public class TuiApp {
         this.onForceQuit = { => this.forceQuitImpl() }
         // 输入历史：启动加载（↑↓ 切换上次输入，对齐 omp/通用 CLI）
         this.loadHistory()
+        // 草稿恢复：上次退出时未提交的输入（不触发 onChange）
+        this.loadDraft()
         // 输入框回调接线
         // 变更 → 刷新 / 命令候选
         this.inputBox.onChange = { _ =>
@@ -341,6 +343,7 @@ public class TuiApp {
      * 供 run() 正常退出和 main() finally 异常退出兜底调用
      */
     public func restoreTerminal(): Unit {
+        this.saveDraft()  // 退出前保存未提交输入（启动时恢复）
         this.term.disableRaw()
         print(Ansi.showCursor(), flush: true)
         print(Ansi.clearScreen(), flush: true)
@@ -418,6 +421,49 @@ public class TuiApp {
             f.close()
         } catch (e: Exception) {
             // 写失败忽略（历史持久化非关键）
+        }
+    }
+
+    /**
+     * 保存输入草稿（退出/强退前）：未提交的输入内容写 <configDir>/draft
+     */
+    private func saveDraft(): Unit {
+        try {
+            let text = this.inputBox.text()
+            if (text.size == 0) {
+                return  // 无草稿不写
+            }
+            let path = this.historyPath().replace("history", "draft")
+            let f = File(path, OpenMode.Write)
+            f.write(text.toArray())
+            f.close()
+        } catch (e: Exception) {
+            // 写失败忽略（草稿恢复非关键）
+        }
+    }
+
+    /**
+     * 加载草稿（启动时）：上次退出未提交的输入恢复进输入框（不触发 onChange）
+     */
+    private func loadDraft(): Unit {
+        try {
+            let path = this.historyPath().replace("history", "draft")
+            let f = File(path, OpenMode.Read)
+            let buf = Array<Byte>(16384, repeat: 0)
+            var pending = ""
+            while (true) {
+                let n = f.read(buf)
+                if (n <= 0) {
+                    break
+                }
+                pending += safeFromUtf8(buf[0..n])
+            }
+            f.close()
+            if (pending.size > 0) {
+                this.inputBox.setTextSilent(pending)
+            }
+        } catch (e: Exception) {
+            // 无草稿/读失败忽略
         }
     }
 
@@ -506,6 +552,7 @@ public class TuiApp {
      * 不等待 agent 线程——进程退出会终止一切线程
      */
     private func forceQuitImpl(): Unit {
+        this.saveDraft()  // 强退前保存草稿
         this.safeLog("info", "Ctrl+C 强制退出：任务未能在中断后停止")
         try {
             this.term.disableRaw()
@@ -1391,6 +1438,12 @@ public class TuiApp {
         }
 
         // 静态状态栏：始终渲染在 statusRow（+-- # model > [ cwd ] > ready ->）
+        // 滚动指示：输出区已向上滚动时右侧提示（PageUp 可回到底部）
+        this.outputLock.lock()
+        let scrolled = this.outputView.isScrolled()
+        let scrollLines = this.outputView.scrollOffsetLines()
+        this.outputLock.unlock()
+        this.statusBar.setRightHint(if (scrolled) { " ↕ ↑${scrollLines}行" } else { "" })
         this.statusBar.render(this.canvas, statusRow, cols, 1)
 
         // 审批弹窗：模态覆盖，弹窗 4 行，紧贴输入区上方渲染

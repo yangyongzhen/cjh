@@ -185,6 +185,20 @@ public class OutputView <: Component {
         }
     }
 
+    /**
+     * 是否已向上滚动（未在最新位置）——状态栏显示滚动提示用
+     */
+    public func isScrolled(): Bool {
+        return this.scrollOffset > 0
+    }
+
+    /**
+     * 当前滚动偏移行数（状态栏提示用）
+     */
+    public func scrollOffsetLines(): Int64 {
+        return this.scrollOffset
+    }
+
     public override func render(canvas: TuiCanvas, row: Int64, width: Int64, height: Int64): Int64 {
         // 消息流行：output 基础行 + 思考块合成段（消息流末尾，回复下方）
         // 位置在回复下方是刻意的：流式时输出区锚定底部，思考块始终可见；
