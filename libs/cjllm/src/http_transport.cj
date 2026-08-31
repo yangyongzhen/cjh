@@ -484,3 +484,41 @@ public func splitEndpoint(url: String): (String, UInt16, String, Bool) {
     }
     return (host, port, path, useTls)
 }
+
+/**
+ * 流式空闲超时（per-read readTimeout）默认值
+ *
+ * 读取 CJH_IDLE_TIMEOUT_SECS（默认 180s）。
+ * 背景：第三方代理（如 taotoken.net）会缓冲 SSE 响应，模型思考/长生成阶段
+ * 客户端可能长时间无帧；60s 太激进会误切正常任务。180s 覆盖绝大多数
+ * 思考+代理缓冲场景，真实停滞 3min 内网络恢复亦覆盖。
+ */
+/**
+ * 流式空闲超时（per-read readTimeout）默认值
+ *
+ * 读取 CJH_IDLE_TIMEOUT_SECS（默认 180s）。
+ * 背景：第三方代理（如 taotoken.net）会缓冲 SSE 响应，模型思考/长生成阶段
+ * 客户端可能长时间无帧；60s 太激进会误切正常任务。180s 覆盖绝大多数
+ * 思考+代理缓冲场景，真实停滞 3min 内网络恢复亦覆盖。
+ */
+public func defaultIdleTimeout(): Duration {
+    var secs: Int64 = 180
+    try {
+        unsafe {
+            // 复用 cjllm 包级 FFI getenv（见 mock.cj），零依赖
+            let p = getenv(LibC.mallocCString("CJH_IDLE_TIMEOUT_SECS"))
+            if (!p.isNull()) {
+                let v = CString(p).toString()
+                if (v.size > 0) {
+                    let parsed = Int64.parse(v)
+                    if (parsed >= 10) {
+                        secs = parsed
+                    }
+                }
+            }
+        }
+    } catch (e: Exception) {
+        // 非法配置用默认
+    }
+    return Duration.second * secs
+}

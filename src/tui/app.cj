@@ -78,7 +78,9 @@ public class TuiApp {
     // 空闲检测——模型停滞（无帧）时超时自动中断，避免僵持
     private var agentLastActivity: DateTime = DateTime.now()
     private var idleWarned: Bool = false
-    // 空闲超时秒数（CJH_IDLE_TIMEOUT_SECS 可配，默认 60）
+    // 空闲超时秒数（CJH_IDLE_TIMEOUT_SECS 可配，默认 180）
+    // 180s：第三方代理（taotoken.net 等）缓冲 SSE + 模型思考/长生成阶段
+    // 客户端可长时间无帧；60s 太激进会误切正常任务（已多次实测）
     private let idleTimeoutSecs: Int64
     // 审批/确认弹窗（替代旧的状态行内联审批 UI）
     private var confirmDialog: ConfirmDialog = ConfirmDialog()
@@ -131,8 +133,8 @@ public class TuiApp {
     public var onSessionResume: (String) -> Unit = { _ => }
 
     public init() {
-        // 空闲超时秒数（CJH_IDLE_TIMEOUT_SECS 可配，默认 60）
-        var to: Int64 = 60
+        // 空闲超时秒数（CJH_IDLE_TIMEOUT_SECS 可配，默认 180）
+        var to: Int64 = 180
         try {
             let v = TermEnv.getenv("CJH_IDLE_TIMEOUT_SECS") ?? ""
             if (v.size > 0) {
@@ -287,7 +289,7 @@ public class TuiApp {
                 if (idleSecs > this.idleTimeoutSecs && !this.idleWarned) {
                     this.idleWarned = true
                     this.appendOutput(Ansi.fg(Ansi.THEME_WARN) +
-                        "⚠️ 模型 ${idleSecs}s 无响应（可能停滞），已请求中断。有数据恢复则立即停止；流连接约 90s 超时后自动释放。" +
+                        "⚠️ 模型 ${idleSecs}s 无响应（可能停滞），已请求中断。有数据恢复则立即停止。" +
                         Ansi.reset())
                     this.onInterrupt()
                 }
