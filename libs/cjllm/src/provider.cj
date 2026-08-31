@@ -60,6 +60,13 @@ public interface LlmProvider {
      */
     public func abort(): Unit {
     }
+
+    /**
+     * 连接预热（后台 spawn 调用）：提前完成 TCP+TLS 握手，省首个请求
+     * 的握手延迟。默认空实现；OpenAiProvider 等有实际预热逻辑。
+     */
+    public func warmup(): Unit {
+    }
 }
 
 /**

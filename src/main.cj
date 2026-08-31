@@ -72,6 +72,14 @@ func makeProvider(cfg: CjhConfig): LlmProvider {
         case op: OllamaProvider => op.setSampling(cfg.temperature, cfg.maxTokens)
         case _ => ()
     }
+    // 连接预热（后台 spawn）：提前完成 TCP+TLS 握手，省首个请求的握手延迟
+    // （~200-500ms）。此前因 stdx.net.http 的 readTimer 后台线程 WARN 污染
+    // TUI 而移除；现用 std.net 直连（HttpStreamClient），无 readTimer 问题，
+    // 安全恢复。warmup 内部失败静默（如代理拒绝 GET），不影响正常请求。
+    let pp = p
+    spawn {
+        pp.warmup()
+    }
     return p
 }
 
