@@ -113,7 +113,8 @@ public class OllamaProvider <: LlmProvider {
         // 传输层：std.net 直连（本地 HTTP，无 TLS），per-read 60s 空闲超时
         let (host, port, path, useTls) = splitEndpoint(this.endpointUrl())
         let transport = HttpStreamClient(host, port, useTls)
-        transport.readTimeout = defaultIdleTimeout()
+        transport.idleTimeout = defaultIdleTimeout()
+        transport.cancelChecker = { => isCancelled() }
         this.clientLock.lock()
         this.currentTransport = Some(transport)
         this.clientLock.unlock()
@@ -141,7 +142,8 @@ public class OllamaProvider <: LlmProvider {
             throw LlmException("Ollama HTTP ${status}: ${err}")
         }
 
-        // SSE 解析（复用 OpenAI 兼容的 StreamAccumulator + SseParser）
+        // SSE 解析（transport 已默认短读轮询；空闲预算由 parser 管理）
+        // 复用 OpenAI 兼容的 StreamAccumulator + SseParser
         let acc = StreamAccumulator()
         // prompt token 估算：消息历史字符数 / 4
         var promptChars: Int64 = 0
@@ -151,6 +153,8 @@ public class OllamaProvider <: LlmProvider {
         acc.estimatedPromptTokens = promptChars / 4
         acc.onTokenEstimate = onTokenEstimate
         let parser = SseParser(HttpStreamInput(transport))
+        parser.cancelChecker = { => isCancelled() }
+        parser.idleTimeout = defaultIdleTimeout()
         parser.onEvent = { data =>
             // 用户 Ctrl+C 中断：提前结束流解析（保留已收内容）
             if (isCancelled()) {

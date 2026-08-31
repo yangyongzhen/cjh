@@ -175,7 +175,8 @@ public class AnthropicProvider <: LlmProvider {
         tlsConfig.domain = Some(this.sniHost())
         let (host, port, path, useTls) = splitEndpoint(this.endpointUrl())
         let transport = HttpStreamClient(host, port, useTls, tlsConfig)
-        transport.readTimeout = defaultIdleTimeout()
+        transport.idleTimeout = defaultIdleTimeout()
+        transport.cancelChecker = { => isCancelled() }
         this.clientLock.lock()
         this.currentTransport = Some(transport)
         this.clientLock.unlock()
@@ -201,7 +202,8 @@ public class AnthropicProvider <: LlmProvider {
             throw LlmException("HTTP ${status}: ${err}")
         }
 
-        // SSE 解析（Anthropic event 格式）
+        // SSE 解析（transport 已默认短读轮询；空闲预算由 parser 管理）
+        // Anthropic event 格式
         let acc = AnthropicAccumulator()
         // prompt token 估算：消息历史字符数 / 4
         var promptChars: Int64 = 0
@@ -211,6 +213,8 @@ public class AnthropicProvider <: LlmProvider {
         acc.estimatedPromptTokens = promptChars / 4
         acc.onTokenEstimate = onTokenEstimate
         let parser = SseParser(HttpStreamInput(transport))
+        parser.cancelChecker = { => isCancelled() }
+        parser.idleTimeout = defaultIdleTimeout()
         parser.onEvent = { data =>
             // 用户 Ctrl+C 中断：提前结束流解析（保留已收内容）
             if (isCancelled()) {

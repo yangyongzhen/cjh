@@ -68,7 +68,7 @@ public class CjhConfig {
     public var baseUrl: String = "https://api.openai.com/v1/chat/completions"
     public var model: String = "gpt-4o-mini"
     public var apiKey: String = ""
-    public var maxIterations: Int64 = 50
+    public var maxIterations: Int64 = 100
     public var systemPrompt: String = ""
     // 采样参数（对齐 pi：/settings 可调）
     public var temperature: Float64 = 0.7

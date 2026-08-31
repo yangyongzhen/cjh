@@ -3,8 +3,10 @@ package cjllm
 import std.io.*
 import cjlog.*
 import std.collection.*
+import std.time.*
 import std.net.SocketTimeoutException
 import stdx.net.http.HttpTimeoutException
+import stdx.encoding.json.*
 import cjutil.*
 
 /**
@@ -22,8 +24,22 @@ public class SseParser {
     public var onEvent: (String) -> Unit = { _ => }
     public var onDone: () -> Unit = { => }
     public var onError: (String) -> Unit = { _ => }
-    // readTimeout 绝对超时触发：已收数据保留，但流被切断
+    // 空闲超预算触发（idleTimeout 完全无数据）：已收数据保留，但流被切断
     public var timedOut: Bool = false
+
+    /**
+     * 短读轮询间隔：每次 read 最多阻塞该时长（调用方把 transport.readTimeout
+     * 设为该值）。流式帧不断则不触发；静默期每 POLL_INTERVAL 轮询一次中断标志
+     * 与空闲预算——**中断响应 ≤ POLL_INTERVAL，不依赖 abort() 能否打断阻塞 read**
+     * （TLS close 语义未验证，不赌 socket 行为；用户实测 Ctrl+C 断不掉阻塞 read）。
+     */
+    public static let POLL_INTERVAL: Duration = Duration.second * 5
+
+    // 中断轮询（调用方注入 isCancelled）：短读超时后检查，用户中断立即生效
+    public var cancelChecker: () -> Bool = { => false }
+    // 空闲预算：超过该时长完全无数据 → timedOut（原 readTimeout 语义，默认 180s）。
+    // 模型思考/代理缓冲 SSE 期间的合法静默不误切——有数据帧即重置计时
+    public var idleTimeout: Duration = Duration.second * 180
 
     public init(input: InputStream) {
         this.input = input
@@ -43,48 +59,70 @@ public class SseParser {
     }
 
     /**
-     * 阻塞读取并解析整个流，直到 EOF 或取消
+     * 阻塞读取并解析整个流，直到 EOF、取消/中断、协议结束标记或空闲超预算。
+     *
+     * 短读轮询模型：transport.readTimeout = POLL_INTERVAL（5s），每次 read 至多
+     * 阻塞 5s；超时后先查中断（cancelChecker）再查空闲预算（idleTimeout）。
+     * 这样用户 Ctrl+C / 看门狗中断在 ≤5s 内必生效——即使 abort() 无法打断
+     * 阻塞中的 TLS read，read 自身也会短超时退出，轮询到中断标志。
      */
     public func run(): Unit {
+        var idleStart = DateTime.now()
         try {
             while (true) {
-                if (this.cancelled) {
-                    // 取消：保留已收数据（flush 后结束，不抛异常）
+                if (this.cancelled || this.cancelChecker()) {
+                    // 取消/用户中断：保留已收数据（flush 后结束，不抛异常）
                     this.flushRemaining()
                     break
                 }
-                let n = this.input.read(this.buffer)
+                var n: Int64 = 0
+                try {
+                    n = this.input.read(this.buffer)
+                } catch (e: SocketTimeoutException) {
+                    // 短读超时（POLL_INTERVAL 无数据）：轮询中断标志 + 空闲预算
+                    if (this.cancelled || this.cancelChecker()) {
+                        this.flushRemaining()
+                        break
+                    }
+                    if ((DateTime.now() - idleStart).toMilliseconds() > this.idleTimeout.toMilliseconds()) {
+                        Log.warn("[SSE] idle 超预算（${this.idleTimeout.toMilliseconds() / 1000}s 无数据，模型停滞/流被切断），flush pending (size=${this.pending.size})")
+                        this.timedOut = true
+                        this.flushRemaining()
+                        break
+                    }
+                    continue  // 空闲在预算内（模型思考/代理缓冲）：继续等
+                } catch (e: HttpTimeoutException) {
+                    // 兼容旧 stdx.net.http 路径（已不再使用，保留兜底）
+                    if (this.cancelled || this.cancelChecker()) {
+                        this.flushRemaining()
+                        break
+                    }
+                    if ((DateTime.now() - idleStart).toMilliseconds() > this.idleTimeout.toMilliseconds()) {
+                        Log.warn("[SSE] idle timeout (absolute), flushing pending (size=${this.pending.size})")
+                        this.timedOut = true
+                        this.flushRemaining()
+                        break
+                    }
+                    continue
+                }
                 if (n <= 0) {
                     // EOF：flush 剩余
                     this.flushRemaining()
                     break
                 }
+                idleStart = DateTime.now()  // 有数据：重置空闲计时
                 var chunk = Array<Byte>(n, repeat: 0)
                 for (i in 0..n) {
                     chunk[i] = this.buffer[i]
                 }
-                // 协议结束标记（data: [DONE] / event: message_stop）→ 提前结束，
-                // 不等 EOF：服务端/代理输出完可能不关连接（keep-alive），
+                // 协议结束标记（data: [DONE] / event: message_stop / finish_reason）
+                // → 提前结束，不等 EOF：服务端/代理输出完可能不关连接（keep-alive），
                 // 继续 read 会挂起直到空闲超时误报"流被切断"
                 let ended = this.feed(chunk)
                 if (ended) {
                     break
                 }
             }
-            this.onDone()
-        } catch (e: SocketTimeoutException) {
-            // per-read 超时（std.net 直连）：60s 无数据 = 流空闲/停滞
-            // → 保留已收数据 + 标记 timedOut（与旧整体超时语义一致，但
-            //   per-read 只在无帧时触发——长任务帧不断永不误切）
-            Log.warn("[SSE] read timeout (idle 60s), flushing pending (size=${this.pending.size})")
-            this.timedOut = true
-            this.flushRemaining()
-            this.onDone()
-        } catch (e: HttpTimeoutException) {
-            // 兼容旧 stdx.net.http 路径（已不再使用，保留兜底）
-            Log.warn("[SSE] read timeout (absolute), flushing pending (size=${this.pending.size})")
-            this.timedOut = true
-            this.flushRemaining()
             this.onDone()
         } catch (e: Exception) {
             // 用户中断（abort 关闭连接）→ 保留已收数据正常结束，不标 timedOut
@@ -215,9 +253,57 @@ public class SseParser {
         if (data.size > 0) {
             this.onEvent(data)
         }
-        // 协议结束标记：OpenAI 系 data: [DONE]；Anthropic 系 event: message_stop
-        // → 通知 run() 提前结束，不等 EOF（服务端/代理可能 keep-alive 不关连接）
-        return data == "[DONE]" || event == "message_stop"
+        // 协议结束标记：OpenAI 系 data: [DONE]；Anthropic 系 event: message_stop；
+        // OpenAI 兼容系 choices[0].finish_reason 非 null（stop/length/tool_calls）
+        // → 通知 run() 提前结束，不等 EOF（服务端/代理可能 keep-alive 不关连接，
+        // 甚至不发 [DONE]——只透传 finish_reason 的聚合网关实测会挂死 read）
+        return data == "[DONE]" || event == "message_stop" || this.hasFinishReason(data)
+    }
+
+    /**
+     * 检测 OpenAI 兼容流式最后一块：choices[0].finish_reason 为非 null 字符串。
+     * finish_reason 是生成完成的标准信号（stop/length/tool_calls），
+     * 比 [DONE] 更底层——部分聚合代理透传 finish_reason 但不透传 [DONE]。
+     * 中间块 finish_reason 为 null → 不判定结束（仅 JSON 字符串非空才结束）。
+     */
+    private func hasFinishReason(data: String): Bool {
+        // 快速路径：不含该字段直接返回（Anthropic/非 JSON 帧零开销）
+        if (!data.contains("\"finish_reason\"")) {
+            return false
+        }
+        try {
+            let j = JsonValue.fromStr(data)
+            match (j.kind()) {
+                case JsonKind.JsObject =>
+                    let obj = j.asObject()
+                    if (let Some(choices) <- obj.get("choices")) {
+                        match (choices.kind()) {
+                            case JsonKind.JsArray =>
+                                let arr = choices.asArray()
+                                if (arr.size() > 0) {
+                                    if (let Some(c0) <- arr.get(0)) {
+                                        match (c0.kind()) {
+                                            case JsonKind.JsObject =>
+                                                let c = c0.asObject()
+                                                if (let Some(fr) <- c.get("finish_reason")) {
+                                                    match (fr.kind()) {
+                                                        case JsonKind.JsString => return fr.asString().getValue().size > 0
+                                                        case _ => return false
+                                                    }
+                                                }
+                                            case _ => ()
+                                        }
+                                    }
+                                }
+                            case _ => ()
+                        }
+                    }
+                case _ => ()
+            }
+        } catch (e: Exception) {
+            // JSON 解析失败：不判定结束（交由后续 [DONE]/EOF/超时兜底）
+        }
+        return false
     }
 
     private func flushRemaining(): Unit {

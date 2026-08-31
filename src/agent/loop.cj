@@ -571,7 +571,19 @@ public class Agent {
         // 空响应重试计数（LLM 返回无 text 且无 tool_calls 时重试，超过 maxEmptyRetries 才退出）
         var emptyRetries: Int64 = 0
         let maxEmptyRetries: Int64 = 3
-        while (iterations < this.config.maxIterations) {
+        // 软顶（wrapUpRounds）：达到 maxIterations 后注入"立即总结收尾"指令，不再硬切——
+        // 长任务可在当前工作线程自然收尾；超过 wrapUpRounds 仍未结束才强制停止
+        var wrapUpInjected: Bool = false
+        let wrapUpRounds: Int64 = 10
+        let hardCap: Int64 = this.config.maxIterations + wrapUpRounds
+        while (iterations < hardCap) {
+            // 软顶注入：达到 maxIterations 时要求模型收尾（不消耗轮次）
+            if (iterations >= this.config.maxIterations && !wrapUpInjected) {
+                wrapUpInjected = true
+                this.messages.add(ChatMessage("user",
+                    "[System Notice] 任务已执行 ${this.config.maxIterations} 轮，请立即结束：不要再调用任何工具，直接给出最终总结答复（如任务确未完成，简述剩余步骤）。"))
+                this.onAssistantText("\n[System] 已达轮次上限（${this.config.maxIterations}），要求模型收尾总结\n")
+            }
             // P0-2：用户 Ctrl+C 中断——轮次间检查，保留已完成工作
             if (this.isInterrupted()) {
                 Log.warn("Agent.run 被用户中断（${iterations} 轮后）")
@@ -614,8 +626,31 @@ public class Agent {
                     this.onTokenEstimate(est)
                 }, { => this.isInterrupted() })
             } catch (e: Exception) {
+                // 建连/响应头阶段被用户中断（StreamInterruptedException 或 abort 后异常）：
+                // 明确标记已中断，而非"LLM 调用异常"
+                if (this.isInterrupted()) {
+                    Log.warn("Agent.run 请求阶段被中断（第 ${iterations} 轮）: ${e}")
+                    this.fireHooks(AgentHook.Interrupt, JsonObject())
+                    this.onAssistantText("\n_[已中断：保留已完成的工作，可继续提问]_")
+                    let d = (DateTime.now() - startTime).toMilliseconds()
+                    summary.durationMs = d
+                    summary.reply = "[已中断：${iterations} 轮已完成]"
+                    return summary
+                }
                 Log.error("Agent.run chatStream 异常: ${e}", e)
                 summary.reply = "[LLM 调用异常: ${e}]"
+                return summary
+            }
+            // 流式中被用户中断（Ctrl+C / 空闲看门狗）：立即结束回合，明确标记已中断
+            // （原实现只在轮次间检查——流中中断后会把半截回复当正常回复返回，
+            //   且中断提示不出现；现在短读轮询保证中断在 ≤5s 内抵达 chatStream 返回）
+            if (this.isInterrupted()) {
+                Log.warn("Agent.run 流式中被中断（第 ${iterations} 轮）")
+                this.fireHooks(AgentHook.Interrupt, JsonObject())
+                this.onAssistantText("\n_[已中断：保留已完成的工作，可继续提问]_")
+                let d = (DateTime.now() - startTime).toMilliseconds()
+                summary.durationMs = d
+                summary.reply = "[已中断：${iterations} 轮已完成]"
                 return summary
             }
             let roundMs = (DateTime.now() - roundStart).toMilliseconds()
@@ -805,13 +840,13 @@ public class Agent {
             Log.warn("Agent.run 正常结束: ${iterations} rounds, ${summary.toolCalls} tools, ${durationMs}ms")
             return summary
         }
-        // 达最大迭代次数也触发总结
-        Log.warn("已达最大迭代次数 ${this.config.maxIterations}，强制结束回合")
+        // 超过软顶 + wrapUpRounds 仍未收尾：强制结束（保留已完成工作）
+        Log.warn("已达硬顶 ${hardCap} 轮（软顶 ${this.config.maxIterations} + ${wrapUpRounds}）仍未收尾，强制结束回合")
         let durationMsMax = (DateTime.now() - startTime).toMilliseconds()
         summary.durationMs = durationMsMax
-        summary.reply = "[已达最大迭代次数 ${this.config.maxIterations}]"
+        summary.reply = "[已达最大迭代次数 ${hardCap}]"
         // 给 TUI 上文字提示，而非静默退出
-        this.onAssistantText("\n⚠️ 已达最大迭代次数 ${this.config.maxIterations}，回合强制结束。如需继续，请重新提问。")
+        this.onAssistantText("\n⚠️ 已达最大迭代次数 ${hardCap}，回合强制结束。如需继续，请重新提问。")
         return summary
     }
 
