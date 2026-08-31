@@ -237,7 +237,11 @@ public class HttpStreamClient {
             }
             return n
         }
-        // chunked 模式
+        // chunked 模式：每次调用读一个完整 chunk 后立即返回。
+        // 让解析层（SseParser）及时处理已读帧并检测协议结束标记
+        // （data: [DONE] / event: message_stop）——若填满 buf 才返回，
+        // 服务器在 chunk 间隙挂起（不发 0 长度 chunk）时会阻塞在下一 chunk，
+        // SseParser 拿不到已读帧，DONE 检测被无限延迟
         if (this.isChunked) {
             var filled: Int64 = 0
             while (filled < Int64(buf.size)) {
@@ -258,12 +262,8 @@ public class HttpStreamClient {
                     }
                     this.chunkRemain = chunkSize
                 }
-                // 读 chunk 数据
-                let want = if (this.chunkRemain < Int64(buf.size) - filled) {
-                    this.chunkRemain
-                } else {
-                    Int64(buf.size) - filled
-                }
+                // 读 chunk 数据（一个完整 chunk）
+                let want = this.chunkRemain
                 let n = this.readRaw(buf, filled, want)
                 if (n <= 0) {
                     this.eof = true
@@ -274,6 +274,7 @@ public class HttpStreamClient {
                 if (this.chunkRemain == 0) {
                     // chunk 数据后 CRLF
                     this.readCRLF()
+                    return filled  // 读完一个完整 chunk 立即返回
                 }
             }
             return filled
@@ -318,11 +319,20 @@ public class HttpStreamClient {
         if (this.readPos < this.readLen) {
             return this.readLen - this.readPos
         }
+
         // 缓冲耗尽：重新读
         this.readPos = 0
         this.readLen = 0
         let sock = this.socket.getOrThrow()
-        let n = sock.read(this.readBuf)
+        var n: Int64 = 0
+        try {
+            n = sock.read(this.readBuf)
+        } catch (e: SocketException) {
+            // 对端异常关闭（Connection reset）：已收数据在缓冲里先消费，
+            // 缓冲耗尽后按 EOF 处理——流式尾部 reset 不算错误
+            return 0
+        }
+
         if (n <= 0) {
             return 0  // EOF
         }

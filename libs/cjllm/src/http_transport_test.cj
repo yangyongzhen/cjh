@@ -3,6 +3,7 @@ package cjllm
 import std.net.*
 import std.time.*
 import std.collection.*
+import cjutil.*
 
 /**
  * HttpStreamClient 稳定性测试
@@ -23,9 +24,7 @@ public class HttpTransportTest {
     public func testContentLengthStream(): Unit {
         let port: UInt16 = 18101
         let body = "hello world, this is a streaming response body with enough length to split into chunks"
-        spawn {
-            runMockServer(port, MockResp.ContentLength(body, 5))
-        }
+        let _ = startMockServer(port, MockResp.ContentLength(body, 5))
         let client = HttpStreamClient("127.0.0.1", port, false)
         client.readTimeout = Duration.second * 2
         client.connect()
@@ -44,9 +43,7 @@ public class HttpTransportTest {
     public func testChunkedStream(): Unit {
         let port: UInt16 = 18102
         let body = "data: {\"content\":\"你好，世界\"}\n\ndata: [DONE]\n\n"
-        spawn {
-            runMockServer(port, MockResp.Chunked(body))
-        }
+        let _ = startMockServer(port, MockResp.Chunked(body))
         let client = HttpStreamClient("127.0.0.1", port, false)
         client.readTimeout = Duration.second * 2
         client.connect()
@@ -65,9 +62,7 @@ public class HttpTransportTest {
         let port: UInt16 = 18103
         // 服务端持续 3s 发帧（每 50ms 一帧）；客户端 readTimeout 仅 1s
         // 若 readTimeout 是整体绝对超时 → 必然误切；per-read 语义 → 帧不断永不超时
-        spawn {
-            runMockServer(port, MockResp.LongStream(3000, 40))
-        }
+        let _ = startMockServer(port, MockResp.LongStream(3000, 40))
         let client = HttpStreamClient("127.0.0.1", port, false)
         client.readTimeout = Duration.second * 1
         client.connect()
@@ -88,9 +83,7 @@ public class HttpTransportTest {
     @TestCase
     public func testReadTimeoutInterrupt(): Unit {
         let port: UInt16 = 18104
-        spawn {
-            runMockServer(port, MockResp.StallAfterHead(2000))  // 发头 + 少量数据后停发
-        }
+        let _ = startMockServer(port, MockResp.StallAfterHead(2000))  // 发头 + 少量数据后停发
         let client = HttpStreamClient("127.0.0.1", port, false)
         client.readTimeout = Duration.second * 1
         client.connect()
@@ -127,9 +120,7 @@ public class HttpTransportTest {
     @TestCase
     public func testAbortInterrupt(): Unit {
         let port: UInt16 = 18105
-        spawn {
-            runMockServer(port, MockResp.StallAfterHead(0))  // 只发头，不发 body
-        }
+        let _ = startMockServer(port, MockResp.StallAfterHead(0))  // 只发头，不发 body
         let client = HttpStreamClient("127.0.0.1", port, false)
         client.readTimeout = Duration.second * 10
         client.connect()
@@ -139,17 +130,20 @@ public class HttpTransportTest {
         let input = HttpStreamInput(client)
         let buf = Array<Byte>(1024, repeat: 0)
         spawn {
-            sleep(Duration.milliSecond * 500)
-            client.abort()  // 读中关闭连接 → read 应抛异常
+            sleep(Duration.millisecond * 500)
+            client.abort()  // 读中关闭连接 → read 结束（抛异常或 EOF 返回 0）
         }
-        var threw: Bool = false
+        var ended: Bool = false
         try {
-            input.read(buf)
-            @Assert(true, false)  // abort 后 read 不应正常返回数据
+            let r = input.read(buf)
+            // abort 后 read 结束：EOF（返回 0）也视为中断生效（close 打断 read）
+            if (r <= 0) {
+                ended = true
+            }
         } catch (e: Exception) {
-            threw = true
+            ended = true
         }
-        @Assert(threw, true)
+        @Assert(ended, true)  // abort 打断 read（抛异常或 EOF）
     }
 
     // ==================== 场景 6：连接关闭 EOF ====================
@@ -158,9 +152,7 @@ public class HttpTransportTest {
     public func testConnectionCloseEof(): Unit {
         let port: UInt16 = 18106
         let body = "partial body then server closes"
-        spawn {
-            runMockServer(port, MockResp.CloseEarly(body, 20))  // 发 20 字节后关连接
-        }
+        let _ = startMockServer(port, MockResp.CloseEarly(body, 20))  // 发 20 字节后关连接
         let client = HttpStreamClient("127.0.0.1", port, false)
         client.readTimeout = Duration.second * 2
         client.connect()
@@ -168,7 +160,33 @@ public class HttpTransportTest {
         let (status, _) = client.readResponseHead()
         @Assert(status, 200)
         let got = readAll(client)
-        @Assert(got, body)  // 剩余数据完整读完 + EOF 正常结束
+        @Assert(got, body[0..20])  // 20 字节后服务器关闭：剩余数据 + EOF 正常收尾
+        client.close()
+    }
+
+    // ==================== 场景 7：协议结束标记（[DONE]）提前结束 ====================
+    // 服务端发 SSE 帧含 [DONE] 后挂起不关连接（代理 keep-alive 行为）——
+    // SseParser 必须在 [DONE] 后立即返回，不等 EOF/空闲超时
+
+    @TestCase
+    public func testSseDoneEndsStreamEarly(): Unit {
+        let port: UInt16 = 18107
+        let _ = startMockServer(port, MockResp.SseDoneNoClose)
+        let client = HttpStreamClient("127.0.0.1", port, false)
+        client.readTimeout = Duration.second * 2  // 若未修复：等 EOF 挂起 → 2s 超时
+        client.connect()
+        client.request("POST", "/v1/chat/completions", ArrayList<(String, String)>(), "{}")
+        let (status, _) = client.readResponseHead()
+        @Assert(status, 200)
+        let parser = SseParser(HttpStreamInput(client))
+        let events = ArrayList<String>()
+        parser.onEvent = { d => events.add(d) }
+        let t0 = DateTime.now()
+        parser.run()
+        let elapsed = (DateTime.now() - t0).toSeconds()
+        @Assert(events.size, 2)          // content 帧 + [DONE] 帧
+        @Assert(events[1], "[DONE]")     // DONE 帧已回调
+        @Assert(elapsed < 2, true)       // DONE 后立即返回（不等 EOF/超时）
         client.close()
     }
 
@@ -177,17 +195,22 @@ public class HttpTransportTest {
     private func readAll(client: HttpStreamClient): String {
         let input = HttpStreamInput(client)
         let buf = Array<Byte>(4096, repeat: 0)
-        var sb = StringBuilder()
+        var all = Array<Byte>()
         while (true) {
             let n = input.read(buf)
             if (n <= 0) {
                 break
             }
-            for (i in 0..n) {
-                sb.append(Rune(Int32(buf[i])).toString())
+            var merged = Array<Byte>(all.size + n, repeat: 0)
+            for (i in 0..all.size) {
+                merged[i] = all[i]
             }
+            for (i in 0..n) {
+                merged[all.size + i] = buf[i]
+            }
+            all = merged
         }
-        return sb.toString()
+        return safeFromUtf8(all)
     }
 }
 
@@ -199,27 +222,45 @@ public enum MockResp {
     | LongStream(Int64, Int64)      // 总时长 ms, 帧间隔 ms
     | StallAfterHead(Int64)         // 发头后停发（可先发少量数据）
     | CloseEarly(String, Int64)     // body, 发前 N 字节后关连接
+    | SseDoneNoClose                 // 发 SSE 帧含 [DONE] 后挂起不关连接（模拟代理 keep-alive）
 }
 
-public func runMockServer(port: UInt16, resp: MockResp): Unit {
+/**
+ * 启动 mock server：主线程 bind（监听就绪后返回），spawn 线程 accept + 发响应。
+ * 避免 spawn 调度延迟导致 client connect 被拒（Connection refused 竞态）。
+ */
+public func startMockServer(port: UInt16, resp: MockResp): TcpServerSocket {
     let server = TcpServerSocket(bindAt: port)
     server.bind()
-    let conn = server.accept()
+    spawn {
+        let conn = server.accept()
+        try {
+            handleMockResp(conn, resp)
+        } catch (e: Exception) {
+            // 客户端提前关闭等异常忽略
+        }
+        try {
+            conn.close()
+            server.close()
+        } catch (e: Exception) {
+            // 忽略
+        }
+    }
+    return server
+}
+
+public func handleMockResp(conn: StreamingSocket, resp: MockResp): Unit {
     match (resp) {
         case ContentLength(body, chunkSize) =>
             conn.write(("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: ${body.size}\r\n\r\n").toArray())
-            writeInChunks(conn, body, chunkSize, Duration.milliSecond * 5)
+            writeInChunks(conn, body, chunkSize, Duration.millisecond * 5)
         case Chunked(body) =>
             conn.write("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\n\r\n".toArray())
-            var i: Int64 = 0
+            // 整帧一块发送（真实 SSE：每事件一个 chunk）；UTF-8 中文完整验证
             let bytes = body.toArray()
-            while (i < Int64(bytes.size)) {
-                let n = if (4 < Int64(bytes.size) - i) { 4 } else { Int64(bytes.size) - i }
-                conn.write((toHex(n) + "\r\n").toArray())
-                conn.write(bytes[i..(i + n)])
-                conn.write("\r\n".toArray())
-                i += n
-            }
+            conn.write((toHex(Int64(bytes.size)) + "\r\n").toArray())
+            conn.write(bytes)
+            conn.write("\r\n".toArray())
             conn.write("0\r\n\r\n".toArray())
         case LongStream(totalMs, frameMs) =>
             conn.write("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\n\r\n".toArray())
@@ -230,7 +271,7 @@ public func runMockServer(port: UInt16, resp: MockResp): Unit {
                 conn.write((toHex(Int64(pbytes.size)) + "\r\n").toArray())
                 conn.write(pbytes)
                 conn.write("\r\n".toArray())
-                sleep(Duration.milliSecond * frameMs)
+                sleep(Duration.millisecond * frameMs)
             }
             conn.write("0\r\n\r\n".toArray())
         case StallAfterHead(warmBytes) =>
@@ -239,9 +280,9 @@ public func runMockServer(port: UInt16, resp: MockResp): Unit {
                 var i: Int64 = 0
                 while (i < warmBytes) {
                     let n = if (100 < warmBytes - i) { 100 } else { warmBytes - i }
-                    conn.write(Array<Byte>(n, repeat: Byte(65)))
+                    conn.write(Array<Byte>(n, repeat: 65u8))
                     i += n
-                    sleep(Duration.milliSecond * 10)
+                    sleep(Duration.millisecond * 10)
                 }
                 // 之后停发
                 sleep(Duration.second * 30)
@@ -255,9 +296,17 @@ public func runMockServer(port: UInt16, resp: MockResp): Unit {
             let n = if (sendBytes < Int64(bytes.size)) { sendBytes } else { Int64(bytes.size) }
             conn.write(bytes[0..n])
             conn.close()  // 发部分后关连接
+        case SseDoneNoClose =>
+            conn.write("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n".toArray())
+            let frame = "data: {\"content\":\"hi\"}\n\ndata: [DONE]\n\n"
+            let fbytes = frame.toArray()
+            conn.write((toHex(Int64(fbytes.size)) + "\r\n").toArray())
+            conn.write(fbytes)
+            conn.write("\r\n".toArray())
+            // 不发 0 长度 chunk、不关连接：挂起（模拟代理 keep-alive）
+            // SseParser 必须在 [DONE] 帧后提前结束，不等 EOF/超时
+            sleep(Duration.second * 30)
     }
-    conn.close()
-    server.close()
 }
 
 public func writeInChunks(conn: StreamingSocket, body: String, chunkSize: Int64, gap: Duration): Unit {
@@ -275,12 +324,18 @@ public func toHex(n: Int64): String {
     if (n == 0) {
         return "0"
     }
-    let digits = "0123456789abcdef"
-    var sb = StringBuilder()
+    // 注意：仓颉 String[Int64] 下标返回 Byte，Byte.toString() 是十进制数字串
+    // （如 '4' → "52"）——必须用 toRuneArray() 取字符
+    let digits = "0123456789abcdef".toRuneArray()
     var v = n
+    var chars = ArrayList<String>()
     while (v > 0) {
-        sb.append(digits[(v % 16)].toString())
+        chars.add(digits[(v % 16)].toString())
         v = v / 16
     }
-    return sb.toString().reversed()
+    var sb = StringBuilder()
+    for (i in 0..chars.size) {
+        sb.append(chars[chars.size - 1 - i])
+    }
+    return sb.toString()
 }
