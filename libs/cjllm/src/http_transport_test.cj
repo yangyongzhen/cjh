@@ -190,6 +190,176 @@ public class HttpTransportTest {
         client.close()
     }
 
+    // ==================== 场景 8：finish_reason 提前结束（无 [DONE]） ====================
+    // 聚合网关透传 OpenAI 帧但省略 [DONE]、keep-alive 不关连接——
+    // SseParser 必须在 finish_reason="stop" 帧后立即返回，不等 EOF/空闲超时
+    // （"任务完成但 Streaming 不停 → 新消息排队"的根治用例）
+
+    @TestCase
+    public func testSseFinishReasonEndsStreamEarly(): Unit {
+        let port: UInt16 = 18108
+        let _ = startMockServer(port, MockResp.SseFinishReasonNoClose)
+        let client = HttpStreamClient("127.0.0.1", port, false)
+        client.readTimeout = Duration.second * 2  // 若未修复：等 EOF 挂起 → 2s 超时
+        client.connect()
+        client.request("POST", "/v1/chat/completions", ArrayList<(String, String)>(), "{}")
+        let (status, _) = client.readResponseHead()
+        @Assert(status, 200)
+        let parser = SseParser(HttpStreamInput(client))
+        let events = ArrayList<String>()
+        parser.onEvent = { d => events.add(d) }
+        let t0 = DateTime.now()
+        parser.run()
+        let elapsed = (DateTime.now() - t0).toSeconds()
+        @Assert(events.size, 2)                  // content 帧 + finish_reason 帧
+        @Assert(elapsed < 2, true)               // finish_reason 后立即返回（不等 EOF/超时）
+        // 中间帧 finish_reason=null 不结束：事件 0 必须回调（未提前 break）
+        @Assert(events[0].contains("hi"), true)
+        client.close()
+    }
+
+    // ==================== 场景 9：短读轮询——中断不依赖 abort/EOF ====================
+    // 服务端发一帧后挂起（无 [DONE]/finish_reason/EOF/关连接）：此时 abort() 若
+    // 无法打断阻塞 read（TLS 语义未验证），唯一出路是 read 自身短超时 + 轮询
+    // cancelChecker。本用例证明：中断标志翻转后 ≤POLL_INTERVAL+余量 内解析结束。
+
+    @TestCase
+    public func testParserCancelWithoutAbort(): Unit {
+        let port: UInt16 = 18109
+        let _ = startMockServer(port, MockResp.SseStallNoClose)
+        let client = HttpStreamClient("127.0.0.1", port, false)
+        client.readTimeout = Duration.second * 1  // 短读轮询（比 5s 更短，测试提速）
+        client.connect()
+        client.request("POST", "/v1/chat/completions", ArrayList<(String, String)>(), "{}")
+        let (status, _) = client.readResponseHead()
+        @Assert(status, 200)
+        let parser = SseParser(HttpStreamInput(client))
+        let cancelAt = DateTime.now() + Duration.second * 1
+        parser.cancelChecker = { => DateTime.now() > cancelAt }
+        parser.idleTimeout = Duration.second * 30  // 预算远大于测试时长：只有中断能结束
+        spawn {
+            sleep(Duration.second * 4)  // 保底取消（若 cancelChecker 轮询失效则测试失败）
+            parser.cancel()
+        }
+        let t0 = DateTime.now()
+        parser.run()
+        let elapsed = (DateTime.now() - t0).toSeconds()
+        @Assert(elapsed < 3, true)  // 中断 ≤ 轮询间隔 + 余量生效（不依赖 abort/EOF/close）
+        @Assert(parser.timedOut, false)  // 中断不是超时
+        client.close()
+    }
+
+    // ==================== 场景 10：空闲预算耗尽 → timedOut ====================
+    // 停滞超过 idleTimeout（完全无数据）→ timedOut=true（原 readTimeout 语义，
+    // 由解析层预算管理，短读本身不误判超时）
+
+    @TestCase
+    public func testParserIdleTimeout(): Unit {
+        let port: UInt16 = 18110
+        let _ = startMockServer(port, MockResp.SseStallNoClose)
+        let client = HttpStreamClient("127.0.0.1", port, false)
+        client.readTimeout = Duration.second * 1  // 短读轮询
+        client.connect()
+        client.request("POST", "/v1/chat/completions", ArrayList<(String, String)>(), "{}")
+        let (status, _) = client.readResponseHead()
+        @Assert(status, 200)
+        let parser = SseParser(HttpStreamInput(client))
+        parser.idleTimeout = Duration.second * 1  // 预算 1s：首个短读超时后即耗尽
+        let t0 = DateTime.now()
+        parser.run()
+        let elapsed = (DateTime.now() - t0).toMilliseconds()
+        @Assert(parser.timedOut, true)   // 停滞超预算 → timedOut
+        @Assert(elapsed >= 500, true)    // 至少等过第一个短读超时
+        @Assert(elapsed < 3000, true)    // 预算耗尽即结束（不等 EOF/close）
+        client.close()
+    }
+
+    // ==================== 场景 11：响应头阶段中断轮询 ====================
+    // 服务端 accept 后不发任何字节（响应头停滞）：Ctrl+C 必须 ≤轮询间隔生效
+    // （响应头阶段此前是无轮询盲区——只能等 abort 或 180s 预算）
+
+    @TestCase
+    public func testHeadReadInterrupt(): Unit {
+        let port: UInt16 = 18111
+        let _ = startMockServer(port, MockResp.StallBeforeHead)
+        let client = HttpStreamClient("127.0.0.1", port, false)
+        client.readTimeout = Duration.second * 1  // 短读轮询
+        client.idleTimeout = Duration.second * 30 // 预算远大于测试时长：只有中断能结束
+        let cancelAt = DateTime.now() + Duration.second * 1
+        client.cancelChecker = { => DateTime.now() > cancelAt }
+        client.connect()
+        client.request("POST", "/v1/chat/completions", ArrayList<(String, String)>(), "{}")
+        let t0 = DateTime.now()
+        var interrupted: Bool = false
+        try {
+            let _ = client.readResponseHead()
+        } catch (e: StreamInterruptedException) {
+            interrupted = true  // 明确的中断信号（非网络错误）
+        } catch (e: Exception) {
+            // 其他异常也算"读被打破"（socket 语义差异），但不如中断信号精确
+        }
+        let elapsed = (DateTime.now() - t0).toSeconds()
+        @Assert(interrupted, true)  // 必须抛 StreamInterruptedException（用户中断）
+        @Assert(elapsed < 3, true)  // ≤ 轮询间隔 + 余量
+        client.close()
+    }
+
+    // ==================== 场景 12：响应头阶段预算耗尽 ====================
+
+    @TestCase
+    public func testHeadReadIdleTimeout(): Unit {
+        let port: UInt16 = 18112
+        let _ = startMockServer(port, MockResp.StallBeforeHead)
+        let client = HttpStreamClient("127.0.0.1", port, false)
+        client.readTimeout = Duration.second * 1  // 短读轮询
+        client.idleTimeout = Duration.second * 1 // 响应头预算 1s
+        client.connect()
+        client.request("POST", "/v1/chat/completions", ArrayList<(String, String)>(), "{}")
+        let t0 = DateTime.now()
+        var threw: Bool = false
+        try {
+            let _ = client.readResponseHead()
+        } catch (e: Exception) {
+            threw = true  // 预算耗尽：抛超时（网络停滞报错）
+        }
+        let elapsed = (DateTime.now() - t0).toMilliseconds()
+        @Assert(threw, true)
+        @Assert(elapsed >= 500, true)
+        @Assert(elapsed < 3000, true)
+        client.close()
+    }
+
+    // ==================== 场景 13：大 chunk 不得越界（回归） ====================
+    // 聚合代理单 chunk > SseParser 缓冲(8192)：旧实现 readRaw 越界写 buf[8192]
+    // 抛 IndexOutOfBoundsException → 流被截断 → 内容不完整 → 模型续跑空转
+    // （实测 13 次越界 + 50 轮强制结束）。大 chunk 必须分多次 readBody 无损读完
+
+    @TestCase
+    public func testBigChunkNoOverflow(): Unit {
+        let port: UInt16 = 18113
+        var big = StringBuilder()
+        for (i in 0..9000) {
+            big.append("x")  // 9KB 内容 > 8192 缓冲
+        }
+        let body = "data: {\"choices\":[{\"delta\":{\"content\":\"${big.toString()}\"},\"finish_reason\":null}]}\n\n" +
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+        let _ = startMockServer(port, MockResp.Chunked(body))  // 整帧单 chunk 发送
+        let client = HttpStreamClient("127.0.0.1", port, false)
+        client.readTimeout = Duration.second * 2
+        client.connect()
+        client.request("POST", "/v1/chat/completions", ArrayList<(String, String)>(), "{}")
+        let (status, _) = client.readResponseHead()
+        @Assert(status, 200)
+        let parser = SseParser(HttpStreamInput(client))
+        let got = StringBuilder()
+        parser.onEvent = { d => got.append(d) }
+        parser.run()
+        // 内容完整无越界截断；finish_reason 帧也到达（协议提前结束）
+        @Assert(got.toString().contains(big.toString()), true)
+        @Assert(got.toString().contains("finish_reason"), true)
+        client.close()
+    }
+
     // ==================== 辅助 ====================
 
     private func readAll(client: HttpStreamClient): String {
@@ -223,6 +393,9 @@ public enum MockResp {
     | StallAfterHead(Int64)         // 发头后停发（可先发少量数据）
     | CloseEarly(String, Int64)     // body, 发前 N 字节后关连接
     | SseDoneNoClose                 // 发 SSE 帧含 [DONE] 后挂起不关连接（模拟代理 keep-alive）
+    | SseFinishReasonNoClose         // 只发 finish_reason（无 [DONE]）后挂起不关连接（聚合网关）
+    | SseStallNoClose                // 发一帧后挂起（无 [DONE]/finish_reason/EOF）——只有短读轮询能结束
+    | StallBeforeHead                // accept 后不发任何字节（响应头阶段停滞）
 }
 
 /**
@@ -305,6 +478,34 @@ public func handleMockResp(conn: StreamingSocket, resp: MockResp): Unit {
             conn.write("\r\n".toArray())
             // 不发 0 长度 chunk、不关连接：挂起（模拟代理 keep-alive）
             // SseParser 必须在 [DONE] 帧后提前结束，不等 EOF/超时
+            sleep(Duration.second * 30)
+        case SseFinishReasonNoClose =>
+            conn.write("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n".toArray())
+            // 聚合网关行为：透传 OpenAI 帧但省略 [DONE]；首块 finish_reason=null，
+            // 末块 finish_reason="stop"，之后挂起不关连接
+            let frame = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\n" +
+                "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+            let fbytes = frame.toArray()
+            conn.write((toHex(Int64(fbytes.size)) + "\r\n").toArray())
+            conn.write(fbytes)
+            conn.write("\r\n".toArray())
+            // 不发 0 长度 chunk、不关连接：挂起（模拟聚合网关 keep-alive）
+            // SseParser 必须在 finish_reason 帧后提前结束（不能等 [DONE]/EOF/超时）
+            sleep(Duration.second * 30)
+        case SseStallNoClose =>
+            conn.write("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n".toArray())
+            // 发一帧（finish_reason=null，不触发协议结束）后挂起：无 [DONE]、
+            // 无 finish_reason、不关连接、不再发数据
+            let frame = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\n"
+            let fbytes = frame.toArray()
+            conn.write((toHex(Int64(fbytes.size)) + "\r\n").toArray())
+            conn.write(fbytes)
+            conn.write("\r\n".toArray())
+            // 只有短读轮询（cancelChecker 中断 / 空闲预算超时）能结束解析
+            sleep(Duration.second * 30)
+        case StallBeforeHead =>
+            // accept 后不发任何字节（无 HTTP 响应头）：响应头阶段停滞
+            // 只有 readResponseHead 的短读轮询（中断/预算）能结束
             sleep(Duration.second * 30)
     }
 }

@@ -199,8 +199,10 @@ public class OpenAiProvider <: LlmProvider {
         for (ki in 0..keys.size) {
             let key = keys[ki]
             let transport = HttpStreamClient(host, port, useTls, tlsConfig)
-            // per-read 超时 60s：空闲检测在 read 层（帧不断永不超时；停滞 60s 抛）
-            transport.readTimeout = defaultIdleTimeout()
+            // 建连/响应头宽容预算（默认 180s）；流式体短读轮询（默认 5s）
+            transport.idleTimeout = defaultIdleTimeout()
+            // 中断轮询：连接/握手/响应头/流式体全程可中断（不依赖 abort 打断 read）
+            transport.cancelChecker = { => isCancelled() }
             // 保存当前 transport（abort 时关闭打断 read）
             this.clientLock.lock()
             this.currentTransport = Some(transport)
@@ -234,15 +236,17 @@ public class OpenAiProvider <: LlmProvider {
                 throw LlmException(lastErr)
             }
 
-        // SSE 解析
+        // SSE 解析（transport 已默认短读轮询：中断响应 ≤5s；空闲预算由 parser 管理）
         let acc = StreamAccumulator()
-        // prompt token 估算：消息历史字符数 / 4（混合中英文经验值）
+        // prompt token 估算：消息历史字符数 / 4
         var promptChars: Int64 = 0
         for (m in messages) {
             promptChars += Int64(m.content.size)
         }
         acc.estimatedPromptTokens = promptChars / 4
         let parser = SseParser(HttpStreamInput(transport))
+        parser.cancelChecker = { => isCancelled() }
+        parser.idleTimeout = defaultIdleTimeout()
         parser.onEvent = { data =>
             // 用户 Ctrl+C 中断：提前结束流解析（保留已收内容）
             if (isCancelled()) {

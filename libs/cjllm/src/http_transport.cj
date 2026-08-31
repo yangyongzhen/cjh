@@ -40,6 +40,16 @@ public class HttpTransportException <: Exception {
 }
 
 /**
+ * 用户中断（cancelChecker 命中）抛出：区别于网络错误/超时，
+ * 上层据此标记"已中断"而非"LLM 调用异常"
+ */
+public class StreamInterruptedException <: Exception {
+    public init() {
+        super("stream interrupted by user")
+    }
+}
+
+/**
  * 流式 HTTP/1.1 客户端
  */
 public class HttpStreamClient {
@@ -61,8 +71,15 @@ public class HttpStreamClient {
     private var bodyConsumed: Int64 = 0
     private var chunkRemain: Int64 = 0
     private var eof: Bool = false
-    // per-read 超时（默认 60s：流式帧不断则不超时；停滞 60s 抛 SocketTimeoutException）
-    public var readTimeout: Duration = Duration.second * 60
+    // 短读轮询间隔（默认 5s，与 SseParser.POLL_INTERVAL 一致）：
+    // 每次 read 至多阻塞该时长——中断（cancelChecker）与空闲预算在短超时后检查，
+    // 不依赖 abort() 能否打断阻塞 read（TLS close 语义未验证）
+    public var readTimeout: Duration = SseParser.POLL_INTERVAL
+    // 中断轮询（上层注入 isCancelled）：短读超时后检查，命中抛 StreamInterruptedException
+    public var cancelChecker: () -> Bool = { => false }
+    // 建连/响应头阶段的宽容预算（非流式：慢代理/慢握手正常，默认 180s；
+    // 超预算抛 SocketTimeoutException = 网络停滞）
+    public var idleTimeout: Duration = Duration.second * 180
 
     /**
      * @param host 目标主机
@@ -106,6 +123,8 @@ public class HttpStreamClient {
                     cfg = c
             }
             let tls = TlsSocket.client(sock, session: None, clientConfig: cfg)
+            // 握手：宽容预算（建连不是流式，慢代理正常）；完成后切短读轮询
+            tls.readTimeout = this.idleTimeout
             tls.handshake()
             tls.readTimeout = this.readTimeout
             this.socket = Some(tls)
@@ -147,9 +166,25 @@ public class HttpStreamClient {
      * @throws ConnectionException 连接关闭
      */
     public func readResponseHead(): (Int32, HashMap<String, String>) {
+        // 响应头阶段也做中断轮询 + 宽容预算：
+        // - 每次短读超时（readTimeout）后检查 cancelChecker——用户 Ctrl+C 在
+        //   ≤POLL_INTERVAL 内生效（响应头阶段此前是无轮询盲区，只能等 180s）
+        // - 总预算 idleTimeout：慢代理长时间不返回头 = 网络停滞 → 抛超时
+        let headStart = DateTime.now()
         var head = StringBuilder()
         while (true) {
-            let b = this.readByte()
+            var b: Int64 = 0
+            try {
+                b = this.readByte()
+            } catch (e: SocketTimeoutException) {
+                if (this.cancelChecker()) {
+                    throw StreamInterruptedException()
+                }
+                if ((DateTime.now() - headStart).toMilliseconds() > this.idleTimeout.toMilliseconds()) {
+                    throw e  // 响应头超预算：网络停滞，交上层报错
+                }
+                continue  // 未超预算：继续等响应头
+            }
             if (b < 0) {
                 throw HttpTransportException("连接关闭（读响应头 EOF）")
             }
@@ -262,8 +297,16 @@ public class HttpStreamClient {
                     }
                     this.chunkRemain = chunkSize
                 }
-                // 读 chunk 数据（一个完整 chunk）
-                let want = this.chunkRemain
+                // 关键修复：单次读取不得超过 buf 剩余空间。
+                // 旧实现 want=chunkRemain 对大 chunk（聚合代理单帧 >8KB 常见）越界
+                // 写 buf[8192] 抛 IndexOutOfBoundsException → 流被截断 → 内容不完整
+                // → 模型被迫续跑 → 轮次空转（实测 13 次越界 + 50 轮强制结束）。
+                // 大 chunk 分多次 readBody 返回，chunkRemain 跨调用保留
+                let want = if (this.chunkRemain < Int64(buf.size) - filled) {
+                    this.chunkRemain
+                } else {
+                    Int64(buf.size) - filled
+                }
                 let n = this.readRaw(buf, filled, want)
                 if (n <= 0) {
                     this.eof = true
@@ -327,6 +370,12 @@ public class HttpStreamClient {
         var n: Int64 = 0
         try {
             n = sock.read(this.readBuf)
+        } catch (e: SocketTimeoutException) {
+            // 短读超时：先查用户中断（命中 → 明确中断，不误判为网络停滞）
+            if (this.cancelChecker()) {
+                throw StreamInterruptedException()
+            }
+            throw e  // 否则按超时交给上层（parser 空闲预算 / 响应头重试）
         } catch (e: SocketException) {
             // 对端异常关闭（Connection reset）：已收数据在缓冲里先消费，
             // 缓冲耗尽后按 EOF 处理——流式尾部 reset 不算错误
