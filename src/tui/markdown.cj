@@ -49,6 +49,9 @@ public class MarkdownRender {
 
     // ===== 表格状态 =====
     private var atLineStart: Bool = true       // 当前是否行首（\n 后）
+    // ATX 标题状态：行首 # 进入缓冲，\n 时判断是否为标题（# 文本）再渲染
+    private var headingMode: Bool = false      // 行首 # 缓冲中
+    private var headingLine: String = ""       // 标题行缓冲
     private var tableMode: Bool = false        // 检测到行首 | 进入表格行缓冲
     private var tableOn: Bool = false          // 确认是表格（见过分隔行），数据行渲染中
     private var tableLine: StringBuilder = StringBuilder()  // 当前表格行缓冲
@@ -71,13 +74,24 @@ public class MarkdownRender {
         for (r in delta.toRuneArray()) {
             let s = r.toString()
             if (s == "\n") {
+                // 标题行结束：判断是否为 ATX 标题并渲染（或原样输出）
+                if (this.headingMode) {
+                    this.flushHeading(sb)
+                    this.headingMode = false
+                    this.headingLine = ""
+                }
                 // 普通行的 \n：flush 未决反引号（非反引号字符语义）；表格行内不 flush
                 if (!this.tableMode) {
                     this.flushTicks(sb)
                 }
-                // 行结束：处理表格行 or flush 普通行
+                // 行结束：处理表格行 or flush 普通行。
+                // 表格行缓冲期间的 \n 不输出——表格在 endTable 统一渲染，
+                // 缓冲期若输出 \n 会在表格上方堆叠成一片空行（旧 bug）
+                let wasTableLine = this.tableMode
                 this.flushLine(sb)
-                sb.append("\n")
+                if (!wasTableLine) {
+                    sb.append("\n")
+                }
                 this.atLineStart = true
                 // 代码块：换行结束行注释/刷新词；首行 \n 后语言确定
                 if (this.codeBlockOn) {
@@ -101,12 +115,24 @@ public class MarkdownRender {
                 this.atLineStart = false
                 continue
             }
-            this.atLineStart = false
-            // 代码块：语法高亮状态机（语言标注时）
+            // 代码块内：语法高亮状态机（行首 # 是注释，不触发标题）
             if (this.codeBlockOn) {
+                this.atLineStart = false
                 this.hlRune(s, sb)
                 continue
             }
+            // 行首 # → ATX 标题候选（缓冲整行，\n 时判断：`# 文本` 才是标题）
+            if (this.atLineStart && s == "#") {
+                this.headingMode = true
+                this.headingLine = s
+                this.atLineStart = false
+                continue
+            }
+            if (this.headingMode) {
+                this.headingLine += s
+                continue
+            }
+            this.atLineStart = false
             // 普通行：原有 rune 处理（反引号/粗体）
             this.processInline(s, sb)
         }
@@ -124,6 +150,52 @@ public class MarkdownRender {
             return
         }
         // 普通行：无额外处理（rune 已即时输出）
+    }
+
+    /**
+     * ATX 标题渲染（对齐 omp）：行首 # 1-6 级 + 空格 → 主题色 + 加粗，
+     * H1 额外下划线，H3+ 保留 # 前缀；非标题（#tag、# 列表）原样输出。
+     * 流式安全：整行缓冲后统一判断（跨帧 # 分片不误判）。
+     */
+    private func flushHeading(sb: StringBuilder): Unit {
+        let line = this.headingLine
+        var level: Int64 = 0
+        var i: Int64 = 0
+        let n = line.size
+        while (i < n && line[i] == 35u8) {  // '#'
+            level += 1
+            i += 1
+        }
+        // ATX 要求：#{1,6} 后跟空格或制表符
+        if (level >= 1 && level <= 6 && i < n && (line[i] == 32u8 || line[i] == 9u8)) {
+            var text = line[i..n].trimAscii()
+            // 去尾部闭合 #（"## 标题 ##" → "## 标题"；尾部 # 前需空格）
+            var t = text.size
+            while (t > 0 && text[t - 1] == 35u8) {
+                t -= 1
+            }
+            if (t < text.size) {
+                text = text[0..t].trimAscii()
+            }
+            if (text.size > 0) {
+                // 主题色 + 加粗；H1 额外下划线；H3+ 保留 # 前缀（对齐 omp heading）
+                var prefix = ""
+                if (level >= 3) {
+                    for (j in 0..level) {
+                        prefix += "#"
+                    }
+                    prefix += " "
+                }
+                var style = Ansi.fg(Ansi.THEME_ACCENT) + Ansi.bold()
+                if (level == 1) {
+                    style += Ansi.underline()
+                }
+                sb.append(style + prefix + text + Ansi.reset())
+                return
+            }
+        }
+        // 非标题：原样输出（如 #tag、# 无序列表、#### 分隔线）
+        sb.append(line)
     }
 
     /**
@@ -264,6 +336,38 @@ public class MarkdownRender {
     }
 
     /**
+     * 表格顶边框：┌───┬───┐（完整表格观感，对齐 omp 表格边框）
+     */
+    private func renderTableTopBorder(sb: StringBuilder): Unit {
+        sb.append(this.renderTableHLine("┌", "┬", "┐"))
+    }
+
+    /**
+     * 表格底边框：└───┴───┘
+     */
+    private func renderTableBottomBorder(sb: StringBuilder): Unit {
+        sb.append(this.renderTableHLine("└", "┴", "┘"))
+    }
+
+    /**
+     * 表格横向边框线（顶/底）
+     */
+    private func renderTableHLine(left: String, mid: String, right: String): String {
+        var line = left
+        for (i in 0..this.tableCols) {
+            let w = this.tableWidths[i]
+            for (j in 0..w + 2) {
+                line += "─"
+            }
+            if (i < this.tableCols - 1) {
+                line += mid
+            }
+        }
+        line += right
+        return Ansi.fg(Ansi.THEME_MUTED) + line + Ansi.reset()
+    }
+
+    /**
      * 渲染数据行（按表头列宽对齐）
      */
     private func renderTableRow(sb: StringBuilder, line: String): Unit {
@@ -322,10 +426,14 @@ public class MarkdownRender {
                 allRows.add(d)
             }
             this.tableWidths = this.calcWidths(allRows)
+            this.renderTableTopBorder(sb)
+            sb.append("\n")
             this.renderTableHeader(sb)
             for (d in this.tableData) {
                 this.renderTableRow(sb, d)
             }
+            sb.append("\n")
+            this.renderTableBottomBorder(sb)
         } else if (this.tableHeader.size > 0) {
             // 只有表头没有分隔行/数据：当作普通文本输出（可能不是表格）
             for (h in this.tableHeader) {
@@ -662,7 +770,8 @@ public class MarkdownRender {
         var list = ArrayList<String>()
         match (lang) {
             case "python" | "py" =>
-                MarkdownRender.addKeywords(list, ["def", "None", "True", "False", "self", "class", "import", "from", "return", "if", "elif", "else", "for", "while", "break", "continue", "try", "except", "finally", "with", "as", "lambda", "yield", "global", "nonlocal", "pass", "raise", "assert", "del", "in", "is", "not", "and", "or"])
+                // 关键字 + 内置函数（print/len/range 等此前缺失——"代码不能高亮"主因）
+                MarkdownRender.addKeywords(list, ["def", "None", "True", "False", "self", "class", "import", "from", "return", "if", "elif", "else", "for", "while", "break", "continue", "try", "except", "finally", "with", "as", "lambda", "yield", "global", "nonlocal", "pass", "raise", "assert", "del", "in", "is", "not", "and", "or", "print", "input", "len", "range", "type", "str", "int", "float", "bool", "list", "dict", "set", "tuple", "open", "read", "write", "append", "super", "isinstance", "enumerate", "zip", "map", "filter", "sorted", "sum", "min", "max", "abs", "repr", "format", "join", "split", "strip", "keys", "values", "items", "get", "update", "pop", "remove", "extend", "insert", "copy", "count", "index", "startswith", "endswith", "replace", "find", "upper", "lower"])
             case "javascript" | "js" | "jsx" | "ts" | "typescript" | "tsx" =>
                 MarkdownRender.addKeywords(list, ["const", "let", "var", "function", "return", "if", "else", "for", "while", "class", "new", "this", "async", "await", "export", "import", "from", "default", "typeof", "instanceof", "null", "undefined", "true", "false", "try", "catch", "throw", "switch", "case", "break", "continue", "interface", "type", "enum", "extends", "implements"])
             case "cangjie" | "cj" =>
@@ -706,6 +815,12 @@ public class MarkdownRender {
         this.flushLine(sb)   // 最后一行可能未以 \n 结束（表格行）
         if (this.tableMode || this.tableOn) {
             this.endTable(sb)
+        }
+        // 未以 \n 结尾的标题行（流式结尾无换行）
+        if (this.headingMode) {
+            this.flushHeading(sb)
+            this.headingMode = false
+            this.headingLine = ""
         }
         this.flushTicks(sb)
         if (this.codeBlockOn) {
