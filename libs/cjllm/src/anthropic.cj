@@ -175,7 +175,7 @@ public class AnthropicProvider <: LlmProvider {
         tlsConfig.domain = Some(this.sniHost())
         let (host, port, path, useTls) = splitEndpoint(this.endpointUrl())
         let transport = HttpStreamClient(host, port, useTls, tlsConfig)
-        transport.readTimeout = Duration.second * 60
+        transport.readTimeout = defaultIdleTimeout()
         this.clientLock.lock()
         this.currentTransport = Some(transport)
         this.clientLock.unlock()

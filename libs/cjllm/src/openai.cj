@@ -200,7 +200,7 @@ public class OpenAiProvider <: LlmProvider {
             let key = keys[ki]
             let transport = HttpStreamClient(host, port, useTls, tlsConfig)
             // per-read 超时 60s：空闲检测在 read 层（帧不断永不超时；停滞 60s 抛）
-            transport.readTimeout = Duration.second * 60
+            transport.readTimeout = defaultIdleTimeout()
             // 保存当前 transport（abort 时关闭打断 read）
             this.clientLock.lock()
             this.currentTransport = Some(transport)

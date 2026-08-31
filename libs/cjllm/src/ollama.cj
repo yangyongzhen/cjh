@@ -113,7 +113,7 @@ public class OllamaProvider <: LlmProvider {
         // 传输层：std.net 直连（本地 HTTP，无 TLS），per-read 60s 空闲超时
         let (host, port, path, useTls) = splitEndpoint(this.endpointUrl())
         let transport = HttpStreamClient(host, port, useTls)
-        transport.readTimeout = Duration.second * 60
+        transport.readTimeout = defaultIdleTimeout()
         this.clientLock.lock()
         this.currentTransport = Some(transport)
         this.clientLock.unlock()

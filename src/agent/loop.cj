@@ -628,12 +628,12 @@ public class Agent {
             this.onTokens(response.usage.promptTokens + response.usage.completionTokens)
             Log.info("第 ${iterations} 轮完成 | 耗时 ${roundMs}ms | prompt ${response.usage.promptTokens} completion ${response.usage.completionTokens} cached ${response.usage.cachedTokens} | toolCalls ${response.toolCalls.size} | textLen ${response.text.size} | truncated ${response.truncated} | timedOut ${response.timedOut}")
 
-            // SSE 空闲超时：网络 60s 无新数据，已收文本/tool_calls 保留
+            // SSE 空闲超时：网络长时间无新数据，已收文本/tool_calls 保留
             // 给 LLM 注入提示，让它在下一轮知道发生了超时
             if (response.timedOut) {
-                Log.error("SSE 空闲超时（60s 无新数据），SSE 流被切断")
-                this.onAssistantText("\n\n⚠️ 网络空闲超时（60s 无新数据），SSE 流被切断。已收到的内容已保留，但可能不完整。\n")
-                this.messages.add(ChatMessage("user", "[System Notice] The previous SSE stream was cut off due to a 60-second idle timeout (network stall). The received content may be INCOMPLETE. Please check whether the output/tool_calls were fully received, and continue or retry as needed."))
+                Log.error("SSE 空闲超时（CJH_IDLE_TIMEOUT_SECS 无新数据），SSE 流被切断")
+                this.onAssistantText("\n\n⚠️ 网络空闲超时（模型长时间无输出），SSE 流被切断。已收到的内容已保留，但可能不完整。\n")
+                this.messages.add(ChatMessage("user", "[System Notice] The previous SSE stream was cut off due to an idle timeout (no new data for CJH_IDLE_TIMEOUT_SECS seconds). The received content may be INCOMPLETE. Please check whether the output/tool_calls were fully received, and continue or retry as needed."))
             }
 
             if (response.hasToolCalls()) {
