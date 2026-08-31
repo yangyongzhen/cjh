@@ -2,7 +2,7 @@
   cjc-version = "1.0.5"
   name = "cjh"
   description = "nothing here"
-  version = "1.3.1"
+  version = "1.3.3"
   target-dir = ""
   output-type = "executable"
   bin-name = "cjh"
