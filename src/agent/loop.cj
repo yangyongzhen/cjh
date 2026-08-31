@@ -50,6 +50,25 @@ public func hookName(hook: AgentHook): String {
 }
 
 /**
+ * Agent 回合状态机：统一生命周期管理，消除状态残留 bug
+ *
+ * 状态转换：
+ *   Idle → Running    run() 开始（beginRound 重置一切残留）
+ *   Running → Interrupted  interrupt()（用户中断）
+ *   Running/Interrupted → Idle  run() 结束（endRound，含异常路径 finally 兜底）
+ *   Done 为回合完成标记（Interrupted 用于中断，Done 用于正常完成）
+ *
+ * run() 开头 beginRound / 结尾 finally endRound——所有出口（正常/中断/异常）
+ * 统一清理，杜绝"interruptFlag 残留导致永不回复"类 bug。
+ */
+public enum RoundState {
+    | Idle
+    | Running
+    | Interrupted
+    | Done
+}
+
+/**
  * Agent 配置
  */
 public class AgentConfig {
@@ -218,6 +237,10 @@ public class Agent {
     // 线程安全（主线程 handleKey 设置，agent 线程轮询检查）。
     private var interruptFlag: Bool = false
     private var interruptLock: Mutex = Mutex()
+    // 回合状态（状态机：Idle/Running/Interrupted/Done）
+    private var roundState: RoundState = RoundState.Idle
+    // 已完成的轮次数（异常出口时记录，供 summary 展示）
+    private var roundsCompleted: Int64 = 0
     // 摘要专用快模型（P1-5 模型路由）：compaction 摘要走快模型，None=复用主 provider
     private var summaryProvider: Option<LlmProvider> = None
     // 内置任务列表（对齐 Claude Code TodoWrite，TUI Tasks 面板数据源）
@@ -300,6 +323,11 @@ public class Agent {
         this.interruptLock.lock()
         try {
             this.interruptFlag = true
+            // 状态联动：运行中中断 → Interrupted
+            match (this.roundState) {
+                case RoundState.Running => this.roundState = RoundState.Interrupted
+                case _ => ()
+            }
         } finally {
             this.interruptLock.unlock()
         }
@@ -309,6 +337,50 @@ public class Agent {
             this.provider.abort()
         } catch (e: Exception) {
             Log.warn("Agent.interrupt abort provider 异常: ${e}")
+        }
+    }
+
+    /**
+     * 回合开始：统一重置状态（清除中断残留，状态 Running）
+     */
+    private func beginRound(): Unit {
+        this.interruptLock.lock()
+        try {
+            this.interruptFlag = false
+            this.roundState = RoundState.Running
+            this.roundsCompleted = 0
+        } finally {
+            this.interruptLock.unlock()
+        }
+    }
+
+    /**
+     * 回合结束：统一清理（正常/中断/异常所有出口，状态回 Idle）
+     */
+    private func endRound(): Unit {
+        this.interruptLock.lock()
+        try {
+            this.interruptFlag = false
+            // 记录最终状态（Done/Interrupted），随后回 Idle 供下一轮
+            match (this.roundState) {
+                case RoundState.Running => this.roundState = RoundState.Done
+                case _ => ()
+            }
+            this.roundState = RoundState.Idle
+        } finally {
+            this.interruptLock.unlock()
+        }
+    }
+
+    /**
+     * 当前回合状态（测试/诊断用）
+     */
+    public func getRoundState(): RoundState {
+        this.interruptLock.lock()
+        try {
+            return this.roundState
+        } finally {
+            this.interruptLock.unlock()
         }
     }
 
@@ -469,11 +541,27 @@ public class Agent {
      * 追加用户消息并运行，返回回合统计（含最终文本答复 summary.reply）
      */
     public func run(userInput: String): RunSummary {
-        // 新一轮开始：清除上次中断状态（否则 interruptFlag 残留 true，
-        // 后续所有消息立即命中"已中断"——用户实测的"再也不回复"bug）
-        this.interruptLock.lock()
-        this.interruptFlag = false
-        this.interruptLock.unlock()
+        // 回合开始：统一重置状态（清除中断残留，状态 Running）
+        this.beginRound()
+        var summary = RunSummary()
+        try {
+            summary = this.runLoop(userInput)
+        } catch (e: Exception) {
+            // 异常出口：状态统一清理由 finally 兜底
+            Log.error("Agent.run 顶层异常: ${e}", e)
+            summary.rounds = this.roundsCompleted
+            summary.reply = "[执行异常: ${e}]"
+        } finally {
+            // 所有出口（正常/中断/异常）统一清理：状态回 Idle
+            this.endRound()
+        }
+        return summary
+    }
+
+    /**
+     * 回合主体（原 run 逻辑，多出口 return summary；状态清理由 run() finally 兜底）
+     */
+    private func runLoop(userInput: String): RunSummary {
         this.messages.add(ChatMessage("user", userInput))
 
         // 回合统计收集
@@ -496,6 +584,7 @@ public class Agent {
             }
             iterations += 1
             summary.rounds = iterations
+            this.roundsCompleted = iterations
 
             // 长会话压缩：每轮发起 LLM 请求前检查历史是否超阈值
             // （消息条数 或 估算 token 任一超限即 LLM 摘要压缩早期历史）。

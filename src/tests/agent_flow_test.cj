@@ -313,3 +313,71 @@ public class InterruptResetTest {
         @Assert(s2.reply.contains("FINAL-DONE"), true)
     }
 }
+
+/**
+ * 回合状态机测试：生命周期转换 + 异常路径统一清理
+ */
+@Test
+public class RoundStateTest {
+    private func buildStateAgent(provider: LlmProvider): Agent {
+        let registry = ToolRegistry()
+        registry.register(BashTool())
+        let config = AgentConfig("state test", 10, Capability(),
+            0, 0, 6, 2000, "/tmp/cjh_state_spill", "sess-state")
+        return Agent(provider, registry, config)
+    }
+
+    @TestCase
+    public func testStateTransitions(): Unit {
+        let agent = this.buildStateAgent(MockProvider("/tmp/cjh_state.txt"))
+        // 初始 Idle
+        match (agent.getRoundState()) {
+            case RoundState.Idle => ()
+            case _ => @Assert(true, false)  // 应 Idle
+        }
+        // interrupt 在 Idle：不改变状态（无回合可中断）
+        agent.interrupt()
+        match (agent.getRoundState()) {
+            case RoundState.Idle => ()
+            case _ => @Assert(true, false)
+        }
+        // 正常跑完 → 回到 Idle
+        let summary = agent.run("状态测试")
+        @Assert(summary.rounds > 0, true)
+        match (agent.getRoundState()) {
+            case RoundState.Idle => ()
+            case _ => @Assert(true, false)  // 结束必须回 Idle（finally 兜底）
+        }
+        // 中断后跑完 → 也回 Idle（上一 bug：残留导致永不回复）
+        agent.interrupt()
+        let s2 = agent.run("中断后")
+        @Assert(s2.rounds > 0, true)
+        match (agent.getRoundState()) {
+            case RoundState.Idle => ()
+            case _ => @Assert(true, false)
+        }
+    }
+
+    @TestCase
+    public func testExceptionPathCleansState(): Unit {
+        // 异常 provider：chatStream 抛异常 → run 返回异常 summary → 状态必须回 Idle
+        let agent = this.buildStateAgent(ThrowingProvider())
+        let summary = agent.run("异常测试")
+        @Assert(summary.reply.contains("异常"), true)
+        match (agent.getRoundState()) {
+            case RoundState.Idle => ()
+            case _ => @Assert(true, false)  // 异常路径 finally 清理
+        }
+    }
+}
+
+/**
+ * 抛异常 provider（状态机异常路径测试）
+ */
+class ThrowingProvider <: LlmProvider {
+    public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
+        onDelta: (String) -> Unit, onReasoning: (String) -> Unit,
+        onTokenEstimate: (Int64) -> Unit, isCancelled: () -> Bool): ModelResponse {
+        throw LlmException("测试异常")
+    }
+}
