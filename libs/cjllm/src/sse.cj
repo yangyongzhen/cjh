@@ -3,6 +3,7 @@ package cjllm
 import std.io.*
 import cjlog.*
 import std.collection.*
+import std.net.SocketTimeoutException
 import stdx.net.http.HttpTimeoutException
 import cjutil.*
 
@@ -65,18 +66,23 @@ public class SseParser {
                 this.feed(chunk)
             }
             this.onDone()
+        } catch (e: SocketTimeoutException) {
+            // per-read 超时（std.net 直连）：60s 无数据 = 流空闲/停滞
+            // → 保留已收数据 + 标记 timedOut（与旧整体超时语义一致，但
+            //   per-read 只在无帧时触发——长任务帧不断永不误切）
+            Log.warn("[SSE] read timeout (idle 60s), flushing pending (size=${this.pending.size})")
+            this.timedOut = true
+            this.flushRemaining()
+            this.onDone()
         } catch (e: HttpTimeoutException) {
-            // readTimeout 绝对超时：长任务思考阶段超过 readTimeout 设定值
-            // → HttpTimeoutException → 保留已收数据 + 标记 timedOut
-            // 注：openai.cj 已把 readTimeout 放宽到 10min，正常长任务不会触发
+            // 兼容旧 stdx.net.http 路径（已不再使用，保留兜底）
             Log.warn("[SSE] read timeout (absolute), flushing pending (size=${this.pending.size})")
             this.timedOut = true
             this.flushRemaining()
             this.onDone()
         } catch (e: Exception) {
-            // 用户中断（abort 关闭连接）→ 保留已收数据正常结束，不报错
+            // 用户中断（abort 关闭连接）→ 保留已收数据正常结束，不标 timedOut
             Log.warn("[SSE] run() caught exception (may be user abort): ${e}")
-            this.timedOut = true
             this.flushRemaining()
             this.onDone()
         }

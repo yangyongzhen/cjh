@@ -1,12 +1,12 @@
 package cjllm
 
 import stdx.encoding.json.*
-import stdx.net.http.*
 import stdx.net.tls.*
 import stdx.crypto.x509.X509Certificate
 import std.collection.*
 import std.io.*
 import std.sync.*
+import std.net.*
 import cjutil.*
 
 /**
@@ -22,7 +22,7 @@ import cjutil.*
  * - tool 结果：以 user 角色 + tool_result block 回传
  */
 public class AnthropicProvider <: LlmProvider {
-    private var currentClient: ?Client = None
+    private var currentTransport: ?HttpStreamClient = None
     private var clientLock: Mutex = Mutex()
     public let baseUrl: String
     public let apiKey: String
@@ -81,11 +81,11 @@ public class AnthropicProvider <: LlmProvider {
 
     public func abort(): Unit {
         this.clientLock.lock()
-        let c = this.currentClient
+        let t = this.currentTransport
         this.clientLock.unlock()
-        match (c) {
-            case Some(cl) =>
-                try { cl.close() } catch (e: Exception) { }
+        match (t) {
+            case Some(tr) =>
+                try { tr.abort() } catch (e: Exception) { }
             case None => ()
         }
     }
@@ -169,34 +169,35 @@ public class AnthropicProvider <: LlmProvider {
             body.put("tools", JsonArray(toolList))
         }
 
-        // 请求（base_url 自动补全 /v1/messages）
-        // 显式加载系统根证书 + 设置 SNI：TlsClientConfig 默认不自动发 SNI，
-        // 部分服务端（如 taotoken.net）在无 SNI 时返回不可信证书导致 unknown CA
+        // 传输层：std.net 直连 + stdx.net.tls（per-read 60s 空闲超时）
         var tlsConfig = TlsClientConfig()
         tlsConfig.verifyMode = CertificateVerifyMode.CustomCA(X509Certificate.systemRootCerts())
         tlsConfig.domain = Some(this.sniHost())
-        let client = ClientBuilder().tlsConfig(tlsConfig).readTimeout(Duration.second * 1200).build()
+        let (host, port, path, useTls) = splitEndpoint(this.endpointUrl())
+        let transport = HttpStreamClient(host, port, useTls, tlsConfig)
+        transport.readTimeout = Duration.second * 60
         this.clientLock.lock()
-        this.currentClient = Some(client)
+        this.currentTransport = Some(transport)
         this.clientLock.unlock()
-        let req = HttpRequestBuilder()
-            .post()
-            .url(this.endpointUrl())
-            .header("Content-Type", "application/json")
-            .header("x-api-key", this.apiKey)
-            .header("anthropic-version", "2023-06-01")
-            .body(body.toJsonString())
-            .build()
-
-        let resp = client.send(req)
-        let status = resp.status
+        transport.connect()
+        var hdrs = ArrayList<(String, String)>()
+        hdrs.add(("Content-Type", "application/json"))
+        hdrs.add(("x-api-key", this.apiKey))
+        hdrs.add(("anthropic-version", "2023-06-01"))
+        transport.request("POST", path, hdrs, body.toJsonString())
+        let (status, _) = transport.readResponseHead()
         if (status != 200) {
             var errBuf = Array<Byte>(4096, repeat: 0)
             var err = ""
-            let n = resp.body.read(errBuf)
-            if (n > 0) {
-                err = safeFromUtf8(errBuf[0..n])
+            try {
+                let n = transport.readBody(errBuf)
+                if (n > 0) {
+                    err = safeFromUtf8(errBuf[0..n])
+                }
+            } catch (e: Exception) {
+                // 读错误体失败忽略
             }
+            transport.close()
             throw LlmException("HTTP ${status}: ${err}")
         }
 
@@ -209,7 +210,7 @@ public class AnthropicProvider <: LlmProvider {
         }
         acc.estimatedPromptTokens = promptChars / 4
         acc.onTokenEstimate = onTokenEstimate
-        let parser = SseParser(resp.body)
+        let parser = SseParser(HttpStreamInput(transport))
         parser.onEvent = { data =>
             // 用户 Ctrl+C 中断：提前结束流解析（保留已收内容）
             if (isCancelled()) {
@@ -219,6 +220,7 @@ public class AnthropicProvider <: LlmProvider {
             acc.feed(data, onDelta)
         }
         parser.run()
+        transport.close()
         return acc.finish()
     }
 }

@@ -2,14 +2,16 @@ package cjllm
 
 import stdx.encoding.json.*
 import std.sync.*
-import stdx.net.http.*
+
 import stdx.net.tls.*
 import stdx.crypto.x509.X509Certificate
 import std.collection.*
 import std.io.*
+import std.net.*
 import std.env.*
 import std.fs.*
 import std.time.*
+import std.convert.Parsable
 import cjutil.*
 
 /**
@@ -23,8 +25,8 @@ public class OpenAiProvider <: LlmProvider {
     public var fallbackKeys: ArrayList<String> = ArrayList<String>()
     public var temperature: Float64 = 0.7
     public var maxTokens: Int64 = 4096
-    // 当前流式请求的 Client（abort 时 close 打断阻塞 read）
-    private var currentClient: ?Client = None
+    // 当前流式请求的 HttpStreamClient（abort 时关闭连接打断阻塞 read）
+    private var currentTransport: ?HttpStreamClient = None
     private var clientLock: Mutex = Mutex()
 
     public init(baseUrl: String, apiKey: String, model: String) {
@@ -76,12 +78,12 @@ public class OpenAiProvider <: LlmProvider {
      */
     public func abort(): Unit {
         this.clientLock.lock()
-        let c = this.currentClient
+        let t = this.currentTransport
         this.clientLock.unlock()
-        match (c) {
-            case Some(cl) =>
+        match (t) {
+            case Some(tr) =>
                 try {
-                    cl.close()
+                    tr.abort()
                 } catch (e: Exception) {
                     // 关闭失败忽略（连接可能已结束）
                 }
@@ -91,30 +93,21 @@ public class OpenAiProvider <: LlmProvider {
 
     public func warmup(): Unit {
         try {
-            var tlsConfig = TlsClientConfig()
-            tlsConfig.verifyMode = CertificateVerifyMode.CustomCA(X509Certificate.systemRootCerts())
-            tlsConfig.domain = Some(this.sniHost())
-            let client = ClientBuilder()
-                .tlsConfig(tlsConfig)
-                .build()
-            var modelsUrl = this.baseUrl
-            if (modelsUrl.endsWith("/")) {
-                modelsUrl = modelsUrl[0..modelsUrl.size - 1]
-            }
-            if (!modelsUrl.endsWith("/v1")) {
-                modelsUrl += "/v1"
-            }
-            modelsUrl += "/models"
-            let req = HttpRequestBuilder()
-                .get()
-                .url(modelsUrl)
-                .header("Authorization", "Bearer ${this.apiKey}")
-                .build()
-            let _ = client.send(req)
+            let (host, port, path, useTls) = splitEndpoint(this.endpointUrl())
+            let c = HttpStreamClient(host, port, useTls)
+            c.readTimeout = Duration.second * 15
+            c.connect()
+            var hdrs = ArrayList<(String, String)>()
+            hdrs.add(("Authorization", "Bearer ${this.apiKey}"))
+            c.request("GET", path, hdrs, "")
+            let _ = c.readResponseHead()
+            c.close()
         } catch (e: Exception) {
             // 预热失败静默
         }
     }
+
+
 
     /**
      * 设置采样参数（对齐 pi：temperature / max_tokens）
@@ -188,54 +181,50 @@ public class OpenAiProvider <: LlmProvider {
             body.put("tools", JsonArray(toolList))
         }
 
-        // 请求（base_url 自动补全 /v1/chat/completions 路径）
-        // 显式加载系统根证书 + 设置 SNI：TlsClientConfig 默认不自动发 SNI，
-        // 部分服务端（如 taotoken.net）在无 SNI 时返回不可信证书导致 unknown CA
+        // 传输层：std.net 直连 + stdx.net.tls（per-read readTimeout）
+        // 根治 stdx.net.http 整体超时权衡：
+        //   - per-read 60s：每次 read 等待数据 60s，超时抛 SocketTimeoutException
+        //     → 流式帧不断则永不超时（长任务安全），停滞 60s 无数据立即打断（空闲检测
+        //       在 read 层天然实现，不再依赖 TUI 外层轮询）
+        //   - 显式加载系统根证书 + 设置 SNI：TlsClientConfig 默认不自动发 SNI，
+        //     部分服务端（如 taotoken.net）在无 SNI 时返回不可信证书导致 unknown CA
         var tlsConfig = TlsClientConfig()
         tlsConfig.verifyMode = CertificateVerifyMode.CustomCA(X509Certificate.systemRootCerts())
         tlsConfig.domain = Some(this.sniHost())
-        // SSE 流式响应：readTimeout 是"读取整个响应的最大时长"——绝对超时
-        // （stdx 源码核实：readTimer 在 stream end 才 cancel，不随数据重置——
-        // 长流式 >90s 会被误切，用户实测 74s 思考+输出被切断）
-        // 1200s（20min）：单轮 LLM 调用（思考+输出）几乎不可能超过；
-        // 多轮各自独立预算不累积。停滞由上层空闲检测（60s 无活动 →
-        // interrupt + abort 关连接 → read 抛异常立即停）处理，不依赖此值
-        // 注：readTimer 在请求正常完成后会被取消，不会触发 WARN；
-        // 只有 warmup 那种"fire and forget"的请求才会让 readTimer 跑到超时
-        // Client 不能缓存复用：stdx.net.http 的 Client 在 send 完成后会被关闭，
-        // 复用已关闭的 Client 会报 "send body failed, since closed"
-        let client = ClientBuilder()
-            .tlsConfig(tlsConfig)
-            .readTimeout(Duration.second * 1200)
-            .build()
-        // 保存当前 client（abort 时 close）
-        this.clientLock.lock()
-        this.currentClient = Some(client)
-        this.clientLock.unlock()
+        let (host, port, path, useTls) = splitEndpoint(this.endpointUrl())
 
         // P1-5 key 轮换：401/429/5xx → 换备用 key 重试（防限流中断任务）
         let keys = this.allKeys()
         var lastErr = ""
         for (ki in 0..keys.size) {
             let key = keys[ki]
-            let req = HttpRequestBuilder()
-                .post()
-                .url(this.endpointUrl())
-                .header("Content-Type", "application/json")
-                .header("Authorization", "Bearer ${key}")
-                .body(body.toJsonString())
-                .build()
-            let resp = client.send(req)
-            let status = resp.status
+            let transport = HttpStreamClient(host, port, useTls, tlsConfig)
+            // per-read 超时 60s：空闲检测在 read 层（帧不断永不超时；停滞 60s 抛）
+            transport.readTimeout = Duration.second * 60
+            // 保存当前 transport（abort 时关闭打断 read）
+            this.clientLock.lock()
+            this.currentTransport = Some(transport)
+            this.clientLock.unlock()
+            transport.connect()
+            var hdrs = ArrayList<(String, String)>()
+            hdrs.add(("Content-Type", "application/json"))
+            hdrs.add(("Authorization", "Bearer ${key}"))
+            transport.request("POST", path, hdrs, body.toJsonString())
+            let (status, _) = transport.readResponseHead()
             if (status != 200) {
                 // 读取错误体
                 var errBuf = Array<Byte>(4096, repeat: 0)
                 var err = ""
-                let n = resp.body.read(errBuf)
-                if (n > 0) {
-                    err = safeFromUtf8(errBuf[0..n])
+                try {
+                    let n = transport.readBody(errBuf)
+                    if (n > 0) {
+                        err = safeFromUtf8(errBuf[0..n])
+                    }
+                } catch (e: Exception) {
+                    // 读错误体失败忽略
                 }
                 lastErr = "HTTP ${status}: ${err}"
+                transport.close()
                 // 认证/限流/服务端错误：换 key 重试；其他 4xx 业务错误直接抛出
                 if (status == 401 || status == 429 || status >= 500) {
                     if (ki < keys.size - 1) {
@@ -253,7 +242,7 @@ public class OpenAiProvider <: LlmProvider {
             promptChars += Int64(m.content.size)
         }
         acc.estimatedPromptTokens = promptChars / 4
-        let parser = SseParser(resp.body)
+        let parser = SseParser(HttpStreamInput(transport))
         parser.onEvent = { data =>
             // 用户 Ctrl+C 中断：提前结束流解析（保留已收内容）
             if (isCancelled()) {
@@ -275,6 +264,7 @@ public class OpenAiProvider <: LlmProvider {
         // token 实时估算回调：流式逐帧粗估，usage 最后一帧回传精确值后由 finish() 覆盖
         acc.onTokenEstimate = onTokenEstimate
         parser.run()
+        transport.close()
         let modelResp = acc.finish()
         modelResp.timedOut = parser.timedOut
         return modelResp

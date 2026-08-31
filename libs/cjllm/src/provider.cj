@@ -2,7 +2,6 @@ package cjllm
 
 import stdx.encoding.json.*
 import cjlog.*
-import stdx.net.http.*
 import std.io.*
 import std.collection.*
 import cjutil.*
@@ -57,7 +56,7 @@ public interface LlmProvider {
 
     /**
      * 中止当前流式请求（用户中断时主动关闭连接，打断阻塞的流读取）。
-     * 默认空实现；各 provider 保存当前 Client 并 close。
+     * 默认空实现；各 provider 保存当前 HttpStreamClient 并 abort。
      */
     public func abort(): Unit {
     }

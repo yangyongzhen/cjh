@@ -1,0 +1,486 @@
+package cjllm
+
+/**
+ * 流式 HTTP/1.1 客户端（std.net 直连 + stdx.net.tls）
+ *
+ * 解决 stdx.net.http 的整体 readTimeout 问题（长任务/停滞只能二选一）：
+ *   - per-read readTimeout：每次 read 等待数据 N 秒，无数据抛 SocketTimeoutException
+ *     → 流式空闲检测在 read 层天然实现：长任务帧不断则永不超时，停滞 N 秒立即停
+ *   - HTTPS：TlsSocket 握手（SNI + 系统证书验证）
+ *   - HTTP/1.1：请求构造 + 响应解析（status/headers/content-length/chunked）
+ *
+ * 使用（流式）：
+ *   let c = HttpStreamClient(host, port, useTls)
+ *   c.connect()
+ *   c.request("POST", "/v1/chat/completions", headers, body)
+ *   let (status, hdrs) = c.readResponseHead()
+ *   let input = HttpStreamInput(c)   // InputStream 适配（供 SseParser）
+ *   ... input.read(buf) 流式读 ...
+ *
+ * 异常语义：
+ *   - SocketTimeoutException：read 超时（N 秒无数据 = 流空闲/停滞）
+ *   - ConnectionException：连接关闭/协议错误
+ */
+
+import std.net.*
+import std.io.*
+import std.time.*
+import std.collection.*
+import std.convert.Parsable
+import stdx.net.tls.*
+import stdx.crypto.x509.X509Certificate
+
+/**
+ * HTTP 传输层异常（连接关闭/协议错误）
+ */
+public class HttpTransportException <: Exception {
+    public init(msg: String) {
+        super(msg)
+    }
+}
+
+/**
+ * 流式 HTTP/1.1 客户端
+ */
+public class HttpStreamClient {
+    private let host: String
+    private let port: UInt16
+    private let useTls: Bool
+    private let tlsConfig: ?TlsClientConfig
+    private var socket: ?StreamingSocket = None
+    // 读缓冲（socket 读入整块，readBody 逐字节/逐段消费）
+    private var readBuf: Array<Byte> = Array<Byte>(16384, repeat: 0)
+    private var readLen: Int64 = 0
+    private var readPos: Int64 = 0
+    // 响应状态
+    private var headRead: Bool = false
+    private var statusCode: Int32 = 0
+    private var headers: HashMap<String, String> = HashMap<String, String>()
+    private var contentLength: Int64 = -1
+    private var isChunked: Bool = false
+    private var bodyConsumed: Int64 = 0
+    private var chunkRemain: Int64 = 0
+    private var eof: Bool = false
+    // per-read 超时（默认 60s：流式帧不断则不超时；停滞 60s 抛 SocketTimeoutException）
+    public var readTimeout: Duration = Duration.second * 60
+
+    /**
+     * @param host 目标主机
+     * @param port 端口（HTTPS 443）
+     * @param useTls 是否 TLS（HTTPS）
+     */
+    public init(host: String, port: UInt16, useTls: Bool) {
+        this.host = host
+        this.port = port
+        this.useTls = useTls
+        this.tlsConfig = None
+    }
+
+    /**
+     * @param host 目标主机
+     * @param port 端口
+     * @param useTls 是否 TLS
+     * @param tlsConfig TLS 配置（SNI/证书验证；None 用系统证书 + host 做 SNI）
+     */
+    public init(host: String, port: UInt16, useTls: Bool, tlsConfig: TlsClientConfig) {
+        this.host = host
+        this.port = port
+        this.useTls = useTls
+        this.tlsConfig = Some(tlsConfig)
+    }
+
+    /**
+     * 建立连接（TCP + 可选 TLS 握手），设置 per-read 超时
+     */
+    public func connect(): Unit {
+        let sock = TcpSocket(this.host, this.port)
+        sock.connect()
+        if (this.useTls) {
+            var cfg: TlsClientConfig
+            match (this.tlsConfig) {
+                case Some(c) => cfg = c
+                case None =>
+                    var c = TlsClientConfig()
+                    c.verifyMode = CertificateVerifyMode.CustomCA(X509Certificate.systemRootCerts())
+                    c.domain = Some(this.host)
+                    cfg = c
+            }
+            let tls = TlsSocket.client(sock, session: None, clientConfig: cfg)
+            tls.handshake()
+            tls.readTimeout = this.readTimeout
+            this.socket = Some(tls)
+        } else {
+            sock.readTimeout = this.readTimeout
+            this.socket = Some(sock)
+        }
+    }
+
+    /**
+     * 发送 HTTP/1.1 请求
+     * @param method GET/POST 等
+     * @param path 路径（如 /v1/chat/completions）
+     * @param headers 请求头（Host 自动补）
+     * @param body 请求体（自动 Content-Length）
+     */
+    public func request(method: String, path: String, headers: ArrayList<(String, String)>, body: String): Unit {
+        var req = StringBuilder()
+        req.append("${method} ${path} HTTP/1.1\r\n")
+        var hasHost: Bool = false
+        for ((k, v) in headers) {
+            req.append("${k}: ${v}\r\n")
+            if (k == "Host") {
+                hasHost = true
+            }
+        }
+        if (!hasHost) {
+            req.append("Host: ${this.host}\r\n")
+        }
+        req.append("Content-Length: ${body.size}\r\n")
+        req.append("\r\n")
+        req.append(body)
+        let sock = this.socket.getOrThrow()
+        sock.write(req.toString().toArray())
+    }
+
+    /**
+     * 读响应头：返回 (statusCode, headers)
+     * @throws ConnectionException 连接关闭
+     */
+    public func readResponseHead(): (Int32, HashMap<String, String>) {
+        var head = StringBuilder()
+        while (true) {
+            let b = this.readByte()
+            if (b < 0) {
+                throw HttpTransportException("连接关闭（读响应头 EOF）")
+            }
+            head.append(this.byteToChar(b))
+            if (head.toString().endsWith("\r\n\r\n")) {
+                break
+            }
+        }
+        let lines = head.toString().split("\r\n", -1)
+        // 状态行：HTTP/1.1 200 OK
+        if (lines.size > 0) {
+            let statusParts = lines[0].split(" ", -1)
+            if (statusParts.size >= 2) {
+                try {
+                    this.statusCode = Int32.parse(statusParts[1])
+                } catch (e: Exception) {
+                    this.statusCode = 0
+                }
+            }
+        }
+        this.headers = HashMap<String, String>()
+        for (i in 1..lines.size) {
+            let line = lines[i]
+            if (line.size == 0) {
+                continue
+            }
+            let idx = line.indexOf(":")
+            if (idx.isSome()) {
+                let k = line[0..idx.getOrThrow()].trimAscii()
+                let v = line[(idx.getOrThrow() + 1)..line.size].trimAscii()
+                this.headers.add(k, v)
+            }
+        }
+        // 传输语义：chunked or content-length or 连接关闭定界
+        let te = this.headers.get("Transfer-Encoding")
+        if (te.isSome() && te.getOrThrow().contains("chunked")) {
+            this.isChunked = true
+            this.contentLength = -1
+        } else {
+            let cl = this.headers.get("Content-Length")
+            if (cl.isSome()) {
+                try {
+                    this.contentLength = Int64.parse(cl.getOrThrow())
+                } catch (e: Exception) {
+                    this.contentLength = -1
+                }
+            } else {
+                this.contentLength = -1  // 读至连接关闭
+            }
+        }
+        this.headRead = true
+        return (this.statusCode, this.headers)
+    }
+
+    /**
+     * 流式读响应体（适配 InputStream.read 语义）。
+     * @param buf 输出缓冲
+     * @return 读取字节数；0 = EOF
+     * @throws SocketTimeoutException read 超时（N 秒无数据）
+     * @throws ConnectionException 连接关闭（非 EOF 语义）
+     */
+    public func readBody(buf: Array<Byte>): Int64 {
+        if (this.eof) {
+            return 0
+        }
+        if (!this.headRead) {
+            this.readResponseHead()
+        }
+        // content-length 模式：读剩余
+        if (!this.isChunked && this.contentLength >= 0) {
+            let remain = this.contentLength - this.bodyConsumed
+            if (remain <= 0) {
+                this.eof = true
+                return 0
+            }
+            let want = if (remain < Int64(buf.size)) { remain } else { Int64(buf.size) }
+            let n = this.readRaw(buf, 0, want)
+            if (n <= 0) {
+                this.eof = true
+                return 0
+            }
+            this.bodyConsumed += n
+            if (this.bodyConsumed >= this.contentLength) {
+                this.eof = true
+            }
+            return n
+        }
+        // chunked 模式
+        if (this.isChunked) {
+            var filled: Int64 = 0
+            while (filled < Int64(buf.size)) {
+                if (this.chunkRemain <= 0) {
+                    // 读下一个 chunk 大小行
+                    let sizeLine = this.readLine()
+                    if (sizeLine.size == 0) {
+                        this.eof = true
+                        return filled  // chunked 结束（0 大小 chunk 后空行）
+                    }
+                    let hexStr = sizeLine.split(";", -1)[0].trimAscii()
+                    let chunkSize = parseHexChunk(hexStr)
+                    if (chunkSize == 0) {
+                        // 结束 chunk：读尾部 CRLF
+                        this.readLine()
+                        this.eof = true
+                        return filled
+                    }
+                    this.chunkRemain = chunkSize
+                }
+                // 读 chunk 数据
+                let want = if (this.chunkRemain < Int64(buf.size) - filled) {
+                    this.chunkRemain
+                } else {
+                    Int64(buf.size) - filled
+                }
+                let n = this.readRaw(buf, filled, want)
+                if (n <= 0) {
+                    this.eof = true
+                    return filled
+                }
+                filled += n
+                this.chunkRemain -= n
+                if (this.chunkRemain == 0) {
+                    // chunk 数据后 CRLF
+                    this.readCRLF()
+                }
+            }
+            return filled
+        }
+        // 连接关闭定界：直接读
+        let n = this.readRaw(buf, 0, Int64(buf.size))
+        if (n <= 0) {
+            this.eof = true
+            return 0
+        }
+        return n
+    }
+
+    /**
+     * 中止：关闭连接打断阻塞 read（上层中断时调用）
+     */
+    public func abort(): Unit {
+        match (this.socket) {
+            case Some(s) =>
+                try {
+                    s.close()
+                } catch (e: Exception) {
+                    // 忽略
+                }
+            case None => ()
+        }
+    }
+
+    /**
+     * 关闭连接
+     */
+    public func close(): Unit {
+        this.abort()
+    }
+
+    // ==================== 内部：原始读 + 缓冲 ====================
+
+    /**
+     * 从缓冲读；缓冲空则从 socket 读（per-read 超时）
+     */
+    private func fillBuffer(): Int64 {
+        if (this.readPos < this.readLen) {
+            return this.readLen - this.readPos
+        }
+        // 缓冲耗尽：重新读
+        this.readPos = 0
+        this.readLen = 0
+        let sock = this.socket.getOrThrow()
+        let n = sock.read(this.readBuf)
+        if (n <= 0) {
+            return 0  // EOF
+        }
+        this.readLen = n
+        return n
+    }
+
+    /**
+     * 读原始字节到 buf[off..off+len)，返回实际读取（可能 < len 当 EOF）
+     */
+    private func readRaw(buf: Array<Byte>, off: Int64, len: Int64): Int64 {
+        var filled: Int64 = 0
+        while (filled < len) {
+            let avail = this.fillBuffer()
+            if (avail <= 0) {
+                break  // EOF
+            }
+            let take = if (avail < len - filled) { avail } else { len - filled }
+            for (i in 0..take) {
+                buf[off + filled + i] = this.readBuf[this.readPos + i]
+            }
+            this.readPos += take
+            filled += take
+        }
+        return filled
+    }
+
+    /**
+     * 读单字节；EOF 返回 -1
+     */
+    private func readByte(): Int64 {
+        let avail = this.fillBuffer()
+        if (avail <= 0) {
+            return -1
+        }
+        let b = Int64(this.readBuf[this.readPos])
+        this.readPos += 1
+        return b
+    }
+
+    /**
+     * 读一行（到 \n；剥 \r\n）
+     */
+    private func readLine(): String {
+        var sb = StringBuilder()
+        while (true) {
+            let b = this.readByte()
+            if (b < 0) {
+                return sb.toString()
+            }
+            if (b == 10) {  // \n
+                // 剥尾部 \r
+                let s = sb.toString()
+                if (s.endsWith("\r")) {
+                    return s[0..s.size - 1]
+                }
+                return s
+            }
+            sb.append(this.byteToChar(b))
+        }
+        return sb.toString()
+    }
+
+    /**
+     * 读并丢弃 CRLF（chunk 数据尾部）
+     */
+    private func readCRLF(): Unit {
+        let b1 = this.readByte()
+        if (b1 == 13) {  // \r
+            let b2 = this.readByte()
+            if (b2 == 10) {  // \n
+                return
+            }
+            if (b2 >= 0) {
+                // 非 \n：回退？简化忽略（容忍）
+            }
+            return
+        }
+        if (b1 == 10) {
+            return  // 容忍裸 \n
+        }
+        // 非 CRLF：忽略（容忍不严格 chunk 结尾）
+    }
+
+    private func byteToChar(b: Int64): String {
+        return Rune(Int32(b)).toString()
+    }
+}
+
+/**
+ * InputStream 适配器：把 HttpStreamClient.readBody 暴露为 InputStream.read，
+ * 供 SseParser 等流式解析器复用（保持现有解析逻辑不变）
+ */
+public class HttpStreamInput <: InputStream {
+    private let client: HttpStreamClient
+
+    public init(client: HttpStreamClient) {
+        this.client = client
+    }
+
+    public override func read(buf: Array<Byte>): Int64 {
+        return this.client.readBody(buf)
+    }
+}
+
+/**
+ * 解析 chunked 十六进制块大小
+ */
+public func parseHexChunk(s: String): Int64 {
+    var v: Int64 = 0
+    for (r in s.toRuneArray()) {
+        let c = UInt32(r)
+        var d: Int64 = -1
+        if (c >= 48 && c <= 57) {
+            d = Int64(c - 48)
+        } else if (c >= 97 && c <= 102) {
+            d = Int64(c - 97 + 10)
+        } else if (c >= 65 && c <= 70) {
+            d = Int64(c - 65 + 10)
+        }
+        if (d < 0) {
+            break
+        }
+        v = v * 16 + d
+    }
+    return v
+}
+
+/**
+ * 拆分端点 URL → (host, port, path, useTls)
+ * 例：https://api.deepseek.com/v1/chat/completions → ("api.deepseek.com", 443, "/v1/chat/completions", true)
+ * 例：http://localhost:11434/v1/chat/completions → ("localhost", 11434, "/v1/chat/completions", false)
+ */
+public func splitEndpoint(url: String): (String, UInt16, String, Bool) {
+    var rest = url
+    var useTls: Bool = true
+    if (rest.startsWith("https://")) {
+        rest = rest[8..rest.size]
+        useTls = true
+    } else if (rest.startsWith("http://")) {
+        rest = rest[7..rest.size]
+        useTls = false
+    }
+    var host = rest
+    var port: UInt16 = if (useTls) { 443 } else { 80 }
+    var path = "/"
+    if (let Some(slash) <- rest.indexOf("/")) {
+        host = rest[0..slash]
+        path = rest[slash..rest.size]
+    }
+    if (let Some(colon) <- host.indexOf(":")) {
+        let portStr = host[(colon + 1)..host.size]
+        host = host[0..colon]
+        try {
+            port = UInt16.parse(portStr)
+        } catch (e: Exception) {
+            // 端口解析失败用默认
+        }
+    }
+    return (host, port, path, useTls)
+}
