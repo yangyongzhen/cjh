@@ -1,5 +1,6 @@
 package cjh.tests
 
+import std.fs.*
 import cjterm.*
 import cjh.tui.*
 
@@ -103,6 +104,66 @@ public class MarkdownRenderTest {
         let out = m.process("你好世界")
         @Assert(stripAnsi(out), "你好世界")
         @Assert(out.contains(Ansi.fg(Ansi.COLOR_TEXT)), true)
+    }
+
+    @TestCase
+    public func testHeadingRendered(): Unit {
+        // ATX 标题：主题色 + 加粗（对齐 omp heading）
+        let m = MarkdownRender()
+        let out = m.process("## 项目简介") + m.finish()
+        @Assert(out.contains(Ansi.fg(Ansi.THEME_ACCENT)), true)  // 主题色
+        @Assert(out.contains(Ansi.bold()), true)                  // 加粗
+        @Assert(stripAnsi(out).contains("项目简介"), true)
+        @Assert(stripAnsi(out).contains("##"), false)            // 标题标记被消费
+    }
+
+    @TestCase
+    public func testHeadingH1Underline(): Unit {
+        // H1 额外下划线（对齐 omp）
+        let m = MarkdownRender()
+        let out = m.process("# 总览") + m.finish()
+        @Assert(out.contains(Ansi.underline()), true)
+    }
+
+    @TestCase
+    public func testHeadingNotTag(): Unit {
+        // #tag / 非 ATX（# 后无空格）→ 原样输出，不渲染成标题
+        let m = MarkdownRender()
+        let out = m.process("#tag") + m.finish()
+        @Assert(stripAnsi(out), "#tag")
+        @Assert(out.contains(Ansi.fg(Ansi.THEME_ACCENT)), false)
+    }
+
+    @TestCase
+    public func testHeadingAcrossFrames(): Unit {
+        // 流式：标题跨帧分片
+        let m = MarkdownRender()
+        let f1 = m.process("## 项目")
+        @Assert(stripAnsi(f1), "")  // 缓冲中未输出
+        let f2 = m.process("简介\n正文") + m.finish()
+        @Assert(stripAnsi(f2).contains("项目简介"), true)
+        @Assert(f2.contains(Ansi.fg(Ansi.THEME_ACCENT)), true)
+    }
+
+    @TestCase
+    public func testTableFullBorders(): Unit {
+        // 表格完整边框：顶框 ┌ 与底框 └（旧实现缺边框，看着不像表格）
+        let m = MarkdownRender()
+        let out = m.process("| A | B |\n|---|---|\n| 1 | 2 |\n") + m.finish()
+        @Assert(out.contains("┌"), true)  // 顶边框
+        @Assert(out.contains("└"), true)  // 底边框
+        @Assert(out.contains("├"), true)  // 表头分隔线
+        @Assert(out.contains("┼"), true)
+        @Assert(out.contains("┤"), true)
+    }
+
+    @TestCase
+    public func testPythonBuiltinHighlighted(): Unit {
+        // python 内置函数高亮（旧实现缺失 print/len 等——"代码不能高亮"主因）
+        let m = MarkdownRender()
+        let out = m.process("```python\nprint(len(x))\n```\n") + m.finish()
+        @Assert(out.contains(Ansi.fg(Ansi.THEME_PURPLE) + "print"), true)
+        @Assert(out.contains(Ansi.fg(Ansi.THEME_PURPLE) + "len"), true)
     }
 
     @TestCase
