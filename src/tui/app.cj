@@ -12,9 +12,12 @@ import cjterm.*
 import cjh.agent.*
 import cjutil.*
 
-// 强制退出：直接终止进程（agent 线程卡死在 OS 调用时的 100% 兜底）
+// 强制退出：直接终止进程（agent 线程卡死在 OS 调用时的 100% 兜底）。
+// 必须用 _exit（POSIX，不运行 atexit/runtime 清理）而非 exit——exit 会触发
+// 仓颉 runtime 析构，此时 agent 线程仍在阻塞（mock 延迟/TLS read），
+// 清理访问跨线程资源 → Segmentation fault（实测静态版 exit code -11）
 @C
-foreign func exit(code: Int32): Unit
+foreign func _exit(code: Int32): Unit
 
 /**
  * TUI 应用：对话界面（组件化编排）
@@ -429,7 +432,7 @@ public class TuiApp {
         }
         print(Ansi.showCursor(), flush: true)
         unsafe {
-            exit(0)
+            _exit(0)
         }
     }
 
