@@ -31,6 +31,8 @@ public class MarkdownRender {
     private var boldOn: Bool = false
     private var inlineCodeOn: Bool = false
     private var codeBlockOn: Bool = false
+    // 素白前景是否已开启（连续普通文本合并为单次 fg，避免逐 rune ANSI 膨胀）
+    private var textOn: Bool = false
     // ===== 代码块语法高亮状态（对齐 OMP：有语言标注才高亮，防误判）=====
     private var codeBlockLang: String = ""     // 代码块语言（```python → python）
     private var langBuf: StringBuilder = StringBuilder()  // 语言累积（开块后到 \n）
@@ -132,6 +134,8 @@ public class MarkdownRender {
      *   - 空行/非表格行 → 结束表格
      */
     private func processTableLine(sb: StringBuilder): Unit {
+        // 表格行独立渲染（单元格/边框各自 fg+reset），清素白状态避免残留
+        this.textOn = false
         let line = this.tableLine.toString()
         let trimmed = line.trimAscii()
         // 空行 → 结束表格
@@ -285,7 +289,9 @@ public class MarkdownRender {
             } else { 0 }
             var cellText = cell
             if (isHeader) {
-                cellText = Ansi.bold() + cell + Ansi.reset()
+                cellText = Ansi.bold() + Ansi.fg(Ansi.COLOR_TEXT) + cell + Ansi.reset()
+            } else {
+                cellText = Ansi.fg(Ansi.COLOR_TEXT) + cell + Ansi.reset()
             }
             sb.append(cellText)
             for (j in 0..pad) {
@@ -353,9 +359,15 @@ public class MarkdownRender {
         }
         if (s == "*") {
             if (this.pendingStar) {
-                // ** 成对 → 切换粗体
+                // ** 成对 → 切换粗体（素白加粗，避免纯白粗体刺眼）
                 this.boldOn = !this.boldOn
-                sb.append(if (this.boldOn) { Ansi.bold() } else { Ansi.reset() })
+                if (this.boldOn) {
+                    sb.append(Ansi.bold() + Ansi.fg(Ansi.COLOR_TEXT))
+                    this.textOn = true
+                } else {
+                    sb.append(Ansi.reset())
+                    this.textOn = false
+                }
                 this.pendingStar = false
             } else {
                 this.pendingStar = true
@@ -367,7 +379,18 @@ public class MarkdownRender {
             sb.append("*")
             this.pendingStar = false
         }
-        sb.append(s)
+        // 普通文本：素白（对齐 omp 正文 #e5e5e7，避免终端默认纯白刺眼）
+        // 粗体/行内代码/代码块内已有各自的颜色语义，不重复着色；
+        // 连续普通文本只开一次 fg（textOn 状态），reset 在各样式切换处统一处理
+        if (this.boldOn || this.inlineCodeOn || this.codeBlockOn) {
+            sb.append(s)
+        } else {
+            if (!this.textOn) {
+                sb.append(Ansi.fg(Ansi.COLOR_TEXT))
+                this.textOn = true
+            }
+            sb.append(s)
+        }
     }
 
     /**
@@ -379,7 +402,12 @@ public class MarkdownRender {
         }
         if (this.tickCount >= 3) {
             this.codeBlockOn = !this.codeBlockOn
-            sb.append(if (this.codeBlockOn) { Ansi.fg(Ansi.THEME_MUTED) } else { Ansi.reset() })
+            if (this.codeBlockOn) {
+                sb.append(Ansi.fg(Ansi.THEME_MUTED))
+            } else {
+                sb.append(Ansi.reset())
+                this.textOn = false
+            }
             if (this.codeBlockOn) {
                 // 开块：重置高亮状态，准备提取语言（``` 后到 \n 为语言标注）
                 this.hlReset()
@@ -393,7 +421,12 @@ public class MarkdownRender {
             }
         } else {
             this.inlineCodeOn = !this.inlineCodeOn
-            sb.append(if (this.inlineCodeOn) { Ansi.fg(Ansi.THEME_ACCENT) } else { Ansi.reset() })
+            if (this.inlineCodeOn) {
+                sb.append(Ansi.fg(Ansi.THEME_ACCENT))
+            } else {
+                sb.append(Ansi.reset())
+                this.textOn = false
+            }
         }
         this.tickCount = 0
     }
@@ -686,6 +719,10 @@ public class MarkdownRender {
         if (this.boldOn) {
             sb.append(Ansi.reset())
             this.boldOn = false
+        }
+        if (this.textOn) {
+            sb.append(Ansi.reset())
+            this.textOn = false
         }
         return sb.toString()
     }
