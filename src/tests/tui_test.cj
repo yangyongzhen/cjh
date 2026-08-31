@@ -364,3 +364,25 @@ public class MarkdownHighlightTest {
         @Assert(out.contains(Ansi.fg(Ansi.THEME_PURPLE) + "let"), true)  // 注释后的关键字正常
     }
 }
+
+/**
+ * 思考行 Markdown 渲染测试（灰斜体基础 + 行内粗体/代码高亮）
+ */
+@Test
+public class ThinkingMdTest {
+    @TestCase
+    public func testThinkingInlineMarkdown(): Unit {
+        let out = OutputView()
+        out.setThinking("检查 **game.js** 与 `src/game.js` 配置", true)
+        // 展开态渲染：灰斜体 + 行内高亮
+        out.toggleThinking()
+        let canvas = TuiCanvas()
+        canvas.begin(5, 80, true)
+        out.render(canvas, 0, 80, 5)
+        // 无法直接取行文本——用 flush 检查 ANSI
+        let flushed = canvas.flush()
+        // 粗体（ESC[1m）与行内代码（青 38;5;73）应出现
+        @Assert(flushed.contains(Ansi.bold()), true)
+        @Assert(flushed.contains("38;5;73"), true)
+    }
+}

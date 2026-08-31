@@ -44,6 +44,55 @@ public class OutputView <: Component {
         this.thinkingExpanded = !this.thinkingExpanded
     }
 
+    // ===== 思考行内 Markdown 渲染（粗体 / 行内代码）=====
+    // 思考内容在灰斜体基础上叠加语法高亮（对齐 pi：thinking 走 Markdown 渲染）
+    // 基础样式：灰斜体（行前缀）；行内高亮后恢复灰斜体（非全 reset）
+
+    /**
+     * 行内 Markdown 渲染：**粗体** → bold；`行内代码` → 青色。
+     * 输入为纯文本行（折行后），输出带 ANSI（灰斜体基础 + 行内高亮叠加）。
+     */
+    private func renderInlineMd(line: String): String {
+        let runes = line.toRuneArray()
+        var sb = StringBuilder()
+        var i: Int64 = 0
+        var boldOn: Bool = false
+        var codeOn: Bool = false
+        // 恢复基础样式（行内高亮后回到灰斜体）
+        func restore(): String {
+            return Ansi.fg(Ansi.THEME_MUTED) + Ansi.italic()
+        }
+        while (i < runes.size) {
+            let ch = runes[i].toString()
+            // 粗体 **
+            if (ch == "*") {
+                if (i + 1 < runes.size && runes[i + 1].toString() == "*") {
+                    boldOn = !boldOn
+                    sb.append(if (boldOn) { Ansi.bold() } else { restore() })
+                    i += 2
+                    continue
+                }
+                sb.append(ch)
+                i += 1
+                continue
+            }
+            // 行内代码 `
+            if (ch == "`") {
+                codeOn = !codeOn
+                sb.append(if (codeOn) { Ansi.fg(Ansi.THEME_ACCENT) } else { restore() })
+                i += 1
+                continue
+            }
+            sb.append(ch)
+            i += 1
+        }
+        // 未闭合的粗体/代码：恢复基础样式
+        if (boldOn || codeOn) {
+            sb.append(restore())
+        }
+        return sb.toString()
+    }
+
     /**
      * 设置思考中 token 计数（折叠行显示增长）
      */
@@ -151,14 +200,14 @@ public class OutputView <: Component {
                 for (r in this.thinkingText.toRuneArray()) {
                     let ch = r.toString()
                     if (ch == "\n") {
-                        outLines.add(Ansi.fg(Ansi.THEME_MUTED) + Ansi.italic() + "› " + cur + Ansi.reset())
+                        outLines.add(Ansi.fg(Ansi.THEME_MUTED) + Ansi.italic() + "› " + this.renderInlineMd(cur) + Ansi.reset())
                         cur = ""
                         curW = 0
                         continue
                     }
                     let chW: Int64 = TuiCanvas.displayWidth(ch)
                     if (curW + chW > contentW) {
-                        outLines.add(Ansi.fg(Ansi.THEME_MUTED) + Ansi.italic() + "› " + cur + Ansi.reset())
+                        outLines.add(Ansi.fg(Ansi.THEME_MUTED) + Ansi.italic() + "› " + this.renderInlineMd(cur) + Ansi.reset())
                         cur = ch
                         curW = chW
                     } else {
@@ -167,7 +216,7 @@ public class OutputView <: Component {
                     }
                 }
                 if (cur.size > 0) {
-                    outLines.add(Ansi.fg(Ansi.THEME_MUTED) + Ansi.italic() + "› " + cur + Ansi.reset())
+                    outLines.add(Ansi.fg(Ansi.THEME_MUTED) + Ansi.italic() + "› " + this.renderInlineMd(cur) + Ansi.reset())
                 }
             } else {
                 if (this.thinkingDone) {
