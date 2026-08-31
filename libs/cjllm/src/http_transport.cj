@@ -71,6 +71,9 @@ public class HttpStreamClient {
     private var bodyConsumed: Int64 = 0
     private var chunkRemain: Int64 = 0
     private var eof: Bool = false
+    // 响应自然读完（0-chunk/content-length/EOF）后可复用（HTTP/1.1 keep-alive）；
+    // abort/异常后不可复用
+    private var reusable: Bool = false
     // 短读轮询间隔（默认 5s，与 SseParser.POLL_INTERVAL 一致）：
     // 每次 read 至多阻塞该时长——中断（cancelChecker）与空闲预算在短超时后检查，
     // 不依赖 abort() 能否打断阻塞 read（TLS close 语义未验证）
@@ -258,6 +261,7 @@ public class HttpStreamClient {
             let remain = this.contentLength - this.bodyConsumed
             if (remain <= 0) {
                 this.eof = true
+                this.reusable = true
                 return 0
             }
             let want = if (remain < Int64(buf.size)) { remain } else { Int64(buf.size) }
@@ -269,6 +273,7 @@ public class HttpStreamClient {
             this.bodyConsumed += n
             if (this.bodyConsumed >= this.contentLength) {
                 this.eof = true
+                this.reusable = true
             }
             return n
         }
@@ -285,6 +290,7 @@ public class HttpStreamClient {
                     let sizeLine = this.readLine()
                     if (sizeLine.size == 0) {
                         this.eof = true
+                        this.reusable = true
                         return filled  // chunked 结束（0 大小 chunk 后空行）
                     }
                     let hexStr = sizeLine.split(";", -1)[0].trimAscii()
@@ -293,6 +299,7 @@ public class HttpStreamClient {
                         // 结束 chunk：读尾部 CRLF
                         this.readLine()
                         this.eof = true
+                        this.reusable = true
                         return filled
                     }
                     this.chunkRemain = chunkSize
@@ -310,6 +317,7 @@ public class HttpStreamClient {
                 let n = this.readRaw(buf, filled, want)
                 if (n <= 0) {
                     this.eof = true
+                    this.reusable = true
                     return filled
                 }
                 filled += n
@@ -326,6 +334,7 @@ public class HttpStreamClient {
         let n = this.readRaw(buf, 0, Int64(buf.size))
         if (n <= 0) {
             this.eof = true
+            this.reusable = true
             return 0
         }
         return n
@@ -335,6 +344,7 @@ public class HttpStreamClient {
      * 中止：关闭连接打断阻塞 read（上层中断时调用）
      */
     public func abort(): Unit {
+        this.reusable = false
         match (this.socket) {
             case Some(s) =>
                 try {
@@ -351,6 +361,64 @@ public class HttpStreamClient {
      */
     public func close(): Unit {
         this.abort()
+    }
+
+    /**
+     * 响应是否自然读完（可复用：HTTP/1.1 keep-alive 同连接发下个请求）
+     */
+    public func canReuse(): Bool {
+        return this.reusable && this.eof
+    }
+
+    /**
+     * 复用前重置流状态（保持 socket/TLS 连接，清空响应解析状态）
+     * @return true=可复用；false=状态不干净（调用方应关闭重建）
+     */
+    public func resetForReuse(): Bool {
+        if (!this.canReuse()) {
+            return false
+        }
+        this.headRead = false
+        this.statusCode = 0
+        this.headers = HashMap<String, String>()
+        this.contentLength = -1
+        this.isChunked = false
+        this.bodyConsumed = 0
+        this.chunkRemain = 0
+        this.eof = false
+        this.reusable = false  // 使用中
+        this.readPos = 0
+        this.readLen = 0
+        return true
+    }
+
+    /**
+     * 读完响应剩余字节（SseParser 因协议结束标记提前 break 时，尾随的
+     * 0-chunk/CRLF 还在缓冲里）。成功读到自然结束 → 可存回复用池。
+     * 短超时保护：读不出（代理 keep-alive 已挂/停滞）→ 不可复用。
+     */
+    public func drainToEnd(limit: Duration): Bool {
+        if (this.eof) {
+            this.reusable = true
+            return true
+        }
+        let deadline = DateTime.now() + limit
+        var buf = Array<Byte>(4096, repeat: 0)
+        while (!this.eof) {
+            if (DateTime.now() > deadline) {
+                return false  // 超时：不可复用
+            }
+            try {
+                let n = this.readBody(buf)
+                if (n <= 0) {
+                    break
+                }
+            } catch (e: Exception) {
+                return false  // 读失败（含短超时）：不可复用
+            }
+        }
+        this.reusable = true
+        return true
     }
 
     // ==================== 内部：原始读 + 缓冲 ====================

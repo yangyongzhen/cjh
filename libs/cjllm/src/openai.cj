@@ -27,6 +27,9 @@ public class OpenAiProvider <: LlmProvider {
     public var maxTokens: Int64 = 4096
     // 当前流式请求的 HttpStreamClient（abort 时关闭连接打断阻塞 read）
     private var currentTransport: ?HttpStreamClient = None
+    // 连接复用池（单槽）：上一轮响应自然读完的连接（HTTP/1.1 keep-alive），
+    // 下一轮 chatStream 优先复用——省 TCP+TLS 握手（多轮任务实测省 2-5s）
+    private var pooledTransport: ?HttpStreamClient = None
     private var clientLock: Mutex = Mutex()
 
     public init(baseUrl: String, apiKey: String, model: String) {
@@ -79,6 +82,8 @@ public class OpenAiProvider <: LlmProvider {
     public func abort(): Unit {
         this.clientLock.lock()
         let t = this.currentTransport
+        let p = this.pooledTransport  // 池中连接一并关闭（中断后连接语义不可信）
+        this.pooledTransport = None
         this.clientLock.unlock()
         match (t) {
             case Some(tr) =>
@@ -89,6 +94,39 @@ public class OpenAiProvider <: LlmProvider {
                 }
             case None => ()
         }
+        match (p) {
+            case Some(pr) =>
+                try {
+                    pr.close()
+                } catch (e: Exception) {
+                    // 忽略
+                }
+            case None => ()
+        }
+    }
+
+    /**
+     * 从复用池取连接（单槽；取出即清空）
+     */
+    private func takePooled(): ?HttpStreamClient {
+        this.clientLock.lock()
+        let t = this.pooledTransport
+        this.pooledTransport = None
+        this.clientLock.unlock()
+        return t
+    }
+
+    /**
+     * 归还连接到复用池：池空则存；池已有（并发/异常路径）则关闭多余的
+     */
+    private func putPooled(t: HttpStreamClient): Unit {
+        this.clientLock.lock()
+        if (this.pooledTransport.isNone()) {
+            this.pooledTransport = Some(t)
+        } else {
+            t.close()
+        }
+        this.clientLock.unlock()
     }
 
     public func warmup(): Unit {
@@ -198,27 +236,72 @@ public class OpenAiProvider <: LlmProvider {
         var lastErr = ""
         for (ki in 0..keys.size) {
             let key = keys[ki]
-            let transport = HttpStreamClient(host, port, useTls, tlsConfig)
+            // 连接复用：优先取池中连接（省 TCP+TLS 握手）；复用后若代理已
+            // 关 keep-alive（读响应头 EOF），重建连接重试一次
+            var transport = this.takePooled()
+            var reused: Bool = false
+            if (transport.isSome()) {
+                let t = transport.getOrThrow()
+                if (t.resetForReuse()) {
+                    transport = Some(t)
+                    reused = true
+                } else {
+                    t.close()
+                    transport = None
+                }
+            }
+            if (transport.isNone()) {
+                transport = Some(HttpStreamClient(host, port, useTls, tlsConfig))
+            }
+            let tr = transport.getOrThrow()
             // 建连/响应头宽容预算（默认 180s）；流式体短读轮询（默认 5s）
-            transport.idleTimeout = defaultIdleTimeout()
+            tr.idleTimeout = defaultIdleTimeout()
             // 中断轮询：连接/握手/响应头/流式体全程可中断（不依赖 abort 打断 read）
-            transport.cancelChecker = { => isCancelled() }
+            tr.cancelChecker = { => isCancelled() }
             // 保存当前 transport（abort 时关闭打断 read）
             this.clientLock.lock()
-            this.currentTransport = Some(transport)
+            this.currentTransport = Some(tr)
             this.clientLock.unlock()
-            transport.connect()
+            if (!reused) {
+                tr.connect()
+            }
             var hdrs = ArrayList<(String, String)>()
             hdrs.add(("Content-Type", "application/json"))
             hdrs.add(("Authorization", "Bearer ${key}"))
-            transport.request("POST", path, hdrs, body.toJsonString())
-            let (status, _) = transport.readResponseHead()
+            var status: Int32 = 0
+            try {
+                tr.request("POST", path, hdrs, body.toJsonString())
+                let (st, _) = tr.readResponseHead()
+                status = st
+            } catch (e: Exception) {
+                if (!reused) {
+                    throw e  // 非复用连接失败：直接抛
+                }
+                // 复用连接已被代理关闭（keep-alive 超时）：关闭重建重试一次
+                try {
+                    tr.close()
+                } catch (e2: Exception) {
+                    // 忽略
+                }
+                let t2 = HttpStreamClient(host, port, useTls, tlsConfig)
+                t2.idleTimeout = defaultIdleTimeout()
+                t2.cancelChecker = { => isCancelled() }
+                this.clientLock.lock()
+                this.currentTransport = Some(t2)
+                this.clientLock.unlock()
+                t2.connect()
+                t2.request("POST", path, hdrs, body.toJsonString())
+                let (st2, _) = t2.readResponseHead()
+                status = st2
+                transport = Some(t2)
+            }
             if (status != 200) {
                 // 读取错误体
                 var errBuf = Array<Byte>(4096, repeat: 0)
                 var err = ""
+                let errTr = transport.getOrThrow()
                 try {
-                    let n = transport.readBody(errBuf)
+                    let n = errTr.readBody(errBuf)
                     if (n > 0) {
                         err = safeFromUtf8(errBuf[0..n])
                     }
@@ -226,7 +309,7 @@ public class OpenAiProvider <: LlmProvider {
                     // 读错误体失败忽略
                 }
                 lastErr = "HTTP ${status}: ${err}"
-                transport.close()
+                errTr.close()
                 // 认证/限流/服务端错误：换 key 重试；其他 4xx 业务错误直接抛出
                 if (status == 401 || status == 429 || status >= 500) {
                     if (ki < keys.size - 1) {
@@ -244,7 +327,7 @@ public class OpenAiProvider <: LlmProvider {
             promptChars += Int64(m.content.size)
         }
         acc.estimatedPromptTokens = promptChars / 4
-        let parser = SseParser(HttpStreamInput(transport))
+        let parser = SseParser(HttpStreamInput(transport.getOrThrow()))
         parser.cancelChecker = { => isCancelled() }
         parser.idleTimeout = defaultIdleTimeout()
         parser.onEvent = { data =>
@@ -268,7 +351,14 @@ public class OpenAiProvider <: LlmProvider {
         // token 实时估算回调：流式逐帧粗估，usage 最后一帧回传精确值后由 finish() 覆盖
         acc.onTokenEstimate = onTokenEstimate
         parser.run()
-        transport.close()
+        // 连接复用：尝试读完剩余（0-chunk 尾）→ 存回复用池（省下轮握手）；
+        // 失败（中断/代理已挂）→ 关闭
+        let doneTr = transport.getOrThrow()
+        if (doneTr.drainToEnd(Duration.second * 2)) {
+            this.putPooled(doneTr)
+        } else {
+            doneTr.close()
+        }
         let modelResp = acc.finish()
         modelResp.timedOut = parser.timedOut
         return modelResp

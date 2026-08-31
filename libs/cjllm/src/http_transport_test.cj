@@ -360,6 +360,58 @@ public class HttpTransportTest {
         client.close()
     }
 
+    // ==================== 场景 14：连接复用（HTTP/1.1 keep-alive） ====================
+    // 响应自然读完（drain 到 0-chunk）后同一连接可发下一个请求——省 TCP+TLS 握手
+
+    @TestCase
+    public func testConnectionReuse(): Unit {
+        let port: UInt16 = 18114
+        let _ = startMockServer(port, MockResp.KeepAliveServer(2))
+        let client = HttpStreamClient("127.0.0.1", port, false)
+        client.readTimeout = Duration.second * 2
+        client.connect()
+        // 请求 1：流式响应 + [DONE] 提前 break → drain 到自然结束 → 可复用
+        client.request("POST", "/v1/chat/completions", ArrayList<(String, String)>(), "{}")
+        let (s1, _) = client.readResponseHead()
+        @Assert(s1, 200)
+        let p1 = SseParser(HttpStreamInput(client))
+        p1.run()
+        @Assert(client.drainToEnd(Duration.second * 2), true)  // 读完 0-chunk 尾
+        @Assert(client.canReuse(), true)
+        // 请求 2：同一连接（server 只 accept 一次）
+        @Assert(client.resetForReuse(), true)
+        client.request("POST", "/v1/chat/completions", ArrayList<(String, String)>(), "{}")
+        let (s2, _) = client.readResponseHead()
+        @Assert(s2, 200)
+        let p2 = SseParser(HttpStreamInput(client))
+        let events2 = ArrayList<String>()
+        p2.onEvent = { d => events2.add(d) }
+        p2.run()
+        @Assert(events2.size > 0, true)
+        @Assert(events2[0].contains("resp-1"), true)  // 第二个响应内容
+        client.close()
+    }
+
+    // ==================== 场景 15：Provider 层连接复用 ====================
+    // OpenAiProvider 连续两次 chatStream：server 只 accept 一次（证明复用生效）
+
+    @TestCase
+    public func testProviderConnectionReuse(): Unit {
+        let port: UInt16 = 18115
+        let _ = startMockServer(port, MockResp.KeepAliveServer(2))
+        let provider = OpenAiProvider("http://127.0.0.1:${port}/v1/chat/completions", "k", "m")
+        let got1 = StringBuilder()
+        let r1 = provider.chatStream(ArrayList<ChatMessage>(), ArrayList<ToolSpec>(),
+            { d => got1.append(d) }, { _ => }, { _ => }, { => false })
+        let got2 = StringBuilder()
+        let r2 = provider.chatStream(ArrayList<ChatMessage>(), ArrayList<ToolSpec>(),
+            { d => got2.append(d) }, { _ => }, { _ => }, { => false })
+        @Assert(r1.text.contains("resp-0"), true)
+        @Assert(r2.text.contains("resp-1"), true)
+        @Assert(got1.toString().contains("resp-0"), true)   // 流式增量回调正常
+        @Assert(got2.toString().contains("resp-1"), true)
+    }
+
     // ==================== 辅助 ====================
 
     private func readAll(client: HttpStreamClient): String {
@@ -396,6 +448,7 @@ public enum MockResp {
     | SseFinishReasonNoClose         // 只发 finish_reason（无 [DONE]）后挂起不关连接（聚合网关）
     | SseStallNoClose                // 发一帧后挂起（无 [DONE]/finish_reason/EOF）——只有短读轮询能结束
     | StallBeforeHead                // accept 后不发任何字节（响应头阶段停滞）
+    | KeepAliveServer(Int64)         // accept 一次，循环处理 n 个请求（HTTP/1.1 keep-alive 复用验证）
 }
 
 /**
@@ -507,6 +560,30 @@ public func handleMockResp(conn: StreamingSocket, resp: MockResp): Unit {
             // accept 后不发任何字节（无 HTTP 响应头）：响应头阶段停滞
             // 只有 readResponseHead 的短读轮询（中断/预算）能结束
             sleep(Duration.second * 30)
+        case KeepAliveServer(n) =>
+            // 同一连接循环处理 n 个请求：读请求头到 CRLFCRLF 后回 chunked SSE
+
+            var handled: Int64 = 0
+            while (handled < n) {
+                var req = ""
+                var buf = Array<Byte>(4096, repeat: 0)
+                while (!req.contains("\r\n\r\n")) {
+                    let r = conn.read(buf)
+                    if (r <= 0) {
+                        return
+                    }
+                    req += safeFromUtf8(buf[0..r])
+                }
+                let body = "data: {\"choices\":[{\"delta\":{\"content\":\"resp-${handled}\"},\"finish_reason\":null}]}\n\ndata: [DONE]\n\n"
+                conn.write("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n".toArray())
+                let bytes = body.toArray()
+                conn.write((toHex(Int64(bytes.size)) + "\r\n").toArray())
+                conn.write(bytes)
+                conn.write("\r\n".toArray())
+                conn.write("0\r\n\r\n".toArray())
+                handled += 1
+            }
+            sleep(Duration.second * 30)  // 等待客户端关闭
     }
 }
 
