@@ -84,11 +84,11 @@ function makeTex(size, draw) {
   t.minFilter = THREE.NearestFilter;
   return t;
 }
-function px(ctx, x, y, color) { ctx.fillStyle = color; ctx.fillRect(x, y, 1, 1); }
+function pxl(ctx, x, y, color) { ctx.fillStyle = color; ctx.fillRect(x, y, 1, 1); }
 function speckle(ctx, size, base, vars, n) {
   for (let i = 0; i < n; i++) {
     const c = vars[(Math.random() * vars.length) | 0];
-    px(ctx, (Math.random() * size) | 0, (Math.random() * size) | 0, c);
+    pxl(ctx, (Math.random() * size) | 0, (Math.random() * size) | 0, c);
   }
 }
 const T = {}; // 纹理
@@ -103,7 +103,7 @@ T.dirt = makeTex(16, (c, s) => { c.fillStyle = '#8a5a32'; c.fillRect(0, 0, s, s)
 T.stone = makeTex(16, (c, s) => { c.fillStyle = '#8f8f8f'; c.fillRect(0, 0, s, s); speckle(c, s, 0, ['#7d7d7d', '#a2a2a2', '#6b6b6b'], 45); });
 T.logSide = makeTex(16, (c, s) => {
   c.fillStyle = '#6b4a26'; c.fillRect(0, 0, s, s);
-  for (let x = 0; x < s; x++) { const v = 100 + ((Math.random() * 40) | 0); px(c, x, 2, `rgb(${v},${v * .7 | 0},${v * .4 | 0})`); px(c, x, 13, `rgb(${v},${v * .7 | 0},${v * .4 | 0})`); }
+  for (let x = 0; x < s; x++) { const v = 100 + ((Math.random() * 40) | 0); pxl(c, x, 2, `rgb(${v},${v * .7 | 0},${v * .4 | 0})`); pxl(c, x, 13, `rgb(${v},${v * .7 | 0},${v * .4 | 0})`); }
   speckle(c, s, 0, ['#5d3f1f', '#7a552e'], 20);
 });
 T.logTop = makeTex(16, (c, s) => {
@@ -119,7 +119,7 @@ T.leaves = makeTex(16, (c, s) => {
 T.plank = makeTex(16, (c, s) => {
   c.fillStyle = '#a8824a'; c.fillRect(0, 0, s, s);
   c.fillStyle = '#8a6a3a'; c.fillRect(0, 5, s, 1); c.fillRect(0, 11, s, 1);
-  for (let i = 0; i < 5; i++) px(c, (Math.random() * 16) | 0, 5, '#8a6a3a');
+  for (let i = 0; i < 5; i++) pxl(c, (Math.random() * 16) | 0, 5, '#8a6a3a');
   speckle(c, s, 0, ['#9a7842', '#b89058'], 20);
 });
 
@@ -197,37 +197,18 @@ function generate() {
 const DIRS = [
   [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]
 ];
-// 六个面的单位盒子模板
-const BOX_TEMPLATES = DIRS.map(d => {
+// 单位立方体模板：对齐 [0,1]^3 的非索引几何，面 d 的 6 个顶点位于 [d*6, d*6+6)
+// 面顺序与 DIRS 一致：+x -x +y -y +z -z（方块 (x,y,z) 整体平移 (x,y,z) 即定位）
+const CUBE_FACES = (() => {
   const g = new THREE.BoxGeometry(1, 1, 1);
-  g.translate(d[0] * 0.5, d[1] * 0.5, d[2] * 0.5);
-  return g;
-});
-function mergeGeometries(list) {
-  if (!list.length) return null;
-  let total = 0;
-  list.forEach(g => total += g.attributes.position.count);
-  const pos = new Float32Array(total * 3), nor = new Float32Array(total * 3), uv = new Float32Array(total * 2);
-  let off = 0;
-  list.forEach(g => {
-    pos.set(g.attributes.position.array, off * 3);
-    nor.set(g.attributes.normal.array, off * 3);
-    uv.set(g.attributes.uv.array, off * 2);
-    off += g.attributes.position.count;
-  });
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  geo.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
-  geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
-  const groups = [];
-  let voff = 0;
-  list.forEach(g => {
-    g.groups.forEach(gr => groups.push({ start: gr.start + voff, count: gr.count, materialIndex: gr.materialIndex }));
-    voff += g.attributes.position.count;
-  });
-  geo.groups = groups;
-  return geo;
-}
+  g.translate(0.5, 0.5, 0.5);
+  const ni = g.toNonIndexed(); // 36 顶点
+  return {
+    pos: ni.attributes.position.array.slice(0, 108),
+    nor: ni.attributes.normal.array.slice(0, 108),
+    uv: ni.attributes.uv.array.slice(0, 72),
+  };
+})();
 function buildMeshes() {
   blockMeshes.forEach(m => { scene.remove(m); m.geometry.dispose(); m.material.forEach(x => x.dispose()); });
   blockMeshes = [];
@@ -238,13 +219,29 @@ function buildMeshes() {
     for (let d = 0; d < 6; d++) {
       const nb = blockAt(bx + DIRS[d][0], by + DIRS[d][1], bz + DIRS[d][2]);
       if (nb === B.AIR || nb === B.LEAF && type === B.LEAF) {
-        (byType[type] = byType[type] || []).push(BOX_TEMPLATES[d].clone().translate(bx, by, bz));
+        (byType[type] = byType[type] || []).push({ d, x: bx, y: by, z: bz });
       }
     }
   }
   for (const type in byType) {
-    const geo = mergeGeometries(byType[type]);
-    if (!geo) continue;
+    const faces = byType[type];
+    const pos = new Float32Array(faces.length * 18), nor = new Float32Array(faces.length * 18), uv = new Float32Array(faces.length * 12);
+    const groups = [];
+    faces.forEach((f, i) => {
+      const d = f.d;
+      pos.set(CUBE_FACES.pos.subarray(d * 18, d * 18 + 18), i * 18);
+      nor.set(CUBE_FACES.nor.subarray(d * 18, d * 18 + 18), i * 18);
+      uv.set(CUBE_FACES.uv.subarray(d * 12, d * 12 + 12), i * 12);
+      for (let v = 0; v < 6; v++) {
+        pos[i * 18 + v * 3] += f.x; pos[i * 18 + v * 3 + 1] += f.y; pos[i * 18 + v * 3 + 2] += f.z;
+      }
+      groups.push({ start: i * 6, count: 6, materialIndex: d });
+    });
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+    geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    geo.groups = groups;
     const mesh = new THREE.Mesh(geo, MATERIALS[type]);
     mesh.castShadow = true; mesh.receiveShadow = true;
     scene.add(mesh); blockMeshes.push(mesh);

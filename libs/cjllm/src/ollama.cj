@@ -1,10 +1,10 @@
 package cjllm
 
 import stdx.encoding.json.*
-import stdx.net.http.*
 import std.collection.*
 import std.io.*
 import std.sync.*
+import std.net.*
 import cjutil.*
 
 /**
@@ -27,7 +27,7 @@ import cjutil.*
  * 由上层 makeProvider → agent.run 捕获并提示 "是否启动 ollama serve？"
  */
 public class OllamaProvider <: LlmProvider {
-    private var currentClient: ?Client = None
+    private var currentTransport: ?HttpStreamClient = None
     private var clientLock: Mutex = Mutex()
     public let baseUrl: String
     public let apiKey: String
@@ -77,11 +77,11 @@ public class OllamaProvider <: LlmProvider {
 
     public func abort(): Unit {
         this.clientLock.lock()
-        let c = this.currentClient
+        let t = this.currentTransport
         this.clientLock.unlock()
-        match (c) {
-            case Some(cl) =>
-                try { cl.close() } catch (e: Exception) { }
+        match (t) {
+            case Some(tr) =>
+                try { tr.abort() } catch (e: Exception) { }
             case None => ()
         }
     }
@@ -110,30 +110,34 @@ public class OllamaProvider <: LlmProvider {
             body.put("tools", JsonArray(toolList))
         }
 
-        // 本地 Ollama 走 HTTP，不设置 TLS（TLS 配置会导致 SNI/证书不匹配）
-        let client = ClientBuilder().readTimeout(Duration.second * 1200).build()
+        // 传输层：std.net 直连（本地 HTTP，无 TLS），per-read 60s 空闲超时
+        let (host, port, path, useTls) = splitEndpoint(this.endpointUrl())
+        let transport = HttpStreamClient(host, port, useTls)
+        transport.readTimeout = Duration.second * 60
         this.clientLock.lock()
-        this.currentClient = Some(client)
+        this.currentTransport = Some(transport)
         this.clientLock.unlock()
-        let reqBuilder = HttpRequestBuilder()
-            .post()
-            .url(this.endpointUrl())
-            .header("Content-Type", "application/json")
+        transport.connect()
+        var hdrs = ArrayList<(String, String)>()
+        hdrs.add(("Content-Type", "application/json"))
         // apiKey 为空时跳过 Authorization（本地 Ollama 默认无认证）
         if (this.apiKey.size > 0) {
-            reqBuilder.header("Authorization", "Bearer ${this.apiKey}")
+            hdrs.add(("Authorization", "Bearer ${this.apiKey}"))
         }
-        let req = reqBuilder.body(body.toJsonString()).build()
-
-        let resp = client.send(req)
-        let status = resp.status
+        transport.request("POST", path, hdrs, body.toJsonString())
+        let (status, _) = transport.readResponseHead()
         if (status != 200) {
             var errBuf = Array<Byte>(4096, repeat: 0)
             var err = ""
-            let n = resp.body.read(errBuf)
-            if (n > 0) {
-                err = safeFromUtf8(errBuf[0..n])
+            try {
+                let n = transport.readBody(errBuf)
+                if (n > 0) {
+                    err = safeFromUtf8(errBuf[0..n])
+                }
+            } catch (e: Exception) {
+                // 读错误体失败忽略
             }
+            transport.close()
             throw LlmException("Ollama HTTP ${status}: ${err}")
         }
 
@@ -146,7 +150,7 @@ public class OllamaProvider <: LlmProvider {
         }
         acc.estimatedPromptTokens = promptChars / 4
         acc.onTokenEstimate = onTokenEstimate
-        let parser = SseParser(resp.body)
+        let parser = SseParser(HttpStreamInput(transport))
         parser.onEvent = { data =>
             // 用户 Ctrl+C 中断：提前结束流解析（保留已收内容）
             if (isCancelled()) {
@@ -160,6 +164,7 @@ public class OllamaProvider <: LlmProvider {
             }
         }
         parser.run()
+        transport.close()
         return acc.finish()
     }
 }
