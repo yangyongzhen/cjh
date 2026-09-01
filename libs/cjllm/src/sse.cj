@@ -37,9 +37,13 @@ public class SseParser {
 
     // 中断轮询（调用方注入 isCancelled）：短读超时后检查，用户中断立即生效
     public var cancelChecker: () -> Bool = { => false }
-    // 空闲预算：超过该时长完全无数据 → timedOut（原 readTimeout 语义，默认 180s）。
-    // 模型思考/代理缓冲 SSE 期间的合法静默不误切——有数据帧即重置计时
-    public var idleTimeout: Duration = Duration.second * 180
+    // 空闲预算：超过该时长无"新事件" → timedOut（默认 60s，CJH_IDLE_TIMEOUT_SECS）。
+    // 基于事件而非 read：代理 keep-alive 空帧会让 read 一直返回数据（绕过
+    // read 预算），但空帧不产生事件（onEvent 不调用）——事件预算不受空帧影响，
+    // 内容不再增长 + 时间流逝 = 停滞（用户实测场景）
+    public var idleTimeout: Duration = Duration.second * 60
+    // 最后事件时间（onEvent 调用时更新；空帧不更新）
+    private var lastEventTime: DateTime = DateTime.now()
 
     public init(input: InputStream) {
         this.input = input
@@ -72,6 +76,15 @@ public class SseParser {
             while (true) {
                 if (this.cancelled || this.cancelChecker()) {
                     // 取消/用户中断：保留已收数据（flush 后结束，不抛异常）
+                    this.flushRemaining()
+                    break
+                }
+                // 事件预算：内容不再增长（无新事件）+ 时间流逝 = 停滞——
+                // 代理 keep-alive 空帧维持 read 活动时，read 预算被绕过，
+                // 事件预算兜底结束回合（用户实测：Streaming 计数一直涨但内容不变）
+                if ((DateTime.now() - this.lastEventTime).toMilliseconds() > this.idleTimeout.toMilliseconds()) {
+                    Log.warn("[SSE] 事件空闲超预算（${this.idleTimeout.toMilliseconds() / 1000}s 无新内容，仅 keep-alive 帧），flush pending (size=${this.pending.size})")
+                    this.timedOut = true
                     this.flushRemaining()
                     break
                 }
@@ -252,6 +265,7 @@ public class SseParser {
         }
         if (data.size > 0) {
             this.onEvent(data)
+            this.lastEventTime = DateTime.now()  // 有真实事件：重置事件预算
         }
         // 协议结束标记：OpenAI 系 data: [DONE]；Anthropic 系 event: message_stop；
         // OpenAI 兼容系 choices[0].finish_reason 非 null（stop/length/tool_calls）
