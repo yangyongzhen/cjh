@@ -663,12 +663,19 @@ public class Agent {
             this.onTokens(response.usage.promptTokens + response.usage.completionTokens)
             Log.info("第 ${iterations} 轮完成 | 耗时 ${roundMs}ms | prompt ${response.usage.promptTokens} completion ${response.usage.completionTokens} cached ${response.usage.cachedTokens} | toolCalls ${response.toolCalls.size} | textLen ${response.text.size} | truncated ${response.truncated} | timedOut ${response.timedOut}")
 
-            // SSE 空闲超时：网络长时间无新数据，已收文本/tool_calls 保留
-            // 给 LLM 注入提示，让它在下一轮知道发生了超时
-            if (response.timedOut) {
-                Log.error("SSE 空闲超时（CJH_IDLE_TIMEOUT_SECS 无新数据），SSE 流被切断")
-                this.onAssistantText("\n\n⚠️ 网络空闲超时（模型长时间无输出），SSE 流被切断。已收到的内容已保留，但可能不完整。\n")
-                this.messages.add(ChatMessage("user", "[System Notice] The previous SSE stream was cut off due to an idle timeout (no new data for CJH_IDLE_TIMEOUT_SECS seconds). The received content may be INCOMPLETE. Please check whether the output/tool_calls were fully received, and continue or retry as needed."))
+            // SSE 空闲超时：网络长时间无新数据，已收文本/tool_calls 保留。
+            // 内容已开始输出（text 或 tool_calls 非空）→ 直接按正常回复处理，
+            // 不再注入提示重试——代理 keep-alive 不发完成标记时，重试会
+            // "卡→重试→又卡"死循环（实测 Streaming 104s+ 排队积压）。
+            // 内容保留为回复（可能不完整但实用优先），回合正常结束。
+            // 仅当完全无内容时才重试（空响应，重试合理）。
+            if (response.timedOut && response.text.size == 0 && response.toolCalls.size == 0) {
+                Log.error("SSE 空闲超时且无任何内容，SSE 流被切断")
+                this.onAssistantText("\n\n⚠️ 网络空闲超时（模型长时间无输出），已收到内容为空。\n")
+                this.messages.add(ChatMessage("user", "[System Notice] The previous SSE stream was cut off due to an idle timeout (no new data). Please continue or retry."))
+            } else if (response.timedOut) {
+                Log.warn("SSE 空闲超时（${this.config.maxIterations} 轮内），已收内容保留为回复（不重试）：textLen=${response.text.size} toolCalls=${response.toolCalls.size}")
+                this.onAssistantText("\n\n⚠️ 网络空闲超时，已收到的内容已保留（可能不完整）。\n")
             }
 
             if (response.hasToolCalls()) {

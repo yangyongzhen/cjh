@@ -158,12 +158,19 @@ public class Term {
         }
         if (this.backend.enableRaw()) {
             this.rawOn = true
+            // 启用 bracketed paste（ESC[?2004h）：终端用 ESC[200~...ESC[201~
+            // 包裹粘贴，避免多行粘贴的换行被逐键解析成 Enter 自动提交。
+            // 此前不启用因 readBracketedPaste 1.5s 超时吞键——已修复
+            // （连续无数据判定结束 + 上限后继续消费闭合标记）
+            print(TermEsc.ESC + "[?2004h", flush: true)
             return true
         }
         return false
     }
 
     public func disableRaw(): Unit {
+        // 关闭 bracketed paste（ESC[?2004l）
+        print(TermEsc.ESC + "[?2004l", flush: true)
         if (!this.rawOn) {
             return
         }
