@@ -449,6 +449,26 @@ public class MarkdownTableTest {
     }
 
     @TestCase
+    public func testTableNewlineAfterBottomBorder(): Unit {
+        // 表格后内容另起一行：底边框 └──┘ 后必须换行（旧实现直接贴边）
+        let m = MarkdownRender()
+        let out = m.process("| A | B |\n|---|---|\n| 1 | 2 |\n") +
+            m.process("表格后的正文内容") + m.finish()
+        let lines = out.split("\n", -1)
+        // 底边框行（└）后是独立一行正文，而非贴边拼接
+        var bottomIdx: Int64 = -1
+        for (i in 0..lines.size) {
+            if (lines[i].contains("└")) {
+                bottomIdx = i
+            }
+        }
+        @Assert(bottomIdx >= 0, true)
+        // 底边框后的下一行是正文（非贴边拼接在 └ 行尾）
+        @Assert(bottomIdx + 1 < Int64(lines.size), true)
+        @Assert(stripAnsi(lines[bottomIdx + 1]).contains("表格后的正文内容"), true)
+    }
+
+    @TestCase
     public func testTableEndOnPlainLine(): Unit {
         let m = MarkdownRender()
         // 表格后接普通文本：表格结束，普通文本正常
