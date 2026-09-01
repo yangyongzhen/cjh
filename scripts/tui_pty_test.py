@@ -232,9 +232,14 @@ def test_help_view() -> None:
         s.send_key(9)  # Tab → 帮助视图
         s.read_available(0.8)  # 读 master 更新 buf
         buf = strip_ansi(s.buf)
-        # 帮助视图独有文本（renderHelp）：「可用命令」+ 快捷键区
+        # 帮助视图独有文本（renderHelp）：「可用命令」
         check("Tab 切到帮助视图（出现可用命令）", "可用命令" in buf, f"(buf尾部: {buf[-200:]})")
-        check("帮助含快捷键说明", "快捷键" in buf, f"(buf尾部: {buf[-200:]})")
+        check("帮助含新增命令（/theme）", "/theme" in buf, f"(buf尾部: {buf[-200:]})")
+        # 帮助内容超一屏（24 行终端）：PageDown 滚动到快捷键区
+        s.send_esc_seq("\x1b[6~")  # PageDown
+        s.read_available(0.5)
+        buf = strip_ansi(s.buf)
+        check("帮助可滚动到快捷键区", "快捷键" in buf, f"(buf尾部: {buf[-250:]})")
         s.send_esc_seq("\x1b")  # Esc 返回对话视图
         s.read_available(0.5)
         s.send_key(3)  # 空闲：一次退出

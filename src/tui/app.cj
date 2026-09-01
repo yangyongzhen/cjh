@@ -111,6 +111,8 @@ public class TuiApp {
     private var sessionSelectList: ArrayList<(String, String)> = ArrayList<(String, String)>()  // (id, summary) 映射，供 chosenId 查询
     // 当前视图：0=对话 1=帮助
     private var viewMode: Int64 = 0
+    // 帮助页滚动偏移（帮助内容超一屏时可滚）
+    private var helpScroll: Int64 = 0
     // 多行编辑模式（Ctrl+E 切换；Alt+Enter 提交，Esc 退出）
     private var editor: MultiLineEditor = MultiLineEditor()
     private var editMode: Bool = false
@@ -1238,6 +1240,22 @@ public class TuiApp {
             this.markDirty()
             return
         }
+        // 帮助视图：PageUp/Down 滚动帮助内容（输出区滚动仅对话视图）
+        if (this.viewMode == 1) {
+            if (key.isPageUp || key.isCtrlU) {
+                this.helpScroll -= 8
+                if (this.helpScroll < 0) {
+                    this.helpScroll = 0
+                }
+                this.markDirty()
+                return
+            }
+            if (key.isPageDown || key.isCtrlD) {
+                this.helpScroll += 8
+                this.markDirty()
+                return
+            }
+        }
         // 组件分发：滚动键（OutputView）→ 输入键（InputBox 消费字符/退格/回车）
         if (this.outputView.handleKey(key)) {
             this.markDirty()
@@ -1290,6 +1308,7 @@ public class TuiApp {
      */
     private func setView(v: Int64): Unit {
         this.viewMode = v
+        this.helpScroll = 0  // 切视图重置帮助滚动
         this.tabBar.setActive(v)
         this.markDirty()
     }
@@ -1542,21 +1561,34 @@ public class TuiApp {
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  /new           开始新会话" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  /resume [id]   恢复历史会话（无 id 时列出）" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  /model [id|#]  列出/切换模型" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  /provider      配置接入（端点/模型/协议/key）" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  /skills        查看/启用技能" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  /compact       手动压缩历史（摘要）" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  /tree          会话树" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  /fork          从当前分支分叉" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  /task          查看/管理任务列表" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  /theme         切换主题" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  /settings      查看采样参数（temp/max_tokens）" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  /quit          退出" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_ACCENT) + "输入：" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  ↑ / ↓          历史上下切换（滚轮亦可）" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  / 开头 ↑↓     只翻 / 命令历史" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Ctrl+R         历史搜索（输入子串过滤）" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  长粘贴         自动折叠为 [Paste #N]（回车展开提交）" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_ACCENT) + "快捷键：" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Tab / ←→       切换视图（对话/帮助）" + Ansi.reset())
-        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Ctrl+E         多行输入编辑" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Ctrl+E         多行输入编辑（Alt+Enter 提交）" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Ctrl+T         思考过程展开/折叠（推理模型）" + Ansi.reset())
-        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Alt+Enter      多行编辑提交" + Ansi.reset())
-        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Esc            退出多行编辑 / 回对话视图" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  PageUp/Down    输出区滚动（Ctrl+U/D 亦可）" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Ctrl+C         空闲退出 / 忙时中断，再按强制退出" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Esc            关闭弹窗 / 退出编辑 / 回对话视图" + Ansi.reset())
         var r: Int64 = 0
-        for (l in lines) {
-            if (r >= height) {
-                break
-            }
-            canvas.setLine(row + r, l)
+        var idx: Int64 = this.helpScroll
+        while (idx < Int64(lines.size) && r < height) {
+            canvas.setLine(row + r, lines[idx])
             r += 1
+            idx += 1
         }
+        // 滚动超出时标记（底部"更多"提示由状态栏滚动指示逻辑类似；简单截断）
     }
 }
