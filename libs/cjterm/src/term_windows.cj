@@ -1,7 +1,5 @@
 package cjterm
 
-import std.fs.*
-
 /**
  * Windows 终端后端（Windows 10 1809+ / Windows Terminal / ConPTY）：
  * VT 输出 + Win32 Console API 输入
@@ -262,25 +260,6 @@ public class WindowsTerminalBackend <: TerminalBackend {
                 let vk = this.readU16(rec, 10)
                 let ch = this.readU16(rec, 14)          // uChar（UTF-16 单元）
                 let ctrlState = this.readU32(rec, 16)
-                // 诊断：dump INPUT_RECORD 原始字节（Windows 方向键被识别为
-                // 左右键 bug 定位——↑ 应 vk=0x26，若日志显示 0x25 则偏移错）
-                try {
-                    let f = File("cjh_win_rec.log", OpenMode.Append)
-                    let hex = "0123456789abcdef"
-                    var sb = StringBuilder()
-                    sb.append("event=${eventType} keyDown=${keyDown} vk=${vk} ch=${ch} ctrl=${ctrlState} rec=")
-                    for (i in 0..20) {
-                        let b = rec.read(i)
-                        sb.append(String(Rune(hex[Int64(b >> 4)])))
-                        sb.append(String(Rune(hex[Int64(b & 0x0F)])))
-                        sb.append(" ")
-                    }
-                    sb.append("\n")
-                    f.write(sb.toString().toArray())
-                    f.close()
-                } catch (e: Exception) {
-                    // 诊断日志失败忽略
-                }
                 LibC.free(rec)
                 if (!keyDown) {
                     return None  // 只处理按下事件（重复按键由 wRepeatCount 分发）
@@ -340,15 +319,7 @@ public class WindowsTerminalBackend <: TerminalBackend {
         else if (vk == VK_RETURN) { return Some(KeyEvent(13)) }
         else if (vk == VK_ESCAPE) { return Some(KeyEvent(27)) }
         else { consume = false }
-        // 诊断：打印映射入参与结果（方向键 bug 定位）
         if (consume) {
-            try {
-                let f = File("cjh_win_rec.log", OpenMode.Append)
-                f.write("vkmap vk=${vk} seq=${seq}\n".toArray())
-                f.close()
-            } catch (e: Exception) {
-                // 忽略
-            }
             return Some(KeyEvent(27, seq))
         }
         return None
