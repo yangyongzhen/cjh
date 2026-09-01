@@ -322,9 +322,18 @@ public class PosixTerminalBackend <: TerminalBackend {
                                             guard += 1
                                         }
                                     } else {
-                                        // 普通 CSI（方向键/功能键）：读到终结字母（0x40..0x7E）
+                                        // 普通 CSI（方向键/功能键）：读到终结字母（0x40..0x7E）。
+                                        // 注意：next 可能已是终结字母（如 ESC[A 的 A）——
+                                        // 此时必须立即收尾，不能再进循环多读：
+                                        // 连按 ↑（缓冲 ESC[A ESC[A...）时若多读会吞掉
+                                        // 下一个序列的 ESC[（'['=0x5B 也在终结范围），
+                                        // 序列错位 → 残留字母被当字符输入（实测
+                                        // esc="ESC[A ESC[" + 输入框出现 AAAA/BBBB）
                                         var guard: Int64 = 0
                                         while (guard < 64) {
+                                            if (next >= 0x40 && next <= 0x7E) {
+                                                break  // next 即终结字母（方向键等）
+                                            }
                                             if (this.waitInput(100)) {
                                                 if (let b3 <- LibC.malloc<UInt8>(count: 1)) {
                                                     let n3 = read(STDIN, b3, 1)
