@@ -206,7 +206,7 @@ public class TuiApp {
         }
         // 初始化文件日志（CJH_TUI_LOG 可覆盖路径；失败则降级 NoopLogger）
         try {
-            let logPath = TermEnv.getenv("CJH_TUI_LOG") ?? "/tmp/cjh_tui.log"
+            let logPath = TermEnv.getenv("CJH_TUI_LOG") ?? this.historyPath().replace("history", "tui.log")
             let f = File(logPath, OpenMode.Append)
             let tl = TextLogger(f)
             tl.level = LogLevel.DEBUG
@@ -371,7 +371,7 @@ public class TuiApp {
             if (cfgDir.size > 0) {
                 dir = cfgDir
             } else {
-                let home = TermEnv.getenv("HOME") ?? ""
+                let home = TermEnv.getenv("HOME") ?? TermEnv.getenv("USERPROFILE") ?? ""
                 if (home.size > 0) {
                     dir = home + "/.cjh"
                 }
@@ -380,7 +380,7 @@ public class TuiApp {
             dir = ""
         }
         if (dir.size == 0) {
-            return "/tmp/cjh_history"  // 兜底
+            return "cjh_history"  // 兜底（当前目录；Windows 无 /tmp）
         }
         return dir + "/history"
     }
