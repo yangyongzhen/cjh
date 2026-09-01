@@ -610,10 +610,13 @@ func runTui(sessionId: String): Int64 {
         agent.onTokens = { tokens =>
             tui.addAgentTokens(tokens)
         }
-        // 流式逐帧 token 估算：思考过程中实时更新动态状态栏 token 数
+        // 流式逐帧 token 估算：思考过程中实时更新动态状态栏 token 数。
+        // 注意：不标记"活动"——代理 keep-alive 帧（无 content/reasoning）
+        // 也会触发估算回调（feed 每帧 estimateAndNotify），若算活动会维持
+        // agentLastActivity 导致看门狗永不触发 → Streaming 无限持续
+        // （用户实测 6341s 卡死 + 排队积压）。真实活动仅看 onDelta/onReasoning
         agent.onTokenEstimate = { est =>
             tui.setAgentTokenEstimate(est)
-            tui.markAgentActivity()  // token 估算帧 = 流有数据
         }
         agent.onToolStart = { name, args =>
             if (StreamState.active) {
