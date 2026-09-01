@@ -339,9 +339,12 @@ public class TuiApp {
                     this.appendOutput(Ansi.fg(Ansi.THEME_WARN) +
                         "⚠️ 模型 ${idleSecs}s 无响应（可能停滞），已请求中断。有数据恢复则立即停止。" +
                         Ansi.reset())
+                    this.safeLog("warn", "看门狗触发中断（idle ${idleSecs}s）")
                     this.onInterrupt()
-                    // 重新武装：若仍未恢复，等满一个超时周期再次中断
+                    // 重新武装：若中断未生效（回合未结束），每超时周期重复
+                    // 中断直到回合结束——不依赖单次中断成功率
                     this.agentLastActivity = now
+                    this.idleWarned = false
                 }
             }
             if (this.takeDirty()) {
