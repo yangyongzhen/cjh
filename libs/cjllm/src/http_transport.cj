@@ -629,7 +629,10 @@ public func splitEndpoint(url: String): (String, UInt16, String, Bool) {
  * 思考+代理缓冲场景，真实停滞 3min 内网络恢复亦覆盖。
  */
 public func defaultIdleTimeout(): Duration {
-    var secs: Int64 = 180
+    // 默认 60s：内容已输出后 60s 无帧即视为停滞（timedOut 语义已改为
+    // 内容保留不重试，短预算不会丢内容）。此前 180s 是配合"timedOut 重试"
+    // 防误切——重试已移除，60s 安全且用户感知响应快
+    var secs: Int64 = 60
     try {
         unsafe {
             // 复用 cjllm 包级 FFI getenv（见 mock.cj），零依赖

@@ -449,15 +449,20 @@ public class PosixTerminalBackend <: TerminalBackend {
     private func readBracketedPaste(): String {
         var sb = StringBuilder()
         let term = TermEsc.ESC + "[201~"
-        let start = DateTime.now()
+        // 结束判定：连续 N 次 waitInput 无数据（粘贴间隙/完成）→ 结束。
+        // 旧实现 1.5s 总超时：大粘贴（>1.5s 传输）未读到闭合标记就截断，
+        // 残留 ESC[201~ 和剩余字节被逐键解析 → 吞键/换行触发 Enter 自动提交。
+        // 粘贴中数据持续到达 → waitInput 立即返回，不误判；结束标记匹配优先。
+        var idleStreak: Int64 = 0
         while (true) {
             if (!this.waitInput(200)) {
-                break  // 无更多输入：粘贴结束（或未闭合）
+                idleStreak += 1
+                if (idleStreak >= 3) {
+                    break  // 600ms 无数据：粘贴结束（或未闭合）
+                }
+                continue
             }
-            // 总超时：未闭合时防止吞掉后续按键输入
-            if ((DateTime.now() - start).toMilliseconds() > 1500) {
-                break
-            }
+            idleStreak = 0
             unsafe {
                 if (let b <- LibC.malloc<UInt8>(count: 1)) {
                     let n = read(STDIN, b, 1)
@@ -469,9 +474,31 @@ public class PosixTerminalBackend <: TerminalBackend {
                     LibC.free(b)
                 }
             }
-            // 内容上限：极端大粘贴体强制截断
+            // 内容上限：极端大粘贴体截断（截断后继续消费到闭合标记，
+            // 避免残留字节被逐键解析；丢弃超限内容）
             if (sb.toString().size > 65536) {
-                break
+                // 丢弃多余内容，但必须读到闭合标记或数据流结束
+                var discard = StringBuilder()
+                while (true) {
+                    if (!this.waitInput(200)) {
+                        break
+                    }
+                    unsafe {
+                        if (let b <- LibC.malloc<UInt8>(count: 1)) {
+                            let n = read(STDIN, b, 1)
+                            if (n <= 0) {
+                                LibC.free(b)
+                                break
+                            }
+                            discard.append(Rune(Int32(b.read(0))).toString())
+                            LibC.free(b)
+                        }
+                    }
+                    if (discard.toString().endsWith(term)) {
+                        break
+                    }
+                }
+                return stripEscapeSequences(sb.toString())
             }
             // 尾部匹配结束标记（可能跨多次 read，用 endsWith 检测）
             let s = sb.toString()

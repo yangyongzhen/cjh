@@ -26,6 +26,9 @@ restore() { cp "$BACKUP" "$STATIC_CFG"; }
 trap restore EXIT
 
 echo "[test.sh] 已切动态配置跑测试（静态下测试框架 double free 崩溃）..."
+# 配置隔离：测试进程读隔离配置目录（空），避免读到真实 ~/.cjh 的
+# history/draft/settings（TuiApp init 加载真实用户数据会污染测试输入）
+export CJH_CONFIG_DIR="${CJH_CONFIG_DIR:-$(mktemp -d /tmp/cjh_test_cfg.XXXXXX)}"
 if [ $# -gt 0 ]; then
     cjpm test "$@"
 else

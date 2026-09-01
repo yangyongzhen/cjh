@@ -269,8 +269,18 @@ public class TuiApp {
                 // 不在 transcript 追加"已入队"提示（处理后残留误导，且污染会话存档）——
                 // 排队状态由动态状态行实时显示（"排队 N 条"），agent 结束自动消失。
                 // busy || 队列非空都入队：堵住 run 结束→下一条启动的窗口期
-                // （否则该窗口提交的消息绕过队列、与续跑消息并发执行同一 Agent）
+                // （否则该窗口提交的消息绕过队列、与续跑消息并发执行同一 Agent）。
+                // 忙时 Enter = 强制插入发送（对齐 omp followup）：打断当前回合，
+                // 排队消息在中断后（≤5s）自动开始处理——模型思考卡住无新增时
+                // 不必等 180s 空闲预算，用户 Enter 即可夺回输入权
                 if (this.isAgentBusy() || this.queueLength() > 0) {
+                    if (this.isAgentBusy()) {
+                        this.interruptPending = true  // 已请求打断：Ctrl+C 可直达强退
+                        this.onInterrupt()
+                        this.safeLog("info", "Enter: 忙时强制插入发送（打断当前回合）")
+                        this.appendOutput(Ansi.fg(Ansi.THEME_WARN) +
+                            "⏸ 已打断当前回合，排队消息即将发送…" + Ansi.reset())
+                    }
                     this.enqueueInput(finalLine)
                 } else {
                     this.onSubmit(finalLine)
