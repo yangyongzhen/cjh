@@ -318,25 +318,40 @@ public class WindowsTerminalBackend <: TerminalBackend {
     }
 
     /**
-     * 虚拟键 → KeyEvent（转义序列语义与 POSIX 一致）
+     * 虚拟键 → KeyEvent（转义序列语义与 POSIX 一致）。
+     * 用 if-else 而非 match：交叉编译下 match 对 UInt16 常量比较
+     * 出现异常（实测 rec vk=38/40 正确但结果全为 LEFT）——if-else
+     * 显式比较排除编译器路径差异。
      */
     private func vkToKeyEvent(vk: UInt16): Option<KeyEvent> {
-        match (vk) {
-            case VK_LEFT => return Some(KeyEvent(27, TermEsc.LEFT))
-            case VK_RIGHT => return Some(KeyEvent(27, TermEsc.RIGHT))
-            case VK_UP => return Some(KeyEvent(27, TermEsc.UP))
-            case VK_DOWN => return Some(KeyEvent(27, TermEsc.DOWN))
-            case VK_PRIOR => return Some(KeyEvent(27, TermEsc.PGUP))
-            case VK_NEXT => return Some(KeyEvent(27, TermEsc.PGDN))
-            case VK_HOME => return Some(KeyEvent(27, TermEsc.ESC + "[H"))
-            case VK_END => return Some(KeyEvent(27, TermEsc.ESC + "[F"))
-            case VK_DELETE => return Some(KeyEvent(27, TermEsc.ESC + "[3~"))
-            case VK_BACK => return Some(KeyEvent(127))   // 对齐 POSIX backspace
-            case VK_TAB => return Some(KeyEvent(9))
-            case VK_RETURN => return Some(KeyEvent(13))
-            case VK_ESCAPE => return Some(KeyEvent(27))
-            case _ => return None  // 未映射键（功能键 F1-F12 等）：忽略
+        var seq: String = ""
+        var consume: Bool = true
+        if (vk == VK_LEFT) { seq = TermEsc.LEFT }
+        else if (vk == VK_RIGHT) { seq = TermEsc.RIGHT }
+        else if (vk == VK_UP) { seq = TermEsc.UP }
+        else if (vk == VK_DOWN) { seq = TermEsc.DOWN }
+        else if (vk == VK_PRIOR) { seq = TermEsc.PGUP }
+        else if (vk == VK_NEXT) { seq = TermEsc.PGDN }
+        else if (vk == VK_HOME) { seq = TermEsc.ESC + "[H" }
+        else if (vk == VK_END) { seq = TermEsc.ESC + "[F" }
+        else if (vk == VK_DELETE) { seq = TermEsc.ESC + "[3~" }
+        else if (vk == VK_BACK) { return Some(KeyEvent(127)) }
+        else if (vk == VK_TAB) { return Some(KeyEvent(9)) }
+        else if (vk == VK_RETURN) { return Some(KeyEvent(13)) }
+        else if (vk == VK_ESCAPE) { return Some(KeyEvent(27)) }
+        else { consume = false }
+        // 诊断：打印映射入参与结果（方向键 bug 定位）
+        if (consume) {
+            try {
+                let f = File("cjh_win_rec.log", OpenMode.Append)
+                f.write("vkmap vk=${vk} seq=${seq}\n".toArray())
+                f.close()
+            } catch (e: Exception) {
+                // 忽略
+            }
+            return Some(KeyEvent(27, seq))
         }
+        return None
     }
 
     /**
