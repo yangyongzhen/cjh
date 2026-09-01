@@ -151,7 +151,10 @@ public class TuiApp {
 
     public init() {
         // 空闲超时秒数（CJH_IDLE_TIMEOUT_SECS 可配，默认 180）
-        var to: Int64 = 180
+        // 与 parser 空闲预算（defaultIdleTimeout 60s）对齐：代理 keep-alive
+        // 可能发空帧绕过 parser 的"无数据"判定（空 chunk/CRLF 重置 idleStart），
+        // TUI 看门狗按 agentLastActivity（仅真实内容帧更新）60s 兜底中断
+        var to: Int64 = 60
         try {
             let v = TermEnv.getenv("CJH_IDLE_TIMEOUT_SECS") ?? ""
             if (v.size > 0) {
