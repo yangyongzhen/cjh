@@ -338,6 +338,8 @@ public class Agent {
         } catch (e: Exception) {
             Log.warn("Agent.interrupt abort provider 异常: ${e}")
         }
+        // 诊断：确认中断请求到达 agent 层（排查"中断发出但回合不结束"）
+        Log.warn("Agent.interrupt 已请求：interruptFlag=true + abort() 已调用")
     }
 
     /**
