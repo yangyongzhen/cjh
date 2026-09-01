@@ -1155,7 +1155,8 @@ public class TuiApp {
         // 用 safeLog：Backspace(ch=127) 等字符曾触发 stdx logger 越界崩 TUI
         this.safeLog("debug",
             "key ch=${key.ch} esc=${key.escapeSeq} text='${key.text}' " +
-            "up=${key.isArrowUp} down=${key.isArrowDown} tab=${key.isTab} " +
+            "up=${key.isArrowUp} down=${key.isArrowDown} " +
+            "left=${key.isArrowLeft} right=${key.isArrowRight} tab=${key.isTab} " +
             "enter=${key.isEnter} back=${key.isBackspace} mouse=${key.isMouse} " +
             "picker=${this.picker.isVisible()}")
         if (key.escapeSeq == TermEsc.ESC) {

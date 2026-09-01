@@ -275,6 +275,15 @@ public class WindowsTerminalBackend <: TerminalBackend {
                     // 其他 Ctrl+字母：1..26（对齐 POSIX 控制字符）
                     if (vk >= 0x41 && vk <= 0x5A) { return Some(KeyEvent(Int32(vk) - 64)) }
                 }
+                // VK 导航/功能键优先（方向键/编辑键/Tab/Enter/Esc/退格）：
+                // 部分 Windows 终端/键盘布局下方向键事件的 uChar 非 0，
+                // 若先判可打印字符会把方向键当普通字符输入，甚至穿透到
+                // 上层被误处理（用户实测：Windows 上 ↑↓ 被当 ←→ 切 Tab）。
+                // 普通字母/数字键 vk 无映射（vkToKeyEvent 返回 None），仍走可打印分支。
+                let navKey = this.vkToKeyEvent(vk)
+                if (navKey.isSome()) {
+                    return navKey
+                }
                 // Alt 组合：ESC + 字符（对齐 POSIX Alt+x = ESC x）
                 if (alt && ch != 0) {
                     let text = this.utf16ToUtf8(ch)
@@ -288,8 +297,8 @@ public class WindowsTerminalBackend <: TerminalBackend {
                     if (text.size > 0) { first = Int32(text.toArray()[0]) }
                     return Some(KeyEvent(first, text))
                 }
-                // 虚拟键（无字符）：映射为与 POSIX 转义序列等价的 KeyEvent
-                return this.vkToKeyEvent(vk)
+                // 未映射虚拟键（功能键 F1-F12 等）：忽略
+                return None
             }
             return None
         }
