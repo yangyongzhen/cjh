@@ -1,5 +1,7 @@
 package cjterm
 
+import std.fs.*
+
 /**
  * Windows 终端后端（Windows 10 1809+ / Windows Terminal / ConPTY）：
  * VT 输出 + Win32 Console API 输入
@@ -260,6 +262,25 @@ public class WindowsTerminalBackend <: TerminalBackend {
                 let vk = this.readU16(rec, 10)
                 let ch = this.readU16(rec, 14)          // uChar（UTF-16 单元）
                 let ctrlState = this.readU32(rec, 16)
+                // 诊断：dump INPUT_RECORD 原始字节（Windows 方向键被识别为
+                // 左右键 bug 定位——↑ 应 vk=0x26，若日志显示 0x25 则偏移错）
+                try {
+                    let f = File("cjh_win_rec.log", OpenMode.Append)
+                    let hex = "0123456789abcdef"
+                    var sb = StringBuilder()
+                    sb.append("event=${eventType} keyDown=${keyDown} vk=${vk} ch=${ch} ctrl=${ctrlState} rec=")
+                    for (i in 0..20) {
+                        let b = rec.read(i)
+                        sb.append(String(Rune(hex[Int64(b >> 4)])))
+                        sb.append(String(Rune(hex[Int64(b & 0x0F)])))
+                        sb.append(" ")
+                    }
+                    sb.append("\n")
+                    f.write(sb.toString().toArray())
+                    f.close()
+                } catch (e: Exception) {
+                    // 诊断日志失败忽略
+                }
                 LibC.free(rec)
                 if (!keyDown) {
                     return None  // 只处理按下事件（重复按键由 wRepeatCount 分发）
@@ -275,21 +296,13 @@ public class WindowsTerminalBackend <: TerminalBackend {
                     // 其他 Ctrl+字母：1..26（对齐 POSIX 控制字符）
                     if (vk >= 0x41 && vk <= 0x5A) { return Some(KeyEvent(Int32(vk) - 64)) }
                 }
-                // VK 导航/功能键优先（方向键/编辑键/Tab/Enter/Esc/退格）：
-                // 部分 Windows 终端/键盘布局下方向键事件的 uChar 非 0，
-                // 若先判可打印字符会把方向键当普通字符输入，甚至穿透到
-                // 上层被误处理（用户实测：Windows 上 ↑↓ 被当 ←→ 切 Tab）。
-                // 普通字母/数字键 vk 无映射（vkToKeyEvent 返回 None），仍走可打印分支。
-                let navKey = this.vkToKeyEvent(vk)
-                if (navKey.isSome()) {
-                    return navKey
-                }
                 // Alt 组合：ESC + 字符（对齐 POSIX Alt+x = ESC x）
                 if (alt && ch != 0) {
                     let text = this.utf16ToUtf8(ch)
                     return Some(KeyEvent(27, TermEsc.ESC + text))
                 }
-                // 可打印字符事件
+                // 可打印字符事件（优先：保证字母/数字输入不受 vk 解析影响——
+                // vk 偏移待 rec dump 确认，此前 VK 优先曾导致所有键被当方向键）
                 if (ch != 0) {
                     let text = this.utf16ToUtf8(ch)
                     // 对齐 POSIX：ch 取 UTF-8 首字节，text 为完整字符
@@ -297,8 +310,8 @@ public class WindowsTerminalBackend <: TerminalBackend {
                     if (text.size > 0) { first = Int32(text.toArray()[0]) }
                     return Some(KeyEvent(first, text))
                 }
-                // 未映射虚拟键（功能键 F1-F12 等）：忽略
-                return None
+                // 虚拟键（无字符）：映射为与 POSIX 转义序列等价的 KeyEvent
+                return this.vkToKeyEvent(vk)
             }
             return None
         }
