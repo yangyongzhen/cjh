@@ -434,6 +434,9 @@ public class MarkdownRender {
             }
             sb.append("\n")
             this.renderTableBottomBorder(sb)
+            // 表格结束后另起一行：底边框后紧跟的内容（普通文本/代码块等）
+            // 不再贴边（旧实现 └──┘代码结构清晰… 挤在一起）
+            sb.append("\n")
         } else if (this.tableHeader.size > 0) {
             // 只有表头没有分隔行/数据：当作普通文本输出（可能不是表格）
             for (h in this.tableHeader) {
