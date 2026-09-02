@@ -29,6 +29,7 @@ import std.collection.*
 import std.convert.Parsable
 import stdx.net.tls.*
 import stdx.crypto.x509.X509Certificate
+import cjutil.*
 
 /**
  * HTTP 传输层异常（连接关闭/协议错误）
@@ -83,6 +84,8 @@ public class HttpStreamClient {
     // 建连/响应头阶段的宽容预算（非流式：慢代理/慢握手正常，默认 180s；
     // 超预算抛 SocketTimeoutException = 网络停滞）
     public var idleTimeout: Duration = Duration.second * 180
+    // 写请求预算（大 payload 经代理 write 可能挂死，默认 30s）
+    public var writeTimeout: Duration = Duration.second * 30
 
     /**
      * @param host 目标主机
@@ -110,30 +113,54 @@ public class HttpStreamClient {
     }
 
     /**
-     * 建立连接（TCP + 可选 TLS 握手），设置 per-read 超时
+     * 建立连接（TCP + 可选 TLS 握手），设置 per-read 超时。
+     * 全程预算竞速（runWithBudget）：裸 TcpSocket.connect（DNS/TCP/TLS 握手）
+     * 无超时参数可无限阻塞，且此窗口 this.socket==None、abort() 打不断
+     * （Thinking 442s 事故根因）——预算 idleTimeout、中断复用本对象 cancelChecker。
+     * 预算内重试一次：首连超预算可能是 DNS 瞬态异常，重连一次再放弃。
      */
     public func connect(): Unit {
-        let sock = TcpSocket(this.host, this.port)
-        sock.connect()
-        if (this.useTls) {
-            var cfg: TlsClientConfig
-            match (this.tlsConfig) {
-                case Some(c) => cfg = c
-                case None =>
-                    var c = TlsClientConfig()
-                    c.verifyMode = CertificateVerifyMode.CustomCA(X509Certificate.systemRootCerts())
-                    c.domain = Some(this.host)
-                    cfg = c
+        let budgetMs = this.idleTimeout.toMilliseconds()
+        var lastErr: ?Exception = None
+        for (i in 0..2) {
+            try {
+                runWithBudget("建连", budgetMs, 100, { => this.cancelChecker() }, { =>
+                    let sock = TcpSocket(this.host, this.port)
+                    sock.connect()
+                    if (this.useTls) {
+                        var cfg: TlsClientConfig
+                        match (this.tlsConfig) {
+                            case Some(c) => cfg = c
+                            case None =>
+                                var c = TlsClientConfig()
+                                c.verifyMode = CertificateVerifyMode.CustomCA(X509Certificate.systemRootCerts())
+                                c.domain = Some(this.host)
+                                cfg = c
+                        }
+                        let tls = TlsSocket.client(sock, session: None, clientConfig: cfg)
+                        // 握手：宽容预算（建连不是流式，慢代理正常）；完成后切短读轮询
+                        tls.readTimeout = this.idleTimeout
+                        tls.handshake()
+                        tls.readTimeout = this.readTimeout
+                        this.socket = Some(tls)
+                    } else {
+                        sock.readTimeout = this.readTimeout
+                        this.socket = Some(sock)
+                    }
+                })
+                return
+            } catch (e: BudgetTimeoutException) {
+                lastErr = Some(e)
+                // 仅首次超预算重试一次（瞬态 DNS/握手抖动）；被中断不重试
+                try {
+                    this.close()
+                } catch (e2: Exception) {
+                    // 清理尽力而为
+                }
             }
-            let tls = TlsSocket.client(sock, session: None, clientConfig: cfg)
-            // 握手：宽容预算（建连不是流式，慢代理正常）；完成后切短读轮询
-            tls.readTimeout = this.idleTimeout
-            tls.handshake()
-            tls.readTimeout = this.readTimeout
-            this.socket = Some(tls)
-        } else {
-            sock.readTimeout = this.readTimeout
-            this.socket = Some(sock)
+        }
+        if (lastErr.isSome()) {
+            throw lastErr.getOrThrow()
         }
     }
 
@@ -160,8 +187,13 @@ public class HttpStreamClient {
         req.append("Content-Length: ${body.size}\r\n")
         req.append("\r\n")
         req.append(body)
+        // 写请求预算竞速：大 payload 经代理 write 可能挂死（无读超时窗口）。
+        // 预算 writeTimeout、中断复用 cancelChecker
         let sock = this.socket.getOrThrow()
-        sock.write(req.toString().toArray())
+        let payload = req.toString().toArray()
+        runWithBudget("写请求", this.writeTimeout.toMilliseconds(), 100, { => this.cancelChecker() }, { =>
+            sock.write(payload)
+        })
     }
 
     /**

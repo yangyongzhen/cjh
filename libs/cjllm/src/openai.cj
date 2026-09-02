@@ -134,6 +134,8 @@ public class OpenAiProvider <: LlmProvider {
             let (host, port, path, useTls) = splitEndpoint(this.endpointUrl())
             let c = HttpStreamClient(host, port, useTls)
             c.readTimeout = Duration.second * 15
+            // 预热是后台任务：缩建连预算到 15s，connect 挂死不长期占线程（预算由传输层 connect 内部执行）
+            c.idleTimeout = Duration.second * 15
             c.connect()
             var hdrs = ArrayList<(String, String)>()
             hdrs.add(("Authorization", "Bearer ${this.apiKey}"))
@@ -263,20 +265,17 @@ public class OpenAiProvider <: LlmProvider {
             this.currentTransport = Some(tr)
             this.clientLock.unlock()
             if (!reused) {
-                // 预算竞速：裸 socket connect（DNS/TCP/TLS 握手）无超时参数，可无限阻塞；
-                // 该窗口 this.socket 未赋值，abort() 的 close() 打不断（Thinking 442s 事故根因）
-                runWithBudget("建连", tr.idleTimeout.toMilliseconds(), 100, isCancelled, { => tr.connect() })
+                // 直调即可：connect 在传输层内部已包预算竞速（预算=idleTimeout、
+                // 中断=tr.cancelChecker），所有协议统一由 HttpStreamClient 兜底
+                tr.connect()
             }
             var hdrs = ArrayList<(String, String)>()
             hdrs.add(("Content-Type", "application/json"))
             hdrs.add(("Authorization", "Bearer ${key}"))
             var status: Int32 = 0
             try {
-                // 请求写同样预算保护（大 payload 经代理 write 可能挂死——无读超时窗口）。
-                // let 接住不可变快照：捕获可变局部变量的 lambda 不能传参（仓颉限制）
-                let reqHdrs = hdrs
-                let reqBody = body.toJsonString()
-                runWithBudget("写请求", 30000, 100, isCancelled, { => tr.request("POST", path, reqHdrs, reqBody) })
+                // request 在传输层内部已包预算竞速（writeTimeout），直调
+                tr.request("POST", path, hdrs, body.toJsonString())
                 let (st, _) = tr.readResponseHead()
                 status = st
             } catch (e: Exception) {
@@ -295,10 +294,8 @@ public class OpenAiProvider <: LlmProvider {
                 this.clientLock.lock()
                 this.currentTransport = Some(t2)
                 this.clientLock.unlock()
-                runWithBudget("重建连接", t2.idleTimeout.toMilliseconds(), 100, isCancelled, { => t2.connect() })
-                let reqHdrs2 = hdrs
-                let reqBody2 = body.toJsonString()
-                runWithBudget("写请求", 30000, 100, isCancelled, { => t2.request("POST", path, reqHdrs2, reqBody2) })
+                t2.connect()
+                t2.request("POST", path, hdrs, body.toJsonString())
                 let (st2, _) = t2.readResponseHead()
                 status = st2
                 transport = Some(t2)
