@@ -1289,7 +1289,11 @@ public class Agent {
         }
         var sb = StringBuilder()
         sb.append("- 最后任务: ")
-        sb.append(if (task.size > 60) { task[0..60] + "…" } else { task })
+        // truncateUtf8：仓颉 String 按字节切片且校验 UTF-8 边界，task[0..60] 在中文（3 字节/字）
+        // 密集内容上切点 60 落在字符中间会抛 IllegalArgumentException: Invalid utf8 byte sequence。
+        // 该调用在 TUI spawn 收尾路径（entries.cj）且历史上位于 try 之外，未捕获异常会静默杀死
+        // 收尾线程 → setAgentRunning(false) 永不执行 → TUI 僵尸"Streaming…"态、排队永不发送。
+        sb.append(if (task.size > 60) { truncateUtf8(task, 60) + "…" } else { task })
         sb.append("\n")
         sb.append("- 工具调用: ${toolCount} 次\n")
         if (files.size > 0) {
@@ -1312,7 +1316,8 @@ public class Agent {
         let reply = lastReply.trimAscii()
         if (reply.size > 0) {
             sb.append("- 结果: ")
-            sb.append(if (reply.size > 200) { reply[0..200] + "…" } else { reply })
+            // 同 task 切片：中文回复切点 200 可能落在多字节字符中间
+            sb.append(if (reply.size > 200) { truncateUtf8(reply, 200) + "…" } else { reply })
             sb.append("\n")
         }
         return sb.toString()

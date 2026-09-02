@@ -779,8 +779,16 @@ func runTui(sessionId: String): Int64 {
                     TuiBridge.output(Ansi.fg(Ansi.THEME_ERR) + "错误: ${e}" + Ansi.reset())
                 }
                 // P1-6：会话结束后保存项目记忆（供下次会话注入，Hindsight 式）
+                // 独立 try 兜底：summarizeForMemory() 实参求值或落盘若抛异常，绝不允许杀死收尾线程——
+                // 否则下面 setAgentRunning(false) 永不执行，TUI 永久卡在忙"Streaming…"态、排队消息永不发送
+                // （2026-09-01 僵尸忙态：中文历史摘要 task[0..60] 字节切片在 CJK 中间抛异常，spawn 未捕获异常只杀线程）。
                 if (summary.rounds > 0) {
-                    saveProjectMemory(cjhCfg.memoryDir, agent.summarizeForMemory())
+                    try {
+                        let memSummary = agent.summarizeForMemory()
+                        saveProjectMemory(cjhCfg.memoryDir, memSummary)
+                    } catch (e: Exception) {
+                        Log.warn("项目记忆保存失败（不影响主流程）: ${e}")
+                    }
                 }
                 // 先关闭 agent 运行态（动态状态栏消失，输出区恢复占满），
                 // 再触发 onRunComplete 渲染回合总结条，避免总结条被收缩的输出区挤压
