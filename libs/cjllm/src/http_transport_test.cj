@@ -412,6 +412,38 @@ public class HttpTransportTest {
         @Assert(got2.toString().contains("resp-1"), true)
     }
 
+    // ==================== 场景 16：黑洞地址 connect 预算有界（Thinking 442s 事故回归） ====================
+    // 192.0.2.1 是 RFC 5737 TEST-NET-1 文档地址（设计上不可路由）：SYN 被丢弃，
+    // 裸 TcpSocket.connect 会无限挂起（本环境探针实测 8s+ 无响应）。
+    // connect() 内部预算竞速必须在 idleTimeout 内（含一次重试）抛
+    // BudgetTimeoutException——证明 connect 不再是无限阻塞、中断打不断的死区。
+    // 前提自证：本环境该地址 connect 必挂起；若网络变更使其被秒拒，异常类型不符
+    // 会让本测试失败并提示"网络前提已变"（属预期报警，不是产品 bug）。
+
+    @TestCase
+    public func testBlackholeConnectBudgetBounded(): Unit {
+        let client = HttpStreamClient("192.0.2.1", 80, false)
+        client.idleTimeout = Duration.second * 1
+        client.readTimeout = Duration.second * 1
+        let t0 = DateTime.now()
+        var thrown: ?Exception = None
+        try {
+            client.connect()
+        } catch (e: Exception) {
+            thrown = Some(e)
+        }
+        @Assert(thrown.isSome(), true)
+        let isBudget = match (thrown.getOrThrow()) {
+            case _: BudgetTimeoutException => true
+            case _ => false
+        }
+        @Assert(isBudget, true)
+        let elapsed = (DateTime.now() - t0).toMilliseconds()
+        // 两次尝试各超 1s 预算 + 轮询开销：总耗时有界（远小于旧行为 180s/无限挂起）
+        @Assert(elapsed >= 1000, true)
+        @Assert(elapsed < 6000, true)
+    }
+
     // ==================== 辅助 ====================
 
     private func readAll(client: HttpStreamClient): String {
