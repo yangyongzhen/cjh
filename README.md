@@ -475,6 +475,7 @@ cjh 内置 MCP 客户端，支持 stdio 传输 + JSON-RPC 2.0。配置 `mcp_serv
 | v1.2.3 | SSE 空闲超时 + 工具结果截断与回溯 + MCP 协议支持 + 6 套主题 |
 | **v1.3.0** | **Web 支持 + 插件信任链（SHA256 + SM2 签名）+ require_signature 配置** |
 | v1.3.1 | **LLM 效率三连修复**（compaction 检查入循环 + 真实 usage 触发 + keep 调优，prompt 峰值 42.9K→9.4K）+ **216 单测全绿** + 修复 13 个潜伏 bug（含 TUI：markdown 代码块失效/Tab 补全重开/退格崩日志）+ build.cj 产物改名 cjh |
+| **v1.3.7** | **首个 LLM 请求 442s 卡死 + 8 次中断全失效根治**：预算竞速原语 `runWithBudget`（spawn + Future 轮询 + cancelChecker）下沉进 `HttpStreamClient.connect()/request()`——全协议（openai/anthropic/ollama + 未来新协议）建连/写请求有界可中断，connect 预算内重试一次；黑洞地址回归用例（TEST-NET 实测裸 connect 8s+ 挂起 → 预算 1s 抛 BudgetTimeoutException）；**双平台发布包修复**：恢复误清空的静态链接配置（cjpm.toml `--static` + winbuild stdx 静态路径）+ 272/31 单测全绿 |
 | **v1.3.4** | **TUI 交互与流式稳定性**：方向键残留字母修复（AAAA/BBBB）、帮助页补全可滚动、Streaming 卡死根治（60s 空闲预算 + 内容保留不重试）、忙时 Enter 强制插入发送、粘贴自动发送修复（启用 bracketed paste）、markdown 表格底边框换行（269 单测 + 46 PTY 全绿） |
 | **v1.3.3** | **流式传输根治 + TUI 渲染/交互打磨**：finish_reason/短读轮询/响应头轮询全阶段可中断、大 chunk 越界修复、轮次软顶（默认 100 + 收尾指令）、两级 Ctrl+C 兜底（任务中打断/强退，空闲一次退出）、markdown 渲染对齐 omp（ATX 标题主题色/表格完整边框/python 内置函数高亮）、思考块配色对齐 omp（261 单测 + 41 PTY 全绿） |
 | **v1.3.2** | **P0+P1 优化**：bash 超时 + Ctrl+C 中断当前轮 + 持久 bash 会话 + 跨会话项目记忆 + 摘要快模型路由 + 429 备用 key 轮换 + compaction 保留工具结果 + read SQLite + 提示词优化 + **静态链接单文件发布**（228 单测 + 36 PTY 全绿） |
