@@ -605,6 +605,15 @@ func runTui(sessionId: String): Int64 {
         }
         agent.onThinking = { =>
             tui.resetAgentTimer()
+            // 关键：重置空闲看门狗锚点。agentLastActivity 只被 onDelta/onReasoning
+            // 更新、跨轮不重置——上一轮结束后锚点停在旧帧，新一轮"建连+前思考期"
+            // （推理模型大 prompt 可 60-180s 无首帧）从陈旧锚点累计超 61s 即误杀
+            // 正在思考的模型（实测 61s/127s/282s 反复打断）。onThinking 每轮
+            // chatStream 前回调，此处重置让前思考期从本轮开始计。
+            tui.markAgentActivity()
+            // 重置 token 计数：setAgentTokenEstimate 只增不减，跨轮不清零会让
+            // 上一轮估算残留（状态条 0.0K 或陈旧值），每轮从零重新估算
+            tui.resetAgentTokens()
             tui.setAgentState("Thinking…")
         }
         agent.onTokens = { tokens =>

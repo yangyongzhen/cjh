@@ -151,10 +151,11 @@ public class TuiApp {
 
     public init() {
         // 空闲超时秒数（CJH_IDLE_TIMEOUT_SECS 可配，默认 180）
-        // 与 parser 空闲预算（defaultIdleTimeout 60s）对齐：代理 keep-alive
-        // 可能发空帧绕过 parser 的"无数据"判定（空 chunk/CRLF 重置 idleStart），
-        // TUI 看门狗按 agentLastActivity（仅真实内容帧更新）60s 兜底中断
-        var to: Int64 = 60
+        // 与 parser 空闲预算（defaultIdleTimeout 180s）对齐：推理模型长思考期
+        // 复杂任务纯 reasoning 可 300s+，60s 兜底过激会把持续思考的模型误杀。
+        // 代理 keep-alive 空帧可能绕过 parser 的"无数据"判定，TUI 看门狗按
+        // agentLastActivity（仅真实内容/思考帧更新）180s 兜底中断
+        var to: Int64 = 180
         try {
             let v = TermEnv.getenv("CJH_IDLE_TIMEOUT_SECS") ?? ""
             if (v.size > 0) {
@@ -542,6 +543,15 @@ public class TuiApp {
     public func testPickerVisible(): Bool { return this.picker.isVisible() }
     public func testPickerCurrent(): String { return this.picker.current() }
     public func testViewMode(): Int64 { return this.viewMode }
+    // 空闲看门狗观测（单测用）：距最近一次 agent 活动的毫秒数
+    public func testAgentIdleMs(): Int64 { return (DateTime.now() - this.agentLastActivity).toMilliseconds() }
+    // 当前显示的 token 数观测（单测用）
+    public func testAgentPromptTokens(): Int64 {
+        this.agentTokenLock.lock()
+        let t = this.agentPromptTokens
+        this.agentTokenLock.unlock()
+        return t
+    }
     public func testEditMode(): Bool { return this.editMode }
 
     /**
@@ -558,6 +568,13 @@ public class TuiApp {
             this.agentTokenLock.lock()
             this.agentPromptTokens = 0
             this.agentTokenLock.unlock()
+            // 重置空闲看门狗锚点：agentLastActivity 只被 onDelta/onReasoning 更新、
+            // 跨 run 不重置——上一 run 结束后锚点停在旧帧，新 run 启动后"建连+前
+            // 思考期"（推理模型大 prompt 可数十秒~分钟无首帧）从陈旧锚点累计超
+            // idleTimeoutSecs 即误杀正在思考的模型（实测提交后 6s 即报"idle 61s"
+            // 并打断）。每次 run 启动从此刻计起，前思考期不再被旧帧污染。
+            this.agentLastActivity = DateTime.now()
+            this.idleWarned = false
         } else {
             // 任务结束/中断生效：复位中断标记（下次 Ctrl+C 重新从"请求中断"开始）
             this.interruptPending = false
@@ -679,6 +696,18 @@ public class TuiApp {
         this.agentPromptTokens = tokens
         this.agentTokenLock.unlock()
         this.markDirty()
+    }
+
+    /**
+     * 重置 token 计数（每轮 LLM 调用前调用，onThinking 触发）。
+     * setAgentTokenEstimate 只增不减、addAgentTokens 用上一轮 usage 覆盖——
+     * 跨轮不清零会让状态条残留上一轮估算值（显示陈旧/0.0K）。每轮从零重估，
+     * 首帧估算到达后跳至本轮上下文规模，语义正确。
+     */
+    public func resetAgentTokens(): Unit {
+        this.agentTokenLock.lock()
+        this.agentPromptTokens = 0
+        this.agentTokenLock.unlock()
     }
 
     /**

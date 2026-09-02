@@ -280,4 +280,50 @@ public class TuiAppKeyTest {
         @Assert(submitted.size, 0)        // 不直接提交
         @Assert(app.queueLength(), 2)     // 追加入队
     }
+
+    // ==================== 空闲看门狗误杀回归（"连续几轮会话总被打断"） ====================
+    // 根因：agentLastActivity 只被 onDelta/onReasoning 更新、跨 run 不重置。
+    // 上一 run 结束后锚点停在旧帧，新 run 启动后"建连+前思考期"（推理模型大
+    // prompt 数十秒~分钟无首帧）从陈旧锚点累计超 idleTimeoutSecs → 看门狗把
+    // 正在思考的模型当停滞杀掉（实测提交后 6s 即报"idle 61s"并打断）。
+
+    @TestCase
+    public func testSetAgentRunningTrueResetsIdleAnchor(): Unit {
+        // 模拟：上一 run 已结束，锚点已陈旧（制造 300ms 的"空闲"）
+        let (app, _) = this.buildApp()
+        sleep(Duration.millisecond * 300)
+        let staleIdle = app.testAgentIdleMs()
+        @Assert(staleIdle >= 200)  // 前置：锚点应已陈旧（≥200ms）
+        // 新 run 启动：setAgentRunning(true) 必须重置锚点，空闲回到 ~0
+        app.setAgentRunning(true)
+        let freshIdle = app.testAgentIdleMs()
+        @Assert(freshIdle < 50)  // 启动新 run 后空闲应≈0（锚点已重置）
+        app.setAgentRunning(false)
+    }
+
+    @TestCase
+    public func testMarkAgentActivityResetsIdleAnchor(): Unit {
+        // onDelta/onReasoning 回调路径（entries.cj 每帧调用）应刷新锚点
+        let (app, _) = this.buildApp()
+        sleep(Duration.millisecond * 300)
+        @Assert(app.testAgentIdleMs() >= 200)  // 前置：锚点应已陈旧
+        app.markAgentActivity()
+        @Assert(app.testAgentIdleMs() < 50)  // 标记活动后空闲应≈0
+    }
+
+    @TestCase
+    public func testResetAgentTokensClearsStaleEstimate(): Unit {
+        // 跨轮 token 残留回归：上一轮估算（setAgentTokenEstimate 只增不减）
+        // 应被新一轮 onThinking→resetAgentTokens 清零，而非残留到状态条
+        let (app, _) = this.buildApp()
+        app.setAgentTokenEstimate(500)      // 模拟上一轮残留估算
+        @Assert(app.testAgentPromptTokens(), 500)
+        app.resetAgentTokens()              // 新一轮 onThinking 触发
+        @Assert(app.testAgentPromptTokens(), 0)  // 新一轮应清零残留估算
+        // 清零后本轮估算正常增长（只增不减语义在本轮内仍成立）
+        app.setAgentTokenEstimate(120)
+        @Assert(app.testAgentPromptTokens(), 120)
+        app.setAgentTokenEstimate(80)       // 小于当前值：不回落
+        @Assert(app.testAgentPromptTokens(), 120)
+    }
 }
