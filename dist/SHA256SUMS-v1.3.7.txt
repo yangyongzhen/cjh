@@ -1,0 +1,3 @@
+e0f84d22984a1eda9d2ffe7187a2bfceafb5862891f8394cbb9a505c0adb889a  linux/cjh-v1.3.7-linux-x64
+42fe5aae37aeb6db6d6d39e69d93ec3075d0fc3531b73e058addf5fa4d63bee3  windows/cjh-v1.3.7-windows-x64.exe
+cd7009c8d418f4edb8ab76020a1dc3a5f855a2f86a75e8d39e02facd67bde237  cjh-v1.3.7-windows-x64.zip

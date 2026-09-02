@@ -12,6 +12,10 @@ cjpm.lock
 # 本地 agent 配置
 .atomcode/
 
+# 本地运行产物（日志/临时文件）
+.cjh/
+cjh_tui.log
+
 # 系统文件
 .DS_Store
 build-script-cache/
