@@ -661,10 +661,12 @@ public func splitEndpoint(url: String): (String, UInt16, String, Bool) {
  * 思考+代理缓冲场景，真实停滞 3min 内网络恢复亦覆盖。
  */
 public func defaultIdleTimeout(): Duration {
-    // 默认 60s：内容已输出后 60s 无帧即视为停滞（timedOut 语义已改为
-    // 内容保留不重试，短预算不会丢内容）。此前 180s 是配合"timedOut 重试"
-    // 防误切——重试已移除，60s 安全且用户感知响应快
-    var secs: Int64 = 60
+    // 默认 180s：覆盖推理模型（glm-5.3-flash 等）长前思考期——复杂任务纯
+    // reasoning 可 300s+，建连+响应头+首帧前的黑盒期也需宽容。60s 过激进，
+    // 实测把持续思考的模型在 61s/127s/282s 反复误杀（"已中断"+"0.0K tokens"）。
+    // 真实停滞 3min 内网络恢复亦覆盖；keep-alive 空帧由 SSE 事件级预算兜底
+    // （空帧不刷新 lastEventTime），不会因此永久卡死。
+    var secs: Int64 = 180
     try {
         unsafe {
             // 复用 cjllm 包级 FFI getenv（见 mock.cj），零依赖
