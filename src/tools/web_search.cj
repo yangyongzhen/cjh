@@ -634,10 +634,20 @@ private func isWsR(r: Rune): Bool {
 }
 
 /**
- * URL 解码：%XX → 对应字符，+ → 空格
+ * URL 解码：%XX → 对应字节（连续字节整段按 UTF-8 解码），+ → 空格。
+ * 踩坑 §3.15：旧实现逐字节 String(Rune(byte))，中文 %E8%AF%BB 被拆成
+ * 3 个独立 Latin-1 字符（éè»）。现累积 %XX 字节，遇到非编码字符时整段
+ * safeFromUtf8 解码（连续 %XX 拼出完整多字节字符），ASCII 原样通过。
  */
-func urlDecode(s: String): String {
+public func urlDecode(s: String): String {
     var result = StringBuilder()
+    var pending = ArrayList<Byte>(0)
+    func flush(): Unit {
+        if (pending.size > 0) {
+            result.append(safeFromUtf8(pending.toArray()))
+            pending = ArrayList<Byte>(0)
+        }
+    }
     let runes = s.toRuneArray()
     let n = runes.size
     var i = 0
@@ -651,25 +661,26 @@ func urlDecode(s: String): String {
                 let v1 = hexVal(h1)
                 let v2 = hexVal(h2)
                 if (v1 >= 0 && v2 >= 0) {
-                    let byte = UInt8(v1 * 16 + v2)
-                    // 收集连续的 %XX 字节，形成完整 UTF-8 字符
-                    // 简化：逐字节解码，非 ASCII 字节可能显示乱码
-                    result.append(String(Rune(Int64(byte))))
+                    pending.add(UInt8(v1 * 16 + v2))
                     i += 3
                     continue
                 }
             }
-            // 无效的 % 编码，原样保留
+            // 无效的 % 编码：flush 已累积字节后原样保留
+            flush()
             result.append(String(r))
             i += 1
         } else if (r == Rune(43)) {  // +
+            flush()
             result.append(" ")
             i += 1
         } else {
+            flush()
             result.append(String(r))
             i += 1
         }
     }
+    flush()
     return result.toString()
 }
 
