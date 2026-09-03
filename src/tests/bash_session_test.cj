@@ -96,6 +96,29 @@ public class BashSessionTest {
     }
 
     @TestCase
+    public func testChineseOutputNoMojibake(): Unit {
+        // 乱码回归（踩坑 §3.15）：旧 readUntilMarker 逐字节 String(Rune(byte))
+        // 拼接，中文 stdout 每个 UTF-8 字节被当独立 Latin-1 码点
+        // （"读"=E8 AF BB → "éè»"）。用 >4096 字节中文输出强制多字节字符
+        // 跨 4096 读取边界，验证 pending 字节拼接正确、无乱码。
+        let s = BashSession()
+        try {
+            // 2000 个"读懂代码"= 8000 字节，必然跨多个 4096 读取边界
+            let (c1, o1) = s.execute("python3 -c \"print('读懂代码快速赢玩法工程案例' * 500)\"", 15)
+            @Assert(c1, 0)
+            @Assert(o1.contains("读懂代码"), true)
+            @Assert(o1.contains("快速赢"), true)
+            // 无乱码特征：UTF-8 字节被当单字节字符会产生 Latin-1 区码点
+            // （"读"=E8 AF BB → è/¯/»），正确解码的纯中文输出不应含 U+00E8
+            @Assert(o1.contains("\u{00e8}"), false)
+            // marker 仍能被正确切掉（不残留在输出里）
+            @Assert(o1.contains("__CJH_"), false)
+        } finally {
+            s.close()
+        }
+    }
+
+    @TestCase
     public func testBashToolSessionPath(): Unit {
         // BashTool 默认走会话：cwd 持久
         let tool = BashTool()  // useSession=true

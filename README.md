@@ -467,6 +467,7 @@ cjh 内置 MCP 客户端，支持 stdio 传输 + JSON-RPC 2.0。配置 `mcp_serv
 
 | 版本 | 主要功能 |
 |---|---|
+| **v1.3.9** | **工具输出中文乱码根治**：`bash_session.readUntilMarker` 逐字节 `String(Rune(byte))` 拼 stdout → 整段 UTF-8 安全解码（跨块 pending 字节 + 字符边界切分）；`web_search.urlDecode` 的 `%XX` 逐字节转字符 → 连续字节整段解码；复用 `cjutil.safeFromUtf8`；+4 回归用例（279 单测全绿，bash 中文跨读取边界先红后绿） |
 | **v1.3.8** | **"连续几轮会话总被打断"根治**：空闲看门狗误杀推理模型"前思考期"——`agentLastActivity` 跨 run 重置（每 run/每轮 onThinking 刷新锚点）+ 空闲预算默认 60s→180s（恢复设计值，对齐 doc）+ `resetAgentTokens` 跨轮清零 token 计数（修复 0.0K 显示）；根因经 curl 直连逐帧验证（模型 300s 持续吐 12269 帧 reasoning、从未停滞）；+3 回归用例（275 单测全绿）+ 真实模型 PTY 连续 3 轮通过（看门狗/强制插入 0 条） |
 | v1.0.0 | 初始版本：TUI + Agent 循环 + 基础工具 |
 | v1.1.0 | 记忆分层 + 插件系统 + 树形会话 + Ollama 支持 |

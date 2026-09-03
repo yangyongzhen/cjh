@@ -149,9 +149,17 @@ public class BashSession {
     /**
      * 读管道直到出现 marker（或 EOF），返回 marker 前内容。
      * 阻塞读——由独立线程承担，主线程轮询完成标志控制超时。
+     *
+     * UTF-8 安全解码（踩坑 §3.15）：旧实现逐字节 `String(Rune(byte))` 拼接，
+     * 把中文 stdout 的每个 UTF-8 字节当成独立 Latin-1 码点（"读"=E8 AF BB →
+     * "éè»"）——bash 输出中文全乱码。现累积字节，每轮在最后一个完整 UTF-8
+     * 字符边界处整段 safeFromUtf8 解码；半截多字节字符留 pending 等下个块。
+     * marker 为纯 ASCII（__CJH_END_N__），其字节必为 0x00-0x7F，永远落在已解码
+     * 段（边界探测只可能把 ≥0x80 的多字节尾字节留 pending），搜索不受影响。
      */
     private static func readUntilMarker(input: InputStream, marker: String): (String, Bool) {
-        var sb = StringBuilder()
+        var decoded = StringBuilder()
+        var pending = ArrayList<Byte>(0)
         let buf = Array<Byte>(4096, repeat: 0)
         while (true) {
             let n = input.read(buf)
@@ -159,15 +167,54 @@ public class BashSession {
                 break  // EOF：会话进程退出（如 exit N）
             }
             for (i in 0..n) {
-                sb.append(String(Rune(Int32(buf[i]))))
+                pending.add(buf[i])
             }
-            let s = sb.toString()
-            let idx = s.indexOf(marker)
+            // 找最后一个完整 UTF-8 字符的边界：从末尾向前探测，遇到多字节
+            // 起始字节且剩余字节不足其序列长度时，尾字节留 pending
+            let total = pending.size
+            var safeEnd = total
+            var probe = total - 1
+            while (probe >= 0 && probe >= total - 4) {
+                let b = pending[probe]
+                if (b >= 0x80u8) {
+                    let cont = probe + 1 < total  // 仍有后续字节（当前块末尾）
+                    var need: Int64 = 1
+                    if ((b & 0xE0u8) == 0xC0u8) { need = 2 }
+                    else if ((b & 0xF0u8) == 0xE0u8) { need = 3 }
+                    else if ((b & 0xF8u8) == 0xF0u8) { need = 4 }
+                    if (cont && total - probe < need) { safeEnd = probe }
+                    break
+                }
+                probe -= 1
+            }
+            if (safeEnd > 0) {
+                var part = Array<Byte>(safeEnd, repeat: 0)
+                for (i in 0..safeEnd) {
+                    part[i] = pending[i]
+                }
+                decoded.append(safeFromUtf8(part))
+            }
+            // pending 保留 [safeEnd, total) 的尾字节（半截多字节字符），整体替换
+            var tail = ArrayList<Byte>(0)
+            for (i in safeEnd..total) {
+                tail.add(pending[i])
+            }
+            pending = tail
+            let cur = decoded.toString()
+            let idx = cur.indexOf(marker)
             if (idx.isSome()) {
-                return (s[0..idx.getOrThrow()], true)
+                return (cur[0..idx.getOrThrow()], true)
             }
         }
-        return (sb.toString(), false)
+        // EOF：flush 残留（容错替换非法尾部字节）
+        if (pending.size > 0) {
+            var rest = Array<Byte>(pending.size, repeat: 0)
+            for (i in 0..pending.size) {
+                rest[i] = pending[i]
+            }
+            decoded.append(safeFromUtf8(rest))
+        }
+        return (decoded.toString(), false)
     }
 
     /**

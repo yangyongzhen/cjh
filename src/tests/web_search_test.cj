@@ -53,6 +53,38 @@ public class WebSearchRouteTest {
         @Assert(r.current(), "")    // 耗尽后 current 为空
     }
 
+    // ---------- urlDecode（踩坑 §3.15 乱码回归） ----------
+
+    @TestCase
+    public func testUrlDecodeAsciiAndPlus(): Unit {
+        @Assert(urlDecode("abc+def"), "abc def")
+        @Assert(urlDecode("100%25"), "100%")  // % 编码的 %
+        @Assert(urlDecode(""), "")
+    }
+
+    @TestCase
+    public func testUrlDecodeChineseUtf8Bytes(): Unit {
+        // 乱码回归：旧实现逐字节 String(Rune(byte))，%E8%AF%BB 被拆成
+        // é/è/» 三个 Latin-1 字符；修复后连续 %XX 整段 UTF-8 解码
+        @Assert(urlDecode("%E8%AF%BB"), "读")
+        @Assert(urlDecode("a%E4%BD%A0%E5%A5%BD"), "a你好")
+        @Assert(urlDecode("%E8%AF%BB%E6%87%82%E4%BB%A3%E7%A0%81"), "读懂代码")
+        // 无乱码特征：不应出现 U+00E8（"读"首字节被当单字符的产物）
+        @Assert(urlDecode("%E8%AF%BB").contains("\u{00e8}"), false)
+    }
+
+    @TestCase
+    public func testUrlDecodeMixedEncoding(): Unit {
+        // 编码段与非编码段交错：ASCII 段 flush 已累积字节
+        @Assert(urlDecode("%E8%AF%BBx%E6%87%82"), "读x懂")
+        @Assert(urlDecode("hello%20%E4%B8%96%E7%95%8C"), "hello 世界")
+        // 末尾是编码段
+        @Assert(urlDecode("end%25%E8%AF%BB"), "end%读")
+        // 无效 % 序列（%Q）原样保留（含 % 本身）；前置非法字节 E8/AF 各
+        // 解码为一个 U+FFFD 替换符
+        @Assert(urlDecode("%E8%AF%Q%E8%AF%BB"), "\u{fffd}\u{fffd}%Q读")
+    }
+
     // ---------- SearchRouter ----------
 
     @TestCase
