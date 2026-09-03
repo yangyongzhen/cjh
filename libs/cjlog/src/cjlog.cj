@@ -376,11 +376,12 @@ internal class LogSink <: LogSinkImpl {
     /**
      * sleep 毫秒（轮询节流）
      */
-    private func sleepMs(ms: Int64): Unit {
-        var i: Int64 = 0
-        while (i < ms * 1000) {
-            i += 1000
-        }
+    internal func sleepMs(ms: Int64): Unit {
+        // 必须用真实 sleep：旧实现是纯整数忙等空转（while i < ms*1000 自增），
+        // 不消耗任何时间——sink 协程在主 worker 上满速自旋，烧光 CPU 并饿死
+        // TUI 主循环（现象：进程存活 + CPU 100% + TUI 无法输入/画面冻结，
+        // sshd Send-Q 0 远端显示未断线）。详见 docs 踩坑记录。
+        sleep(Duration.millisecond * ms)
     }
 
     /**
