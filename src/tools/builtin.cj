@@ -54,6 +54,14 @@ public class BashTool <: CjhTool {
         this.session.close()
     }
 
+    /**
+     * 关闭持久 bash 会话（程序退出时调用）：terminate + wait 回收进程，
+     * 避免退出后残留泄漏的会话 bash / 僵尸子进程（2026-09-03 事故）。
+     */
+    public func close(): Unit {
+        this.session.close()
+    }
+
     public func spec(): ToolSpec {
         var props = HashMap<String, JsonValue>()
         props.add("command", JsonSchema.str("Shell command to execute"))

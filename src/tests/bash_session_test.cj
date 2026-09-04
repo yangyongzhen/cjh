@@ -80,6 +80,54 @@ public class BashSessionTest {
     }
 
     @TestCase
+    public func testTimeoutKillsReapsZombie(): Unit {
+        // 回归（2026-09-03 事故）：killSession 旧实现只 terminate(force) 不 wait，
+        // 每个超时命令都留一个未回收僵尸，长会话累计"4 个未回收僵尸子进程"。
+        // reapedCount 只在 terminate+wait 成功后自增——>0 证明进程已被 wait 回收。
+        let s = BashSession()
+        try {
+            @Assert(s.testReapedCount(), 0)
+            // 命令挂死 → 超时 → killSession（terminate + wait 回收）
+            // 用 sleep 2（非 sleep 10）：killSession 只杀 bash 本体，其孙进程
+            // sleep 会被 re-parent 到测试进程并持有 stdout 管道直到自然退出，
+            // sleep 越短读线程 EOF 越快，用例越短（回收 bash 本身是瞬时的）
+            let (c1, o1) = s.execute("sleep 2", 1)
+            @Assert(c1, -1)
+            @Assert(o1.contains("超时"), true)
+            @Assert(s.testReapedCount(), 1)  // 超时会话进程已被 wait 回收，非僵尸
+        } finally {
+            s.close()
+        }
+    }
+
+    @TestCase
+    public func testCloseReapsZombie(): Unit {
+        // 退出路径回归：close() 必须 wait 回收会话进程，否则退出后残留泄漏的
+        // 会话 bash（事故现场泄漏约 2 小时的 bash 即此路径）。
+        let s = BashSession()
+        try {
+            let (c1, _) = s.execute("echo ok", 10)
+            @Assert(c1, 0)
+            @Assert(s.testReapedCount(), 0)  // 正常完成：进程未 terminate，未回收
+            s.close()
+            @Assert(s.testReapedCount(), 1)  // close → killSession → wait 回收
+        } finally {
+            s.close()
+        }
+    }
+
+    @TestCase
+    public func testBashToolCloseReaps(): Unit {
+        // 退出清理路径：BashTool.close()（runTui finally 调用）必须回收会话进程
+        let tool = BashTool()  // useSession=true
+        var args = JsonObject()
+        args.put("command", JsonString("echo hi"))
+        let r = tool.execute(args)
+        @Assert(r.isError, false)
+        tool.close()  // 不抛异常且回收（进程被 wait，不残留泄漏 bash）
+    }
+
+    @TestCase
     public func testMultiStepWorkflow(): Unit {
         // 模拟真实多步流程：cd 项目 → 创建文件 → 验证
         let s = BashSession()
