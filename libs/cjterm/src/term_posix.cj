@@ -12,6 +12,8 @@ package cjterm
  */
 
 import std.time.*
+import std.collection.*
+import cjutil.*
 
 // ===== termios FFI（直接调 libc，无外部 .so 依赖）=====
 // Linux termios 结构体布局（x86_64，60 字节）：
@@ -442,13 +444,36 @@ public class PosixTerminalBackend <: TerminalBackend {
     /**
      * 读取 bracketed paste 内容：从 ESC[200~ 后持续读取，直到 ESC[201~ 结束标记。
      *
+     * 解码（踩坑：与 §3.15 bash 输出乱码同款）：旧实现逐字节
+     * `Rune(Int32(byte))` 拼接，把中文粘贴体的每个 UTF-8 字节当独立
+     * Latin-1 码点（"好"=E5 A5 BD → "å¥½"）。现累积原始字节，返回前
+     * 整段 safeFromUtf8 解码（非法字节容错为 U+FFFD）。
+     * 结束标记在**字节层**尾部匹配（term 为纯 ASCII，字节匹配与字符
+     * 匹配等价，且不受解码影响）。
+     *
      * 防御（实测：终端未发闭合标记时会把后续按键吞进粘贴体，方向键变 DDDD 字符）：
-     * - 总超时 1.5s + 内容上限 64KB：防未闭合时无限吞后续输入
+     * - 600ms 无数据判结束 + 内容上限 64KB：防未闭合时无限吞后续输入
      * - 返回前剥离 ESC 控制序列：粘贴体只保留纯文本
      */
     private func readBracketedPaste(): String {
-        var sb = StringBuilder()
-        let term = TermEsc.ESC + "[201~"
+        var raw = ArrayList<Byte>(0)
+        let term = (TermEsc.ESC + "[201~").toArray()
+        let termN = term.size
+        // 读一字节入 raw；EOF 返回 false
+        func readOne(): Bool {
+            var got = false
+            unsafe {
+                if (let b <- LibC.malloc<UInt8>(count: 1)) {
+                    let n = read(STDIN, b, 1)
+                    if (n > 0) {
+                        raw.add(b.read(0))
+                        got = true
+                    }
+                    LibC.free(b)
+                }
+            }
+            return got
+        }
         // 结束判定：连续 N 次 waitInput 无数据（粘贴间隙/完成）→ 结束。
         // 旧实现 1.5s 总超时：大粘贴（>1.5s 传输）未读到闭合标记就截断，
         // 残留 ESC[201~ 和剩余字节被逐键解析 → 吞键/换行触发 Enter 自动提交。
@@ -463,66 +488,71 @@ public class PosixTerminalBackend <: TerminalBackend {
                 continue
             }
             idleStreak = 0
-            unsafe {
-                if (let b <- LibC.malloc<UInt8>(count: 1)) {
-                    let n = read(STDIN, b, 1)
-                    if (n <= 0) {
-                        LibC.free(b)
-                        break
-                    }
-                    sb.append(Rune(Int32(b.read(0))).toString())
-                    LibC.free(b)
-                }
+            if (!readOne()) {
+                break
             }
             // 内容上限：极端大粘贴体截断（截断后继续消费到闭合标记，
             // 避免残留字节被逐键解析；丢弃超限内容）
-            if (sb.toString().size > 65536) {
-                // 丢弃多余内容，但必须读到闭合标记或数据流结束
-                var discard = StringBuilder()
+            if (raw.size > 65536) {
                 while (true) {
                     if (!this.waitInput(200)) {
                         break
                     }
-                    unsafe {
-                        if (let b <- LibC.malloc<UInt8>(count: 1)) {
-                            let n = read(STDIN, b, 1)
-                            if (n <= 0) {
-                                LibC.free(b)
-                                break
-                            }
-                            discard.append(Rune(Int32(b.read(0))).toString())
-                            LibC.free(b)
-                        }
+                    if (!readOne()) {
+                        break
                     }
-                    if (discard.toString().endsWith(term)) {
+                    if (endsWithBytes(raw, term)) {
                         break
                     }
                 }
-                return stripEscapeSequences(sb.toString())
+                return decodePaste(raw, 0)
             }
-            // 尾部匹配结束标记（可能跨多次 read，用 endsWith 检测）
-            let s = sb.toString()
-            if (s.endsWith(term)) {
-                let cut = s.size - term.size
-                if (cut <= 0) {
-                    return ""
-                }
-                return stripEscapeSequences(s[0..cut])
+            // 尾部匹配结束标记（可能跨多次 read，用字节 endsWith 检测）
+            if (endsWithBytes(raw, term)) {
+                // 去掉尾部 term 结束标记，解码剩余字节
+                return decodePaste(raw, termN)
             }
         }
-        // 未闭合：去掉可能的尾部残缺结束标记字节，返回剩余（剥离控制序列）
-        let s = sb.toString()
-        if (s.endsWith(term)) {
-            return stripEscapeSequences(s[0..s.size - term.size])
+        // 未闭合：返回已累积字节（剥离控制序列）
+        return decodePaste(raw, 0)
+    }
+
+    /** 字节序列是否以 suffix 结尾（public：粘贴解码逻辑单测直调） */
+    public static func endsWithBytes(bytes: ArrayList<Byte>, suffix: Array<Byte>): Bool {
+        let m = suffix.size
+        if (bytes.size < m) {
+            return false
         }
-        return stripEscapeSequences(s)
+        let base = bytes.size - m
+        for (i in 0..m) {
+            if (bytes[base + i] != suffix[i]) {
+                return false
+            }
+        }
+        return true
+    }
+
+    /**
+     * 粘贴字节 → 纯文本：整段 safeFromUtf8 解码（非法字节→U+FFFD）
+     * + 剥离 ESC 控制序列。dropTail>0 时先去掉尾部 N 字节（结束标记）。
+     */
+    public static func decodePaste(raw: ArrayList<Byte>, dropTail: Int64): String {
+        let keep = raw.size - dropTail
+        if (keep <= 0) {
+            return ""
+        }
+        var arr = Array<Byte>(keep, repeat: 0)
+        for (i in 0..keep) {
+            arr[i] = raw[i]
+        }
+        return stripEscapeSequences(safeFromUtf8(arr))
     }
 
     /**
      * 剥离 ESC 控制序列：粘贴体只保留纯文本（防方向键序列 ESC[D 被吞后
      * 渲染成 D/C 字母、或颜色序列污染字段值）
      */
-    private static func stripEscapeSequences(s: String): String {
+    public static func stripEscapeSequences(s: String): String {
         var sb = StringBuilder()
         let runes = s.toRuneArray()
         var i: Int64 = 0

@@ -11,4 +11,5 @@
   package-configuration = {}
 
 [dependencies]
+  cjutil = { path = "../cjutil" }
 

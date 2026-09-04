@@ -525,6 +525,32 @@ def test_history_and_paste_collapse() -> None:
         s.close()
 
 
+def test_bracketed_paste_chinese() -> None:
+    """[场景13] bracketed paste 中文进输入框（回归：逐字节 Rune 拼接导致
+    中文 UTF-8 字节被当 Latin-1 码点，"好"=E5 A5 BD → "å¥½" 乱码）。"""
+    print("[场景13] bracketed paste 中文/emoji 进输入框不乱码")
+    cfg = make_config_dir()
+    s = PtuSession(cfg)
+    try:
+        s.expect("cjh")
+        time.sleep(1.0)  # 等主循环就绪（PTY 下字符可能丢在初始化窗口）
+        payload = "粘贴测试🚀ok"
+        s.send("\x1b[200~" + payload + "\x1b[201~")
+        s.read_available(1.0)
+        buf = strip_ansi(s.buf)
+        tail = buf[-300:]
+        check("中文粘贴正确进输入框", payload in tail, f"(buf尾部: {tail})")
+        check("无 Latin-1 乱码（å 等）", "å" not in tail, f"(buf尾部: {tail})")
+        # 粘贴不自动提交：输入框保留内容（提交后会被清空）
+        s.read_available(0.6)
+        buf = strip_ansi(s.buf)
+        check("粘贴后不自动发送（等 Enter）", payload in buf[-300:], f"(buf尾部: {buf[-200:]})")
+        s.send_key(3)  # 空闲：一次退出
+        s.wait_exit()
+    finally:
+        s.close()
+
+
 def main() -> None:
     if not os.path.exists(BIN):
         print(f"错误：未找到 {BIN}，请先 cjpm build")
@@ -543,6 +569,7 @@ def main() -> None:
     test_queue_and_autodequeue()
     test_interrupt_releases_busy()
     test_history_and_paste_collapse()
+    test_bracketed_paste_chinese()
     print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
     sys.exit(1 if FAIL else 0)
 
