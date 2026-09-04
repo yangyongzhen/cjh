@@ -851,6 +851,28 @@ func runTui(sessionId: String): Int64 {
             case Some(t) => t.restoreTerminal()
             case None => ()
         }
+        // 退出清理：回收子进程 + 断开 MCP + 停止日志 sink 协程。
+        // 2026-09-03 事故根因之一：退出路径从不关闭 BashSession/MCP，
+        // 泄漏约 2 小时的会话 bash + 未回收僵尸；Log sink 协程也持续运行。
+        // 各项独立 try/catch，单项失败不阻断其余清理。
+        try {
+            match (registry.getTool("bash")) {
+                case Some(bash: BashTool) => bash.close()
+                case _ => ()
+            }
+        } catch (e: Exception) {
+            ()
+        }
+        try {
+            mcpManager.disconnectAll()
+        } catch (e: Exception) {
+            ()
+        }
+        try {
+            Log.shutdown()
+        } catch (e: Exception) {
+            ()
+        }
     }
 }
 

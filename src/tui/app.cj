@@ -187,10 +187,13 @@ public class TuiApp {
         // 审批弹窗回调：把 y/n 结果写回等待中的 agent 线程
         this.confirmDialog.onResult = { ok =>
             this.approvalLock.lock()
-            this.approvalResult = Some(ok)
-            // 审批完成：清除待审批状态，后续按键恢复正常分发
-            this.pendingApproval = None
-            this.approvalLock.unlock()
+            try {
+                this.approvalResult = Some(ok)
+                // 审批完成：清除待审批状态，后续按键恢复正常分发
+                this.pendingApproval = None
+            } finally {
+                this.approvalLock.unlock()
+            }
             this.markDirty()
         }
         // provider 配置表单弹窗（utf8 能力对齐终端；居中弹窗，不全宽）
@@ -300,61 +303,72 @@ public class TuiApp {
         // 滚轮从"原生滚动"改为"发送转义序列"（如 ESC[B 方向键），时序拆分会
         // 残留字符输入（"滚轮触发字母 B"）。保持主屏幕 + clearScreen 全量重绘，
         // 滚轮恢复终端原生滚动行为。
-        print(Ansi.clearScreen(), flush: true)
-        print(Ansi.hideCursor(), flush: true)
-        // 注意：不强制发送 ESC[?2004h 开启 bracketed paste——实测部分真实终端
-        // 开启后粘贴闭合检测失败，readBracketedPaste 吞后续按键（Backspace/方向键
-        // 变 DDDD、删不掉）。保持默认裸流粘贴（逐字符，行为可预期）；
-        // 若终端自行发送 ESC[200~ 包裹，readKey 仍识别为单次粘贴事件。
-        this.render()
+        try {
+            print(Ansi.clearScreen(), flush: true)
+            print(Ansi.hideCursor(), flush: true)
+            // 注意：不强制发送 ESC[?2004h 开启 bracketed paste——实测部分真实终端
+            // 开启后粘贴闭合检测失败，readBracketedPaste 吞后续按键（Backspace/
+            // 方向键 变 DDDD、删不掉）。保持默认裸流粘贴（逐字符，行为可预期）；
+            // 若终端自行发送 ESC[200~ 包裹，readKey 仍识别为单次粘贴事件。
+            this.render()
 
-        // 动态状态行计时刷新：agent 执行中时每秒强制 markDirty，
-        // 让 "Thinking… (Ns · ↑ M tokens)" 的计时按秒递增
-        var lastTick: DateTime = DateTime.now()
-        while (this.running) {
-            if (let Some(key) <- this.term.readKey()) {
-                this.handleKey(key)
-            }
-            // resize 感知：终端尺寸变化时立即重绘
-            // （空闲时 resize 不产生输入事件，依赖每帧尺寸查询对比触发）
-            if (this.term.sizeChanged()) {
-                this.markDirty()
-            }
-            // agent 执行中：每 1 秒触发一次重绘（刷新计时/token 计数）
-            if (this.isAgentBusy()) {
-                let now = DateTime.now()
-                if ((now - lastTick).toSeconds() >= 1) {
-                    lastTick = now
-                    this.markDirty()
+            // 动态状态行计时刷新：agent 执行中时每秒强制 markDirty，
+            // 让 "Thinking… (Ns · ↑ M tokens)" 的计时按秒递增
+            var lastTick: DateTime = DateTime.now()
+            while (this.running) {
+                // 单帧 try/catch：任一帧的 readKey/handleKey/render 抛异常
+                // 绝不能让它终止事件循环——否则循环提前退出、TUI 永久消失
+                // （历史事故：主协程停摆、终端停留 raw）。吞掉并继续下一帧。
+                try {
+                    if (let Some(key) <- this.term.readKey()) {
+                        this.handleKey(key)
+                    }
+                    // resize 感知：终端尺寸变化时立即重绘
+                    // （空闲时 resize 不产生输入事件，依赖每帧尺寸查询对比触发）
+                    if (this.term.sizeChanged()) {
+                        this.markDirty()
+                    }
+                    // agent 执行中：每 1 秒触发一次重绘（刷新计时/token 计数）
+                    if (this.isAgentBusy()) {
+                        let now = DateTime.now()
+                        if ((now - lastTick).toSeconds() >= 1) {
+                            lastTick = now
+                            this.markDirty()
+                        }
+                        // 空闲检测：idleTimeoutSecs 无活动（模型停滞、流无帧）→ 自动中断，
+                        // 避免 Streaming… 无限计时 + 新消息僵持排队。
+                        // 触发后重置计时（重新武装）：若中断未生效（连接/异常路径卡死），
+                        // 下个超时周期再次告警+中断，持续升级直到恢复
+                        let idleSecs = (now - this.agentLastActivity).toSeconds()
+                        if (idleSecs > this.idleTimeoutSecs && !this.idleWarned) {
+                            this.idleWarned = true
+                            // 看门狗已请求中断：置 interruptPending——若中断未生效
+                            // （线程卡死），用户下次 Ctrl+C 直接强制退出
+                            this.interruptPending = true
+                            this.appendOutput(Ansi.fg(Ansi.THEME_WARN) +
+                                "⚠️ 模型 ${idleSecs}s 无响应（可能停滞），已请求中断。有数据恢复则立即停止。" +
+                                Ansi.reset())
+                            this.safeLog("warn", "看门狗触发中断（idle ${idleSecs}s）")
+                            this.onInterrupt()
+                            // 重新武装：若中断未生效（回合未结束），每超时周期重复
+                            // 中断直到回合结束——不依赖单次中断成功率
+                            this.agentLastActivity = now
+                            this.idleWarned = false
+                        }
+                    }
+                    if (this.takeDirty()) {
+                        this.render()
+                    }
+                } catch (e: Exception) {
+                    this.safeLog("warn", "TUI 主循环帧异常（已吞掉，继续运行）: ${e}")
                 }
-                // 空闲检测：idleTimeoutSecs 无活动（模型停滞、流无帧）→ 自动中断，
-                // 避免 Streaming… 无限计时 + 新消息僵持排队。
-                // 触发后重置计时（重新武装）：若中断未生效（连接/异常路径卡死），
-                // 下个超时周期再次告警+中断，持续升级直到恢复
-                let idleSecs = (now - this.agentLastActivity).toSeconds()
-                if (idleSecs > this.idleTimeoutSecs && !this.idleWarned) {
-                    this.idleWarned = true
-                    // 看门狗已请求中断：置 interruptPending——若中断未生效
-                    // （线程卡死），用户下次 Ctrl+C 直接强制退出
-                    this.interruptPending = true
-                    this.appendOutput(Ansi.fg(Ansi.THEME_WARN) +
-                        "⚠️ 模型 ${idleSecs}s 无响应（可能停滞），已请求中断。有数据恢复则立即停止。" +
-                        Ansi.reset())
-                    this.safeLog("warn", "看门狗触发中断（idle ${idleSecs}s）")
-                    this.onInterrupt()
-                    // 重新武装：若中断未生效（回合未结束），每超时周期重复
-                    // 中断直到回合结束——不依赖单次中断成功率
-                    this.agentLastActivity = now
-                    this.idleWarned = false
-                }
+                sleep(Duration.millisecond * 5)
             }
-            if (this.takeDirty()) {
-                this.render()
-            }
-            sleep(Duration.millisecond * 5)
+        } finally {
+            // 兜底：无论正常退出 / 循环异常 / 异常穿透，都必须恢复终端 raw 模式，
+            // 否则 ECHO 被清、回到 shell 后输入不显示（终端停留 raw 事故根因之一）
+            this.restoreTerminal()
         }
-
-        this.restoreTerminal()
     }
 
     /**
@@ -492,9 +506,12 @@ public class TuiApp {
      */
     public func requestApproval(prompt: String): Bool {
         this.approvalLock.lock()
-        this.pendingApproval = Some(prompt)
-        this.approvalResult = None
-        this.approvalLock.unlock()
+        try {
+            this.pendingApproval = Some(prompt)
+            this.approvalResult = None
+        } finally {
+            this.approvalLock.unlock()
+        }
         // 弹出确认对话框（模态，渲染与按键由 ConfirmDialog 组件负责）
         this.confirmDialog.show("审批", prompt, "[y]=同意 [n]/[Esc]=拒绝")
         this.markDirty()
@@ -635,19 +652,22 @@ public class TuiApp {
     public func appendReasoning(text: String): Unit {
         if (text.size == 0) { return }
         this.reasoningLock.lock()
-        // 新一轮思考开始：上一轮已结束（done）则清空重启
-        if (this.reasoningDone && this.reasoningBuffer.size > 0) {
-            this.reasoningBuffer = ""
-            this.reasoningDone = false
+        try {
+            // 新一轮思考开始：上一轮已结束（done）则清空重启
+            if (this.reasoningDone && this.reasoningBuffer.size > 0) {
+                this.reasoningBuffer = ""
+                this.reasoningDone = false
+            }
+            this.reasoningBuffer += text
+            // 上限保护：超出截断保留尾部（最新思考内容）
+            if (this.reasoningBuffer.size > this.reasoningMaxChars) {
+                let cut = this.reasoningBuffer.size - this.reasoningMaxChars
+                this.reasoningBuffer = this.reasoningBuffer[cut..this.reasoningBuffer.size]
+            }
+            this.outputView.setThinking(this.reasoningBuffer, this.reasoningDone)
+        } finally {
+            this.reasoningLock.unlock()
         }
-        this.reasoningBuffer += text
-        // 上限保护：超出截断保留尾部（最新思考内容）
-        if (this.reasoningBuffer.size > this.reasoningMaxChars) {
-            let cut = this.reasoningBuffer.size - this.reasoningMaxChars
-            this.reasoningBuffer = this.reasoningBuffer[cut..this.reasoningBuffer.size]
-        }
-        this.outputView.setThinking(this.reasoningBuffer, this.reasoningDone)
-        this.reasoningLock.unlock()
         this.markDirty()
     }
 
@@ -656,13 +676,18 @@ public class TuiApp {
      */
     public func clearReasoning(): Unit {
         this.reasoningLock.lock()
-        if (this.reasoningBuffer.size > 0 && !this.reasoningDone) {
-            this.reasoningDone = true
-            this.outputView.setThinking(this.reasoningBuffer, true)
+        var mark: Bool = false
+        try {
+            if (this.reasoningBuffer.size > 0 && !this.reasoningDone) {
+                this.reasoningDone = true
+                this.outputView.setThinking(this.reasoningBuffer, true)
+                mark = true
+            }
+        } finally {
             this.reasoningLock.unlock()
+        }
+        if (mark) {
             this.markDirty()
-        } else {
-            this.reasoningLock.unlock()
         }
     }
 
@@ -671,9 +696,12 @@ public class TuiApp {
      */
     public func toggleReasoning(): Unit {
         this.reasoningLock.lock()
-        this.reasoningExpanded = !this.reasoningExpanded
-        this.outputView.toggleThinking()
-        this.reasoningLock.unlock()
+        try {
+            this.reasoningExpanded = !this.reasoningExpanded
+            this.outputView.toggleThinking()
+        } finally {
+            this.reasoningLock.unlock()
+        }
         this.markDirty()
     }
 
@@ -724,10 +752,13 @@ public class TuiApp {
         this.agentTokenLock.unlock()
         // 思考中 token 计数同步到思考块折叠行（显示增长）
         this.reasoningLock.lock()
-        if (this.reasoningBuffer.size > 0 && !this.reasoningDone) {
-            this.outputView.setThinkingTokens(estimate)
+        try {
+            if (this.reasoningBuffer.size > 0 && !this.reasoningDone) {
+                this.outputView.setThinkingTokens(estimate)
+            }
+        } finally {
+            this.reasoningLock.unlock()
         }
-        this.reasoningLock.unlock()
         this.markDirty()
     }
 
@@ -749,19 +780,24 @@ public class TuiApp {
      */
     public func dequeueInput(): Option<String> {
         this.inputQueueLock.lock()
-        if (this.inputQueue.size == 0) {
+        var result: Option<String> = None
+        try {
+            if (this.inputQueue.size == 0) {
+                result = None
+            } else {
+                let first: String = this.inputQueue[0]
+                // 移除首元素：重建列表（ArrayList 无 removeAt）
+                var rest: ArrayList<String> = ArrayList<String>()
+                for (i in 1..this.inputQueue.size) {
+                    rest.add(this.inputQueue[i])
+                }
+                this.inputQueue = rest
+                result = Some(first)
+            }
+        } finally {
             this.inputQueueLock.unlock()
-            return None
         }
-        let first: String = this.inputQueue[0]
-        // 移除首元素：重建列表（ArrayList 无 removeAt）
-        var rest: ArrayList<String> = ArrayList<String>()
-        for (i in 1..this.inputQueue.size) {
-            rest.add(this.inputQueue[i])
-        }
-        this.inputQueue = rest
-        this.inputQueueLock.unlock()
-        return Some(first)
+        return result
     }
 
     /**
@@ -1122,12 +1158,16 @@ public class TuiApp {
         if (key.isCtrlC) {
             // 若有等待中的审批：写回 false 让其解除阻塞（避免 agent 线程悬挂）
             this.approvalLock.lock()
-            let hasPending = this.pendingApproval.isSome()
-            if (hasPending) {
-                this.approvalResult = Some(false)
-                this.pendingApproval = None
+            let hasPending: Bool
+            try {
+                hasPending = this.pendingApproval.isSome()
+                if (hasPending) {
+                    this.approvalResult = Some(false)
+                    this.pendingApproval = None
+                }
+            } finally {
+                this.approvalLock.unlock()
             }
-            this.approvalLock.unlock()
             if (hasPending) {
                 return  // 审批拒绝：不退出、不中断任务
             }
@@ -1153,9 +1193,13 @@ public class TuiApp {
         }
         // 审批模式：等待用户 y/n 决策（危险操作审批链）
         this.approvalLock.lock()
-        let hasPending = this.pendingApproval.isSome()
-        this.approvalLock.unlock()
-        if (hasPending) {
+        let hasPending2: Bool
+        try {
+            hasPending2 = this.pendingApproval.isSome()
+        } finally {
+            this.approvalLock.unlock()
+        }
+        if (hasPending2) {
             // 审批模式：按键交给 ConfirmDialog 组件处理
             // （y/n/Esc/Enter 命中时触发 onResult 写回审批结果）
             if (this.confirmDialog.handleKey(key)) {
@@ -1425,9 +1469,17 @@ public class TuiApp {
         } else { 1 }
 
         // 是否显示欢迎视图（对话视图且输出区为空）
+        // try/finally 守锁：content() 在超大缓冲/异常路径可能抛异常，裸 lock
+        // 会让 outputLock 永久泄漏——主循环下一次 render 与 agent 流式回调都
+        // 卡在 outputLock.lock() 上，两个任务都 park，运行时进入 stop 路径
+        // （2026-09-03 事故：abstime=0x0、7 线程全 idle、终端 raw）。
+        let showWelcome: Bool
         this.outputLock.lock()
-        let showWelcome = this.viewMode == 0 && this.outputView.content().size == 0
-        this.outputLock.unlock()
+        try {
+            showWelcome = this.viewMode == 0 && this.outputView.content().size == 0
+        } finally {
+            this.outputLock.unlock()
+        }
 
         // 欢迎视图布局：欢迎视图固定顶部，状态行+输入框首次居中
         let welcomeContentH: Int64 = 12

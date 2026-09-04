@@ -25,6 +25,10 @@ public class BashSession {
     private var proc: Option<SubProcess> = None
     private let lock: Mutex = Mutex()
     private var seq: Int64 = 0
+    // 已回收(terminate+wait)的会话进程计数——退出/超时后必须 wait 才回收僵尸。
+    // 旧实现只 terminate(force) 不 wait：每个超时命令都留下一个未回收僵尸，
+    // 长会话累计出"4 个未回收僵尸子进程"（2026-09-03 事故现场）。
+    private var reapedCount: Int64 = 0
 
     public init() {}
 
@@ -141,10 +145,24 @@ public class BashSession {
                 } catch (e: Exception) {
                     ()
                 }
+                // terminate(force) 只发 SIGKILL——进程随即变僵尸，须 wait 才回收。
+                // 带 5s 超时兜底（防极端情况 SIGKILL 未即时生效）；wait 成功后
+                // 僵尸被回收，读线程随管道 EOF 自然结束，不再泄漏子进程。
+                try {
+                    let _ = p.wait(timeout: Duration.second * 5)
+                    this.reapedCount += 1
+                } catch (e: Exception) {
+                    ()
+                }
                 this.proc = None
             case None => ()
         }
     }
+
+    /**
+     * 已回收的会话进程数（测试观测：killSession/close 必须 wait 回收僵尸）
+     */
+    public func testReapedCount(): Int64 { return this.reapedCount }
 
     /**
      * 读管道直到出现 marker（或 EOF），返回 marker 前内容。

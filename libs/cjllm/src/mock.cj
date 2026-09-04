@@ -43,6 +43,12 @@ public class MockProvider <: LlmProvider {
             // 非法延迟配置：忽略
         }
         this.callCount += 1
+        // 环境变量门控（additive，默认关闭）：CJH_MOCK_BASH=1 时第 2 轮改发
+        // bash 工具调用，让 mock 会话真正 spawn 一个持久 BashSession 子进程——
+        // 供退出路径回归（/tmp/cjh_exit_repro.py）验证退出时该会话被回收、
+        // 无泄漏 bash/僵尸。默认 4 步链不变（read_file+grep/grep/list_dir/答复），
+        // 不影响 runMockVerify 的"恰好 4 次调用"断言（它不设置该变量）。
+        let bashStepEnabled: Bool = (mockGetenv("CJH_MOCK_BASH") ?? "").size > 0
         match (this.callCount) {
             case 1 =>
                 // 工具调用 1：并发 2 个 read-only 工具（V2d 并发执行引擎验证）
@@ -56,6 +62,14 @@ public class MockProvider <: LlmProvider {
                 calls.add(ToolCall("call_1b", "grep", args1b))
                 return ModelResponse("我来先看看文件内容。", calls)
             case 2 =>
+                if (bashStepEnabled) {
+                    // 退出路径回归：发 bash，真正 spawn 持久 BashSession 子进程
+                    var argsB = JsonObject()
+                    argsB.put("command", JsonString("echo cjh-mock-bash-marker"))
+                    var callsB = ArrayList<ToolCall>()
+                    callsB.add(ToolCall("call_2", "bash", argsB))
+                    return ModelResponse("再用 bash 执行一下。", callsB)
+                }
                 // 工具调用 2：grep 搜索
                 var args2 = JsonObject()
                 args2.put("pattern", JsonString("line"))
