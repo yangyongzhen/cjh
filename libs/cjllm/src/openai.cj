@@ -25,6 +25,8 @@ public class OpenAiProvider <: LlmProvider {
     public var fallbackKeys: ArrayList<String> = ArrayList<String>()
     public var temperature: Float64 = 0.7
     public var maxTokens: Int64 = 4096
+    // reasoning effort（P1a）：""=未配置（请求体不发 reasoning_effort，维持现状）
+    public var reasoningEffort: String = ""
     // 当前流式请求的 HttpStreamClient（abort 时关闭连接打断阻塞 read）
     private var currentTransport: ?HttpStreamClient = None
     // 连接复用池（单槽）：上一轮响应自然读完的连接（HTTP/1.1 keep-alive），
@@ -150,11 +152,12 @@ public class OpenAiProvider <: LlmProvider {
 
 
     /**
-     * 设置采样参数（对齐 pi：temperature / max_tokens）
+     * 设置采样参数（对齐 pi：temperature / max_tokens；P1a + reasoning_effort）
      */
-    public func setSampling(temperature: Float64, maxTokens: Int64): Unit {
+    public func setSampling(temperature: Float64, maxTokens: Int64, reasoningEffort: String): Unit {
         this.temperature = temperature
         this.maxTokens = maxTokens
+        this.reasoningEffort = reasoningEffort
     }
 
     /**
@@ -206,6 +209,10 @@ public class OpenAiProvider <: LlmProvider {
         body.put("stream", JsonBool(true))
         body.put("temperature", JsonFloat(this.temperature))
         body.put("max_tokens", JsonInt(this.maxTokens))
+        // P1a：reasoning_effort 仅在配置时发送（""=缺省，请求体字节级不变）
+        if (this.reasoningEffort.size > 0) {
+            body.put("reasoning_effort", JsonString(this.reasoningEffort))
+        }
 
         var msgList = ArrayList<JsonValue>()
         for (m in messages) {
