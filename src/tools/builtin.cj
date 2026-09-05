@@ -756,9 +756,9 @@ public class GrepTool <: CjhTool {
     }
 
     /**
-     * gitignore 感知：跳过常见忽略目录
+     * gitignore 感知：跳过常见忽略目录（单一来源见 search_common.cj GREP_IGNORED_DIRS）
      */
-    private let ignoredDirs: Array<String> = [".git", "node_modules", "target", ".next", "dist", "build", ".cache", "__pycache__", ".venv"]
+    private let ignoredDirs: Array<String> = GREP_IGNORED_DIRS
 
     /**
      * 判断路径是否应被忽略
@@ -818,11 +818,48 @@ public class GrepTool <: CjhTool {
      */
     private func searchDirectory(dirPath: String, regex: Regex, contextLines: Int64, pattern: String): ToolResult {
         let state = GrepWalkState()
-        this.searchDirRecursive(dirPath, regex, contextLines, pattern, state)
+        // 快速路径：find 一次 C 级枚举全部 文件+符号链接（原生 readdir 同序），
+        // 每文件渲染走 grepSearchFile 原生逻辑。find 不可用/失败 ⇒ 回退原生递归。
+        let usedFastPath = this.searchDirectoryFast(dirPath, regex, contextLines, state)
+        if (!usedFastPath) {
+            this.searchDirRecursive(dirPath, regex, contextLines, pattern, state)
+        }
         if (state.totalCount == 0) {
             return ToolResult("未找到匹配", false)
         }
         return ToolResult("在 ${state.fileCount} 个文件中匹配 ${state.totalCount} 行：\n${state.result.toString()}", false)
+    }
+
+    /**
+     * find 快速路径：用 find 枚举文件，重建原生 fi.path，按 grep 忽略/文本规则过滤后
+     * 走共享的 grepSearchFile 渲染。返回 false 表示应回退原生（find 不可用或失败）。
+     *
+     * 字节级一致的关键：fi.path 用 `FileInfo(dirPath).path + "/" + findRel` 重建
+     * （已实测对 ./、//、尾 /、绝对/相对 base 全部逐字节复现原生递归 walk 的 fi.path），
+     * 忽略规则用"路径任一组件命中忽略目录"等价原生"遇忽略目录不递归"。
+     */
+    private func searchDirectoryFast(dirPath: String, regex: Regex, contextLines: Int64,
+        state: GrepWalkState): Bool {
+        if (!isFindFastPathEnabled()) {
+            return false
+        }
+        let rels = enumerateFilesWithFind(dirPath)
+        if (!rels.isSome()) {
+            return false
+        }
+        let list = rels.getOrThrow()
+        let prefix = "${FileInfo(dirPath).path}"
+        for (rel in list) {
+            if (anyComponentIn(rel, GREP_IGNORED_DIRS)) {
+                continue  // 原生在遇到忽略目录时跳过不递归 ⇒ 该子树文件不出现
+            }
+            let name = lastComponentOf(rel)
+            if (state.isTextFile(name)) {
+                let fiPath = prefix + "/" + rel
+                this.grepSearchFile(fiPath, regex, contextLines, state)
+            }
+        }
+        return true
     }
 
     /**
@@ -840,40 +877,52 @@ public class GrepTool <: CjhTool {
                 this.searchDirRecursive("${fi.path}", regex, contextLines, pattern, state)
             } else if (state.isTextFile(name)) {
                 // 只搜文本文件（跳过二进制）
-                try {
-                    let content = safeFromUtf8(File.readFrom(fi.path))
-                    let lines = content.split("\n", -1)
-                    var i: Int64 = 0
-                    var hasMatch: Bool = false
-                    while (i < Int64(lines.size)) {
-                        let line = lines[i]
-                        if (regex.matches(line)) {
-                            if (!hasMatch) {
-                                state.result.append("\n=== ${fi.path} ===\n")
-                                hasMatch = true
-                                state.fileCount += 1
-                            }
-                            state.result.append("${i + 1}: ${line}\n")
-                            // 上下文行
-                            if (contextLines > 0) {
-                                var j: Int64 = i - contextLines
-                                while (j <= i + contextLines) {
-                                    if (j >= 0 && j < Int64(lines.size) && j != i) {
-                                        state.result.append("${j + 1}- ${lines[j]}\n")
-                                    }
-                                    j += 1
-                                }
-                            }
-                            state.totalCount += 1
-                        }
-                        i += 1
-                    }
-                } catch (e: Exception) {
-                    // 跳过无法读取的文件
-                }
+                this.grepSearchFile("${fi.path}", regex, contextLines, state)
             }
             return true
         })
+    }
+
+    /**
+     * 搜索单个文件并累加结果到 state（原生递归与 find 快速路径共享的"每文件渲染"逻辑）
+     *
+     * 抽成共享方法保证两条路径的输出**字节级一致**：同样的读文件、切行、正则匹配、
+     * 上下文渲染、累加规则。fiPath 是输出用的文件路径（渲染进 `=== ... ===` 头与行前缀）。
+     * 无法读取的文件（含悬空符号链接 / 符号链接指向目录）静默跳过，与原生一致。
+     */
+    private func grepSearchFile(fiPath: String, regex: Regex, contextLines: Int64,
+        state: GrepWalkState): Unit {
+        try {
+            let content = safeFromUtf8(File.readFrom(fiPath))
+            let lines = content.split("\n", -1)
+            var i: Int64 = 0
+            var hasMatch: Bool = false
+            while (i < Int64(lines.size)) {
+                let line = lines[i]
+                if (regex.matches(line)) {
+                    if (!hasMatch) {
+                        state.result.append("\n=== ${fiPath} ===\n")
+                        hasMatch = true
+                        state.fileCount += 1
+                    }
+                    state.result.append("${i + 1}: ${line}\n")
+                    // 上下文行
+                    if (contextLines > 0) {
+                        var j: Int64 = i - contextLines
+                        while (j <= i + contextLines) {
+                            if (j >= 0 && j < Int64(lines.size) && j != i) {
+                                state.result.append("${j + 1}- ${lines[j]}\n")
+                            }
+                            j += 1
+                        }
+                    }
+                    state.totalCount += 1
+                }
+                i += 1
+            }
+        } catch (e: Exception) {
+            // 跳过无法读取的文件
+        }
     }
 
     /**
@@ -919,7 +968,7 @@ class GrepWalkState {
     public var result: StringBuilder = StringBuilder()
     public var totalCount: Int64 = 0
     public var fileCount: Int64 = 0
-    private let ignoredDirs: Array<String> = [".git", "node_modules", "target", ".next", "dist", "build", ".cache", "__pycache__", ".venv"]
+    private let ignoredDirs: Array<String> = GREP_IGNORED_DIRS
     private let textExts: Array<String> = [".cj", ".cjo", ".cjh", ".rs", ".go", ".py", ".js", ".ts", ".tsx", ".jsx",
         ".java", ".c", ".h", ".cpp", ".cc", ".hpp", ".cs", ".rb", ".php", ".swift", ".kt",
         ".scala", ".clj", ".ex", ".exs", ".erl", ".elm", ".lua", ".pl", ".sh", ".bash",
