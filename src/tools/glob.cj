@@ -71,10 +71,11 @@ public class GlobTool <: CjhTool {
             st.pattern = pattern
             st.basePath = normalizedBase
 
-            // 显式递归遍历目录树：Directory.walk 非递归（只给直接子项），
-            // 回调返回 false 会终止整个遍历——子目录必须自己递归进入，
-            // 隐藏/忽略目录只跳过不终止。
-            walkTree(st.basePath, st)
+            // 遍历目录树：优先 find 快速路径（一次 C 级枚举，比逐层 managed stat 快）；
+            // find 不可用/失败时回退原生显式递归（行为与现状一致）。
+            if (!walkTreeFast(st)) {
+                walkTree(st.basePath, st)
+            }
 
             var result = StringBuilder()
             if (st.matches.size == 0) {
@@ -149,17 +150,62 @@ func walkTree(dir: String, st: GlobCallState): Unit {
             walkTree("${fi.path}", st)
         } else {
             // 文件：计算相对路径，检查 glob 匹配
-            let absPath = "${fi.path}"
-            let relPath = makeRelative(st.basePath, absPath)
-            if (globMatchDirect(st.pattern, 0, relPath, 0)) {
-                if (st.count < 200) {
-                    st.matches.add(relPath)
-                }
-                st.count += 1
-            }
+            considerGlobFile("${fi.path}", st)
         }
         return true
     })
+}
+
+/**
+ * 检查单个文件是否匹配 glob 模式并累加（原生 walk 与 find 快速路径共享，
+ * 保证两条路径的 relPath 计算、匹配、计数、200 截断逻辑完全一致）。
+ */
+func considerGlobFile(fiPath: String, st: GlobCallState): Unit {
+    let relPath = makeRelative(st.basePath, fiPath)
+    if (globMatchDirect(st.pattern, 0, relPath, 0)) {
+        if (st.count < 200) {
+            st.matches.add(relPath)
+        }
+        st.count += 1
+    }
+}
+
+/**
+ * find 快速路径：一次 C 级枚举 base 下全部 文件+符号链接（原生 readdir 同序），
+ * 重建原生 fi.path 后走与原生完全相同的 considerGlobFile 逻辑。
+ * 返回 false 表示应回退原生（find 不可用/失败，或 base 非目录）。
+ *
+ * 字节级一致的关键：fi.path 用 `FileInfo(st.basePath).path + "/" + findRel` 重建
+ * （st.basePath = normalizePath(basePath)，与 walkTree 的根一致；已实测该重建对
+ * ./、//、尾 /、绝对/相对 base 全部逐字节复现原生递归 walk 的 fi.path），再由共享的
+ * considerGlobFile 用原生 makeRelative(st.basePath, fiPath) 还原 relPath——连原生
+ * makeRelative 的 case-3 quirk 都被原样复现（输入完全相同）。shouldSkip 是 basename
+ * 判断，对 find 平铺列表等价于"任一组件 hidden/忽略 ⇒ 该文件被原生跳过"。
+ *
+ * base 非目录时返回 false：原生 walkTree 对非目录会抛 FSException（被 execute 捕获
+ * 为"glob 失败"错误），回退原生以保证与现状完全一致。
+ */
+func walkTreeFast(st: GlobCallState): Bool {
+    if (!isFindFastPathEnabled()) {
+        return false
+    }
+    if (!FileInfo(st.basePath).isDirectory()) {
+        return false
+    }
+    let rels = enumerateFilesWithFind(st.basePath)
+    if (!rels.isSome()) {
+        return false
+    }
+    let list = rels.getOrThrow()
+    let prefix = "${FileInfo(st.basePath).path}"
+    for (rel in list) {
+        if (anyComponentHiddenOrIn(rel, GLOB_IGNORED_DIRS)) {
+            continue  // 原生遇隐藏/忽略目录跳过不递归 ⇒ 该子树文件不出现
+        }
+        let fiPath = prefix + "/" + rel
+        considerGlobFile(fiPath, st)
+    }
+    return true
 }
 
 /**
@@ -169,8 +215,7 @@ func shouldSkip(name: String): Bool {
     if (name.startsWith(".")) {
         return true
     }
-    let ignoreList = [".git", "node_modules", "target", ".next", "dist", "build",
-        ".cache", "__pycache__", ".venv", ".gradle", ".idea", ".vscode"]
+    let ignoreList = GLOB_IGNORED_DIRS
     for (ignore in ignoreList) {
         if (name == ignore) {
             return true
