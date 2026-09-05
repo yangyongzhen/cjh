@@ -29,6 +29,8 @@ public class AnthropicProvider <: LlmProvider {
     public let model: String
     public var temperature: Float64 = 0.7
     public var maxTokens: Int64 = 4096
+    // P1a：reasoning_effort 映射的 thinking budget（0=不发 thinking 参数，维持现状）
+    public var thinkingBudget: Int64 = 0
 
     public init(baseUrl: String, apiKey: String, model: String) {
         this.baseUrl = baseUrl
@@ -37,11 +39,32 @@ public class AnthropicProvider <: LlmProvider {
     }
 
     /**
-     * 设置采样参数（对齐 pi：temperature / max_tokens）
+     * 设置采样参数（对齐 pi：temperature / max_tokens；P1a + reasoning_effort 映射）
+     *
+     * Anthropic 无 reasoning_effort 字段，映射为 extended thinking 的 budget_tokens：
+     *   ""/off=0（不发）/ low=1024 / medium=4096 / high=8192
+     * 约束：thinking 要求 max_tokens > budget_tokens 且 budget ≥ 1024，
+     * 不满足时降级不发（避免必然 400）。
      */
-    public func setSampling(temperature: Float64, maxTokens: Int64): Unit {
+    public func setSampling(temperature: Float64, maxTokens: Int64, reasoningEffort: String): Unit {
         this.temperature = temperature
         this.maxTokens = maxTokens
+        var budget: Int64 = 0
+        if (reasoningEffort == "low") {
+            budget = 1024
+        } else if (reasoningEffort == "medium") {
+            budget = 4096
+        } else if (reasoningEffort == "high") {
+            budget = 8192
+        }
+        if (budget >= maxTokens) {
+            budget = maxTokens / 2
+        }
+        if (budget >= 1024 && budget < maxTokens) {
+            this.thinkingBudget = budget
+        } else {
+            this.thinkingBudget = 0
+        }
     }
 
     /**
@@ -97,7 +120,16 @@ public class AnthropicProvider <: LlmProvider {
         var body = JsonObject()
         body.put("model", JsonString(this.model))
         body.put("max_tokens", JsonInt(this.maxTokens))
-        body.put("temperature", JsonFloat(this.temperature))
+        if (this.thinkingBudget > 0) {
+            // P1a：extended thinking（API 硬性要求 thinking 开启时 temperature=1.0）
+            var thinking = JsonObject()
+            thinking.put("type", JsonString("enabled"))
+            thinking.put("budget_tokens", JsonInt(this.thinkingBudget))
+            body.put("thinking", thinking)
+            body.put("temperature", JsonFloat(1.0))
+        } else {
+            body.put("temperature", JsonFloat(this.temperature))
+        }
         body.put("stream", JsonBool(true))
 
         // system 单独提取

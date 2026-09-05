@@ -42,11 +42,13 @@ public class OllamaProvider <: LlmProvider {
     }
 
     /**
-     * 设置采样参数（对齐 OpenAiProvider.setSampling）
+     * 设置采样参数（对齐 OpenAiProvider.setSampling；P1a：reasoningEffort 不适用
+     * Ollama 协议，忽略——签名与 OpenAi/Anthropic 保持一致）
      */
-    public func setSampling(temperature: Float64, maxTokens: Int64): Unit {
+    public func setSampling(temperature: Float64, maxTokens: Int64, reasoningEffort: String): Unit {
         this.temperature = temperature
         this.maxTokens = maxTokens
+        // Ollama /chat/completions 无 reasoning_effort 概念，静默忽略
     }
 
     /**

@@ -1,9 +1,15 @@
 package cjh
 
 import std.collection.*
+import std.env.*
 import std.fs.*
+import std.net.*
 import std.process.*
+import std.time.*
 import stdx.encoding.json.*
+import cjllm.*
+import cjcfg.*
+import cjutil.*
 import cjh.tools.*
 
 /**
@@ -238,5 +244,94 @@ public class CoreTaskToolTest {
         args.put("prompt", JsonString(""))
         let result = tool.execute(args)
         @Assert(result.isError, true)
+    }
+}
+
+// ==================== P1a：makeProvider 接线 ====================
+// 注意：makeProvider 对 OpenAiProvider 会后台 spawn warmup（内部异常静默）；
+// 测试断言的是装配结果（provider 类型 + 采样参数），不依赖 warmup 完成。
+
+@Test
+public class P1aMakeProviderTest {
+    /** makeProvider 后清理 provider 环境变量，防止污染后续用例 */
+    func cleanupProviderEnv(): Unit {
+        removeVariable("CJH_PROVIDER")
+        removeVariable("ANTHROPIC_BASE_URL")
+        removeVariable("ANTHROPIC_API_KEY")
+    }
+
+    @TestCase
+    public func testMakeProviderOpenAiWiring(): Unit {
+        // baseUrl 不能含 localhost/127.0.0.1（makeProvider 会据此误判为 Ollama）；
+        // 用不可解析主机名：warmup 是后台 spawn 且内部异常静默，不影响断言
+        cleanupProviderEnv()
+        let cfg = CjhConfig()
+        cfg.baseUrl = "http://openai.mock:18210"
+        cfg.apiKey = "k"
+        cfg.model = "m"
+        cfg.temperature = 0.3
+        cfg.maxTokens = 4096
+        cfg.reasoningEffort = "medium"
+        let p = makeProvider(cfg)
+        let isOa = match (p) {
+            case _: OpenAiProvider => true
+            case _ => false
+        }
+        @Assert(isOa, true)
+        match (p) {
+            case oa: OpenAiProvider =>
+                @Assert(oa.reasoningEffort, "medium")
+                @Assert(oa.temperature, 0.3)
+                @Assert(oa.maxTokens, 4096)
+            case _ => ()
+        }
+    }
+
+    @TestCase
+    public func testMakeProviderAnthropicWiring(): Unit {
+        cleanupProviderEnv()
+        setVariable("CJH_PROVIDER", "anthropic")
+        setVariable("ANTHROPIC_BASE_URL", "http://127.0.0.1:18211")
+        setVariable("ANTHROPIC_API_KEY", "ak")
+        let cfg = CjhConfig()
+        cfg.apiKey = "ignored"
+        cfg.model = "claude-x"
+        cfg.reasoningEffort = "high"
+        let p = makeProvider(cfg)
+        let isAp = match (p) {
+            case _: AnthropicProvider => true
+            case _ => false
+        }
+        @Assert(isAp, true)
+        match (p) {
+            case ap: AnthropicProvider =>
+                // high → 8192；maxTokens 默认 16384 > 8192 无降级
+                @Assert(ap.thinkingBudget, 8192)
+                @Assert(ap.model, "claude-x")
+            case _ => ()
+        }
+        cleanupProviderEnv()
+    }
+
+    @TestCase
+    public func testMakeProviderOllamaWiring(): Unit {
+        cleanupProviderEnv()
+        setVariable("CJH_PROVIDER", "ollama")
+        let cfg = CjhConfig()
+        cfg.baseUrl = "http://127.0.0.1:11434"
+        cfg.model = "llama"
+        cfg.reasoningEffort = "low"
+        let p = makeProvider(cfg)
+        let isOp = match (p) {
+            case _: OllamaProvider => true
+            case _ => false
+        }
+        @Assert(isOp, true)
+        match (p) {
+            case op: OllamaProvider =>
+                @Assert(op.model, "llama")
+            case _ => ()
+        }
+        cleanupProviderEnv()
     }
 }

@@ -73,6 +73,10 @@ public class CjhConfig {
     // 采样参数（对齐 pi：/settings 可调）
     public var temperature: Float64 = 0.7
     public var maxTokens: Int64 = 16384
+    // reasoning effort（P1a）：""=未配置（不发参数，维持现状）；off/low/medium/high。
+    // openai 协议 → 请求体 reasoning_effort；anthropic 协议 → thinking budget 映射（off=不发，
+    // low=1024/medium=4096/high=8192）；不支持的 provider 静默忽略。
+    public var reasoningEffort: String = ""
     // 可选模型列表（settings.json "models": [...]；/model 可切换）
     public var models: ArrayList<ModelEntry> = ArrayList<ModelEntry>()
     // 接入协议（settings.json "provider_protocol"；""=自动按 CJH_PROVIDER/env 现有逻辑）：
@@ -402,6 +406,9 @@ public class CjhConfig {
         root.put("system_prompt", JsonString(this.systemPrompt))
         root.put("temperature", JsonFloat(this.temperature))
         root.put("max_tokens", JsonInt(this.maxTokens))
+        if (this.reasoningEffort.size > 0) {
+            root.put("reasoning_effort", JsonString(this.reasoningEffort))
+        }
         root.put("compact_threshold", JsonInt(this.compactThreshold))
         root.put("compact_token_threshold", JsonInt(this.compactTokenThreshold))
         root.put("compact_keep", JsonInt(this.compactKeep))
@@ -581,6 +588,17 @@ public class CjhConfig {
                     if (let Some(v) <- obj.get("max_tokens")) {
                         match (v.kind()) {
                             case JsonKind.JsInt => this.maxTokens = v.asInt().getValue()
+                            case _ => ()
+                        }
+                    }
+                    // reasoning_effort：未知值忽略（不报错，保持 ""）
+                    if (let Some(v) <- obj.get("reasoning_effort")) {
+                        match (v.kind()) {
+                            case JsonKind.JsString =>
+                                let s = v.asString().getValue()
+                                if (s == "off" || s == "low" || s == "medium" || s == "high") {
+                                    this.reasoningEffort = s
+                                }
                             case _ => ()
                         }
                     }

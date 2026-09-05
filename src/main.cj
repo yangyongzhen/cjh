@@ -66,10 +66,11 @@ func makeProvider(cfg: CjhConfig): LlmProvider {
         p = oa
     }
     // 应用采样参数（/settings 调整后重建 provider 时生效）
+    // P1a：穿透 reasoning_effort（openai→请求体字段；anthropic→thinking budget；ollama 忽略）
     match (p) {
-        case oa: OpenAiProvider => oa.setSampling(cfg.temperature, cfg.maxTokens)
-        case ap: AnthropicProvider => ap.setSampling(cfg.temperature, cfg.maxTokens)
-        case op: OllamaProvider => op.setSampling(cfg.temperature, cfg.maxTokens)
+        case oa: OpenAiProvider => oa.setSampling(cfg.temperature, cfg.maxTokens, cfg.reasoningEffort)
+        case ap: AnthropicProvider => ap.setSampling(cfg.temperature, cfg.maxTokens, cfg.reasoningEffort)
+        case op: OllamaProvider => op.setSampling(cfg.temperature, cfg.maxTokens, cfg.reasoningEffort)
         case _ => ()
     }
     // 连接预热（后台 spawn）：提前完成 TCP+TLS 握手，省首个请求的握手延迟
