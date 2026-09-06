@@ -45,6 +45,8 @@ public class TuiApp {
     private var inputBox: InputBox = InputBox()
     private var statusBar: StatusBar = StatusBar()
     private var canvas: TuiCanvas = TuiCanvas()
+    // 上一帧渲染的终端宽度（整行背景卡片补空格用；renderInner 每帧更新，agent 线程卡片追加读取）
+    private var lastCols: Int64 = 0
     // / 命令下拉补全框（ListPicker 组件）
     private var picker: ListPicker = ListPicker()
     // 输出锁（agent 线程写、主循环读）
@@ -268,7 +270,8 @@ public class TuiApp {
                 // 回显：大粘贴折叠为 [Paste #N] marker（对齐 omp/通用 CLI），
                 // 完整内容随提交进入 agent 会话；历史持久化
                 let echoLine = this.inputBox.lastEchoText()
-                this.appendOutput(Ansi.fg(Ansi.THEME_ACCENT) + "❯ " + Ansi.reset() +
+                // 行内卡片只用 fg 改色（❯ accent → 正文素白），不用 reset（保整行 bg）
+                this.appendUserLine(Ansi.fg(Ansi.THEME_ACCENT) + "❯ " + Ansi.fg(Ansi.COLOR_TEXT) +
                     (if (echoLine.size > 0) { echoLine } else { finalLine }))
                 this.saveHistory()
                 this.appendOutput("")  // 空行：分隔用户输入与 Agent 回复
@@ -936,6 +939,33 @@ public class TuiApp {
     }
 
     /**
+     * 整行背景卡片追加（P2b）：text 按行铺 bg(code) 卡片（padBg 补空格到 lastCols-1）。
+     * 约束：行内内容只能用 fg 改色、禁止中途 reset（否则背景被截断），行尾 reset 由 padBg 补。
+     */
+    private func appendCard(text: String, bgCode: Int64): Unit {
+        this.outputLock.lock()
+        try {
+            let lines = text.split("\n", -1)
+            for (i in 0..lines.size) {
+                this.outputView.append(Ansi.padBg(lines[i], this.lastCols - 1, bgCode))
+            }
+        } finally {
+            this.outputLock.unlock()
+        }
+        this.markDirty()
+    }
+
+    /** 用户输入回显行（bg 237 整行卡片，≈ omp userMessageBg） */
+    public func appendUserLine(text: String): Unit {
+        this.appendCard(text, Ansi.THEME_USER_BG)
+    }
+
+    /** 工具调用/结果行（bg 236 整行卡片，≈ omp toolPendingBg） */
+    public func appendToolLine(text: String): Unit {
+        this.appendCard(text, Ansi.THEME_TOOL_BG)
+    }
+
+    /**
      * 确保输出以换行结尾（工具调用提示前调用，线程安全）
      */
     public func ensureNewline(): Unit {
@@ -1387,7 +1417,7 @@ public class TuiApp {
         this.inputBox.clear()
         if (text.size > 0) {
             this.safeLog("info", "editor submit: '${text}'")
-            this.appendOutput(Ansi.fg(Ansi.THEME_ACCENT) + "❯ " + Ansi.reset() + text)
+            this.appendUserLine(Ansi.fg(Ansi.THEME_ACCENT) + "❯ " + Ansi.fg(Ansi.COLOR_TEXT) + text)
             this.onSubmit(text)
         }
         this.markDirty()
@@ -1441,6 +1471,7 @@ public class TuiApp {
         if (rows < 4) {
             return
         }
+        this.lastCols = cols
 
         // 开始新帧（尺寸变化时清缓存强制全量重绘）
         this.canvas.begin(rows, cols, this.term.sizeChanged())

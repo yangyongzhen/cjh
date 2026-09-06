@@ -130,6 +130,9 @@ public class TuiCanvas {
                 sb.append(Ansi.moveTo(i + 1, 1))
                 sb.append(Ansi.clearLine())
                 sb.append(content)
+                // 行尾补 reset：content 经 truncate 截断后可能丢失尾部 reset
+                // （整行背景卡片被裁到列宽时），不补会让背景色泄漏到下一行
+                sb.append(Ansi.reset())
                 // 扩容并写入缓存
                 while (this.prevLines.size <= i) {
                     this.prevLines.add("")

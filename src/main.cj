@@ -187,6 +187,16 @@ class TuiBridge {
     }
 
     /**
+     * 工具调用行（bg 236 整行卡片，≈ omp toolPendingBg）。
+     * 约束：行内只用 fg 改色、禁止中途 reset（保整行 bg），行尾 reset 由 padBg 补。
+     */
+    public static func tool(text: String): Unit {
+        if (let Some(a) <- TuiBridge.app) {
+            a.appendToolLine(text)
+        }
+    }
+
+    /**
      * 确保输出以换行结尾（工具调用提示前调用，避免拼到流式文字后面）
      */
     public static func ensureNewline(): Unit {

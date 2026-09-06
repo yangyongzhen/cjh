@@ -46,49 +46,49 @@ public class StatusBar <: Component {
     }
 
     public override func render(canvas: TuiCanvas, row: Int64, width: Int64, height: Int64): Int64 {
-        let sep = Ansi.fg(Ansi.THEME_MUTED) + " > " + Ansi.reset()
+        let border = Ansi.fg(Ansi.THEME_BORDER)   // 边框实线色（244，U+2500 连续实线，P2b）
         let muted = Ansi.fg(Ansi.THEME_MUTED)
-        let border = Ansi.fg(Ansi.THEME_WARN)
-        let hc = "-"
-        // 分段 1：模型名（# accent 色；ASCII 宽度恒定 1 列）
+        let hc = "─"   // U+2500 连续实线
+        // 整行背景卡片（P2b，≈ omp statusLineBg #121212）：行内只用 fg 改色、禁止 reset
+        //（reset 会清掉背景使卡片断裂），行尾 reset 由 padBg 统一补。
+        let sep = muted + " > "
+        // 分段 1：模型名（# accent 色）
         let modelPart = if (this.model.size > 0) {
-            Ansi.fg(Ansi.THEME_ACCENT) + "# " + this.model + Ansi.reset() + sep
+            Ansi.fg(Ansi.THEME_ACCENT) + "# " + this.model + sep
         } else {
             ""
         }
-        // 分段 2：当前工作目录（[cwd] muted，HOME 缩写为 ~；避免 📁 等 emoji 宽度歧义）
-        let dirPart = Ansi.fg(Ansi.THEME_MUTED) + "[ " + StatusBar.homeAbbrev(StatusBar.getCwd()) + " ]" + Ansi.reset()
-        // 分段 3：状态（ready 徽章或自定义文本）
+        // 分段 2：当前工作目录（[cwd] muted，HOME 缩写为 ~）
+        let dirPart = muted + "[ " + StatusBar.homeAbbrev(StatusBar.getCwd()) + " ]"
+        // 分段 3：状态（ready 徽章或自定义文本；badge 内联无 reset 以保背景）
         let statusPart = if (this.text.size == 0) {
-            Logo.badge("ready", Ansi.THEME_OK)
+            Ansi.fg(Ansi.THEME_OK) + "* " + muted + "ready"
         } else {
-            this.text
+            muted + this.text
         }
-        // ASCII 上边框：+-- 内容 ->------+（边框蓝色醒目，标识输入框位置）
+        // 提示文字（warn 色）
         let hintPart = if (this.rightHint.size > 0) {
-            Ansi.fg(Ansi.THEME_WARN) + this.rightHint + Ansi.reset()
+            Ansi.fg(Ansi.THEME_WARN) + " " + this.rightHint
         } else {
             ""
         }
         let content = modelPart + dirPart + sep + statusPart + hintPart
         var sb = StringBuilder()
-        sb.append(border + "+-- " + Ansi.reset())
-        sb.append(content)
-        sb.append(border + " ->" + Ansi.reset())
-        // 右侧横线填充：used + fillN + 1(+) 必须 ≤ cols-1（truncate 上限）
+        // Unicode 实线上边框：┌─ 内容 ─────────┐（边框 THEME_BORDER 244，整行铺 bg 234）
+        sb.append(border + "┌─ " + content + border + " ")
+        // 横线填充撑满到 width-1（truncate 保留 cols-1 可见，防终端折行的边距），
+        // padBg 再铺整行 bg 234（可见宽度已 = width-1，padBg 不额外补空格）
         let used = TuiCanvas.displayWidth(sb.toString())
-        var fillN = width - used - 2
+        var fillN = (width - 1) - used
         if (fillN < 0) {
             fillN = 0
         }
-        sb.append(border)
         var i: Int64 = 0
         while (i < fillN) {
             sb.append(hc)
             i += 1
         }
-        sb.append("+" + Ansi.reset())
-        canvas.setLine(row, sb.toString())
+        canvas.setLine(row, Ansi.padBg(sb.toString(), width - 1, Ansi.THEME_STATUS_BG))
         return 1
     }
 
