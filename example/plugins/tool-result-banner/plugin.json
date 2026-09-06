@@ -1,0 +1,9 @@
+{
+  "name": "tool-result-banner",
+  "version": "1.0.0",
+  "author": "dev-community",
+  "description": "tool-result-banner：on_tool_result 钩子示例。在工具结果头部追加一行 [tool: <name>] 横幅，便于人工审查会话时快速定位工具来源。第三方社区贡献示例，无签名。",
+  "hooks": {
+    "on_tool_result": "hooks/on_tool_result.sh"
+  }
+}

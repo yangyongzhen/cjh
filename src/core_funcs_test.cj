@@ -11,6 +11,7 @@ import cjllm.*
 import cjcfg.*
 import cjutil.*
 import cjh.tools.*
+import stdx.crypto.keys.*
 
 /**
  * 根包（cjh）纯函数单元测试：
@@ -333,5 +334,181 @@ public class P1aMakeProviderTest {
             case _ => ()
         }
         cleanupProviderEnv()
+    }
+}
+
+// ==================== V3 Step 3：信任列表（trusted-publishers）====================
+
+/**
+ * 构造带真实 SM2 签名的插件（复用 signed-demo 的签名流程：
+ * checksum → SM2 密钥对 → 公钥 DER hex → 签 checksum → 写 plugin.json）。
+ * 工具脚本放插件目录根（sha256DirExcluding 用非递归 walk，resolveScript 禁止 ..）。
+ */
+func coreMakeSignedPlugin(base: String, pluginName: String, publisher: String): Unit {
+    let pluginDir = base + "/" + pluginName
+    Directory.create(pluginDir, recursive: true)
+    File.writeTo(pluginDir + "/run.sh", stringToBytes("echo hi"))
+    // 1. checksum（排除 plugin.json）
+    let checksum = sha256DirExcluding(pluginDir, "plugin.json")
+    // 2. SM2 密钥对（测试用，真实场景私钥离线保管）
+    let privateKey = SM2PrivateKey()
+    let publicKey = SM2PublicKey(privateKey)
+    // 3. 公钥 DER → hex
+    let pubkeyHex = bytesToHex(publicKey.encodeToDer().body)
+    // 4. 用私钥签 checksum 字节
+    let signatureHex = bytesToHex(signSm2(privateKey, hexToBytes(checksum)))
+    // 5. 组装 plugin.json（四字段齐全 + 一个工具）
+    var tool = JsonObject()
+    tool.put("name", JsonString(pluginName + "_tool"))
+    tool.put("description", JsonString("trust test tool"))
+    tool.put("command", JsonString("run.sh"))
+    let tools = JsonArray()
+    tools.add(tool)
+    var obj = JsonObject()
+    obj.put("name", JsonString(pluginName))
+    obj.put("publisher", JsonString(publisher))
+    obj.put("checksum", JsonString(checksum))
+    obj.put("pubkey", JsonString(pubkeyHex))
+    obj.put("signature", JsonString(signatureHex))
+    obj.put("tools", tools)
+    File.writeTo(pluginDir + "/plugin.json", stringToBytes(obj.toJsonString()))
+}
+
+/**
+ * 构造无签名插件
+ */
+func coreMakePlainPlugin(base: String, pluginName: String): Unit {
+    let pluginDir = base + "/" + pluginName
+    Directory.create(pluginDir, recursive: true)
+    File.writeTo(pluginDir + "/run.sh", stringToBytes("echo hi"))
+    var tool = JsonObject()
+    tool.put("name", JsonString(pluginName + "_tool"))
+    tool.put("command", JsonString("run.sh"))
+    let tools = JsonArray()
+    tools.add(tool)
+    var obj = JsonObject()
+    obj.put("name", JsonString(pluginName))
+    obj.put("tools", tools)
+    File.writeTo(pluginDir + "/plugin.json", stringToBytes(obj.toJsonString()))
+}
+
+@Test
+public class CoreTrustTest {
+
+    @TestCase
+    public func testParseTrustList(): Unit {
+        let text = "# comment\n\n  alice  \nbob\n#another\n"
+        let list = parseTrustList(text)
+        @Assert(list.size, 2)
+        @Assert(list.contains("alice"), true)
+        @Assert(list.contains("bob"), true)
+    }
+
+    @TestCase
+    public func testTrustAdd(): Unit {
+        let dir = coreTestTempDir("trust_add")
+        let path = dir + "/trusted-publishers"
+        // @Assert 对 enum 泛型推断失败，用 match 转 Bool 断言
+        let isAdded = match (trustAdd(path, "alice")) {
+            case TrustResult.Added => true
+            case _ => false
+        }
+        @Assert(isAdded, true)
+        let isDup = match (trustAdd(path, "alice")) {
+            case TrustResult.AlreadyTrusted => true
+            case _ => false
+        }
+        @Assert(isDup, true)
+        let isEmpty = match (trustAdd(path, "")) {
+            case TrustResult.EmptyEntry => true
+            case _ => false
+        }
+        @Assert(isEmpty, true)
+        let list = readTrustList(path)
+        @Assert(list.size, 1)
+        @Assert(list.contains("alice"), true)
+        removeTreeForTest(dir)
+    }
+
+    @TestCase
+    public func testTrustRemove(): Unit {
+        let dir = coreTestTempDir("trust_rm")
+        let path = dir + "/trusted-publishers"
+        trustAdd(path, "alice")
+        trustAdd(path, "bob")
+        let isRemoved = match (trustRemove(path, "bob")) {
+            case TrustResult.Removed => true
+            case _ => false
+        }
+        @Assert(isRemoved, true)
+        let isMissing = match (trustRemove(path, "bob")) {
+            case TrustResult.NotTrusted => true
+            case _ => false
+        }
+        @Assert(isMissing, true)
+        let isEmpty = match (trustRemove(path, "")) {
+            case TrustResult.EmptyEntry => true
+            case _ => false
+        }
+        @Assert(isEmpty, true)
+        let list = readTrustList(path)
+        @Assert(list.size, 1)
+        @Assert(list.contains("alice"), true)
+        removeTreeForTest(dir)
+    }
+
+    @TestCase
+    public func testIsTrusted(): Unit {
+        var list = ArrayList<String>()
+        list.add("github:alice")
+        list.add("ABCDEF01")
+        // publisher 命中
+        @Assert(isTrusted(list, "github:alice", ""), true)
+        // publisher 未命中但 pubkey 命中
+        @Assert(isTrusted(list, "someone-else", "ABCDEF01"), true)
+        // 都未命中
+        @Assert(isTrusted(list, "someone-else", "FFFF"), false)
+        // 空列表（开放模式前置：isTrusted 本身恒 false，由加载逻辑按 size>0 把关）
+        let empty = ArrayList<String>()
+        @Assert(isTrusted(empty, "x", "y"), false)
+    }
+
+    @TestCase
+    public func testReadTrustListMissing(): Unit {
+        @Assert(readTrustList("/tmp/cjh_ut_no_such/trusted-publishers").size, 0)
+    }
+
+    // 端到端：签名插件在开放/严格模式下的加载行为
+    @TestCase
+    public func testTrustEnforcementEndToEnd(): Unit {
+        let base = coreTestTempDir("trust_e2e")
+        coreMakeSignedPlugin(base, "signed-p", "github:alice")
+        coreMakePlainPlugin(base, "plain-p")
+
+        // 开放模式（空信任列表）：签名 + 无签名插件都加载
+        let reg1 = ToolRegistry()
+        let pm1 = PluginManager(base)
+        pm1.loadAll(reg1, ArrayList<String>(), false, ArrayList<String>())
+        @Assert(reg1.has("signed-p_tool"), true)
+        @Assert(reg1.has("plain-p_tool"), true)
+
+        // 严格模式：信任 alice → 签名插件加载，无签名插件拒绝
+        var trusted = ArrayList<String>()
+        trusted.add("github:alice")
+        let reg2 = ToolRegistry()
+        let pm2 = PluginManager(base)
+        pm2.loadAll(reg2, ArrayList<String>(), false, trusted)
+        @Assert(reg2.has("signed-p_tool"), true)
+        @Assert(reg2.has("plain-p_tool"), false)
+
+        // 严格模式：信任别人 → 签名插件也拒绝
+        var untrusted = ArrayList<String>()
+        untrusted.add("github:mallory")
+        let reg3 = ToolRegistry()
+        let pm3 = PluginManager(base)
+        pm3.loadAll(reg3, ArrayList<String>(), false, untrusted)
+        @Assert(reg3.has("signed-p_tool"), false)
+
+        removeTreeForTest(base)
     }
 }
