@@ -90,7 +90,7 @@ func runWeb(args: Array<String>): Int64 {
     registry.register(AstGrepTool())
     registerWebTools(cjhCfg, registry)
     loadSkillTools(cjhCfg.skillsDir, registry, cjhCfg.enabledSkills)
-    let pluginManager = loadPlugins(cjhCfg.pluginsDir, registry, cjhCfg.enabledPlugins, cjhCfg.requireSignature)
+    let pluginManager = loadPlugins(cjhCfg.pluginsDir, cjhCfg.configDir, registry, cjhCfg.enabledPlugins, cjhCfg.requireSignature)
     let mcpManager = loadMcpServers(cjhCfg.mcpServers, registry)
 
     let provider = makeProvider(cjhCfg)
@@ -156,7 +156,7 @@ func runCli(sessionId: String): Int64 {
     // 注册技能携带的声明式工具（Skill 自定义工具）
     loadSkillTools(cjhCfg.skillsDir, registry, cjhCfg.enabledSkills)
     // 加载插件（V2b Step 1：plugin.json + shell 工具）
-    let pluginManager = loadPlugins(cjhCfg.pluginsDir, registry, cjhCfg.enabledPlugins, cjhCfg.requireSignature)
+    let pluginManager = loadPlugins(cjhCfg.pluginsDir, cjhCfg.configDir, registry, cjhCfg.enabledPlugins, cjhCfg.requireSignature)
     // 连接 MCP 服务器（V2b 扩展点：stdio 传输 + JSON-RPC）
     let mcpManager = loadMcpServers(cjhCfg.mcpServers, registry)
 
@@ -300,7 +300,7 @@ func runJson(prompt: String, sessionId: String): Int64 {
     registerWebTools(cjhCfg, registry)
     loadSkillTools(cjhCfg.skillsDir, registry, cjhCfg.enabledSkills)
     // 加载插件（V2b Step 1：plugin.json + shell 工具）
-    let pluginManager = loadPlugins(cjhCfg.pluginsDir, registry, cjhCfg.enabledPlugins, cjhCfg.requireSignature)
+    let pluginManager = loadPlugins(cjhCfg.pluginsDir, cjhCfg.configDir, registry, cjhCfg.enabledPlugins, cjhCfg.requireSignature)
     // 连接 MCP 服务器（V2b 扩展点：stdio 传输 + JSON-RPC）
     let mcpManager = loadMcpServers(cjhCfg.mcpServers, registry)
 
@@ -481,7 +481,7 @@ func runTui(sessionId: String): Int64 {
     loadSkillTools(cjhCfg.skillsDir, registry, cjhCfg.enabledSkills)
     mark("skill tools loaded")
     // 加载插件（V2b Step 1：plugin.json + shell 工具）
-    let pluginManager = loadPlugins(cjhCfg.pluginsDir, registry, cjhCfg.enabledPlugins, cjhCfg.requireSignature)
+    let pluginManager = loadPlugins(cjhCfg.pluginsDir, cjhCfg.configDir, registry, cjhCfg.enabledPlugins, cjhCfg.requireSignature)
     mark("plugins loaded")
     // 连接 MCP 服务器（V2b 扩展点：stdio 传输 + JSON-RPC）
     let mcpManager = loadMcpServers(cjhCfg.mcpServers, registry)

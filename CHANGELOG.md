@@ -1,8 +1,26 @@
 # CHANGELOG
 
-cjh 版本变更记录。依据 git tag 史 + 提交史整理；版本号规则：重大更新递增中间位（v1.2.0→v1.3.0），小更新递增最后位（v1.3.12→v1.3.13）。
+cjh 版本变更记录。依据 git tag 史 + 提交史整理；版本号规则：重大更新递增中间位（v1.2.0→v1.3.0），小更新递增最后位（v1.3.13→v1.3.14）。
 
 > 注：v1.0.0 / v1.1.0（首个 tag 前）/ v1.2.2 / v1.3.0 / v1.3.5 等版本未打 tag，日期与内容按提交史还原，以「无 tag」标注。
+
+## [v1.3.14] - 2026-09-06
+
+### Added
+- **V3 信任链 Step 3：信任管理 CLI**（`~/.cjh/trusted-publishers` + `cjh trust/untrust/trust-list`）：
+  - 信任列表文件 `~/.cjh/trusted-publishers`（每行一个 publisher ID 或 SM2 公钥 hex，`#` 注释）
+  - **空列表 = 开放模式**（默认，向后兼容）；**非空 = 严格模式**：签名插件 publisher/pubkey 必须命中列表，不匹配拒绝加载并提示 `cjh trust <publisher>`；无签名插件严格模式下同样拒绝
+  - 信任列表随 `loadPlugins` 注入 `PluginManager`，与 Step 1 校验和 / Step 2 SM2 验签串联成完整信任链
+- **第三方风格插件示例**（`example/plugins/`）：git-status 工具插件 + tool-result-banner 钩子插件，附加载/执行/钩子触发的单测（`example_plugins_test.cj`），锁住 plugin.json 加载契约
+
+### Docs
+- `docs/插件签名与贡献指南.md`：Step 2/Step 3 状态更新为已实现，补信任列表语义说明与信任链完整流程
+- README（中英）：价值主张正面化 + 按受众价值总结表（源码注释完备、可读可学习）
+
+### Tests
+- +7 信任用例（`core_funcs_test.cj`：解析/增删/匹配/端到端强制加载——真实 SM2 签名插件在开放/严格×匹配/不匹配下行为）
+- +3 插件示例用例（`example_plugins_test.cj`）
+- 门禁 335 单测全绿 + `--mock` 端到端通过 + 信任 CLI 三命令实测
 
 ## [v1.3.13] - 2026-09-06
 

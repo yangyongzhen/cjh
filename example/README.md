@@ -15,10 +15,22 @@ example/
     │   └── tools/
     │       └── echo.sh           # 工具实现（shell 脚本）
     │
-    └── log-pruner/               # 事件钩子插件示例
-        ├── plugin.json
-        └── hooks/
-            └── on_tool_result.sh # on_tool_result 钩子
+    ├── log-pruner/               # 事件钩子插件示例
+    │   ├── plugin.json
+    │   └── hooks/
+    │       └── on_tool_result.sh # on_tool_result 钩子
+    │
+    ├── git-status/               # 第三方风格工具插件示例（无签名，author=dev-community）
+    │   ├── plugin.json
+    │   └── tools/
+    │       └── git_status.sh     # git 仓库状态摘要（分支/改动数/最近提交）
+    │
+    ├── tool-result-banner/       # 第三方风格钩子插件示例（on_tool_result 结果横幅）
+    │   ├── plugin.json
+    │   └── hooks/
+    │       └── on_tool_result.sh # 结果头部追加 [tool: <name>] 横幅
+    │
+    └── signed-demo/              # SM2 签名插件示例（V3 信任链）
 ```
 
 ## example.md：声明式技能示例（Skills）
@@ -373,6 +385,46 @@ cjh --debug
 ```
 
 恢复脚本后即可正常加载。
+
+## git-status：第三方风格工具插件示例
+
+演示**第三方社区贡献**的插件形态（`author: "dev-community"`、无签名）。注册 `git_status` 只读工具，输出指定仓库的状态摘要（分支 / 改动文件数 / 最近提交）。
+
+```bash
+cp -r example/plugins/git-status ~/.cjh/plugins/
+chmod +x ~/.cjh/plugins/git-status/tools/git_status.sh
+```
+
+工具协议与 echo-test 相同（`CJH_TOOL_ARGS` 传参、stdout 返回结果）。参数：
+
+| 参数 | 说明 |
+|------|------|
+| `path` | （可选）git 仓库路径，缺省当前目录 |
+
+会话内使用：
+
+```
+❯ 用 git_status 看下 /root/test/cj/cjh 的仓库状态
+▶ git_status
+  ↳ branch:   main
+    changes:  0 file(s) modified/untracked, 0 staged
+    latest:   f672067 docs: add value summary section ...
+```
+
+非 git 目录调用会返回错误（`isError=true`），不会崩溃。
+
+## tool-result-banner：第三方风格钩子插件示例
+
+演示**第三方钩子**形态：`on_tool_result` 钩子在每个工具结果头部追加一行 `[tool: <name>]` 横幅，便于人工审查会话时定位工具来源。不截断内容，只加一行前缀。
+
+```bash
+cp -r example/plugins/tool-result-banner ~/.cjh/plugins/
+chmod +x ~/.cjh/plugins/tool-result-banner/hooks/on_tool_result.sh
+```
+
+钩子协议与 log-pruner 相同（`CJH_HOOK_DATA` 传 `{tool, content}`，stdout 输出改写后的 content）。多个 `on_tool_result` 钩子插件同时存在时按插件加载顺序依次改写。
+
+> 两个第三方风格示例的共同点：`plugin.json` 的 `author` 字段标明来源、不带签名字段（信任链下照常加载，`require_signature: true` 时会被拒绝）——这正是[插件签名与贡献指南](../docs/插件签名与贡献指南.md)中"第三方插件如何接入信任链"的实际参照。
 
 ## 编写自己的插件
 

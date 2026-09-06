@@ -118,11 +118,22 @@ public class PluginManager {
     private let pluginsDir: String
     private var hooks: HashMap<String, String>   // 事件名 → 脚本绝对路径
     private var loadedPlugins: ArrayList<String> // 已加载的插件名列表
+    // V3 Step 3：可信发布者列表（空=开放模式，非空=严格模式）
+    private var trustedPublishers: ArrayList<String>
 
     public init(pluginsDir: String) {
         this.pluginsDir = pluginsDir
         this.hooks = HashMap<String, String>()
         this.loadedPlugins = ArrayList<String>()
+        this.trustedPublishers = ArrayList<String>()
+    }
+
+    /**
+     * 设置可信发布者列表（V3 Step 3；来自 ~/.cjh/trusted-publishers）
+     * 空列表 = 开放模式（不做信任检查）；非空 = 严格模式
+     */
+    public func setTrustedPublishers(list: ArrayList<String>): Unit {
+        this.trustedPublishers = list
     }
 
     /**
@@ -133,9 +144,12 @@ public class PluginManager {
      * @param registry  工具注册中心
      * @param enabled   白名单（空=全部启用）
      * @param requireSignature  是否强制插件必须带签名（true=无签名拒绝加载）
+     * @param trustedPublishers  可信发布者列表（V3 Step 3；空=开放模式）
      */
     public func loadAll(registry: ToolRegistry, enabled: ArrayList<String>,
-        requireSignature: Bool): Unit {
+        requireSignature: Bool, trustedPublishers: ArrayList<String>): Unit {
+        // V3 Step 3：信任列表（空列表 = 开放模式，不做信任检查）
+        this.trustedPublishers = trustedPublishers
         if (!exists(this.pluginsDir)) {
             return
         }
@@ -167,7 +181,7 @@ public class PluginManager {
             }
             tmark("loading ${pluginDir}")
             try {
-                this.loadPlugin(pluginDir, pluginJsonPath, registry, enabled, requireSignature)
+                this.loadPlugin(pluginDir, pluginJsonPath, registry, enabled, requireSignature, this.trustedPublishers)
             } catch (e: Exception) {
                 Log.warn("加载插件失败: ${pluginDir} - ${e}")
             }
@@ -184,7 +198,7 @@ public class PluginManager {
      */
     private func loadPlugin(pluginDir: String, pluginJsonPath: String,
         registry: ToolRegistry, enabled: ArrayList<String>,
-        requireSignature: Bool): Unit {
+        requireSignature: Bool, trustedPublishers: ArrayList<String>): Unit {
 
         let content = safeFromUtf8(File.readFrom(pluginJsonPath))
         let v = JsonValue.fromStr(content)
@@ -282,6 +296,22 @@ public class PluginManager {
                         Log.warn("[PLUGIN] require_signature=true，插件缺少完整签名，拒绝加载: ${pluginName} (checksum=${hasChecksum}, sig=${hasSig})")
                         return
                     }
+                }
+
+                // V3 Step 3：信任列表检查（trusted-publishers 非空 = 严格模式）
+                //   签名插件：publisher 或 pubkey 必须命中信任列表
+                //   无签名插件：严格模式下同样拒绝（否则信任形同虚设）
+                if (trustedPublishers.size > 0) {
+                    let hasSig = pubkeyHex.size > 0 && signatureHex.size > 0
+                    if (!hasSig) {
+                        Log.warn("[PLUGIN] 信任列表非空（严格模式），插件无签名，拒绝加载: ${pluginName}。cjh trust <publisher> 或清空信任列表")
+                        return
+                    }
+                    if (!isTrusted(trustedPublishers, publisher, pubkeyHex)) {
+                        Log.warn("[PLUGIN] 发布者不在信任列表，拒绝加载: ${pluginName} (publisher=${publisher})。cjh trust ${publisher} 以信任")
+                        return
+                    }
+                    Log.debug("[PLUGIN] 信任列表检查通过: ${pluginName} (publisher=${publisher})")
                 }
 
                 // 白名单过滤（空=全部启用）

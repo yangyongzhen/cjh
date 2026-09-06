@@ -79,10 +79,12 @@ func registerWebTools(cjhCfg: CjhConfig, registry: ToolRegistry): Unit {
  * requireSignature=true 时强制插件必须带完整签名。
  * 返回创建的 PluginManager（供 Agent 事件钩子使用）。
  */
-func loadPlugins(pluginsDir: String, registry: ToolRegistry,
+func loadPlugins(pluginsDir: String, configDir: String, registry: ToolRegistry,
     enabled: ArrayList<String>, requireSignature: Bool): PluginManager {
     let pm = PluginManager(pluginsDir)
-    pm.loadAll(registry, enabled, requireSignature)
+    // V3 Step 3：信任列表（~/.cjh/trusted-publishers；空 = 开放模式）
+    let trusted = readTrustList(trustListPath(configDir))
+    pm.loadAll(registry, enabled, requireSignature, trusted)
     return pm
 }
 

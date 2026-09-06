@@ -120,11 +120,83 @@ main(args: Array<String>): Int64 {
     if (args.size > 0 && args[0] == "--list") {
         return listSessions()
     }
+    // V3 Step 3：信任管理 CLI（逻辑在 tools/trust.cj，可单测）
+    if (args.size > 0 && (args[0] == "trust" || args[0] == "untrust" || args[0] == "trust-list")) {
+        return runTrustCli(args)
+    }
     // cjh web [--port <n>] [--bind <addr>] [--token <t>]
     if (args.size > 0 && (args[0] == "web" || args[0] == "--web")) {
         return runWeb(args)
     }
     return runTui("")
+}
+
+/**
+ * V3 Step 3：信任管理 CLI
+ *   cjh trust <publisher>    信任发布者（publisher ID 或 SM2 公钥 hex）
+ *   cjh untrust <publisher>  取消信任
+ *   cjh trust-list           列出已信任条目（空列表 = 开放模式）
+ * 信任列表文件：<configDir>/trusted-publishers（逻辑在 tools/trust.cj，可单测）
+ */
+func runTrustCli(args: Array<String>): Int64 {
+    let cfg = CjhConfig()
+    let path = trustListPath(cfg.configDir)
+    match (args[0]) {
+        case "trust" =>
+            if (args.size < 2) {
+                println("用法: cjh trust <publisher-id 或 SM2 公钥 hex>")
+                return 2
+            }
+            match (trustAdd(path, args[1])) {
+                case TrustResult.Added =>
+                    println("已信任: ${args[1]}")
+                    println("提示：信任列表非空 = 严格模式，仅加载受信任发布者的签名插件（${path}）")
+                    return 0
+                case TrustResult.AlreadyTrusted =>
+                    println("已在信任列表: ${args[1]}")
+                    return 0
+                case TrustResult.EmptyEntry =>
+                    println("错误：信任条目不能为空")
+                    return 2
+                case _ =>
+                    println("错误：信任失败")
+                    return 1
+            }
+        case "untrust" =>
+            if (args.size < 2) {
+                println("用法: cjh untrust <publisher-id 或 SM2 公钥 hex>")
+                return 2
+            }
+            match (trustRemove(path, args[1])) {
+                case TrustResult.Removed =>
+                    println("已取消信任: ${args[1]}")
+                    return 0
+                case TrustResult.NotTrusted =>
+                    println("不在信任列表: ${args[1]}")
+                    return 1
+                case TrustResult.EmptyEntry =>
+                    println("错误：信任条目不能为空")
+                    return 2
+                case _ =>
+                    println("错误：取消信任失败")
+                    return 1
+            }
+        case "trust-list" =>
+            let list = readTrustList(path)
+            if (list.size == 0) {
+                println("信任列表为空（开放模式：不检查插件信任）")
+            } else {
+                println("信任列表（严格模式：仅加载受信任发布者的签名插件）:")
+                for (e in list) {
+                    println("  ${e}")
+                }
+            }
+            println("文件: ${path}")
+            return 0
+        case _ =>
+            println("未知命令: ${args[0]}（支持 trust / untrust / trust-list）")
+            return 2
+    }
 }
 
 class SessionState {

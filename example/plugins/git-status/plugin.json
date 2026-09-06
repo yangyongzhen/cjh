@@ -1,0 +1,21 @@
+{
+  "name": "git-status",
+  "version": "1.0.0",
+  "author": "dev-community",
+  "description": "git-status：查看任意 git 仓库的状态摘要（分支/改动文件数/最近提交）。第三方社区贡献示例，无签名（演示无签名第三方插件的加载形态）。",
+  "tools": [
+    {
+      "name": "git_status",
+      "description": "Show a short git status summary for a repository: current branch, counts of modified/staged/untracked files, and the latest commit (short hash + subject).",
+      "command": "tools/git_status.sh",
+      "is_read_only": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": { "type": "string", "description": "Path of the git repository (default: current directory)" }
+        },
+        "required": []
+      }
+    }
+  ]
+}
