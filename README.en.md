@@ -109,7 +109,7 @@ A coding agent's execution speed directly determines user wait time. cjh optimiz
 |---|---|---|
 | **V2d concurrent execution engine** | DAG dependency analysis (extracting resource access `(path, isWrite)` from `ToolCall`) + topological group scheduling (same group spawns concurrently, groups execute serially) | LLM parallel tool calls automatically execute concurrently, `parallelSavedMs` stats time saved in real time |
 | **hashline file rewriting** (drawing on OMP) | Line number anchor `@@N` + content verification editing, avoiding the overhead of reading + writing entire files | Precise line-level editing of large files, saves tokens and is fast |
-| **Provider connection warmup** | Background connection establishment at construction time, first `chatStream` doesn't pay TLS cold start overhead | Faster first response |
+| **Keep-alive connection reuse** | A connection that naturally finished reading the previous response is pooled; the next `chatStream` reuses it first (single-slot pool, closed all together on abort) | Saves TCP+TLS handshake on multi-turn tasks (measured 2-5s/round); construction-time warmup was removed (stdx `readTimer` background thread WARN pollutes the TUI — not worth it) |
 
 **V2d concurrent engine's DAG dependency analysis**: Each tool call extracts resource access `(path, isWrite)`, automatically building a dependency graph. Rules:
 - Same path and at least one isWrite → serial dependency edge
@@ -162,7 +162,7 @@ Built-in HTTP Server + WebSocket streaming conversation + REST API + frontend SP
 
 - **Multi-turn tool call loop**: message history → LLM → tool call → result feedback → re-call, supporting complex task orchestration
 - **Three-domain Capability security model**: commands / tools / resources whitelist + dangerous operation approval chain
-- **Auto Compaction**: LLM summary compression of early history when message count or real prompt tokens (`usage.promptTokens`) exceed thresholds (`compactThreshold` / `compact_token_threshold` / `compactKeep`)
+- **Auto Compaction (background async)**: when message count or real `usage.promptTokens` exceed thresholds, the summary is **spawned in the background** (never blocks the main loop); the next LLM request checks it non-blockingly (`tryGet`) and swaps history in, deferring if still running, falling back to sync compression on failure. Manual `/compact` stays synchronous
 - **Project instructions**: auto-loads `AGENTS.md` / `.atomcode.md` project instructions injected into system prompt
 
 ### Tool System (14 built-in + extensible)
@@ -209,7 +209,8 @@ Built-in HTTP Server + WebSocket streaming conversation + REST API + frontend SP
 
 - **Full-screen TUI**: diff rendering + ANSI escape, termios raw mode (pure libc FFI)
 - **Markdown rendering**: headings / lists / code blocks / tables / links
-- **6 themes**: starfrost / classic / catppuccin / rose-pine / solarized / monokai, `/theme` live switching
+- **10 themes**: starfrost (default) / classic / dracula / nord / gruvbox / tokyo-night / catppuccin / rose-pine / solarized / monokai, `/theme` live switching, border color filled per theme
+- **Visual hierarchy**: full-line background cards for status bar / user echo / tool invocations / thinking blocks + inline code chips; `NO_COLOR` disables all color/style escapes
 - **Multi-line editor**: Ctrl+E to enter, Alt+Enter to submit
 - **Slash command completion**: `/` triggers dropdown completion
 - **Tasks panel**: Agent's built-in task list displayed in real time
@@ -259,7 +260,7 @@ Built-in HTTP Server + WebSocket streaming conversation + REST API + frontend SP
 # Activate Cangjie environment (sets PATH; build is static-linked single file, no runtime libs needed)
 source cj-env.sh
 
-# Build (produces cjh, static single file, zero deps)
+# Build (produces cjh, statically linked Cangjie runtime + stdx, only system libs remain)
 cjpm build
 
 # Unit tests (auto-switches to dynamic config: test framework double-free crashes under static linking)
@@ -271,8 +272,8 @@ cjpm build
 
 | Platform | Command | Artifact | Notes |
 |---|---|---|---|
-| Linux (static single file, default) | `cjpm build` (cjpm.toml defaults to `--static`) | `dist/linux/cjh-<ver>-linux-x64` | Single file, zero deps (Cangjie runtime + stdx included; only system libc), run directly, no env vars needed |
-| Windows | `./scripts/winbuild.sh` | `dist/windows/cjh-<ver>-windows-x64.exe` | Cross-compiled PE on Linux (stdx **statically linked**: artifact depends only on system libs + 2 runtime DLLs). **Prerequisite**: `cangjie-stdx-windows-x64-<ver>` installed under `~/.cangjie/stdx/` (download from gitcode.com/Cangjie/cangjie_stdx/releases). **Deploy**: unpack `dist/cjh-<ver>-windows-x64.zip` (7.2MB, includes exe + runtime DLLs + **openssl DLL**) — openssl (libcrypto-3-x64.dll/libssl-3-x64.dll) is required for WebSocket handshake and HTTPS, loaded on demand by dynamicLoader, must sit next to the exe. **Single-file exe not yet possible**: the Cangjie SDK ships no Windows static runtime (`libcangjie-runtime.a` exists for Linux only), and `--static` affects Linux targets only — waiting for official support (see dev docs §3.10) |
+| Linux (default) | `cjpm build` (cjpm.toml defaults to `--static`) | `dist/linux/cjh-<ver>-linux-x64` | Statically linked Cangjie runtime + stdx (`ldd` shows only libc/libstdc++/libm etc.), run directly, no env vars needed |
+| Windows | `./scripts/winbuild.sh` | `dist/cjh-<ver>-windows-x64.zip` | Cross-compiled PE on Linux (exe + `libcangjie-runtime.dll`/`libboundscheck.dll`; stdx statically linked into the exe, system libs only). **Prerequisite**: `cangjie-stdx-windows-x64-<ver>` under `~/.cangjie/stdx/` (the repo ships `docs/cangjie-stdx-windows-x64-1.0.5.1.zip` — just unpack it). **Deploy**: unpack the zip, exe and runtime DLLs must sit together. **Single-file exe not yet possible**: the Cangjie SDK ships no Windows static runtime (`libcangjie-runtime.a` is Linux-only) — waiting for official support (see dev docs §3.10) |
 | macOS | POSIX backend passthrough, same source tree | — | Build on macOS (termios-compatible, `@When` auto-selects POSIX backend) |
 
 > Cross-platform principle: terminal-layer `TerminalBackend` abstraction (`@When[os == ...]` conditional compilation selects the backend; Windows uses Win32 Console API + VT output, Linux/macOS use termios) — one source tree, multi-platform binaries. See [design](docs/跨平台终端层设计方案.md).
@@ -322,6 +323,7 @@ CJH_MOCK=1 ./target/release/bin/cjh
 | `CJH_MODEL` | Model name | gpt-4o-mini |
 | `CJH_PROVIDER` | Provider switch (openai/anthropic/ollama) | openai |
 | `CJH_MOCK` | `1` enables mock | off |
+| `NO_COLOR` | When set, TUI disables all color/style escapes (accessibility / piping) | off |
 | `CJH_CONFIG_DIR` | Config directory | `~/.cjh` |
 
 ## 📁 Architecture
@@ -343,7 +345,7 @@ CJH_MOCK=1 ./target/release/bin/cjh
 │  plugin/mcp/todo │                                      │
 ├──────────────────┴──────────────────────────────────────┤
 │  Infrastructure libs (libs/)                            │
-│  cjterm (Terminal UI) · cjcfg (Config) · cjutil (SHA256/SM2) │
+│  cjterm (Term UI) · cjcfg (Config) · cjutil · cjlog     │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -351,14 +353,15 @@ CJH_MOCK=1 ./target/release/bin/cjh
 
 | Package | Responsibility |
 |---|---|
-| `cjh.agent` | Agent main loop orchestration (message state machine + tool call + DAG concurrent scheduling) |
+| `cjh.agent` | Agent main loop orchestration (message state machine + tool call + DAG concurrency + background async compaction) |
 | `cjh.tools` | Tool interface, registry, built-in tools, plugin system, MCP client |
-| `cjh.tui` | TUI application layer (conversation interface, Markdown rendering) |
+| `cjh.tui` | TUI application layer (conversation interface, Markdown rendering, background-card hierarchy) |
 | `cjh.web` | Web Server (HTTP + WebSocket + REST API + frontend SPA) |
-| `cjterm` (libs/) | **Independent terminal UI library**: ANSI / diff rendering / termios / 6 themes (pure libc FFI, reusable) |
-| `cjllm` (libs/) | **Independent LLM protocol library**: OpenAI / Anthropic / Ollama / SSE / Mock |
-| `cjcfg` (libs/) | **Independent config library**: settings.json / auth.json / env vars / session management |
-| `cjutil` (libs/) | **Independent utility library**: SHA256 / SM2 signature / UTF-8 / JSON repair / logging |
+| `cjterm` (libs/) | **Independent terminal UI library**: ANSI / diff rendering / termios / Win32 cross-platform terminal layer / 10 themes (pure libc FFI, reusable) |
+| `cjllm` (libs/) | **Independent LLM protocol library**: OpenAI / Anthropic / Ollama / SSE / Mock / keep-alive pool / budget-raced interruption |
+| `cjcfg` (libs/) | **Independent config library**: settings.json / auth.json / env vars / session management / three-domain Capability model |
+| `cjutil` (libs/) | **Independent utility library**: SHA256 / SM2 signature / UTF-8 safe decoding / JSON repair / BM25 / SSRF guard |
+| `cjlog` (libs/) | **Independent async logging library**: level control / dual-file output / stack trace extraction |
 
 ## 🔌 Plugin Ecosystem & Trust Chain
 
@@ -424,7 +427,7 @@ cjh has a built-in MCP client supporting stdio transport + JSON-RPC 2.0. After c
 
 ## 🧪 Testing & Quality Assurance
 
-**216 unit tests, all green** (4 packages, 25 test classes, one-shot `cjpm test`) + **14 PTY integration tests** (`python3 scripts/tui_pty_test.py`, real TUI driven via pseudo-terminal), covering all 14 built-in tools + Agent core + TUI rendering/events + infrastructure:
+**325 unit tests, all green** (4 packages, 30+ test classes, one-shot `./scripts/test.sh`, auto-switches to dynamic linking) + **15 PTY integration scenarios (49 assertions)** (`python3 scripts/tui_pty_test.py`, real TUI driven via pseudo-terminal), covering all 14 built-in tools + Agent core + TUI rendering/events + infrastructure:
 
 | Test domain | Coverage |
 |---|---|
@@ -436,7 +439,7 @@ cjh has a built-in MCP client supporting stdio transport + JSON-RPC 2.0. After c
 | **TUI rendering & events** | Markdown bold/inline-code/code-block/cross-frame streaming/finish reset, Screen diff rendering (changed lines/Chinese/clone), Ansi sequences, **TuiApp key protocol** (Ctrl+C quit/typing/submit/completion/view switch/multiline/backspace crash-guard) |
 | **PTY integration (real terminal)** | `scripts/tui_pty_test.py`: startup rendering, mock toolchain e2e, `/` completion, help view, **approval dialog yes/no** (blocking approval path unit tests can't cover) |
 
-**CI gate (mandatory, see `AGENTS.md`)**: `cjpm test` all-green is the sole delivery credential; new features/fixes must ship with tests; bug fixes require a reproducing test written first.
+**CI gate (mandatory, see `AGENTS.md`)**: `./scripts/test.sh` all-green (incl. TUI PTY scenarios) is the sole delivery credential; new features/fixes must ship with tests; bug fixes require a reproducing test written first.
 
 **The value of tests — 10+ latent bugs caught (see `docs/开发文档与踩坑记录.md` §3.9)**:
 
@@ -473,15 +476,22 @@ cjh has a built-in MCP client supporting stdio transport + JSON-RPC 2.0. After c
 
 | Version | Main Features |
 |---|---|
-| v1.0.0 | Initial release: TUI + Agent loop + basic tools |
+| **v1.3.13** | **P2 OutputView incremental line cache + P2b TUI visual polish**: per-frame O(total) `split` replaced by O(delta) `lineCache`; Unicode solid borders filled per theme (10 themes, live `/theme` switching) + full-line background cards (status bar / user echo / tool lines / thinking blocks) + inline code chips + `NO_COLOR` support (325 tests + 49 PTY assertions green, dual-platform release) |
+| **v1.3.12** | **Pasted-Chinese mojibake fixed** (bracketed paste whole-chunk `safeFromUtf8`); ships with v1.3.11 long-session TUI main-coroutine stall fix (lock leaks + exit cleanup) |
+| **v1.3.10** | **TUI freeze / unresponsive input fixed** (cjlog `sleepMs` spin-wait → real sleep) |
+| **v1.3.9** | **Tool-output Chinese mojibake fixed** (never build strings byte-wise from raw streams) |
+| **v1.3.8** | **"Consecutive sessions keep getting interrupted" fixed** (idle watchdog no longer kills reasoning-model pre-thinking phase) |
+| **v1.3.7** | **First-LLM-request 442s hang + all 8 aborts failing, fixed** (budget racing sunk into transport layer) + dual-platform release fix |
+| **v1.3.4** | **TUI interaction & streaming stability** (arrow-key residue / Streaming-stuck fix / force-insert when busy / auto-send on paste) |
+| **v1.3.3** | **Streaming transport fixed + TUI rendering/interaction polish** (fully interruptible + markdown aligned to omp) |
+| **v1.3.2** | **P0+P1 optimization** (bash timeout / persistent session / project memory / 429 rotation / SQLite read) + static-linked single-file release |
+| **v1.3.1** | **LLM efficiency triple fix** (prompt peak 42.9K→9.4K) + 13 latent bugs fixed + CI gate established |
+| **v1.3.0** | **Web support + plugin trust chain (SHA256 + SM2 signature)** |
+| v1.2.0–v1.2.3 | Concurrent execution engine / starfrost theme / round summary bar / tool result truncation & backtrack / MCP protocol |
 | v1.1.0 | Memory layering + plugin system + tree sessions + Ollama support |
-| v1.2.0 | Concurrent execution engine + tool efficiency + Tasks panel |
-| v1.2.1 | Starfrost theme system + /theme switching |
-| v1.2.2 | Round summary bar + /compact + /tree + /fork |
-| v1.2.3 | SSE idle timeout + tool result truncation & backtrack + MCP protocol support + 6 themes |
-| **v1.3.0** | **Web support + plugin trust chain (SHA256 + SM2 signature) + require_signature config** |
-| v1.3.1 | **LLM efficiency triple fix** (compaction into loop + real-usage trigger + keep tuning, prompt peak 42.9K→9.4K) + **216 unit tests green** + 13 latent bugs fixed (incl. TUI: markdown code-block, Tab re-open, backspace log crash) + build.cj renames artifact to `cjh` |
-| **v1.3.2** | **P0+P1 optimization**: bash timeout + Ctrl+C interrupt + persistent bash session + cross-session project memory + fast-model routing + 429 key fallback + compaction keeps tool results + SQLite read + prompt tuning + **static-linked single-file release** (228 tests + 36 PTY green) |
+| v1.0.0 | Initial release: TUI + Agent loop + basic tools |
+
+> Full per-version change details: [CHANGELOG.md](CHANGELOG.md).
 
 ## 🗺️ Roadmap
 
@@ -509,6 +519,8 @@ cjh has a built-in MCP client supporting stdio transport + JSON-RPC 2.0. After c
 
 ## 📚 Docs
 
+- [CHANGELOG](CHANGELOG.md) — Full version change log
+- [Performance Optimization Plan](docs/优化提速方案.md) — Performance roadmap and progress
 - [Architecture & Design v2](docs/方案与架构设计-v2.md) — Project design and architecture
 - [Implementation & Handover](docs/实现方案与交接.md) — Architecture and code map (onboarding entry)
 - [Feature Checklist](docs/cjh功能清单.md) — Complete feature list
@@ -581,7 +593,7 @@ cjh/
 │   ├── web/                # Web Server (HTTP + WS + REST + frontend)
 │   ├── entries.cj          # assembly entry (CLI/TUI/JSON/Web/Mock)
 │   ├── main.cj             # program entry (provider factory + dispatch)
-│   ├── tests/              # unit tests (tools/session/truncator/router)
+│   ├── tests/              # unit tests (tools/session/truncator/router/TUI/perf)
 │   └── core_funcs_test.cj  # root-package pure-function tests
 ├── libs/                   # Independent reusable libraries
 │   ├── cjterm/             # Terminal UI library (ANSI / diff rendering / termios / themes)

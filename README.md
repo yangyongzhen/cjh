@@ -109,7 +109,7 @@ coding agent 的执行效率直接决定用户等待时间。cjh 从三个维度
 |---|---|---|
 | **V2d 并发执行引擎** | DAG 依赖分析（从 `ToolCall` 提取资源访问 `(path, isWrite)`）+ 拓扑分组调度（同组 spawn 并发，组间串行） | LLM 并行工具调用自动并发执行，`parallelSavedMs` 实时统计节省时间 |
 | **hashline 文件改写**（借鉴 OMP） | 行号锚点 `@@N` + 内容验证编辑，避免 read 整文件 + write 整文件的开销 | 大文件精确行级编辑，省 token 又快 |
-| **Provider 连接预热** | 构造时后台建连，首次 `chatStream` 不付 TLS 冷启动开销 | 首次响应更快 |
+| **keep-alive 连接复用** | 上一轮响应自然读完的连接入池，下一轮 `chatStream` 优先复用（单槽复用池，中断时整体关闭） | 多轮任务省 TCP+TLS 握手（实测 2-5s/轮次）；构造时预热已移除（stdx `readTimer` 后台线程 WARN 会污染 TUI，得不偿失） |
 
 **V2d 并发引擎的 DAG 依赖分析**：每个工具调用提取资源访问 `(path, isWrite)`，自动构建依赖图。规则：
 - 同一 path 且至少一个 isWrite → 串行依赖边
@@ -162,7 +162,7 @@ coding agent 的执行效率直接决定用户等待时间。cjh 从三个维度
 
 - **多轮工具调用循环**：消息历史 → LLM → 工具调用 → 结果回填 → 再调用，支持复杂任务编排
 - **三域 Capability 安全模型**：commands / tools / resources 白名单 + 危险操作审批链
-- **自动 Compaction**：消息条数或估算 prompt token（真实 `usage.promptTokens`）超阈值自动 LLM 摘要压缩早期历史，`compactThreshold` / `compact_token_threshold` / `compactKeep` 可配
+- **自动 Compaction（后台异步）**：消息条数或真实 `usage.promptTokens` 超阈值时**后台 spawn 摘要**（不阻塞主循环），下一轮请求前 `tryGet` 非阻塞换装，未完成顺延、失败回退同步压缩，`compactThreshold` / `compact_token_threshold` / `compactKeep` 可配；手动 `/compact` 保持同步
 - **项目指令**：自动加载 `AGENTS.md` / `.atomcode.md` 项目指令注入 system prompt
 
 ### 工具系统（14 个内置 + 可扩展）
@@ -203,7 +203,8 @@ coding agent 的执行效率直接决定用户等待时间。cjh 从三个维度
 
 - **全屏 TUI**：差分渲染 + ANSI 转义，termios 原始模式（纯 libc FFI，自实现非依赖第三方库）
 - **Markdown 渲染**：标题 / 列表 / 代码块 / 表格 / 链接
-- **6 套主题**：starfrost（星霜青）/ classic / catppuccin / rose-pine / solarized / monokai，`/theme` 实时切换
+- **10 套主题**：starfrost（星霜青，默认）/ classic / dracula / nord / gruvbox / tokyo-night / catppuccin / rose-pine / solarized / monokai，`/theme` 实时切换，边框色随主题填充
+- **视觉层次**：状态栏/用户回显/工具调用/思考块整行背景卡片 + 行内代码芯片，`NO_COLOR` 环境自动关闭全部颜色/样式转义
 - **多行编辑器**：Ctrl+E 进入，Alt+Enter 提交
 - **斜杠命令补全**：`/` 触发下拉补全
 - **Tasks 面板**：Agent 内置任务列表实时展示
@@ -253,7 +254,7 @@ coding agent 的执行效率直接决定用户等待时间。cjh 从三个维度
 # 激活仓颉环境（设 PATH；构建为静态链接单文件，无需运行时库）
 source cj-env.sh
 
-# 构建（产物为 cjh，静态单文件零依赖，直接运行）
+# 构建（产物为 cjh，静态链接仓颉运行时 + stdx，仅余系统库依赖，直接运行）
 cjpm build
 
 # 单元测试（自动切动态配置：静态链接下测试框架 double free 崩溃）
@@ -265,8 +266,8 @@ cjpm build
 
 | 平台 | 命令 | 产物 | 说明 |
 |---|---|---|---|
-| Linux（静态单文件，默认） | `cjpm build`（cjpm.toml 已默认 `--static`） | `dist/linux/cjh-<ver>-linux-x64` | 单文件零依赖（含仓颉运行时+stdx，仅依赖系统 libc），直接分发运行，无需环境变量 |
-| Windows | `./scripts/winbuild.sh` | `dist/windows/cjh-<ver>-windows-x64.exe` | Linux 交叉编译 PE（stdx **静态链接**：产物仅依赖系统库 + 2 个 runtime DLL）。**前提**：`~/.cangjie/stdx/` 装 `cangjie-stdx-windows-x64-<ver>`（gitcode.com/Cangjie/cangjie_stdx/releases）。**部署**：解压 `dist/cjh-<ver>-windows-x64.zip`（7.2MB，含 exe + runtime DLL + **openssl DLL**）——openssl（libcrypto-3-x64.dll/libssl-3-x64.dll）为 WebSocket 握手与 HTTPS 必需，dynamicLoader 运行时按需加载，须与 exe 同目录。**单文件 exe 暂不可达**：仓颉 SDK 未提供 Windows 静态 runtime（`libcangjie-runtime.a` 仅 Linux 有），`--static` 仅 Linux 生效——等官方支持（详见踩坑记录 §3.10） |
+| Linux（默认） | `cjpm build`（cjpm.toml 已默认 `--static`） | `dist/linux/cjh-<ver>-linux-x64` | 静态链接仓颉运行时 + stdx（`ldd` 仅见 libc/libstdc++/libm 等系统库），直接分发运行，无需环境变量 |
+| Windows | `./scripts/winbuild.sh` | `dist/cjh-<ver>-windows-x64.zip` | Linux 交叉编译 PE（exe + `libcangjie-runtime.dll`/`libboundscheck.dll`，stdx 静态链接进 exe，仅依赖系统库）。**前提**：`~/.cangjie/stdx/` 装 `cangjie-stdx-windows-x64-<ver>`（仓库内 `docs/cangjie-stdx-windows-x64-1.0.5.1.zip` 已备，解压即可）。**部署**：zip 解压即用，exe 与 runtime DLL 须同目录。**单文件 exe 暂不可达**：仓颉 SDK 未提供 Windows 静态 runtime（`libcangjie-runtime.a` 仅 Linux 有）——等官方支持（详见踩坑记录 §3.10） |
 | macOS | POSIX 后端直通，同 Linux 源码 | — | 需 macOS 环境构建（termios 兼容，`@When` 自动选 POSIX 后端） |
 
 > 跨平台原理：终端层 `TerminalBackend` 抽象（`@When[os == ...]` 条件编译选后端，Windows 用 Win32 Console API + VT 输出，Linux/macOS 用 termios），一份源码多平台二进制。详见 [跨平台终端层设计方案](docs/跨平台终端层设计方案.md)。
@@ -316,6 +317,7 @@ CJH_MOCK=1 ./target/release/bin/cjh
 | `CJH_MODEL` | 模型名 | gpt-4o-mini |
 | `CJH_PROVIDER` | Provider 切换（openai/anthropic/ollama） | openai |
 | `CJH_MOCK` | `1` 启用 mock | 关 |
+| `NO_COLOR` | 设置后 TUI 关闭全部颜色/样式转义（无障碍/管道场景） | 关 |
 | `CJH_CONFIG_DIR` | 配置目录 | `~/.cjh` |
 
 ## 📁 架构
@@ -337,7 +339,7 @@ CJH_MOCK=1 ./target/release/bin/cjh
 │  plugin/mcp/todo  │                                      │
 ├──────────────────┴──────────────────────────────────────┤
 │  基础设施库 (libs/)                                      │
-│  cjterm（终端 UI）· cjcfg（配置）· cjutil（SHA256/SM2）  │
+│  cjterm（终端UI）· cjcfg（配置）· cjutil（工具）· cjlog  │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -345,14 +347,15 @@ CJH_MOCK=1 ./target/release/bin/cjh
 
 | 包 | 职责 |
 |---|---|
-| `cjh.agent` | Agent 主循环编排（消息状态机 + 工具调用 + DAG 并发） |
+| `cjh.agent` | Agent 主循环编排（消息状态机 + 工具调用 + DAG 并发 + 后台异步 Compaction） |
 | `cjh.tools` | 工具接口、注册中心、内置工具、插件系统、MCP 客户端 |
-| `cjh.tui` | TUI 应用层（对话界面、Markdown 渲染） |
+| `cjh.tui` | TUI 应用层（对话界面、Markdown 渲染、背景卡片层次） |
 | `cjh.web` | Web Server（HTTP + WebSocket + REST API + 前端 SPA） |
-| `cjterm`（libs/） | **独立终端 UI 库**：ANSI / 差分渲染 / termios / 6 套主题（纯 libc FFI 自实现，可复用） |
-| `cjllm`（libs/） | **独立 LLM 协议库**：OpenAI / Anthropic / Ollama / SSE / Mock |
-| `cjcfg`（libs/） | **独立配置库**：settings.json / auth.json / 环境变量 / 会话管理 |
-| `cjutil`（libs/） | **独立工具库**：SHA256 / SM2 签名 / UTF-8 / JSON 修复 / 日志 |
+| `cjterm`（libs/） | **独立终端 UI 库**：ANSI / 差分渲染 / termios / Win32 跨平台终端层 / 10 套主题（纯 libc FFI 自实现，可复用） |
+| `cjllm`（libs/） | **独立 LLM 协议库**：OpenAI / Anthropic / Ollama / SSE / Mock / keep-alive 复用池 / 预算竞速中断 |
+| `cjcfg`（libs/） | **独立配置库**：settings.json / auth.json / 环境变量 / 会话管理 / Capability 三域模型 |
+| `cjutil`（libs/） | **独立工具库**：SHA256 / SM2 签名 / UTF-8 安全解码 / JSON 修复 / BM25 / SSRF 防护 |
+| `cjlog`（libs/） | **独立异步日志库**：级别控制 / 双文件落盘 / 异常堆栈提取 |
 
 ## 🔌 插件生态与信任链
 
@@ -418,7 +421,7 @@ cjh 内置 MCP 客户端，支持 stdio 传输 + JSON-RPC 2.0。配置 `mcp_serv
 
 ## 🧪 测试与质量保证
 
-**216 个单元测试全绿**（4 包 25 个测试类，`cjpm test` 一键运行）+ **14 个 PTY 集成测试**（`python3 scripts/tui_pty_test.py`，伪终端驱动真实 TUI），覆盖全部 14 个内置工具 + Agent 核心 + TUI 渲染/事件 + 基础设施：
+**325 个单元测试全绿**（4 包 30+ 测试类，`./scripts/test.sh` 一键运行，自动切动态链接配置）+ **15 个 PTY 集成测试场景（49 断言）**（`python3 scripts/tui_pty_test.py`，伪终端驱动真实 TUI），覆盖全部 14 个内置工具 + Agent 核心 + TUI 渲染/事件 + 基础设施：
 
 | 测试域 | 覆盖 |
 |---|---|
@@ -430,7 +433,7 @@ cjh 内置 MCP 客户端，支持 stdio 传输 + JSON-RPC 2.0。配置 `mcp_serv
 | **TUI 渲染与事件** | Markdown 粗体/行内代码/代码块/跨帧流式/finish 复位、Screen 差分渲染（变化行/中文/clone）、Ansi 转义序列、**TuiApp 按键协议**（Ctrl+C 退出/输入/提交/补全/视图切换/多行编辑/退格防崩） |
 | **PTY 集成（真实终端）** | `scripts/tui_pty_test.py`：启动渲染、mock 工具链端到端、`/` 命令补全、帮助视图、**审批弹窗同意/拒绝**（单测无法覆盖的阻塞审批路径） |
 
-**CI 门禁（强制，见 `AGENTS.md`）**：`cjpm test` 全绿是唯一交付凭证；新功能/修复必须带测试；bug 修复先写复现测试再修。
+**CI 门禁（强制，见 `AGENTS.md`）**：`./scripts/test.sh` 全绿（含 TUI PTY 场景）是唯一交付凭证；新功能/修复必须带测试；bug 修复先写复现测试再修。
 
 **测试的价值——实测揪出 10+ 个潜伏 bug**（详见 `docs/开发文档与踩坑记录.md` 3.9 节）：
 
@@ -467,23 +470,22 @@ cjh 内置 MCP 客户端，支持 stdio 传输 + JSON-RPC 2.0。配置 `mcp_serv
 
 | 版本 | 主要功能 |
 |---|---|
-| **v1.3.13** | **P2 OutputView 增量行缓存 + P2b TUI 视觉美化**：render 每帧 O(总量) `split` 改 `lineCache` 增量维护（O(本帧文本)，+12 用例锁死逐位等价）；状态栏/输入框 Unicode 实线边框 `THEME_BORDER` 按主题填充（10 主题 `/theme` 即时变色）+ 状态栏 bg234 / 用户回显 bg237 / 工具行 bg236 / 思考块 bg233 整行背景卡片 + 行内代码芯片 + `NO_COLOR` 支持（325 单测 + 49 PTY 全绿，双平台发布包） |
-| **v1.3.12** | **粘贴中文乱码根治**：`readBracketedPaste` 逐字节 `Rune(byte)` 拼接 → 字节累积 + 整段 `safeFromUtf8`（中文/emoji 粘贴正确，+8 单测 + PTY 场景13）；同批含 v1.3.11：长会话 TUI 主协程停摆根治（9 处裸 `Mutex.lock` try/finally 守锁 + 退出路径回收子进程 + Log 关闭） |
-| **v1.3.10** | **TUI 假死/无法输入根治**：`cjlog.LogSink` 异步日志的 `sleepMs` 是纯整数忙等空转（`while (i < ms*1000)` 自增不耗时）——sink 协程在仓颉主 worker 上满速自旋烧光 CPU、饿死 TUI 渲染/输入主循环。现象：进程存活 + CPU 100% + 画面冻结无法输入 + `sshd Send-Q 0`（MobaXterm 远端显示"未断线"）。修复：改真实 `sleep(Duration.millisecond * ms)`；+1 回归用例（耗时断言先红后绿，78µs 空转→真实 ~80ms） |
-| **v1.3.9** | **工具输出中文乱码根治**：`bash_session.readUntilMarker` 逐字节 `String(Rune(byte))` 拼 stdout → 整段 UTF-8 安全解码（跨块 pending 字节 + 字符边界切分）；`web_search.urlDecode` 的 `%XX` 逐字节转字符 → 连续字节整段解码；复用 `cjutil.safeFromUtf8`；+4 回归用例（279 单测全绿，bash 中文跨读取边界先红后绿） |
-| **v1.3.8** | **"连续几轮会话总被打断"根治**：空闲看门狗误杀推理模型"前思考期"——`agentLastActivity` 跨 run 重置（每 run/每轮 onThinking 刷新锚点）+ 空闲预算默认 60s→180s（恢复设计值，对齐 doc）+ `resetAgentTokens` 跨轮清零 token 计数（修复 0.0K 显示）；根因经 curl 直连逐帧验证（模型 300s 持续吐 12269 帧 reasoning、从未停滞）；+3 回归用例（275 单测全绿）+ 真实模型 PTY 连续 3 轮通过（看门狗/强制插入 0 条） |
-| v1.0.0 | 初始版本：TUI + Agent 循环 + 基础工具 |
+| **v1.3.13** | **P2 OutputView 增量行缓存 + P2b TUI 视觉美化**：render 每帧 O(总量) `split` 改 `lineCache` 增量维护（O(本帧文本)）；Unicode 实线边框按主题填充（10 主题 `/theme` 即时变色）+ 整行背景卡片（状态栏/用户回显/工具行/思考块）+ 行内代码芯片 + `NO_COLOR` 支持（325 单测 + 49 PTY 全绿，双平台发布包） |
+| **v1.3.12** | **粘贴中文乱码根治**（bracketed paste 整段 `safeFromUtf8`）；同批含 v1.3.11 长会话 TUI 主协程停摆根治（锁泄漏 + 退出清理） |
+| **v1.3.10** | **TUI 假死/无法输入根治**（cjlog sleepMs 忙等空转 → 真实 sleep） |
+| **v1.3.9** | **工具输出中文乱码根治**（字节流禁止逐字节 `String(Rune(byte))`） |
+| **v1.3.8** | **"连续几轮会话总被打断"根治**（空闲看门狗误杀推理模型前思考期） |
+| **v1.3.7** | **首个 LLM 请求 442s 卡死 + 8 次中断全失效根治**（预算竞速下沉传输层）+ 双平台发布包修复 |
+| **v1.3.4** | **TUI 交互与流式稳定性**（方向键残留/Streaming 卡死根治/忙时强制插入/粘贴自动发送） |
+| **v1.3.3** | **流式传输根治 + TUI 渲染/交互打磨**（全阶段可中断 + markdown 对齐 omp） |
+| **v1.3.2** | **P0+P1 优化**（bash 超时/持久会话/项目记忆/429 轮换/SQLite read）+ 静态链接单文件发布 |
+| **v1.3.1** | **LLM 效率三连修复**（prompt 峰值 42.9K→9.4K）+ 13 个潜伏 bug 修复 + CI 门禁建立 |
+| **v1.3.0** | **Web 支持 + 插件信任链（SHA256 + SM2 签名）** |
+| v1.2.0–v1.2.3 | 并发执行引擎 / 星霜青主题 / 回合总结条 / 工具结果截断与回溯 / MCP 协议 |
 | v1.1.0 | 记忆分层 + 插件系统 + 树形会话 + Ollama 支持 |
-| v1.2.0 | 并发执行引擎 + 工具效率提升 + Tasks 面板 |
-| v1.2.1 | 星霜青主题系统 + /theme 切换 |
-| v1.2.2 | 回合总结条 + /compact + /tree + /fork |
-| v1.2.3 | SSE 空闲超时 + 工具结果截断与回溯 + MCP 协议支持 + 6 套主题 |
-| **v1.3.0** | **Web 支持 + 插件信任链（SHA256 + SM2 签名）+ require_signature 配置** |
-| v1.3.1 | **LLM 效率三连修复**（compaction 检查入循环 + 真实 usage 触发 + keep 调优，prompt 峰值 42.9K→9.4K）+ **216 单测全绿** + 修复 13 个潜伏 bug（含 TUI：markdown 代码块失效/Tab 补全重开/退格崩日志）+ build.cj 产物改名 cjh |
-| **v1.3.7** | **首个 LLM 请求 442s 卡死 + 8 次中断全失效根治**：预算竞速原语 `runWithBudget`（spawn + Future 轮询 + cancelChecker）下沉进 `HttpStreamClient.connect()/request()`——全协议（openai/anthropic/ollama + 未来新协议）建连/写请求有界可中断，connect 预算内重试一次；黑洞地址回归用例（TEST-NET 实测裸 connect 8s+ 挂起 → 预算 1s 抛 BudgetTimeoutException）；**双平台发布包修复**：恢复误清空的静态链接配置（cjpm.toml `--static` + winbuild stdx 静态路径）+ 272/31 单测全绿 |
-| **v1.3.4** | **TUI 交互与流式稳定性**：方向键残留字母修复（AAAA/BBBB）、帮助页补全可滚动、Streaming 卡死根治（60s 空闲预算 + 内容保留不重试）、忙时 Enter 强制插入发送、粘贴自动发送修复（启用 bracketed paste）、markdown 表格底边框换行（269 单测 + 46 PTY 全绿） |
-| **v1.3.3** | **流式传输根治 + TUI 渲染/交互打磨**：finish_reason/短读轮询/响应头轮询全阶段可中断、大 chunk 越界修复、轮次软顶（默认 100 + 收尾指令）、两级 Ctrl+C 兜底（任务中打断/强退，空闲一次退出）、markdown 渲染对齐 omp（ATX 标题主题色/表格完整边框/python 内置函数高亮）、思考块配色对齐 omp（261 单测 + 41 PTY 全绿） |
-| **v1.3.2** | **P0+P1 优化**：bash 超时 + Ctrl+C 中断当前轮 + 持久 bash 会话 + 跨会话项目记忆 + 摘要快模型路由 + 429 备用 key 轮换 + compaction 保留工具结果 + read SQLite + 提示词优化 + **静态链接单文件发布**（228 单测 + 36 PTY 全绿） |
+| v1.0.0 | 初始版本：TUI + Agent 循环 + 基础工具 |
+
+> 各版本完整变更明细见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 🗺️ 路线图
 
@@ -511,6 +513,8 @@ cjh 内置 MCP 客户端，支持 stdio 传输 + JSON-RPC 2.0。配置 `mcp_serv
 
 ## 📚 文档
 
+- [CHANGELOG](CHANGELOG.md) — 完整版本变更记录
+- [优化提速方案](docs/优化提速方案.md) — 性能优化路线图与进度总纲
 - [方案与架构设计 v2](docs/方案与架构设计-v2.md) — 项目设计与架构
 - [实现方案与交接](docs/实现方案与交接.md) — 架构与代码地图（新开发者接手入口）
 - [cjh 功能清单](docs/cjh功能清单.md) — 完整功能列表
@@ -590,7 +594,7 @@ cjh/
 │   ├── gateway/            # Channel 抽象（IM/Web 渠道网关）
 │   ├── skills.cj           # 技能系统（frontmatter 解析 + 指令注入）
 │   ├── ast_grep.cj         # AST 搜索工具（sg CLI + grep 降级）
-│   ├── tests/              # 单元测试（工具/会话/截断器/路由，141 用例）
+│   ├── tests/              # 单元测试（工具/会话/截断器/路由/TUI 渲染/性能优化，325 用例）
 │   └── core_funcs_test.cj  # 根包纯函数测试（skills/tool_format/ast_grep/task）
 ├── libs/                   # 独立可复用库
 │   ├── cjterm/             # 终端 UI 库（ANSI / 差分渲染 / termios / 主题）
