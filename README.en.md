@@ -8,17 +8,18 @@ Describe tasks in natural language → the Agent understands intent, plans auton
 
 **cjh is a coding agent harness natively implemented in Cangjie**: single-binary zero-dependency distribution (one file = one agent), a plugin trust chain backed by language-level memory safety, and systematic engineering optimization around two hard metrics: **token efficiency** + **execution speed**. Driven both from the TUI and remotely via Web, cjh is evolving toward **parallel multi-agent orchestration** (drawing on mature patterns like swarm, with a parallel-subagent orientation).
 
-[Project Intent](#-project-intent-not-just-another-agent) · [Features](#-features) · [Two Hard Metrics](#-two-hard-metrics) · [Quick Start](#-quick-start) · [Architecture](#-architecture) · [Plugin Ecosystem](#-plugin-ecosystem--trust-chain) · [Docs](#-docs) · [Roadmap](#-roadmap)
+[Project Intent](#-project-intent-native-cangjie-differentiation) · [Features](#-features) · [Two Hard Metrics](#-two-hard-metrics) · [Quick Start](#-quick-start) · [Architecture](#-architecture) · [Plugin Ecosystem](#-plugin-ecosystem--trust-chain) · [Docs](#-docs) · [Roadmap](#-roadmap)
 
 </div>
 
 ---
 
-## 🎯 Project Intent: Not Just Another Agent
+## 🎯 Project Intent: Native Cangjie Differentiation
 
 > The coding-agent space already has mature solutions — codex, claude code, deepseek's dsh, pi, omp, and more — with features proven viable.
-> **Building yet another "same agent in Cangjie" has no value.** cjh's foundation is the differentiation only Cangjie can provide:
-> single-binary distribution, a strong safety DNA, multi-backend compilation, M:N native concurrency, and the **parallel multi-agent orchestration** these enable.
+> cjh's value is that it reimplements, from the bottom up, a **complete, runnable, reusable coding agent harness** in the Cangjie language —
+> with well-commented, readable source that serves as a first-hand reference for building agents in Cangjie.
+> Single-binary distribution, language-level safety, multi-backend compilation, M:N native concurrency — these Cangjie characteristics are fully realized in the real engineering scenario of an agent, and thereby support **parallel multi-agent orchestration**.
 
 The core thesis: **mainstream agents have already proven features viable; piling on features is meaningless. Cangjie's unique advantages are the foundation.** Three hard constraints permeate all design:
 
@@ -78,6 +79,18 @@ cjh's orientation is **parallel sub-agents + context isolation** (Linux-fork-lik
 | **Plugin Trust Chain** | SHA256 checksum + SM2 national cryptography signature verification (Cangjie native `stdx.crypto`), preventing supply chain poisoning. |
 | **Web Native Support** | Built-in HTTP Server + WebSocket streaming conversation + REST API + frontend SPA, remotely driving the Agent. |
 | **Cross-Platform Native** | Cangjie multi-backend compilation + terminal-layer platform abstraction (POSIX/Win32 backends via conditional compilation, unified VT output) — one source tree, multi-platform binaries: Linux static single file + Windows cross-compiled exe verified, macOS passthrough ([design](docs/跨平台终端层设计方案.md)). |
+
+### Value Summary (by audience)
+
+| Audience | Value |
+|---|---|
+| **Cangjie ecosystem** | The most complete "AI application in Cangjie" reference: TUI (cjterm), SSE streaming (cjllm), MCP client, plugin SM2 signature, cross-platform terminal layer — "first" or "most complete" implementations in five directions; the 5 standalone libraries under libs/ are infrastructure ready to be reused |
+| **Xinchuang / government & enterprise** | Single binary with zero dependencies + no foreign runtime dependency + SM2 national-cryptography signing — "no foreign dependencies" is a real differentiator in sensitive scenarios |
+| **Engineering quality** | 325 unit tests + 15 PTY scenarios (49 assertions); tests have genuinely caught 10+ latent bugs (including the edit tool that "never actually worked" before); performance optimization backed by measured data (prompt peak 42.9K→9.4K, per-round 5-22s→2-5s); CI gate (all-green tests, red-first-then-green) enforced |
+| **Design judgment** | Truncation + spill-to-disk backtrack for token savings (not naive truncation — no middle information lost); hashline anchor-point editing; multi-agent takes parallel sub-agents + context isolation, explicitly "claiming no conceptual novelty, choosing an implementation orientation" |
+| **Learning / porting** | Well-commented source (16%–26% on critical paths, comments explain "why" rather than restate code) + a complete docs set (architecture design, 30+ pitfall records, tool design docs); low cost to pick up |
+
+> **Honest positioning**: cjh does not compete with codex / claude code on feature breadth; its value lies in the Cangjie ecosystem position and in assets that are directly reusable and learnable. Parallel multi-agent orchestration (V4) is planned (the `task` tool already provides explore/worker primitives); the 5 libs are "publishable as standalone packages" but not yet published — see the [Roadmap](#-roadmap).
 
 ## 🎯 Two Hard Metrics
 
