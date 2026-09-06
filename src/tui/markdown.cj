@@ -533,7 +533,8 @@ public class MarkdownRender {
         } else {
             this.inlineCodeOn = !this.inlineCodeOn
             if (this.inlineCodeOn) {
-                sb.append(Ansi.fg(Ansi.THEME_ACCENT))
+                // 行内代码芯片：浅灰字 fg250 + 深底 bg236（P2b，≈ omp mdCodeBlock 芯片感）
+                sb.append(Ansi.fg(250) + Ansi.bg(Ansi.THEME_CODE_BG))
             } else {
                 sb.append(Ansi.reset())
                 this.textOn = false

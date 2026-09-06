@@ -18,7 +18,7 @@ public class InputBox <: Component {
     private var text_: String = ""
     // 提示符可见文本（不含 ANSI）与其着色渲染文本（omp 风格：╰─ 底边框 + ❯）
     private var promptText: String = "╰─ ❯ "
-    private var promptRendered: String = Ansi.fg(Ansi.THEME_MUTED) + "╰─ " + Ansi.reset() + Ansi.fg(Ansi.THEME_ACCENT) + "❯ " + Ansi.reset()
+    private var promptRendered: String = Ansi.fg(Ansi.THEME_BORDER) + "╰─ " + Ansi.reset() + Ansi.fg(Ansi.THEME_ACCENT) + "❯ " + Ansi.reset()
 
     // 变更回调（输入内容变化时触发，参数为新内容）
     public var onChange: (String) -> Unit = { _ => }
@@ -295,7 +295,7 @@ public class InputBox <: Component {
         this.searchMode = !this.searchMode
         if (this.searchMode) {
             this.promptText = "╰─ 🔍 "
-            this.promptRendered = Ansi.fg(Ansi.THEME_MUTED) + "╰─ " + Ansi.reset() +
+            this.promptRendered = Ansi.fg(Ansi.THEME_BORDER) + "╰─ " + Ansi.reset() +
                 Ansi.fg(Ansi.THEME_WARN) + "🔍 " + Ansi.reset()
             this.searchQuery = ""
             this.historyIndex = -1
@@ -303,7 +303,7 @@ public class InputBox <: Component {
             this.jumpToFirstMatch()  // 显示最近一条（若历史非空）
         } else {
             this.promptText = "╰─ ❯ "
-            this.promptRendered = Ansi.fg(Ansi.THEME_MUTED) + "╰─ " + Ansi.reset() +
+            this.promptRendered = Ansi.fg(Ansi.THEME_BORDER) + "╰─ " + Ansi.reset() +
                 Ansi.fg(Ansi.THEME_ACCENT) + "❯ " + Ansi.reset()
             this.searchQuery = ""
             this.text_ = ""  // 退出搜索：清空（与进入时对称）

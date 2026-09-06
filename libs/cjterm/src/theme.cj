@@ -33,6 +33,14 @@ public class Palette {
     public var highlight: Int64 = 179   // 浅琥珀金（选中行 / 预览卡片高亮）
     public var text: Int64 = 254        // 素白（基础文本层）
     public var bg: Int64 = 235          // 深炭灰（背景层，暂未启用）
+    // P2b 视觉层次（中性灰阶背景卡片 + 边框 + 链接，跨主题一致，个别主题可覆盖）
+    public var statusBg: Int64 = 234    // 状态栏整行背景
+    public var userBg: Int64 = 237      // 用户输入回显行背景
+    public var toolBg: Int64 = 236      // 工具调用/结果行背景
+    public var thinkingBg: Int64 = 233  // 思考块背景
+    public var codeBg: Int64 = 236      // 行内代码芯片背景
+    public var link: Int64 = 51         // 链接色
+    public var border: Int64 = 244      // 边框实线色
 
     public init() {}
 }
@@ -63,6 +71,7 @@ public class Theme {
         starfrost.highlight = 179    // 浅琥珀金
         starfrost.text = 254         // 素白
         starfrost.bg = 235           // 深炭灰
+        starfrost.border = 73        // 星霜青 accent（品牌主色，输入框╰─/状态栏边框）
         map["starfrost"] = starfrost
 
         // classic：经典亮青（旧版配色，向后兼容）
@@ -78,6 +87,7 @@ public class Theme {
         classic.highlight = 226      // 亮黄（选中行高亮）
         classic.text = 15            // 纯白
         classic.bg = 235             // 深炭灰
+        classic.border = 51          // 亮青 accent（高饱和亮青，醒目）
         map["classic"] = classic
 
         // dracula：经典暗色主题（紫粉青绿）
@@ -94,6 +104,7 @@ public class Theme {
         dracula.highlight = 177      // 紫（选中行高亮）
         dracula.text = 231           // 近白 (#F8F8F2)
         dracula.bg = 235             // 深炭灰 (#282A36 近似)
+        dracula.border = 177         // 紫 #BD93F9（注释意图 border=purple）
         map["dracula"] = dracula
 
         // nord：北欧极简冷色主题（蓝灰冰原）
@@ -110,6 +121,7 @@ public class Theme {
         nord.highlight = 222         // 黄（选中行高亮）
         nord.text = 254              // 素白 (nord6 #ECEFF4 近似)
         nord.bg = 235                // 深炭灰 (nord0 #2E3440 近似)
+        nord.border = 110            // 冰蓝青 nord8 #88C0D0（比 nord10 更亮，保醒目）
         map["nord"] = nord
 
         // gruvbox：复古暖色主题（橙黄绿棕）
@@ -126,6 +138,7 @@ public class Theme {
         gruvbox.highlight = 208      // 橙（选中行高亮）
         gruvbox.text = 230           // 暖白 (fg1 #EBDBB2 近似)
         gruvbox.bg = 235             // 深炭灰 (bg0 #282828 近似)
+        gruvbox.border = 208         // 橙 #FE8019（accent，暖复古醒目）
         map["gruvbox"] = gruvbox
 
         // tokyo-night：东京夜色主题（深蓝紫粉霓虹感）
@@ -142,6 +155,7 @@ public class Theme {
         tokyoNight.highlight = 141   // 紫（选中行高亮）
         tokyoNight.text = 189        // 浅蓝灰白 (lightBlue #C0CAF5 近似)
         tokyoNight.bg = 235          // 深炭灰 (bg #1A1B26 近似)
+        tokyoNight.border = 33       // 蓝 #7AA2F7（注释意图 border=blue）
         map["tokyo-night"] = tokyoNight
 
         // catppuccin：柔和暖色暗色主题（粉橙薰衣草）
@@ -158,6 +172,7 @@ public class Theme {
         catppuccin.highlight = 216   // 桃橙（选中行高亮）
         catppuccin.text = 189        // 近白 (text #CDD6F4 近似)
         catppuccin.bg = 235          // 深炭灰 (base #1E1E2E 近似)
+        catppuccin.border = 111      // 柔蓝 blue #89B4FA（注释意图 border=blue）
         map["catppuccin"] = catppuccin
 
         // rose-pine：玫瑰松石暗色主题（玫红松绿金）
@@ -174,6 +189,7 @@ public class Theme {
         rosePine.highlight = 183     // 鸢尾紫（选中行高亮）
         rosePine.text = 189          // 近白 (text #E0DEF4 近似)
         rosePine.bg = 235            // 深炭灰 (base #191724 近似)
+        rosePine.border = 30         // 松石青 pine #31748F（注释意图 border=pine）
         map["rose-pine"] = rosePine
 
         // solarized：经典护眼暗色主题（蓝青绿黄）
@@ -190,6 +206,7 @@ public class Theme {
         solarized.highlight = 33     // 太阳蓝（选中行高亮）
         solarized.text = 230         // 暖白 (base3 #FDF6E3 近似)
         solarized.bg = 235           // 深炭灰 (base03 #002B36 近似)
+        solarized.border = 37        // 青绿 cyan #2AA198（base01 太暗，取亮青绿保醒目）
         map["solarized"] = solarized
 
         // monokai：经典编辑器暗色主题（粉绿黄橙紫）
@@ -206,6 +223,7 @@ public class Theme {
         monokai.highlight = 214      // 橙（选中行高亮）
         monokai.text = 231           // 近白 (foreground #F8F8F2 近似)
         monokai.bg = 235             // 深炭灰 (background #272822 近似)
+        monokai.border = 81          // 青绿 cyan #66D9EF（注释意图 border=cyan）
         map["monokai"] = monokai
 
         return map
@@ -230,6 +248,13 @@ public class Theme {
             Ansi.THEME_HIGHLIGHT = p.highlight
             Ansi.COLOR_TEXT = p.text
             Ansi.COLOR_BG = p.bg
+            Ansi.THEME_STATUS_BG = p.statusBg
+            Ansi.THEME_USER_BG = p.userBg
+            Ansi.THEME_TOOL_BG = p.toolBg
+            Ansi.THEME_THINKING_BG = p.thinkingBg
+            Ansi.THEME_CODE_BG = p.codeBg
+            Ansi.THEME_LINK = p.link
+            Ansi.THEME_BORDER = p.border
             Theme.currentName = key
             return key
         }

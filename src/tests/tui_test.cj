@@ -43,7 +43,7 @@ public class MarkdownRenderTest {
         let m = MarkdownRender()
         // 帧尾反引号延迟到 finish() flush（流式语义：无法预知后续是否还有反引号）
         let out = m.process("`code`") + m.finish()
-        @Assert(out, Ansi.fg(Ansi.THEME_ACCENT) + "code" + Ansi.reset())
+        @Assert(out, Ansi.fg(250) + Ansi.bg(Ansi.THEME_CODE_BG) + "code" + Ansi.reset())
     }
 
     @TestCase
@@ -51,7 +51,7 @@ public class MarkdownRenderTest {
         // 2 反引号行内代码
         let m = MarkdownRender()
         let out = m.process("``code``") + m.finish()
-        @Assert(out, Ansi.fg(Ansi.THEME_ACCENT) + "code" + Ansi.reset())
+        @Assert(out, Ansi.fg(250) + Ansi.bg(Ansi.THEME_CODE_BG) + "code" + Ansi.reset())
     }
 
     @TestCase
@@ -94,7 +94,8 @@ public class MarkdownRenderTest {
         let out = m.process("**粗体** 和 `code`") + m.finish()
         @Assert(stripAnsi(out), "粗体 和 code")
         @Assert(out.contains(Ansi.fg(Ansi.COLOR_TEXT)), true)  // 粗体/普通文本素白
-        @Assert(out.contains(Ansi.fg(Ansi.THEME_ACCENT)), true)  // 行内代码青色
+        @Assert(out.contains(Ansi.fg(250)), true)  // 行内代码芯片 fg250
+        @Assert(out.contains(Ansi.bg(Ansi.THEME_CODE_BG)), true)  // 行内代码芯片 bg236
     }
 
     @TestCase
@@ -183,8 +184,8 @@ public class MarkdownRenderTest {
         let m = MarkdownRender()
         m.process("`")  // 帧尾 1 个反引号未决（无后续字符触发 flush）
         let tail = m.finish()
-        // finish 先 flush（开行内代码 accent），再关闭（reset）
-        @Assert(tail, Ansi.fg(Ansi.THEME_ACCENT) + Ansi.reset())
+        // finish 先 flush（开行内代码 fg250+bg236 芯片），再关闭（reset）
+        @Assert(tail, Ansi.fg(250) + Ansi.bg(Ansi.THEME_CODE_BG) + Ansi.reset())
     }
 
     // 剥离 ANSI 转义（测试辅助：验证文本内容而非精确 ANSI 序列）

@@ -633,7 +633,8 @@ func runTui(sessionId: String): Int64 {
                 StreamState.active = false
             }
             TuiBridge.ensureNewline()
-            TuiBridge.output(Ansi.fg(Ansi.THEME_OK) + "▶ ${name} " + Ansi.reset() + Ansi.fg(Ansi.THEME_MUTED) + formatToolArgs(name, args) + Ansi.reset())
+            // 工具调用行 bg 236 整行卡片（P2b）：行内只用 fg 改色、禁止中途 reset（保背景）
+            TuiBridge.tool(Ansi.fg(Ansi.THEME_OK) + "▶ ${name} " + Ansi.fg(Ansi.THEME_MUTED) + formatToolArgs(name, args))
             tui.setAgentState("Running ${name}…")
         }
         agent.onToolResult = { name, result =>
