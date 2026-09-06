@@ -237,6 +237,16 @@ public class Agent {
     // 线程安全（主线程 handleKey 设置，agent 线程轮询检查）。
     private var interruptFlag: Bool = false
     private var interruptLock: Mutex = Mutex()
+    // P1b：messages 换装锁——后台摘要任务持锁做"快照 → 换装"，
+    // 主循环 loadHistory/换装同样持锁，保证快照与换装的原子性（避免换装旧列表）
+    private var compactLock: Mutex = Mutex()
+    // P1b 后台压缩状态：pending 摘要任务（None=无）；auto 模式（None/SyncFallback）
+    private var pendingCompact: Option<Future<String>> = None
+    private var autoCompactMode: String = "None"
+    // P1b 模式终态标记：本 run 是否触发过后台摘要 / 是否完成过一次换装
+    // （mode 推导：pending 在=Async；否则曾换装=AsyncApplied；否则 SyncFallback/None）
+    private var compactTriggeredOnce: Bool = false
+    private var compactAppliedOnce: Bool = false
     // 回合状态（状态机：Idle/Running/Interrupted/Done）
     private var roundState: RoundState = RoundState.Idle
     // 已完成的轮次数（异常出口时记录，供 summary 展示）
@@ -600,11 +610,12 @@ public class Agent {
             summary.rounds = iterations
             this.roundsCompleted = iterations
 
-            // 长会话压缩：每轮发起 LLM 请求前检查历史是否超阈值
-            // （消息条数 或 估算 token 任一超限即 LLM 摘要压缩早期历史）。
+            // 长会话压缩（P1b 后台异步化）：每轮发起 LLM 请求前——
+            // 若后台摘要已完成则换装 messages（不阻塞），未完成则顺延；
+            // 后台曾失败则本 run 回退同步压缩（行为降级不崩）。
             // 必须放在循环内——单次 run() 可能跑几十轮，prompt 随轮次膨胀，
             // 只在 run() 开头检查的话压缩永远不会触发（实测 48 轮 prompt 涨到 31K token）
-            this.maybeCompact()
+            this.checkPendingCompact()
 
             // 顶层兜底：LLM 响应解析可能抛 IllegalArgumentException（非法 UTF-8 字节）
             // 不让它崩 TUI，转成错误消息返回
@@ -662,6 +673,9 @@ public class Agent {
             summary.cachedTokens += response.usage.cachedTokens
             // 记录真实 prompt token（压缩触发依据；首轮为 0 时用字符估算兜底）
             this.lastPromptTokens = response.usage.promptTokens
+            // P1b：轮末检查阈值——超限且无后台任务在跑 → spawn 后台摘要（不阻塞主循环，
+            // 下一轮请求前 checkPendingCompact 换装或顺延）
+            this.maybeTriggerBackgroundCompact()
             this.onTokens(response.usage.promptTokens + response.usage.completionTokens)
             Log.info("第 ${iterations} 轮完成 | 耗时 ${roundMs}ms | prompt ${response.usage.promptTokens} completion ${response.usage.completionTokens} cached ${response.usage.cachedTokens} | toolCalls ${response.toolCalls.size} | textLen ${response.text.size} | truncated ${response.truncated} | timedOut ${response.timedOut}")
 
@@ -864,6 +878,10 @@ public class Agent {
      * 保留最近 compactKeep 条（含 system）。对齐 pi 的自动摘要压缩：
      * 触发后调用链 = 摘要请求（无工具）→ 重建 messages = system + 摘要 + 近期历史
      *
+     * 手动路径（/compact，独立线程 spawn 调用）保持同步 + compactLock 保护，
+     * 与 P1b 主循环后台异步路径（maybeTriggerBackgroundCompact + checkPendingCompact）
+     * 共享 compactLock 保证 messages 快照/换装的跨线程一致性。
+     *
      * 返回值：(是否执行了压缩, 压缩前消息数, 压缩后消息数)。
      * force=true 时无视阈值强制压缩（/compact 手动命令）。
      */
@@ -925,7 +943,14 @@ public class Agent {
         for (i in compactEnd..this.messages.size) {
             newMsgs.add(this.messages[i])
         }
-        this.messages = newMsgs
+        // P1b：换装持 compactLock——手动 /compact 在独立线程调用，与主循环后台
+        // 摘要任务的快照/换装共享 messages，锁串行化换装语句保证不交错写坏
+        this.compactLock.lock()
+        try {
+            this.messages = newMsgs
+        } finally {
+            this.compactLock.unlock()
+        }
         this.onDelta("\n\n_[会话历史已手动压缩：${compactEnd - 1} 条早期消息 → 摘要]_")
     }
 
@@ -951,35 +976,53 @@ public class Agent {
     }
 
     /**
-     * Compaction：消息历史超过阈值时，用 LLM 把早期消息压缩成摘要，
+     * Compaction（同步路径，P1b 保留）：消息历史超过阈值时，用 LLM 把早期消息压缩成摘要，
      * 保留最近 compactKeep 条（含 system）。对齐 pi 的自动摘要压缩：
      * 触发后调用链 = 摘要请求（无工具）→ 重建 messages = system + 摘要 + 近期历史
+     *
+     * 供 compact(false) 手动路径使用（/compact 之外的非强制入口）；主循环自动压缩
+     * 走 P1b 后台异步路径（maybeTriggerBackgroundCompact + checkPendingCompact）。
      */
     private func maybeCompact(): Unit {
         if (this.config.compactThreshold <= 0 && this.config.compactTokenThreshold <= 0) {
             return
         }
-        // 双阈值触发（任一超限即压缩）：
-        //  1. 消息条数阈值：compactThreshold（对齐 pi 自动摘要）
-        //  2. token 估算阈值：compactTokenThreshold——长 tool_result 时消息条数涨得慢
-        //     但 prompt 已膨胀，靠字符数估算兜底（实测 30 条消息时 prompt 已 15-20K token）
-        let msgCount: Int64 = this.messages.size
-        let overCount: Bool = this.config.compactThreshold > 0 && msgCount > this.config.compactThreshold
-        // token 触发：优先用上一轮 provider 返回的真实 prompt token（精确）；
-        // 首轮前无测量时退化为字符估算（/4，保守）
-        let triggerTokens = if (this.lastPromptTokens > 0) { this.lastPromptTokens } else { this.estimateMessagesTokens() }
-        let overTokens: Bool = this.config.compactTokenThreshold > 0 && triggerTokens > this.config.compactTokenThreshold
-        if (!overCount && !overTokens) {
+        // 双阈值触发判断（任一超限即压缩），与后台路径共用同一判定
+        if (!this.compactionOverThreshold()) {
             return
         }
         let keep = if (this.config.compactKeep >= 2) { this.config.compactKeep } else { 2 }
-        // 待压缩段：索引 1 .. size-keep-1（跳过 system，保留最近 keep 条）
-        let compactEnd = this.messages.size - keep
-        if (compactEnd <= 1) {
+        if (this.messages.size - keep <= 1) {
             return
         }
-        // P1-8：构造摘要请求——assistant 纯文本进摘要，tool_call/tool_result 保留原文。
-        // 避免摘要丢失工具结果细节导致压缩后 agent"失忆"。
+        let req = this.buildSummaryRequest(keep)
+        let summary = this.requestSummary(req[2])
+        if (summary.size == 0) {
+            return
+        }
+        this.applySummary(summary, req)
+    }
+
+    /**
+     * 双阈值触发判断（消息条数 或 token 任一超限）。
+     * token 触发优先用上一轮 provider 返回的真实 prompt token（精确）；
+     * 首轮前无测量时退化为字符估算（/4，保守）。
+     */
+    private func compactionOverThreshold(): Bool {
+        let msgCount: Int64 = this.messages.size
+        let overCount: Bool = this.config.compactThreshold > 0 && msgCount > this.config.compactThreshold
+        let triggerTokens = if (this.lastPromptTokens > 0) { this.lastPromptTokens } else { this.estimateMessagesTokens() }
+        let overTokens: Bool = this.config.compactTokenThreshold > 0 && triggerTokens > this.config.compactTokenThreshold
+        return overCount || overTokens
+    }
+
+    /**
+     * 构造摘要请求（P1-8）：assistant 纯文本进摘要，tool_call/tool_result 保留原文。
+     * 避免摘要丢失工具结果细节导致压缩后 agent"失忆"。
+     * 返回 (compactEnd, kept 工具链消息, 摘要请求消息)。
+     */
+    private func buildSummaryRequest(keep: Int64): (Int64, ArrayList<ChatMessage>, ArrayList<ChatMessage>) {
+        let compactEnd = this.messages.size - keep
         var kept = ArrayList<ChatMessage>()
         var sb = StringBuilder()
         sb.append("请把以下对话历史压缩成一段简洁的中文摘要（保留：任务目标、已完成的关键操作与结果、当前进度、尚未解决的问题）。不要遗漏重要事实。")
@@ -995,36 +1038,199 @@ public class Agent {
         }
         var summaryMsgs = ArrayList<ChatMessage>()
         summaryMsgs.add(ChatMessage("user", sb.toString()))
-        var summary = ""
+        return (compactEnd, kept, summaryMsgs)
+    }
+
+    /**
+     * 摘要请求（无工具）：P1-5 摘要走快模型（配置了 summary 时）。
+     * 失败或空摘要返回 ""（调用方保持原历史）。
+     */
+    private func requestSummary(summaryMsgs: ArrayList<ChatMessage>): String {
+        let sp = if (this.summaryProvider.isSome()) { this.summaryProvider.getOrThrow() } else { this.provider }
         try {
-            // P1-5：摘要走快模型（配置了 summary 时），降低摘要调用耗时
-            let sp = if (this.summaryProvider.isSome()) { this.summaryProvider.getOrThrow() } else { this.provider }
             let resp = sp.chatStream(summaryMsgs, ArrayList<ToolSpec>(), { _ => }, { _ => }, { _ => }, { => false })
-            summary = resp.text
+            return resp.text
         } catch (e: Exception) {
-            // 摘要失败不阻塞主流程（保持原历史继续）
-            return
+            Log.warn("compaction 摘要请求失败: ${e}")
+            return ""
         }
-        if (summary.size == 0) {
-            return
+    }
+
+    /**
+     * 应用摘要（换装 messages）：system + 摘要 + 保留的工具链消息 + 最近 keep 条。
+     * 在 compactLock 内执行，与后台任务的"快照→换装"互斥，避免换装旧列表。
+     */
+    private func applySummary(summary: String, req: (Int64, ArrayList<ChatMessage>, ArrayList<ChatMessage>)): Unit {
+        let compactEnd = req[0]
+        let kept = req[1]
+        this.compactLock.lock()
+        try {
+            // 重建历史：system + 摘要 + 保留的工具链消息 + 最近 keep 条
+            var newMsgs = ArrayList<ChatMessage>()
+            if (this.messages.size > 0) {
+                newMsgs.add(this.messages[0])  // system
+            }
+            newMsgs.add(ChatMessage("user", "[历史摘要] ${summary}"))
+            for (m in kept) {
+                newMsgs.add(m)
+            }
+            for (i in compactEnd..this.messages.size) {
+                newMsgs.add(this.messages[i])
+            }
+            this.messages = newMsgs
+            // 重置真实 prompt token 记录：压缩后旧测量值已失真（>阈值），
+            // 不重置会导致下一轮基于陈旧值再次压缩（churn）
+            this.lastPromptTokens = 0
+        } finally {
+            this.compactLock.unlock()
         }
-        // 重建历史：system + 摘要 + 保留的工具链消息 + 最近 keep 条
-        var newMsgs = ArrayList<ChatMessage>()
-        if (this.messages.size > 0) {
-            newMsgs.add(this.messages[0])  // system
-        }
-        newMsgs.add(ChatMessage("user", "[历史摘要] ${summary}"))
-        for (m in kept) {
-            newMsgs.add(m)
-        }
-        for (i in compactEnd..this.messages.size) {
-            newMsgs.add(this.messages[i])
-        }
-        this.messages = newMsgs
-        // 重置真实 prompt token 记录：压缩后旧测量值已失真（>阈值），
-        // 不重置会导致下一轮基于陈旧值再次压缩（churn）
-        this.lastPromptTokens = 0
         this.onDelta("\n\n_[会话历史已自动压缩：${compactEnd - 1} 条早期消息 → 摘要]_")
+    }
+
+    // ==================== P1b：compaction 后台异步化 ====================
+    //
+    // 主循环每轮结束检查真实 prompt token（lastPromptTokens），超阈值即后台 spawn
+    // 摘要任务（读 messages 快照生成摘要，不阻塞主循环）；下一轮 LLM 请求前
+    // tryGet 检查：已完成则换装 messages（主线程独占写，compactLock 守护），
+    // 未完成则顺延（当前轮照常跑）；后台失败静默重试一次，再失败回退同步路径
+    // （本 run 内 autoCompactMode 置 SyncFallback，后续按同步压缩，行为降级不崩）。
+
+    /**
+     * P1b：查询当前自动压缩模式（测试观测用）。
+     * "None"=未触发；"Async"=后台摘要在跑；"AsyncApplied"=后台摘要已完成换装
+     * （run 同步结束时后台必已完成，pending 已清，终态为 AsyncApplied）；
+     * "SyncFallback"=后台曾失败已回退同步。
+     */
+    public func getCompactionMode(): String {
+        if (this.pendingCompact.isSome()) {
+            return "Async"
+        }
+        if (this.compactAppliedOnce) {
+            return "AsyncApplied"
+        }
+        return this.autoCompactMode
+    }
+
+    /**
+     * P1b：轮末触发后台摘要（不阻塞）。
+     * 超阈值 且 无后台任务在跑 且 未处于同步回退模式 → spawn 摘要任务。
+     * 触发点在主循环 lastPromptTokens 回填后、assistant 消息入历史前，
+     * 快照边界 = 截至上一轮末尾的历史（干净，不含本轮响应）。
+     */
+    private func maybeTriggerBackgroundCompact(): Unit {
+        if (this.config.compactThreshold <= 0 && this.config.compactTokenThreshold <= 0) {
+            return
+        }
+        if (this.autoCompactMode == "SyncFallback") {
+            return
+        }
+        if (this.pendingCompact.isSome()) {
+            return
+        }
+        if (!this.compactionOverThreshold()) {
+            return
+        }
+        let keep = if (this.config.compactKeep >= 2) { this.config.compactKeep } else { 2 }
+        if (this.messages.size - keep <= 1) {
+            return
+        }
+        // 在锁内取快照（快照必须与换装互斥：换装改 this.messages，
+        // 快照读 this.messages，两者需串行以避免读到换装后的列表）。
+        // 拷贝独立列表（非引用别名）：spawn 闭包只持有快照副本，
+        // 主线程后续换装/增长 messages 不影响摘要输入
+        var snapMsgs = ArrayList<ChatMessage>()
+        this.compactLock.lock()
+        try {
+            let built = this.buildSummaryRequest(keep)
+            for (m in built[2]) {
+                snapMsgs.add(m)
+            }
+        } finally {
+            this.compactLock.unlock()
+        }
+        // let 接住不可变快照（spawn 闭包只能捕获不可量：快照列表此刻起不再变化）
+        let snapSummaryMsgs = snapMsgs
+        // spawn 摘要任务：读快照生成摘要（失败静默重试一次，返回 ""=失败）
+        this.compactTriggeredOnce = true
+        this.pendingCompact = Some(spawn {
+            let sp = if (this.summaryProvider.isSome()) { this.summaryProvider.getOrThrow() } else { this.provider }
+            var result = ""
+            for (attempt in 0..2) {
+                try {
+                    let resp = sp.chatStream(snapSummaryMsgs, ArrayList<ToolSpec>(), { _ => }, { _ => }, { _ => }, { => false })
+                    result = resp.text
+                    if (result.size > 0) {
+                        break
+                    }
+                } catch (e: Exception) {
+                    Log.warn("compaction 后台摘要失败（第 ${attempt + 1} 次）: ${e}")
+                }
+            }
+            result
+        })
+        Log.info("compaction 后台摘要已触发（pending）")
+    }
+
+    /**
+     * P1b：每轮 LLM 请求前检查后台摘要任务。
+     * 已完成（tryGet 非 None）→ 换装 messages（成功置 AsyncApplied，失败回退同步）；
+     * 未完成（None）→ 顺延，当前轮照常跑。
+     * 换装时按【当前】size 重算 compactEnd 与 kept：触发到换装之间历史已增长，
+     * 用触发时的旧边界会丢消息；kept 重算则与摘要内容自然衔接不重复。
+     */
+    private func checkPendingCompact(): Unit {
+        if (this.pendingCompact.isNone()) {
+            return
+        }
+        let fut = this.pendingCompact.getOrThrow()
+        let res = fut.tryGet()
+        if (res.isNone()) {
+            // 未完成 → 顺延
+            return
+        }
+        let summary = res.getOrThrow()
+        this.pendingCompact = None
+        if (summary.size == 0) {
+            // 后台两次都失败 → 回退同步路径（本 run 内按同步压缩，行为降级不崩）
+            Log.warn("compaction 后台摘要失败，本 run 回退同步压缩")
+            this.autoCompactMode = "SyncFallback"
+            this.maybeCompact()
+            return
+        }
+        // 成功 → 换装（主线程独占写，锁守护快照/换装互斥）
+        let keep = if (this.config.compactKeep >= 2) { this.config.compactKeep } else { 2 }
+        let compactEnd = this.messages.size - keep
+        if (compactEnd <= 1) {
+            // 当前历史不足（极端：run 期间被清空），丢弃摘要
+            return
+        }
+        this.compactLock.lock()
+        try {
+            var newMsgs = ArrayList<ChatMessage>()
+            if (this.messages.size > 0) {
+                newMsgs.add(this.messages[0])  // system
+            }
+            newMsgs.add(ChatMessage("user", "[历史摘要] ${summary}"))
+            // kept 工具链消息（与同步路径同规则）：1..compactEnd 内的工具调用/结果保留原文
+            for (i in 1..compactEnd) {
+                let m = this.messages[i]
+                if (m.role == "tool" || m.toolCalls.size > 0) {
+                    newMsgs.add(m)
+                }
+            }
+            for (i in compactEnd..this.messages.size) {
+                newMsgs.add(this.messages[i])
+            }
+            this.messages = newMsgs
+            // 重置真实 prompt token 记录：压缩后旧测量值已失真（>阈值），
+            // 不重置会导致下一轮基于陈旧值再次压缩（churn）
+            this.lastPromptTokens = 0
+        } finally {
+            this.compactLock.unlock()
+        }
+        this.compactAppliedOnce = true
+        this.onDelta("\n\n_[会话历史已后台自动压缩：${compactEnd - 1} 条早期消息 → 摘要]_")
+        Log.info("compaction 后台摘要完成，已换装（${compactEnd} 条 → 摘要）")
     }
 
     /**
