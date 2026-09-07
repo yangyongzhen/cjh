@@ -144,6 +144,52 @@ public class StreamAccumulatorTest {
         @Assert(resp.usage.completionTokens, 0)
     }
 
+    @TestCase
+    public func testUsageOpenAiNestedCachedTokens(): Unit {
+        // OpenAI 标准 / 智谱 GLM 等 OpenAI 兼容接口：
+        // 缓存命中在嵌套字段 usage.prompt_tokens_details.cached_tokens
+        let acc = StreamAccumulator()
+        acc.feed(this.usageFrameWithDetails(5300, 12, 4988))
+        let resp = acc.finish()
+        @Assert(resp.usage.promptTokens, 5300)
+        @Assert(resp.usage.completionTokens, 12)
+        @Assert(resp.usage.cachedTokens, 4988)
+    }
+
+    @TestCase
+    public func testUsageNestedCachedZeroAndNonObjectDetails(): Unit {
+        // 嵌套字段存在但命中为 0 → 不产生假命中
+        let acc0 = StreamAccumulator()
+        acc0.feed(this.usageFrameWithDetails(100, 10, 0))
+        let r0 = acc0.finish()
+        @Assert(r0.usage.cachedTokens, 0)
+        // prompt_tokens_details 非对象（异常形态）→ 容错，不抛异常
+        var details = JsonInt(123)
+        let accBad = StreamAccumulator()
+        accBad.feed(this.usageFrameWithBadDetails(100, 10, details))
+        let rBad = accBad.finish()
+        @Assert(rBad.usage.promptTokens, 100)
+        @Assert(rBad.usage.cachedTokens, 0)
+    }
+
+    @TestCase
+    public func testUsageTopLevelCacheWinsOverNested(): Unit {
+        // 优先级：顶层 prompt_cache_hit_tokens / cache_read_input_tokens 优先于嵌套兜底
+        var usage = JsonObject()
+        usage.put("prompt_tokens", JsonInt(1000))
+        usage.put("completion_tokens", JsonInt(10))
+        var details = JsonObject()
+        details.put("cached_tokens", JsonInt(500))
+        usage.put("prompt_tokens_details", details)
+        usage.put("prompt_cache_hit_tokens", JsonInt(777))
+        var root = JsonObject()
+        root.put("usage", usage)
+        let acc = StreamAccumulator()
+        acc.feed(root.toJsonString())
+        let resp = acc.finish()
+        @Assert(resp.usage.cachedTokens, 777)
+    }
+
     /**
      * 构造 {"choices":[{"delta":{"content":X}}]}
      */
@@ -180,6 +226,34 @@ public class StreamAccumulatorTest {
         usage.put("prompt_tokens", JsonFloat(prompt))
         usage.put("completion_tokens", JsonFloat(completion))
         usage.put("prompt_cache_hit_tokens", JsonFloat(cached))
+        var root = JsonObject()
+        root.put("usage", usage)
+        return root.toJsonString()
+    }
+
+    /**
+     * 构造带嵌套 prompt_tokens_details.cached_tokens 的 usage 帧（OpenAI 标准/智谱 GLM 形态）
+     */
+    private func usageFrameWithDetails(prompt: Int64, completion: Int64, cached: Int64): String {
+        var details = JsonObject()
+        details.put("cached_tokens", JsonInt(cached))
+        var usage = JsonObject()
+        usage.put("prompt_tokens", JsonInt(prompt))
+        usage.put("completion_tokens", JsonInt(completion))
+        usage.put("prompt_tokens_details", details)
+        var root = JsonObject()
+        root.put("usage", usage)
+        return root.toJsonString()
+    }
+
+    /**
+     * 构造 prompt_tokens_details 非对象的异常形态帧（容错验证）
+     */
+    private func usageFrameWithBadDetails(prompt: Int64, completion: Int64, badDetails: JsonValue): String {
+        var usage = JsonObject()
+        usage.put("prompt_tokens", JsonInt(prompt))
+        usage.put("completion_tokens", JsonInt(completion))
+        usage.put("prompt_tokens_details", badDetails)
         var root = JsonObject()
         root.put("usage", usage)
         return root.toJsonString()

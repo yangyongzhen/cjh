@@ -1,8 +1,17 @@
 # CHANGELOG
 
-cjh 版本变更记录。依据 git tag 史 + 提交史整理；版本号规则：重大更新递增中间位（v1.2.0→v1.3.0），小更新递增最后位（v1.3.13→v1.3.14）。
+cjh 版本变更记录。依据 git tag 史 + 提交史整理；版本号规则：重大更新递增中间位（v1.2.0→v1.3.0），小更新递增最后位（v1.3.14→v1.3.15）。
 
 > 注：v1.0.0 / v1.1.0（首个 tag 前）/ v1.2.2 / v1.3.0 / v1.3.5 等版本未打 tag，日期与内容按提交史还原，以「无 tag」标注。
+
+## [v1.3.15] - 2026-09-06
+
+### Fixed
+- **回合统计 `0% cached` 统计缺口**：`StreamAccumulator` 只解析 DeepSeek 顶层 `prompt_cache_hit_tokens` 与 Anthropic `cache_read_input_tokens`，未解析 OpenAI 标准 / 智谱 GLM 等 OpenAI 兼容接口的**嵌套字段** `usage.prompt_tokens_details.cached_tokens`——跑 GLM/OpenAI 兼容 provider 时缓存命中恒为 0，状态条永远显示 `0% cached`（实际缓存可能已命中）。现按优先级解析：顶层两字段优先，嵌套字段兜底（仅当缓存值仍为 0 时读取），`prompt_tokens_details` 非对象时容错不抛异常。
+
+### Tests
+- +3 用例（`libs/cjllm/llm_test.cj`）：嵌套 `cached_tokens` 解析（GLM 真实形态 5300/12/4988）、命中为 0 与异常形态容错、顶层字段优先级
+- 门禁：cjllm 34/34 + 根包 335/335 全绿 + build + --mock
 
 ## [v1.3.14] - 2026-09-06
 
