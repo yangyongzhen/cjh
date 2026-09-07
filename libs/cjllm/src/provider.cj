@@ -246,13 +246,27 @@ public class StreamAccumulator {
                         if (let Some(ct) <- usage.get("completion_tokens")) {
                             this.completionTokens = extractNum(ct)
                         }
-                        // 缓存命中：DeepSeek prompt_cache_hit_tokens / Anthropic cache_read_input_tokens
-                        // 对齐 atomcode openai_compat.rs map_usage：单值 fallback，流式 last-wins（= 赋值）
+                        // 缓存命中（多协议字段，优先级自上而下，流式 last-wins = 赋值）：
+                        //   1. DeepSeek 风格：usage.prompt_cache_hit_tokens（顶层）
+                        //   2. Anthropic 原生：usage.cache_read_input_tokens（顶层）
+                        //   3. OpenAI 标准 / 智谱 GLM 等 OpenAI 兼容接口：
+                        //      usage.prompt_tokens_details.cached_tokens（嵌套，兜底层）
                         if (let Some(ch) <- usage.get("prompt_cache_hit_tokens")) {
                             this.cachedTokens = extractNum(ch)
                         }
                         if (let Some(cr) <- usage.get("cache_read_input_tokens")) {
                             this.cachedTokens = extractNum(cr)
+                        }
+                        if (this.cachedTokens == 0) {
+                            if (let Some(d) <- usage.get("prompt_tokens_details")) {
+                                match (d.kind()) {
+                                    case JsonKind.JsObject =>
+                                        if (let Some(ct) <- d.asObject().get("cached_tokens")) {
+                                            this.cachedTokens = extractNum(ct)
+                                        }
+                                    case _ => ()
+                                }
+                            }
                         }
                     case _ => ()
                 }
