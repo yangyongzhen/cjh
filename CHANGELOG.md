@@ -4,6 +4,14 @@ cjh 版本变更记录。依据 git tag 史 + 提交史整理；版本号规则�
 
 > 注：v1.0.0 / v1.1.0（首个 tag 前）/ v1.2.2 / v1.3.0 / v1.3.5 等版本未打 tag，日期与内容按提交史还原，以「无 tag」标注。
 
+## [v1.3.17] - 2026-09-08
+
+### Fixed
+- **Windows bash 工具 /bin/bash 不存在：Shell 降级 + 平台感知缺失**：`BashSession.ensureStarted()` 硬编码 `launch("/bin/bash", ...)`，Windows 上 `/bin/bash` 不存在导致 `ProcessException: Created process failed`；`BashTool` timeout 路径同理硬编码 `bash -c`。新增 `ShellProvider`（`term_util.cj`）平台感知 shell 解析器——Windows 通过 `OS=Windows_NT`/`windir` 环境变量检测，候选 Git Bash 三路径（系统级 ×2 + 用户级 portable）→ Unix 默认 `/bin/bash`；`CJH_SHELL` 环境变量可强制覆盖。`BashSession` 改用 `ShellProvider.shellPath`，`execute()` 命令模板按 `isBash` 分支（bash 保持 `{ cmd; }` 语法，PowerShell 用 `$LASTEXITCODE`）；`BashTool` timeout 路径按 `isBash` 分支（bash `timeout --kill-after=2s`，PowerShell `cmd.exe /c timeout`）。cjterm 包无法 import `std.fs`（构建范围限制），改为 launch 失败时报错提示。
+
+### Tests
+- Windows 交叉编译通过（winbuild.sh，PE32+ x86-64 Windows 控制台程序）
+
 ## [v1.3.16] - 2026-09-08
 
 ### Fixed

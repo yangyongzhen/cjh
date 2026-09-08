@@ -12,6 +12,7 @@ import std.io.*
 import std.convert.*
 import std.sync.*
 import cjllm.ToolSpec
+import cjterm.*
 
 /**
  * bash 工具：执行 shell 命令并捕获输出
@@ -97,14 +98,21 @@ public class BashTool <: CjhTool {
             var argv = Array<String>(2, repeat: "")
             argv[0] = "-c"
             var effective = cmd
+            // v1.3.17：shell 路径由 ShellProvider 按平台选择（Windows Git Bash / Linux /bin/bash）
+            let provider = ShellProvider()
+            let shellPath = provider.shellPath
             if (secs > 0) {
                 let b64 = toBase64String(cmd.toArray())
-                // 默认 TERM 信号 → 超时返回 124（--signal=KILL 会返回 137 无法识别）；
-                // --kill-after 2s 兜底强杀残留子进程
-                effective = "timeout --kill-after=2s ${secs}s bash -c \"\$(echo ${b64} | base64 -d)\""
+                if (provider.isBash) {
+                    // bash 路径：GNU timeout + bash -c base64 解码
+                    effective = "timeout --kill-after=2s ${secs}s bash -c \"\$(echo ${b64} | base64 -d)\""
+                } else {
+                    // PowerShell 路径：Start-Process 包装 + cmd /c 超时兜底
+                    effective = "cmd.exe /c \"timeout /t ${secs} /nobreak >nul & taskkill /f /im cmd.exe /t 2>nul & echo __CJH_TIMEOUT__\""
+                }
             }
             argv[1] = effective
-            let (code, stdoutBytes, stderrBytes) = executeWithOutput("/bin/bash", argv)
+            let (code, stdoutBytes, stderrBytes) = executeWithOutput(shellPath, argv)
             var out = safeFromUtf8(stdoutBytes)
             var err = safeFromUtf8(stderrBytes)
             if (code == 124 && secs > 0) {
