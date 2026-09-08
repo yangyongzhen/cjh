@@ -1,7 +1,7 @@
 # cjh 功能清单
 
-> 最后更新：2026-08-30
-> 版本：v1.3.2（开发中 v1.3.3）
+> 最后更新：2026-09-07
+> 版本：v1.3.15
 > 性质：cjh 已具备和支持的功能完整列表
 
 ---
@@ -14,6 +14,11 @@
 | **多 Provider 支持** | OpenAI / DeepSeek / GLM / Ollama / Anthropic 协议兼容 |
 | **Provider 热切换** | `/model` `/provider` 命令运行时切换，历史保留 |
 | **单二进制零依赖** | 仓颉原生编译，无运行时依赖，跨平台分发 |
+| **预算竞速中断** | `runWithBudget` 原语：LLM 请求 connect/写/读全阶段有界超时 + 用户取消检查器（下沉传输层，新协议复用即天然继承）；裸 connect 挂死从"永久卡死"变为秒级可中断 |
+| **超长工具参数 JSON 修复** | `repairTruncatedJson`：LLM 生成超长 tool_call 被 max_tokens 截断时，优先闭合被截断字符串再闭合 JSON，恢复可用参数 |
+| **异步 Compaction** | 轮末按真实 `usage.promptTokens` 触发，读快照 spawn 后台摘要（不阻塞主循环），下一轮请求前换装/顺延，失败静默重试再回退同步路径 |
+| **双平台条件编译** | POSIX termios / Windows 控制台 API 用 `@When[os == "..."]` 内置条件编译隔离，业务代码零平台分支；交叉编译产物经 strings 符号级验证后端互斥 |
+| **模块化包架构** | 6 包单向依赖（cjh 主体 + cjllm/cjterm/cjutil/cjlog/cjconfig），循环依赖用回调注入解决；5 个库包独立开源发布 v0.1.0 |
 
 ## 二、TUI 终端界面
 
@@ -31,16 +36,23 @@
 | **Provider 配置表单** | `/provider` 无参数时弹出配置表单 |
 | **输入队列方案 B** | Agent 执行期间输入可编辑，提交入队 + 提示，执行完自动处理下一条 |
 | **Tasks 面板** | Agent 内置任务列表实时展示，对齐 Claude Code TodoWrite |
-| **回合总结条** | 每轮结束后显示 `─── ✓ 2 rounds · 3 tools · 42.6s · 1.53K tokens · 99% cached ───` |
+| **回合总结条** | 每轮结束后显示 `─── ✓ 2 rounds · 3 tools · 42.6s · 1.53K tokens · 99% cached ───`（token 为模型 usage 真实值逐轮累加，缓存率按 provider 协议解析——DeepSeek `prompt_cache_hit_tokens` / Anthropic `cache_read_input_tokens` / OpenAI 标准嵌套 `prompt_tokens_details.cached_tokens` 三字段全解析） |
+| **增量行缓存** | OutputView 行级增量维护，渲染复杂度 O(全部行)→O(变化行)，长会话无卡顿无闪屏（等价性有专项单测锁定） |
+| **思考过程折叠** | 推理/思考段独立视图 + Ctrl+T 折叠 |
+| **bracketed paste** | 粘贴走独立读取路径，按字符边界解码（中文粘贴不乱码，v1.3.12 根治） |
+| **双平台输入** | POSIX termios / Windows 控制台 API（含 UTF-8 中文输入、快捷键体系），`@When` 条件编译隔离 |
+| **NO_COLOR 支持** | 终端禁用颜色时自动降级（v1.3.13） |
+| **可靠性兜底** | 主循环单帧异常不终止事件循环；终端 raw 恢复放 finally（崩溃也还原 ECHO）；Ctrl+C 优雅中断当前轮 |
 
 ## 三、主题系统
 
 | 功能 | 说明 |
 |------|------|
-| **6 套主题** | starfrost（星霜青）/classic（经典亮青）/catppuccin/rose-pine/solarized/monokai |
+| **10 套主题** | starfrost（星霜青）/classic（经典亮青）/catppuccin/rose-pine/solarized/monokai 等 10 套（v1.3.13 自 6 套扩充） |
 | **运行时切换** | `/theme [name]` 切换，持久化到 settings.json |
 | **交互式选择** | `/theme` 无参数时弹出 picker，上下键选择 |
 | **实时预览** | 主题切换即时渲染，无需重启 |
+| **按主题变色的输入框边框** | 每个主题显式定义输入框边框色，视觉层次统一 |
 
 ## 四、工具系统
 
@@ -134,7 +146,9 @@
 | **PluginManager** | 扫描 `~/.cjh/plugins/*/plugin.json`，路径遍历防护，白名单过滤 |
 | **事件钩子** | `on_tool_result` 钩子：工具结果回填前触发，插件可拦截/改写；事件数据通过 `CJH_HOOK_DATA` 环境变量传递 |
 | **插件白名单** | `enabled_plugins` 配置启用插件 |
-| **示例插件** | `example/plugins/echo-test`（工具插件）+ `log-pruner`（事件钩子插件） |
+| **插件信任链（V3，三步全部实现）** | ① SHA256 目录校验和（`sha256DirExcluding`，加载时比对）；② SM2 国密签名验证（stdx.crypto 原生实现，零外部依赖，pubkey DER + 签 checksum）；③ 信任列表 CLI（`cjh trust/untrust/trust-list` + `~/.cjh/trusted-publishers`，空列表=开放模式/非空=严格模式） |
+| **require_signature 强制模式** | 配置开启后，无完整签名（checksum+pubkey+signature）的插件拒绝加载 |
+| **示例插件** | `example/plugins/`：echo-test（工具）+ log-pruner（钩子）+ git-status（第三方风格工具）+ tool-result-banner（第三方风格钩子）+ signed-demo（SM2 签名插件，附签名生成器） |
 
 ## 八、MCP 协议支持（V2b 扩展点）
 
@@ -175,10 +189,11 @@
 
 | 功能 | 说明 |
 |------|------|
-| **settings.json** | base_url / model / max_iterations / system_prompt / temperature / max_tokens / models / capability / compact_threshold / compact_keep / enabled_skills / enabled_plugins / mcp_servers / theme / tool_result_max_chars |
+| **settings.json** | base_url / model / max_iterations / system_prompt / temperature / max_tokens / models / capability / compact_threshold / compact_keep / enabled_skills / enabled_plugins / mcp_servers / theme / tool_result_max_chars / require_signature / web_search / web_fetch / max_tokens 等 |
 | **auth.json** | api_key 存储 |
 | **环境变量** | `CJH_CONFIG_DIR` `CJH_MOCK` `CJH_PROVIDER` 等覆盖 |
-| **模型预设** | `/provider deepseek|openai|glm|ollama` 预设 base_url+model |
+| **模型预设** | `/provider deepseek|openai|glm|ollama|qwen|kimi|doubao|siliconflow` 预设 base_url+model（支持 custom 端点） |
+| **配置模板兜底** | cjconfig 首次运行自动生成带注释模板，缺失字段取默认值 |
 
 ## 十三、斜杠命令
 
@@ -234,7 +249,19 @@
 | v1.3.0 | Web 支持实现方案 Step 1-5：HTTP server + WebSocket 流式对话 + 前端 app.js + REST API + Markdown 渲染（marked.js + DOMPurify + highlight.js）+ 代码块复制按钮 + auth_token 鉴权中间件 + 启动安全审计日志 |
 | v1.3.1 | P0+P1 优化（bash 超时 / Ctrl+C 中断 / 提示词 / 项目记忆 / 模型路由 / compaction / task / SQLite）+ 持久 bash 会话（跨命令保留 cwd/env）+ 429 fallback 备用 key 轮换 + provider 弹窗预设（qwen/kimi/doubao/siliconflow + custom 端点 + 接入协议）+ TUI 零测试补齐（202 全绿）+ 技能示例 |
 | v1.3.2 | 静态链接单文件发布（零仓颉动态库依赖，`dist/cjh-v1.3.2-linux-x64`） |
-| v1.3.3（开发中） | Web 工作区切换运行时真正生效（chdir + bash 会话重置）+ 目录浏览选择器 + 配置表单厂家选择 + 右上角模型下拉修复（原"加载中"死代码）+ 配置按钮文字化 + web 模块单测（238 全绿） |
+| v1.3.3 | Web 工作区切换运行时真正生效（chdir + bash 会话重置）+ 目录浏览选择器 + 配置表单厂家选择 + 右上角模型下拉修复（原"加载中"死代码）+ 配置按钮文字化 + web 模块单测（238 全绿） |
+| v1.3.4 | Streaming 卡死根治（流式传输链路排查修复）+ 粘贴自动发送修复 |
+| v1.3.5 | TUI 僵尸忙态根治 + 技术债"偶发 UTF-8 异常"正式闭环（`truncateUtf8` 字符边界截断，禁裸 `String[0..N]` 切中文） |
+| v1.3.6 | 首个 LLM 请求 442s 卡死 + 8 次中断全部失效根治：`runWithBudget` 预算竞速原语（裸 socket 无 connect 超时的仓颉 1.0.5 实测问题） |
+| v1.3.7 | 预算竞速下沉传输层（connect/write/read 全有界，新协议复用传输层零改动继承）+ 双平台发布包修复 |
+| v1.3.8 | "连续几轮会话总被打断"根治 |
+| v1.3.9 | 工具输出中文乱码根治（字节流→String 按字符边界 `safeFromUtf8` 解码，替代逐字节 `Rune(byte)` 拼接） |
+| v1.3.10 | TUI 假死/无法输入根治（异步日志 sink 计数空循环假 sleep 饿死主 worker，改 runtime `sleep`） |
+| v1.3.11 | 长会话 TUI 主协程停摆 + 泄漏 bash/僵尸根治（裸 `Mutex.lock()` 临界区异常锁泄漏→全 `try/finally` 守护；退出路径显式回收子进程 + 关闭 Log/MCP/会话） |
+| v1.3.12 | 粘贴中文乱码根治（bracketed paste 独立读取路径按字符边界解码） |
+| v1.3.13 | P2 OutputView 增量行缓存（渲染 O(全部行)→O(变化行)）+ P2b TUI 视觉层次美化 + `NO_COLOR` 支持 + 主题扩至 10 套 + 双平台发布包 |
+| v1.3.14 | V3 信任链 Step 3 信任管理 CLI（`cjh trust/untrust/trust-list` + `~/.cjh/trusted-publishers`，空列表开放/非空严格）+ 第三方风格插件示例（git-status / tool-result-banner）+ libs 生态冷启动发布（cjterm/cjlog/cjconfig/cjutil/cjllm 独立仓库 v0.1.0） |
+| v1.3.15 | 回合统计缓存率统计缺口修复：解析 OpenAI 标准/智谱 GLM 嵌套字段 `prompt_tokens_details.cached_tokens`（此前 GLM/OpenAI 兼容接口恒显示 0% cached） |
 
 ## 十七、代码组织原则
 
@@ -244,11 +271,22 @@
 
 ---
 
-## 十八、待推进功能（v2 路线图）
+## 十八、待推进功能（路线图）
 
 | 优先级 | 功能 | 说明 |
 |--------|------|------|
+| ★★★ | P3 连接池 1→N | 传输层 `pooledTransport` 单槽→2-4 槽（host:port 键），主+摘要 provider 交替省建连 |
 | ★★★ | V4 agent 集群调度 | 编排器 + 子 agent 并行（隔离工作区/契约/角色模型/编排 DSL/模型路由）——核心差异化（`task` 工具已建 explore/worker 基础） |
-| ★★★ | V2b 插件系统完整形态 | WASM 工具沙箱 + 中心仓 + `cjh install` |
+| ★★☆ | V2b 插件系统完整形态 | WASM 工具沙箱 + 中心仓 + `cjh install`（信任链三步已闭环，沙箱与仓库分发是剩余项） |
 | ★★☆ | V2e IM 网关 | Channel 抽象 + Web 渠道 + 审批远程化 |
 | ★★☆ | V3b 协议深化 | Provider Registry + 模型能力描述 |
+| ★☆☆ | 单轮 completion 瓶颈优化 | 快模型验证 + 请求批量化（中期） |
+| ★☆☆ | 库包生态演进 | 推动 5 库包进入官方收录、适配鸿蒙工具链、持续按版本号规则发版 |
+
+## 十九、生态发布与测试门禁
+
+| 项 | 说明 |
+|----|------|
+| **独立开源库包** | cjllm（LLM 协议/SSE/多 provider）/ cjterm（TUI 渲染/主题/双平台输入）/ cjutil（UTF-8 安全/SHA256/SM2/hex/runWithBudget）/ cjlog（异步分级日志）/ cjconfig（配置管理）——均含 LICENSE + README + 发布指南 + examples + CI，已发布独立仓库 v0.1.0；cjcfg 为内部架构库不独立发布 |
+| **测试门禁** | `scripts/test.sh`（根包 335 用例，自动切动态链接配置）+ `cd libs/cjllm && cjpm test`（34 用例）+ `python3 scripts/tui_pty_test.py`（TUI 伪终端 14 场景）+ `--mock` 端到端（工具调用链验证）；交付前必须全绿 |
+| **发版流程** | 版本号三处同步（cjpm.toml + logo.cj VERSION + 标题栏注释）+ 打 tag + 双远端推送；重大更新递增中间位、小更新递增最后位 |
