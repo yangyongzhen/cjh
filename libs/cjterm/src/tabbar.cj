@@ -17,10 +17,20 @@ public class TabBar <: Component {
     private var tabs: ArrayList<String> = ArrayList<String>()
     private var active: Int64 = 0
     private var visible: Bool = true
+    // 终端 UTF-8 能力（false 时标签分隔符降级 "|"）：
+    // v1.3.16 前硬编码 UTF-8，Windows 非 65001 代码页下与 logo ASCII 混排
+    private var utf8: Bool = true
     // 标签切换回调（参数为选中索引）
     public var onSelect: (Int64) -> Unit = { _ => }
 
     public init() {}
+
+    /**
+     * 设置终端 UTF-8 能力（TuiApp 启动时接线）
+     */
+    public func setUtf8(v: Bool): Unit {
+        this.utf8 = v
+    }
 
     public init(tabs: ArrayList<String>) {
         this.tabs = tabs
@@ -128,17 +138,18 @@ public class TabBar <: Component {
             canvas.setLine(row, Ansi.fg(Ansi.THEME_MUTED) + "（无标签）" + Ansi.reset())
             return 1
         }
+        let bx = BoxChars(this.utf8)
         for (i in 0..this.tabs.size) {
             let label = this.tabs[i]
             if (i == this.active) {
-                // 选中：主题色底 + 黑字
+                // 选中：主题色底 +黑字
                 sb.append(Ansi.bg(Ansi.THEME_ACCENT) + Ansi.fg(Ansi.COLOR_BLACK) + " " + label + " " + Ansi.reset())
             } else {
                 sb.append(Ansi.fg(Ansi.THEME_MUTED) + " " + label + " " + Ansi.reset())
             }
-            // 标签间分隔
+            // 标签间分隔（utf8 │ / ascii |）
             if (i < this.tabs.size - 1) {
-                sb.append(Ansi.fg(Ansi.THEME_MUTED) + "│" + Ansi.reset())
+                sb.append(Ansi.fg(Ansi.THEME_MUTED) + bx.vc + Ansi.reset())
             }
         }
         canvas.setLine(row, sb.toString())

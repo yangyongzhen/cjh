@@ -29,6 +29,14 @@ public class Spinner <: Component {
     }
 
     /**
+     * 更新终端 UTF-8 能力（TuiApp 启动接线：Windows enableRaw 切换控制台代码页
+     * 晚于组件构造，构造时帧序列可能选错）
+     */
+    public func setUtf8(v: Bool): Unit {
+        this.frames = if (v) { Spinner.FRAMES_UTF8 } else { Spinner.FRAMES_ASCII }
+    }
+
+    /**
      * 设置文案（如 "思考中…"）
      */
     public func setLabel(l: String): Unit {

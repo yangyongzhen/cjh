@@ -118,6 +118,10 @@ foreign func GetConsoleOutputCP(): UInt32
 
 @When[os == "Windows"]
 @C
+foreign func SetConsoleOutputCP(wCodePage: UInt32): Bool
+
+@When[os == "Windows"]
+@C
 foreign func SetStdHandle(nStdHandle: Int32, hHandle: CPointer<UInt8>): Bool
 
 @When[os == "Windows"]
@@ -139,6 +143,9 @@ public class WindowsTerminalBackend <: TerminalBackend {
     private var rawOn: Bool = false
     private var savedErrHandle: CPointer<UInt8> = CPointer<UInt8>()
     private var errRedirected: Bool = false
+    // 原始输出代码页（enableRaw 时若为 936 等非 65001 则切 65001，disableRaw 恢复）
+    private var savedOutCp: UInt32 = 0
+    private var cpSwitched: Bool = false
 
     public init() {
         unsafe {
@@ -178,6 +185,17 @@ public class WindowsTerminalBackend <: TerminalBackend {
                 }
                 LibC.free(outModeBuf)
             }
+            // 输出代码页：能开 VT 的终端（Windows Terminal/ConPTY/新 conhost）必按
+            // UTF-8 渲染，但中文系统默认 CP=936——此时 isUtf8() 误判 false 导致
+            // TUI 框线/logo 混排（v1.3.7 线上 bug）。主动切 65001 并记住原值恢复。
+            // 设置失败不致命（isUtf8 还有现代终端环境变量兜底判据）。
+            let curCp = GetConsoleOutputCP()
+            if (curCp != 65001) {
+                this.savedOutCp = curCp
+                if (SetConsoleOutputCP(65001)) {
+                    this.cpSwitched = true
+                }
+            }
             this.rawOn = true
             return true
         }
@@ -189,6 +207,11 @@ public class WindowsTerminalBackend <: TerminalBackend {
         }
         unsafe {
             SetConsoleMode(this.inHandle, this.savedInMode)
+            // 恢复原始输出代码页（exit 路径必经，避免影响用户后续控制台会话）
+            if (this.cpSwitched) {
+                SetConsoleOutputCP(this.savedOutCp)
+                this.cpSwitched = false
+            }
         }
         this.rawOn = false
     }
@@ -367,12 +390,21 @@ public class WindowsTerminalBackend <: TerminalBackend {
     // ===== UTF-8 检测 =====
 
     /**
-     * 终端是否 UTF-8：代码页 65001（配合 chcp 65001）
+     * 终端是否 UTF-8，判据（任一满足）：
+     *   1. 输出代码页 65001（chcp 65001，或 enableRaw 已主动切换）
+     *   2. 现代终端环境（Windows Terminal/ConPTY/ConEmu 环境变量）——
+     *      这类终端恒按 UTF-8 渲染，根本不读控制台代码页（中文系统 CP 仍 936）
+     *
+     * v1.3.7 线上 bug：仅认判据 1，Windows Terminal 上误判 false，
+     * 框线/logo 降级 ASCII 而输入框等组件仍硬编码 UTF-8 → 混排。
      */
     public func isUtf8(): Bool {
         unsafe {
-            return GetConsoleOutputCP() == 65001
+            if (GetConsoleOutputCP() == 65001) {
+                return true
+            }
         }
+        return isModernTerminalEnv()
     }
 
     // ===== stderr 屏蔽（重定向 NUL，等价 POSIX /dev/null）=====

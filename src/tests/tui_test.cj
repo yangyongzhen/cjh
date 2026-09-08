@@ -469,6 +469,42 @@ public class MarkdownTableTest {
         @Assert(stripAnsi(lines[bottomIdx + 1]).contains("表格后的正文内容"), true)
     }
 
+    /** 表格边框 UTF-8 主路径（默认）：圆角直角齐全 */
+    @TestCase
+    public func testTableBordersUtf8Default(): Unit {
+        let m = MarkdownRender()
+        let out = m.process("| A | B |\n") +
+            m.process("|---|---|\n") +
+            m.process("| 1 | 2 |\n") + m.finish()
+        @Assert(out.contains("┌"), true)   // 顶边框
+        @Assert(out.contains("┐"), true)
+        @Assert(out.contains("├"), true)   // 分隔线
+        @Assert(out.contains("┼"), true)
+        @Assert(out.contains("└"), true)   // 底边框
+        @Assert(out.contains("│"), true)   // 数据行竖线
+    }
+
+    /**
+     * 表格边框非 UTF-8 降级（v1.3.16 Windows 框线混排修复）：
+     * setUtf8(false) 后表格边框全部走 ASCII，不再硬编码 ┌┬┐
+     */
+    @TestCase
+    public func testTableBordersAsciiFallback(): Unit {
+        let m = MarkdownRender()
+        m.setUtf8(false)
+        let out = m.process("| A | B |\n") +
+            m.process("|---|---|\n") +
+            m.process("| 1 | 2 |\n") + m.finish()
+        @Assert(out.contains("┌"), false)
+        @Assert(out.contains("┐"), false)
+        @Assert(out.contains("├"), false)
+        @Assert(out.contains("┼"), false)
+        @Assert(out.contains("└"), false)
+        @Assert(out.contains("│"), false)
+        @Assert(out.contains("+---"), true)  // 顶/底/分隔线 ASCII
+        @Assert(out.contains("|"), true)     // 数据行竖线 ASCII
+    }
+
     @TestCase
     public func testTableEndOnPlainLine(): Unit {
         let m = MarkdownRender()

@@ -59,8 +59,17 @@ public class MarkdownRender {
     private var tableCols: Int64 = 0           // 列数（分隔行确定）
     private var tableWidths: ArrayList<Int64> = ArrayList<Int64>()    // 各列宽
     private var tableData: ArrayList<String> = ArrayList<String>()    // 数据行缓冲（表格结束统一渲染，列宽=全部行最大值）
+    // 终端 UTF-8 能力（false 时表格边框降级 +|-|；runTui 构造后接线）
+    private var utf8: Bool = true
 
     public init() {}
+
+    /**
+     * 设置终端 UTF-8 能力（表格边框按此降级；entries.cj 构造后接线 tui.isUtf8()）
+     */
+    public func setUtf8(v: Bool): Unit {
+        this.utf8 = v
+    }
 
     /**
      * 处理一个增量片段，返回带 ANSI 高亮的字符串
@@ -319,45 +328,49 @@ public class MarkdownRender {
      */
     private func renderTableHeader(sb: StringBuilder): Unit {
         sb.append(this.renderBorderRow(this.tableHeader, true))
-        // 分隔线：├───┼───┤
+        // 分隔线：├───┼───┤（ascii：+---++---+）
         sb.append("\n")
-        var sep = "├"
+        let bx = BoxChars(this.utf8)
+        var sep = bx.tLeft
         for (i in 0..this.tableCols) {
             let w = this.tableWidths[i]
             for (j in 0..w + 2) {
-                sep += "─"
+                sep += bx.hc
             }
             if (i < this.tableCols - 1) {
-                sep += "┼"
+                sep += bx.tCross
             }
         }
-        sep += "┤"
+        sep += bx.tRight
         sb.append(Ansi.fg(Ansi.THEME_MUTED) + sep + Ansi.reset())
     }
 
     /**
-     * 表格顶边框：┌───┬───┐（完整表格观感，对齐 omp 表格边框）
+     * 表格顶边框：┌───┬───┐（完整表格观感，对齐 omp 表格边框；ascii：+---++---+）
      */
     private func renderTableTopBorder(sb: StringBuilder): Unit {
-        sb.append(this.renderTableHLine("┌", "┬", "┐"))
+        let bx = BoxChars(this.utf8)
+        sb.append(this.renderTableHLine(bx.stl, bx.tTop, bx.str))
     }
 
     /**
-     * 表格底边框：└───┴───┘
+     * 表格底边框：└───┴───┘（ascii：+---++---+）
      */
     private func renderTableBottomBorder(sb: StringBuilder): Unit {
-        sb.append(this.renderTableHLine("└", "┴", "┘"))
+        let bx = BoxChars(this.utf8)
+        sb.append(this.renderTableHLine(bx.sbl, bx.tBottom, bx.sbr))
     }
 
     /**
      * 表格横向边框线（顶/底）
      */
     private func renderTableHLine(left: String, mid: String, right: String): String {
+        let bx = BoxChars(this.utf8)
         var line = left
         for (i in 0..this.tableCols) {
             let w = this.tableWidths[i]
             for (j in 0..w + 2) {
-                line += "─"
+                line += bx.hc
             }
             if (i < this.tableCols - 1) {
                 line += mid
@@ -377,11 +390,13 @@ public class MarkdownRender {
     }
 
     /**
-     * 渲染一行单元格：│ 单元格（补空格对齐）│
+     * 渲染一行单元格：│ 单元格（补空格对齐）│（ascii：| ... |）
      */
     private func renderBorderRow(cells: ArrayList<String>, isHeader: Bool): String {
+        let bx = BoxChars(this.utf8)
+        let vc = bx.vc
         var sb = StringBuilder()
-        sb.append(Ansi.fg(Ansi.THEME_MUTED) + "│ " + Ansi.reset())
+        sb.append(Ansi.fg(Ansi.THEME_MUTED) + vc + " " + Ansi.reset())
         for (i in 0..this.tableCols) {
             var cell = ""
             if (i < cells.size) {
@@ -403,9 +418,9 @@ public class MarkdownRender {
             }
             // 列间 " │ "；最后一列行尾 " │"（去尾空格，与分隔线宽度精确对齐）
             if (i < this.tableCols - 1) {
-                sb.append(Ansi.fg(Ansi.THEME_MUTED) + " │ " + Ansi.reset())
+                sb.append(Ansi.fg(Ansi.THEME_MUTED) + " " + vc + " " + Ansi.reset())
             } else {
-                sb.append(Ansi.fg(Ansi.THEME_MUTED) + " │" + Ansi.reset())
+                sb.append(Ansi.fg(Ansi.THEME_MUTED) + " " + vc + Ansi.reset())
             }
         }
         return sb.toString()
