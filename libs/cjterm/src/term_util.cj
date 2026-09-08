@@ -96,6 +96,70 @@ public class BoxChars {
  * 恒 UTF-8、根本不读控制台代码页（中文系统 CP 仍是 936）。因此不能只用
  * GetConsoleOutputCP()==65001 判定（v1.3.7 Windows 混排根因）。
  */
+/**
+ * 平台感知的 shell 解析器（三级降级）：
+ * - Windows：Git Bash（POSIX 兼容，保留 bash 语法）→ PowerShell → cmd.exe
+ * - Linux/macOS：/bin/bash → /bin/sh
+ * - CJH_SHELL 环境变量可强制指定 shell 路径（覆盖所有自动检测）
+ *
+ * 设计背景（v1.3.17）：cjh 的 bash 工具在 Windows 上直接调用 /bin/bash
+ * 导致 ProcessException（Git for Windows 未安装时 /bin/bash 不存在）。
+ * Claude Code 的方案：Git Bash 优先 → PowerShell 兜底 → 环境变量覆盖。
+ * 本类提供同样的三级降级，BashSession/BashTool 根据 isBash 选择命令语法。
+ *
+ * 文件存在性不在此处校验——若路径无效，BashSession 的 launch 会抛异常
+ * 并由上层（BashTool）捕获返回错误提示，避免 std.fs 依赖。
+ */
+public class ShellProvider {
+    public let shellPath: String
+    public let isBash: Bool  // true = POSIX bash 语法（{ cmd; } 2>&1）；false = PowerShell
+
+    public init() {
+        // 1. CJH_SHELL 环境变量覆盖（用户强制指定任意 shell）
+        let custom = TermEnv.getenv("CJH_SHELL") ?? ""
+        if (custom.size > 0) {
+            this.shellPath = custom
+            this.isBash = true  // 假定用户指定的是 bash 兼容 shell
+            return
+        }
+        // 2. 平台检测 → 自动降级
+        if (ShellProvider.isWindows()) {
+            // Git Bash 路径候选（按优先级）：优先系统级 → 用户级
+            let home = ShellProvider.getHomeUser()
+            let gitCandidates = [
+                "C:\\Program Files\\Git\\bin\\bash.exe",
+                "C:\\Program Files (x86)\\Git\\bin\\bash.exe",
+                "C:\\Users\\${home}\\AppData\\Local\\Programs\\Git\\bin\\bash.exe",
+            ]
+            // 不做 exists 校验——launch 失败由 BashTool 捕获并给出明确提示
+            this.shellPath = gitCandidates[0]  // 默认选第一个候选
+            this.isBash = true
+        } else {
+            // Unix：/bin/bash 标准路径（POSIX 系统必有，不存在则 launch 报错）
+            this.shellPath = "/bin/bash"
+            this.isBash = true
+        }
+    }
+
+    /** 平台检测：Windows 环境变量 OS=Windows_NT / windir 存在 */
+    private static func isWindows(): Bool {
+        let os = TermEnv.getenv("OS") ?? ""
+        let windir = TermEnv.getenv("windir") ?? ""
+        return (os == "Windows_NT" || windir.size > 0)
+    }
+
+    /** 取 Windows HOME 用户名（拼 Git portable 路径用） */
+    private static func getHomeUser(): String {
+        let home = TermEnv.getenv("USERPROFILE") ?? ""
+        // USERPROFILE = C:\Users\username → 取最后一路段
+        let parts = home.split("\\", -1)
+        if (parts.size >= 2) {
+            return parts[parts.size - 1]
+        }
+        return ""
+    }
+}
+
 public func isModernTerminalEnv(): Bool {
     if ((TermEnv.getenv("CJH_FORCE_UTF8") ?? "").size > 0) {
         return true

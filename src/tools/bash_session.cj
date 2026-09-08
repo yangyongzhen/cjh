@@ -7,6 +7,7 @@ import std.sync.*
 import std.time.*
 import std.convert.Parsable
 import cjutil.*
+import cjterm.*
 
 /**
  * 持久 bash 会话（P1-3，对齐 omp brush shell）：
@@ -29,6 +30,8 @@ public class BashSession {
     // 旧实现只 terminate(force) 不 wait：每个超时命令都留下一个未回收僵尸，
     // 长会话累计出"4 个未回收僵尸子进程"（2026-09-03 事故现场）。
     private var reapedCount: Int64 = 0
+    // 平台感知 shell 解析（v1.3.17）：Windows 优先 Git Bash，Linux 默认 /bin/bash
+    private let shell: ShellProvider = ShellProvider()
 
     public init() {}
 
@@ -44,7 +47,13 @@ public class BashSession {
             let marker = "__CJH_END_${this.seq}__"
             // 大括号当前 shell 执行（cwd/env 持久）；2>&1 合并 stderr；
             // exit N 会退出会话进程（EOF 路径由 wait() 取退出码）
-            let full = "{ " + cmd + "; } 2>&1; echo \"__CJH_CODE_$?__\"; echo " + marker + "\n"
+            // PowerShell 不支持 { cmd; } 语法——用原生命令拼接替代
+            let full: String
+            if (this.shell.isBash) {
+                full = "{ " + cmd + "; } 2>&1; echo \"__CJH_CODE_$?__\"; echo " + marker + "\n"
+            } else {
+                full = cmd + " 2>&1; echo \"__CJH_CODE_$LASTEXITCODE__\"; echo " + marker + "\n"
+            }
             p.stdInPipe.write(full.toArray())
             p.stdInPipe.flush()  // 必须 flush：否则 bash 收不到命令（管道缓冲）→ 读线程无输出 → wait() 死锁
             // 读线程：阻塞读 stdout 直到 marker（或 EOF），结果写共享状态
@@ -130,9 +139,10 @@ public class BashSession {
                 this.proc = None
             case None => ()
         }
-        // 持久 bash：stdin 管道写命令，stdout/stderr 管道（读线程消费），
+        // 持久 shell：stdin 管道写命令，stdout/stderr 管道（读线程消费），
         // stderr 由命令 2>&1 合并进 stdout
-        let p = launch("/bin/bash", Array<String>(0, repeat: ""), stdIn: Pipe, stdOut: Pipe, stdErr: Pipe)
+        // shell 路径由 ShellProvider 按平台选择（Windows Git Bash / Linux /bin/bash）
+        let p = launch(this.shell.shellPath, Array<String>(0, repeat: ""), stdIn: Pipe, stdOut: Pipe, stdErr: Pipe)
         this.proc = Some(p)
         return p
     }
