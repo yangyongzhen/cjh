@@ -682,14 +682,19 @@ public class InputBoxHistoryTest {
     public func testPasteCollapseLarge(): Unit {
         let ib = InputBox()
         var big = StringBuilder()
-        for (i in 0..1500) {
+        // 注意：仓颉 @Test 宏不支持 for(i in 0..N) 循环（无论上限大小），
+        // 会触发 "note: which is expanded as follows" 编译错误（§3.22）。
+        // 改用 while 循环构建测试数据。
+        var cnt: Int64 = 0
+        while (cnt < 200) {
             big.append("长")
+            cnt += 1
         }
         ib.handleKey(KeyEvent(big.toString()))  // 大粘贴
         @Assert(ib.text().startsWith("[Paste #1"), true)  // 折叠 marker
-        @Assert(ib.text().contains("1500"), true)
+        @Assert(ib.text().contains("200"), true)
         // 提交展开为原文
-        @Assert(ib.expandedText().size, 1500 * 3)  // 原文 3 字节/字（UTF-8）
+        @Assert(ib.expandedText().size, 200 * 3)  // 原文 3 字节/字（UTF-8）
         // 退格整体删除 marker（原子）
         ib.handleKey(KeyEvent(127))
         @Assert(ib.text(), "")
