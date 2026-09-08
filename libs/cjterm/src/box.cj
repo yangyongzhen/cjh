@@ -28,6 +28,14 @@ public class Box <: Component {
         this.utf8 = utf8
     }
 
+    /**
+     * 更新终端 UTF-8 能力（TuiApp 启动接线：Windows enableRaw 切换控制台代码页
+     * 晚于组件构造，构造时初值可能过时）
+     */
+    public func setUtf8(v: Bool): Unit {
+        this.utf8 = v
+    }
+
     public init(title: String, utf8: Bool) {
         this.title = title
         this.utf8 = utf8

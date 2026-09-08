@@ -54,8 +54,18 @@ public class TasksPanel {
     // 任务快照（线程安全：Agent 线程写快照，主循环读渲染）
     private var snapshots: ArrayList<TaskSnapshot> = ArrayList<TaskSnapshot>()
     private var lock: Mutex = Mutex()
+    // 终端 UTF-8 能力（false 时面板边框/任务标记降级 ASCII）：
+    // v1.3.16 前硬编码 UTF-8，Windows 非 65001 代码页下与 logo ASCII 混排
+    private var utf8: Bool = true
 
     public init() {}
+
+    /**
+     * 设置终端 UTF-8 能力（TuiApp 启动时接线）
+     */
+    public func setUtf8(v: Bool): Unit {
+        this.utf8 = v
+    }
 
     /**
      * 更新任务快照（Agent 线程通过 onTodosChanged 回调调用）
@@ -169,19 +179,20 @@ public class TasksPanel {
         let ok: String = Ansi.fg(Ansi.THEME_OK)
         let warn: String = Ansi.fg(Ansi.THEME_WARN)
         let reset: String = Ansi.reset()
+        let bx = BoxChars(this.utf8)
 
-        // 顶边框：╭─ Tasks (1 done, 1 in progress, 2 open) ───╮
+        // 顶边框：╭─ Tasks (1 done, 1 in progress, 2 open) ───╮（ascii：+-- ... +）
         let title: String = "Tasks (${doneCount} done, ${inProgressCount} in progress, ${openCount} open)"
-        var topLine: String = muted + "╭─ " + reset + accent + title + reset + muted + " "
-        let used: Int64 = 4 + Int64(title.size) + 1  // ╭─ + title + 空格
-        var dashCount: Int64 = panelW - used - 1  // -1 for ╮
+        var topLine: String = muted + bx.tl + bx.hc + " " + reset + accent + title + reset + muted + " "
+        let used: Int64 = 4 + Int64(title.size) + 1  // tl+hc + title + 空格
+        var dashCount: Int64 = panelW - used - 1  // -1 for tr
         if (dashCount < 0) { dashCount = 0 }
         var i: Int64 = 0
         while (i < dashCount) {
-            topLine += "─"
+            topLine += bx.hc
             i += 1
         }
-        topLine += "╮" + reset
+        topLine += bx.tr + reset
         canvas.setLine(startRow, topLine)
 
         // 任务行：│  ✓ #1  content   │
@@ -193,13 +204,13 @@ public class TasksPanel {
             var markerColor: String = muted
             match (item.status) {
                 case TaskState.Completed =>
-                    marker = "✓"
+                    marker = if (this.utf8) { "✓" } else { "x" }
                     markerColor = ok
                 case TaskState.InProgress =>
-                    marker = "▶"
+                    marker = if (this.utf8) { "▶" } else { ">" }
                     markerColor = warn
                 case TaskState.Pending =>
-                    marker = "☐"
+                    marker = if (this.utf8) { "☐" } else { "o" }
                     markerColor = muted
             }
             // 截断 content 到面板宽度（UTF-8 安全：避免落在多字节字符中间）
@@ -208,22 +219,22 @@ public class TasksPanel {
             if (Int64(content.size) > maxContentW) {
                 content = truncateUtf8(content, maxContentW)
             }
-            let line: String = muted + "│" + reset + "  " + markerColor + marker + reset + " " +
+            let line: String = muted + bx.vc + reset + "  " + markerColor + marker + reset + " " +
                 muted + "#${item.id}" + reset + "  " + content +
-                muted + "│" + reset
+                muted + bx.vc + reset
             canvas.setLine(row, line)
             row += 1
             itemIdx += 1
         }
 
-        // 底边框：╰───╯
-        var bottomLine: String = muted + "╰"
+        // 底边框：╰───╯（ascii：+---+）
+        var bottomLine: String = muted + bx.bl
         i = 0
         while (i < panelW - 2) {
-            bottomLine += "─"
+            bottomLine += bx.hc
             i += 1
         }
-        bottomLine += "╯" + reset
+        bottomLine += bx.br + reset
         canvas.setLine(startRow + panelH - 1, bottomLine)
     }
 }

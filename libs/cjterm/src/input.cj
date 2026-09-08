@@ -16,6 +16,9 @@ import std.convert.Parsable
  */
 public class InputBox <: Component {
     private var text_: String = ""
+    // 终端 UTF-8 能力（决定提示符/搜索图标是否走 ASCII 降级）：
+    // v1.3.16 前硬编码 UTF-8，Windows 非 65001 代码页下与 logo/状态栏 ASCII 混排
+    private var utf8: Bool = true
     // 提示符可见文本（不含 ANSI）与其着色渲染文本（omp 风格：╰─ 底边框 + ❯）
     private var promptText: String = "╰─ ❯ "
     private var promptRendered: String = Ansi.fg(Ansi.THEME_BORDER) + "╰─ " + Ansi.reset() + Ansi.fg(Ansi.THEME_ACCENT) + "❯ " + Ansi.reset()
@@ -46,6 +49,32 @@ public class InputBox <: Component {
     public init(prompt: String) {
         this.promptText = prompt
         this.promptRendered = Ansi.fg(Ansi.THEME_ACCENT) + prompt + Ansi.reset()
+    }
+
+    /**
+     * 设置终端 UTF-8 能力（TuiApp 启动时接线；false 时提示符降级 "+-- > "）
+     */
+    public func setUtf8(v: Bool): Unit {
+        this.utf8 = v
+        this.rebuildPrompt()
+    }
+
+    /**
+     * 按 utf8 能力 + 搜索模式重建提示符文本/着色文本
+     */
+    private func rebuildPrompt(): Unit {
+        if (this.searchMode) {
+            let icon = if (this.utf8) { "🔍 " } else { "? " }
+            let head = if (this.utf8) { "╰─ " } else { "+-- " }
+            this.promptText = head + icon
+            this.promptRendered = Ansi.fg(Ansi.THEME_BORDER) + head + Ansi.reset() +
+                Ansi.fg(Ansi.THEME_WARN) + icon + Ansi.reset()
+        } else {
+            let head = if (this.utf8) { "╰─ " } else { "+-- " }
+            this.promptText = head + "❯ "
+            this.promptRendered = Ansi.fg(Ansi.THEME_BORDER) + head + Ansi.reset() +
+                Ansi.fg(Ansi.THEME_ACCENT) + "❯ " + Ansi.reset()
+        }
     }
 
     /**
@@ -293,18 +322,13 @@ public class InputBox <: Component {
      */
     private func toggleSearch(): Unit {
         this.searchMode = !this.searchMode
+        this.rebuildPrompt()
         if (this.searchMode) {
-            this.promptText = "╰─ 🔍 "
-            this.promptRendered = Ansi.fg(Ansi.THEME_BORDER) + "╰─ " + Ansi.reset() +
-                Ansi.fg(Ansi.THEME_WARN) + "🔍 " + Ansi.reset()
             this.searchQuery = ""
             this.historyIndex = -1
             this.historyDraft = ""
             this.jumpToFirstMatch()  // 显示最近一条（若历史非空）
         } else {
-            this.promptText = "╰─ ❯ "
-            this.promptRendered = Ansi.fg(Ansi.THEME_BORDER) + "╰─ " + Ansi.reset() +
-                Ansi.fg(Ansi.THEME_ACCENT) + "❯ " + Ansi.reset()
             this.searchQuery = ""
             this.text_ = ""  // 退出搜索：清空（与进入时对称）
             this.historyIndex = -1

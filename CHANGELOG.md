@@ -4,6 +4,19 @@ cjh 版本变更记录。依据 git tag 史 + 提交史整理；版本号规则�
 
 > 注：v1.0.0 / v1.1.0（首个 tag 前）/ v1.2.2 / v1.3.0 / v1.3.5 等版本未打 tag，日期与内容按提交史还原，以「无 tag」标注。
 
+## [v1.3.16] - 2026-09-08
+
+### Fixed
+- **Windows TUI 框线混排根治**（v1.3.7 起遗留）：`isUtf8()` 旧判据仅 `GetConsoleOutputCP()==65001`，而 Windows Terminal 内部恒按 UTF-8 渲染、根本不读控制台代码页（中文系统 CP 仍 936）→ 误判 false → logo/标题栏/状态栏降级 ASCII，但 InputBox/StatusBar/TabBar/TasksPanel/markdown 表格边框硬编码 UTF-8 → 同屏混排（`╭─╮` 与 `+--` 并存）。修复三件套：
+  - **判据补全**：新增 `isModernTerminalEnv()` 纯函数（`WT_SESSION`/`WT_PROFILE_ID`/`ConEmuANSI`/`ConEmuTask`/`CJH_FORCE_UTF8`），`isUtf8()` 改为「代码页 65001 ∪ 现代终端环境」双判据
+  - **主动切代码页**：`WindowsTerminalBackend.enableRaw()` VT 开启成功后 `SetConsoleOutputCP(65001)`（能开 VT 的终端必支持 UTF-8，不依赖用户手动 `chcp`），`disableRaw()` 恢复原值——退出后用户控制台会话不受影响
+  - **组件降级统一**：新增 `BoxChars` 统一边框字符集（圆角+直角+T 型），InputBox（`╰─ ❯`→`+-- >`、搜索图标 `🔍`→`?`）/StatusBar（`┌─`→`+--`）/TabBar（`│`→`|`）/TasksPanel（`╭╮╰╯`+`✓▶☐`→ASCII）/markdown 表格（`┌┬┐├┼┤└┴┘│`→`+`/`-`/`|`）/`titleBarFull` 全部按 utf8 标志选择；`TuiApp.run()` 在 enableRaw 后统一重设 8 个组件的 utf8 标志（消除 conhost 下「构造早于切代码页」的陈旧值混排）；Spinner/Box/ConfirmDialog/WelcomeView/FormDialog 补 `setUtf8` 接线
+  - 新增 `TuiApp.isUtf8()` 透传 + `CJH_FORCE_UTF8` 环境变量（用户侧强制开关/排障手段）
+
+### Tests
+- +17 用例（`libs/cjterm/utf8_fallback_test.cj`：BoxChars 双形态、`isModernTerminalEnv` 5 场景、5 组件 UTF-8/ASCII 降级渲染断言——cjterm 首个测试文件）+ +2 用例（`tui_test.cj`：markdown 表格边框双形态）
+- 门禁：根包 337 全绿 + cjterm 17 全绿 + `cjpm build` + `--mock` + TUI PTY 15 场景 49 断言全过 + **Windows 交叉编译通过**（winbuild.sh；首次踩坑：POSIX `setenv` FFI 无 `@When[os != "Windows"]` 守卫致 exe 链接失败）
+
 ## [v1.3.15] - 2026-09-06
 
 ### Fixed

@@ -17,8 +17,18 @@ public class StatusBar <: Component {
     private var model: String = ""
     // 右侧提示（如滚动位置指示）：render 时附加在横线前，每帧由上层刷新
     private var rightHint: String = ""
+    // 终端 UTF-8 能力（false 时上边框/横线降级 "+--"/"-"）：
+    // v1.3.16 前硬编码 UTF-8，Windows 非 65001 代码页下与 logo ASCII 混排
+    private var utf8: Bool = true
 
     public init() {}
+
+    /**
+     * 设置终端 UTF-8 能力（TuiApp 启动时接线）
+     */
+    public func setUtf8(v: Bool): Unit {
+        this.utf8 = v
+    }
 
     /**
      * 设置状态文本（空串显示默认徽章）
@@ -48,7 +58,8 @@ public class StatusBar <: Component {
     public override func render(canvas: TuiCanvas, row: Int64, width: Int64, height: Int64): Int64 {
         let border = Ansi.fg(Ansi.THEME_BORDER)   // 边框实线色（244，U+2500 连续实线，P2b）
         let muted = Ansi.fg(Ansi.THEME_MUTED)
-        let hc = "─"   // U+2500 连续实线
+        let bx = BoxChars(this.utf8)
+        let hc = bx.hc
         // 整行背景卡片（P2b，≈ omp statusLineBg #121212）：行内只用 fg 改色、禁止 reset
         //（reset 会清掉背景使卡片断裂），行尾 reset 由 padBg 统一补。
         let sep = muted + " > "
@@ -74,8 +85,8 @@ public class StatusBar <: Component {
         }
         let content = modelPart + dirPart + sep + statusPart + hintPart
         var sb = StringBuilder()
-        // Unicode 实线上边框：┌─ 内容 ─────────┐（边框 THEME_BORDER 244，整行铺 bg 234）
-        sb.append(border + "┌─ " + content + border + " ")
+        // 上边框：utf8 ┌─ / ascii +--（边框 THEME_BORDER 244，整行铺 bg 234）
+        sb.append(border + bx.stl + bx.hc + " " + content + border + " ")
         // 横线填充撑满到 width-1（truncate 保留 cols-1 可见，防终端折行的边距），
         // padBg 再铺整行 bg 234（可见宽度已 = width-1，padBg 不额外补空格）
         let used = TuiCanvas.displayWidth(sb.toString())

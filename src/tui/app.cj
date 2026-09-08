@@ -300,8 +300,28 @@ public class TuiApp {
         }
     }
 
+    /**
+     * 终端是否 UTF-8（透传 Term.isUtf8；供 TuiBridge 输出路径的控制台文本
+     * ——回合统计栏/markdown 表格边框——按终端能力降级，避免非 UTF-8 终端乱码）
+     */
+    public func isUtf8(): Bool {
+        return this.term.isUtf8()
+    }
+
     public func run(): Unit {
         this.term.enableRaw()
+        // Windows enableRaw 会主动切换控制台代码页（936→65001），晚于组件构造——
+        // 构造时按 term.isUtf8() 初始化的组件（spinner 帧序列/弹窗/欢迎页等）
+        // 初值可能过时，此处统一重设，消除"logo 已 ASCII、弹窗仍 UTF-8"新混排
+        let utf8Now = this.term.isUtf8()
+        this.inputBox.setUtf8(utf8Now)
+        this.statusBar.setUtf8(utf8Now)
+        this.tabBar.setUtf8(utf8Now)
+        this.tasksPanel.setUtf8(utf8Now)
+        this.spinner.setUtf8(utf8Now)
+        this.confirmDialog.setUtf8(utf8Now)
+        this.welcomeView.setUtf8(utf8Now)
+        this.providerDialog.setUtf8(utf8Now)
         // 注意：不用备用缓冲区（enterAltScreen）——alt screen 下很多终端会把
         // 滚轮从"原生滚动"改为"发送转义序列"（如 ESC[B 方向键），时序拆分会
         // 残留字符输入（"滚轮触发字母 B"）。保持主屏幕 + clearScreen 全量重绘，

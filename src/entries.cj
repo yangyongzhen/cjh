@@ -670,11 +670,13 @@ func runTui(sessionId: String): Int64 {
             if (StreamState.active) {
                 // 流式结束：用最终完整文本（已整体修复 mojibake）整体渲染并重绘替换流式段
                 let md = MarkdownRender()
+                md.setUtf8(tui.isUtf8())  // 表格边框按终端能力降级
                 TuiBridge.endStream(indentReply(md.process(text) + md.finish()))
                 StreamState.active = false
             } else {
                 // 非流式（旧协议全量返回）：整体渲染 markdown
                 let md = MarkdownRender()
+                md.setUtf8(tui.isUtf8())  // 表格边框按终端能力降级
                 TuiBridge.output(indentReply(md.process(text) + md.finish()))
             }
             // 回复结束后加空行：与下一轮用户输入分隔
@@ -711,17 +713,19 @@ func runTui(sessionId: String): Int64 {
                 leftDash = avail / 2 + avail % 2  // 余数补左侧，视觉居中
                 rightDash = avail / 2
             }
+            // 横线按终端能力降级（非 UTF-8 终端 ─ 乱码；TUI 内输出区同屏混排）
+            let dash = if (tui.isUtf8()) { "─" } else { "-" }
             var bar = StringBuilder()
             bar.append(Ansi.fg(Ansi.THEME_MUTED))
             var i: Int64 = 0
             while (i < leftDash) {
-                bar.append("─")
+                bar.append(dash)
                 i += 1
             }
             bar.append(" " + stat + " ")
             i = 0
             while (i < rightDash) {
-                bar.append("─")
+                bar.append(dash)
                 i += 1
             }
             bar.append(Ansi.reset())

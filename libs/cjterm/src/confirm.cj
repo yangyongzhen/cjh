@@ -35,6 +35,14 @@ public class ConfirmDialog <: Component {
     }
 
     /**
+     * 更新终端 UTF-8 能力（TuiApp 启动接线：Windows enableRaw 切换控制台代码页
+     * 晚于组件构造，构造时初值可能过时）
+     */
+    public func setUtf8(v: Bool): Unit {
+        this.utf8 = v
+    }
+
+    /**
      * 弹出弹窗（设置标题/消息/操作提示）
      */
     public func show(title: String, message: String, hint: String): Unit {
