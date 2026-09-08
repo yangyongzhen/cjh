@@ -211,12 +211,10 @@ public class InputBox <: Component {
     public override func render(canvas: TuiCanvas, row: Int64, width: Int64, height: Int64): Int64 {
         // 输入行：提示符 + 内容
         canvas.setLine(row, this.promptRendered + this.text_)
-        // 光标定位到内容末尾（提示符宽度 + 内容码点数；中文输入光标不错位）
-        var cur = this.promptWidth() + 1
-        for (_ in this.text_.toRuneArray()) {
-            cur += 1
-        }
-        canvas.setCursor(row + 1, cur)
+        // 光标定位到内容末尾（使用 displayWidth 计算显示列数——CJK 字符占 2 列）
+        let promptCols = TuiCanvas.displayWidth(this.promptText)
+        let textCols = TuiCanvas.displayWidth(this.text_)
+        canvas.setCursor(row + 1, promptCols + textCols)
         return 1
     }
 
