@@ -16,6 +16,8 @@ import std.convert.Parsable
  */
 public class InputBox <: Component {
     private var text_: String = ""
+    // 光标位置（字节索引，范围 [0..text_.size]）——支持左右移动/插入/删除
+    private var cursorPos: Int64 = 0
     // 终端 UTF-8 能力（决定提示符/搜索图标是否走 ASCII 降级）：
     // v1.3.16 前硬编码 UTF-8，Windows 非 65001 代码页下与 logo/状态栏 ASCII 混排
     private var utf8: Bool = true
@@ -106,6 +108,61 @@ public class InputBox <: Component {
      */
     public func clear(): Unit {
         this.text_ = ""
+        this.cursorPos = 0
+    }
+
+    // ===== 光标移动（UTF-8 字节安全）=====
+
+    /** 光标左移一个字符（UTF-8 多字节跳过连续字节 0x80-0xBF） */
+    private func cursorLeft(): Unit {
+        if (this.cursorPos > 0) {
+            var pos = this.cursorPos - 1
+            while (pos > 0 && (this.text_[pos] & 0xC0u8) == 0x80u8) {
+                pos -= 1
+            }
+            this.cursorPos = pos
+        }
+    }
+
+    /** 光标右移一个字符 */
+    private func cursorRight(): Unit {
+        if (this.cursorPos < this.text_.size) {
+            var pos = this.cursorPos + 1
+            while (pos < this.text_.size && (this.text_[pos] & 0xC0u8) == 0x80u8) {
+                pos += 1
+            }
+            this.cursorPos = pos
+        }
+    }
+
+    /** 光标移到行首 */
+    private func cursorHome(): Unit {
+        this.cursorPos = 0
+    }
+
+    /** 光标移到行尾 */
+    private func cursorEnd(): Unit {
+        this.cursorPos = this.text_.size
+    }
+
+    /** 在光标位置插入文本（UTF-8 字节安全切片） */
+    private func insertAtCursor(s: String): Unit {
+        let before = if (this.cursorPos > 0) { this.text_[0..this.cursorPos] } else { "" }
+        let after = if (this.cursorPos < this.text_.size) { this.text_[this.cursorPos..this.text_.size] } else { "" }
+        this.text_ = before + s + after
+        this.cursorPos += s.size
+    }
+
+    /** 删除光标前一个字符（UTF-8 字节安全） */
+    private func backspaceAtCursor(): Unit {
+        if (this.cursorPos > 0) {
+            var pos = this.cursorPos - 1
+            while (pos > 0 && (this.text_[pos] & 0xC0u8) == 0x80u8) {
+                pos -= 1
+            }
+            this.text_ = this.text_[0..pos] + this.text_[this.cursorPos..this.text_.size]
+            this.cursorPos = pos
+        }
     }
 
     /**
@@ -211,9 +268,10 @@ public class InputBox <: Component {
     public override func render(canvas: TuiCanvas, row: Int64, width: Int64, height: Int64): Int64 {
         // 输入行：提示符 + 内容
         canvas.setLine(row, this.promptRendered + this.text_)
-        // 光标定位到内容末尾（使用 displayWidth 计算显示列数——CJK 字符占 2 列）
+        // 光标定位到 cursorPos 位置（displayWidth 计算显示列数——CJK 字符占 2 列）
         let promptCols = TuiCanvas.displayWidth(this.promptText)
-        let textCols = TuiCanvas.displayWidth(this.text_)
+        let textBefore = if (this.cursorPos > 0) { this.text_[0..this.cursorPos] } else { "" }
+        let textCols = TuiCanvas.displayWidth(textBefore)
         canvas.setCursor(row + 1, promptCols + textCols)
         return 1
     }
@@ -233,13 +291,24 @@ public class InputBox <: Component {
             this.historyDown()
             return true
         }
+        // 光标移动：← 左移 / → 右移
+        if (key.isArrowLeft) {
+            this.cursorLeft()
+            return true
+        }
+        if (key.isArrowRight) {
+            this.cursorRight()
+            return true
+        }
         if (key.isEnter) {
             // 提交（即使内容为空也回调，由上层决定是否忽略）：
-            // 大粘贴 marker 展开为原文提交；加入历史；记录回显文本
+            // 大粘贴 marker 展开为原文提交；加入历史；记录回显文本；光标归位
             let expanded = this.expandedText()
             this.lastEcho = this.text_
             this.addToHistory(expanded)
             this.onSubmit(expanded)
+            this.text_ = ""
+            this.cursorPos = 0
             return true
         }
         if (key.isBackspace) {
@@ -265,17 +334,10 @@ public class InputBox <: Component {
             let (isMarker, _) = this.parsePasteMarker(this.text_)
             if (isMarker) {
                 this.text_ = ""
-            } else if (this.text_.size > 0) {
-                // 按 UTF-8 字符删除（非字节）：从末尾递减试切片，直到合法字符边界
-                var cut = this.text_.size - 1
-                while (cut >= 0) {
-                    try {
-                        this.text_ = this.text_[0..cut]
-                        break
-                    } catch (e: Exception) {
-                        cut -= 1
-                    }
-                }
+                this.cursorPos = 0
+            } else {
+                // 按光标位置删除前一个字符（UTF-8 字节安全）
+                this.backspaceAtCursor()
             }
             this.historyIndex = -1  // 编辑内容：退出历史浏览
             this.onChange(this.text_)
@@ -291,8 +353,9 @@ public class InputBox <: Component {
                     this.pasteCounter += 1
                     this.pasteStore.add(clean)
                     this.text_ = "[Paste #${this.pasteCounter}, +${clean.toRuneArray().size} chars]"
+                    this.cursorPos = this.text_.size
                 } else {
-                    this.text_ += clean
+                    this.insertAtCursor(clean)
                 }
                 this.historyIndex = -1
                 this.onChange(this.text_)
@@ -307,7 +370,8 @@ public class InputBox <: Component {
                 this.searchQuery += key.text  // 搜索：输入进 query，实时跳转匹配
                 this.jumpToFirstMatch()
             } else {
-                this.text_ += key.text
+                // 在光标位置插入字符
+                this.insertAtCursor(key.text)
             }
             this.onChange(this.text_)
             return true
