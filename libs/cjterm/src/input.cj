@@ -92,6 +92,7 @@ public class InputBox <: Component {
     public func setText(t: String): Unit {
         if (this.text_ != t) {
             this.text_ = t
+            this.cursorPos = Int64(t.size)  // 外部设置内容：光标置尾
             this.onChange(t)
         }
     }
@@ -101,6 +102,7 @@ public class InputBox <: Component {
      */
     public func setTextSilent(t: String): Unit {
         this.text_ = t
+        this.cursorPos = Int64(t.size)  // 补全确认：光标置尾
     }
 
     /**
@@ -409,10 +411,12 @@ public class InputBox <: Component {
         let list = this.filteredHistory()
         if (list.size == 0) {
             this.text_ = this.searchQuery  // 无匹配：显示 query
+            this.cursorPos = Int64(this.text_.size)
             this.historyIndex = -1
             return
         }
         this.text_ = list[list.size - 1]  // 最近一条匹配
+        this.cursorPos = Int64(this.text_.size)
         this.historyIndex = 0
     }
 
@@ -434,6 +438,7 @@ public class InputBox <: Component {
             return  // 已到最旧
         }
         this.text_ = list[list.size - 1 - this.historyIndex]
+        this.cursorPos = Int64(this.text_.size)  // 历史浏览：光标置尾
         this.onChange(this.text_)
     }
 
@@ -448,9 +453,11 @@ public class InputBox <: Component {
         if (this.historyIndex > 0) {
             this.historyIndex -= 1
             this.text_ = list[list.size - 1 - this.historyIndex]
+            this.cursorPos = Int64(this.text_.size)  // 历史浏览：光标置尾
         } else {
             this.historyIndex = -1
             this.text_ = this.historyDraft
+            this.cursorPos = Int64(this.text_.size)  // 恢复 draft：光标置尾
         }
         this.onChange(this.text_)
     }
