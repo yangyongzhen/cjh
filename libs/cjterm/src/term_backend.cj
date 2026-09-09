@@ -39,6 +39,23 @@ public interface TerminalBackend {
     func hasInput(): Bool
 
     /**
+     * 输入缓冲区积压量（POSIX: FIONREAD 待读字节；Windows: 待读事件数）。
+     * 供 Term 层做"裸流粘贴"回退：大批量输入事件一次性到达（缓冲积压
+     * 远超单键）是粘贴的特征——Windows 控制台不支持 bracketed paste，
+     * 粘贴以离散按键流入，靠积压量识别后合并为单次粘贴事件。
+     */
+    func readPendingBytes(): Int64
+
+    /**
+     * 后端是否原生支持 bracketed paste（终端以 ESC[200~...ESC[201~
+     * 包裹粘贴，backend 解析为单个 isPaste 事件）。
+     * 支持的后端（POSIX）由 backend 自行解析，Term 层不得做裸流合并
+     * （会抢先吞掉包裹标记）；不支持的后端（Windows 控制台）由 Term
+     * 层按积压量合并离散按键。
+     */
+    func supportsBracketedPaste(): Bool
+
+    /**
      * 带超时等待输入；期间有输入返回 true，超时返回 false
      */
     func waitInput(timeoutMs: Int64): Bool

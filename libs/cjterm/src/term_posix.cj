@@ -69,6 +69,8 @@ private let STDERR: Int32 = 2
 
 // ioctl TIOCGWINSZ = 0x5413
 private let TIOCGWINSZ: UInt64 = 0x5413
+// FIONREAD：查询输入缓冲区待读字节数（Linux/macOS 值一致）
+private let FIONREAD: UInt64 = 0x541B
 
 // 缓冲区常量
 private let TERMIOS_SIZE: Int64 = 60
@@ -158,6 +160,32 @@ public class PosixTerminalBackend <: TerminalBackend {
             }
             return false
         }
+    }
+
+    /**
+     * 输入缓冲区待读字节数（FIONREAD）：裸流粘贴回退的积压量判据
+     */
+    public func readPendingBytes(): Int64 {
+        unsafe {
+            if (let cnt <- LibC.malloc<UInt8>(count: 8)) {
+                let r = ioctl(STDIN, FIONREAD, cnt)
+                if (r == 0) {
+                    let v = this.readU32(cnt, 0)
+                    LibC.free(cnt)
+                    return Int64(v)
+                }
+                LibC.free(cnt)
+            }
+            return 0
+        }
+    }
+
+    /**
+     * POSIX 终端启用 bracketed paste（ESC[?2004h），readKey 自行解析
+     * ESC[200~...ESC[201~ 包裹标记为 isPaste 事件
+     */
+    public func supportsBracketedPaste(): Bool {
+        return true
     }
 
     /**

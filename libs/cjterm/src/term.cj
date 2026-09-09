@@ -1,5 +1,6 @@
 package cjterm
 
+import std.collection.*
 import std.convert.Parsable
 import std.time.*
 
@@ -142,6 +143,16 @@ public class KeyEvent {
 }
 
 /**
+ * 裸流粘贴合并阈值（v1.3.19）：
+ * - MIN：输入缓冲积压达到此量即判定为粘贴（单键 < 24 字节，多字节 UTF-8
+ *   字符 1 个 ≤ 4 字节，4 字节序列 < 24）
+ * - MAX：单次合并上限码点数（超过部分留待后续 readKey 继续吞读，
+ *   避免一次吞读阻塞输入循环过久）
+ */
+private let BULK_PASTE_MIN: Int64 = 48
+private let BULK_PASTE_MAX: Int64 = 2000
+
+/**
  * 终端控制器：委托 TerminalBackend 实现平台差异，对外 API 与旧版一致
  */
 public class Term {
@@ -193,9 +204,62 @@ public class Term {
     }
 
     /**
-     * 非阻塞读按键；无输入返回 None
+     * 读取一个按键事件（阻塞）。无输入返回 None。
+     *
+     * 裸流粘贴合并（v1.3.19）：Windows 控制台不支持 bracketed paste，
+     * 粘贴以离散按键事件涌入——靠 backend 输入缓冲积压量识别：
+     * 积压 ≥ 阈值时连续吞读可打印字符（有上限），合并为单个 isPaste 事件；
+     * 中途的控制键（↑↓←→、Enter、ESC）立即停止合并并**原样返回该键**
+     * （不丢事件），后续 readKey 继续正常处理。
      */
     public func readKey(): Option<KeyEvent> {
+        // bracketed paste 后端（POSIX）：backend 自行解析 ESC[200~...ESC[201~，
+        // Term 层不得拦截（吞字节会破坏包裹标记）
+        if (this.backend.supportsBracketedPaste()) {
+            return this.backend.readKey()
+        }
+        // 裸流后端（Windows 控制台）：输入积压探测（POSIX=字节数，
+        // Windows=控制台事件数；单键至多 ~10 字节/2 事件），超阈值即疑似粘贴
+        let pending = this.backend.readPendingBytes()
+        if (pending >= BULK_PASTE_MIN) {
+            var sb = StringBuilder()
+            var count: Int64 = 0
+            while (count < BULK_PASTE_MAX) {
+                // hasInput 非阻塞守卫：粘贴读完即停，绝不阻塞等下一个键
+                if (!this.backend.hasInput()) {
+                    break
+                }
+                if (let Some(k) <- this.backend.readKey()) {
+                    // 粘贴内可能混入的 bracketed paste 事件（部分终端）：整段并入
+                    if (k.isPaste) {
+                        sb.append(k.text)
+                        count += k.text.toRuneArray().size
+                        continue
+                    }
+                    // 只合并可打印字符；控制键停止合并并原样返回（不丢）
+                    if (k.text.size == 0 || k.isEnter || k.isBackspace || k.isEsc
+                        || k.isArrowUp || k.isArrowDown || k.isArrowLeft || k.isArrowRight) {
+                        if (count > 0) {
+                            // 已收部分作为粘贴事件先行返回；该控制键丢弃。
+                            // 粘贴场景下夹带的 Enter 语义上就是粘贴内容里的
+                            // 换行（不应触发提交，对齐 bracketed paste 语义）；
+                            // 正常单键打字积压远低于 BULK_PASTE_MIN 不进此路径。
+                            return Some(KeyEvent(sb.toString()))
+                        }
+                        return Some(k)
+                    }
+                    sb.append(k.text)
+                    count += k.text.toRuneArray().size
+                } else {
+                    break
+                }
+            }
+            if (count > 0) {
+                return Some(KeyEvent(sb.toString()))
+            }
+            // 积压全是控制序列：退回常规读取（上面 while 已逐键读完则 None）
+            return this.backend.readKey()
+        }
         return this.backend.readKey()
     }
 
