@@ -484,9 +484,16 @@ def test_interrupt_releases_busy() -> None:
         s.close()
 
 
-def test_history_and_paste_collapse() -> None:
-    """[场景12] 输入历史（↑↓ 切换上次输入）+ 大粘贴折叠（[Paste #N] marker）"""
-    print("[场景12] 输入历史 ↑↓ + 大粘贴折叠")
+def test_history_and_paste_multiline() -> None:
+    """[场景12] 输入历史（↑↓ 切换上次输入）+ 粘贴双路径（v1.3.20）
+
+    粘贴行为分两路：
+    - >3 行粘贴 → 折叠为 [Paste #N, +X lines] marker（原子 token，原文不进输入框），
+      Enter 展开原文提交
+    - ≤3 行粘贴（含单行长文本）→ 原文进输入框，按屏宽自动软换行多行显示
+      （最多 5 行视口跟随光标），Enter 整体提交
+    """
+    print("[场景12] 输入历史 ↑↓ + 粘贴折叠/软换行")
     cfg = make_config_dir()
     s = PtuSession(cfg)
     try:
@@ -500,25 +507,45 @@ def test_history_and_paste_collapse() -> None:
         s.expect("历史消息二")
         time.sleep(0.5)
         # ↑ 恢复上一条（最新）——PTY 下 ESC 序列偶发拆包，单测已完整覆盖 ↑↑↓↓，
-        # 这里只做冒烟验证 ↑ 恢复 + 大粘贴折叠真实生效
+        # 这里只做冒烟验证 ↑ 恢复 + 粘贴双路径真实生效
         s.send_esc_seq("\x1b[A")
         s.read_available(0.5)
         buf = strip_ansi(s.buf)
         check("↑ 恢复上一条历史", "历史消息二" in buf[-200:], f"(buf尾部: {buf[-200:]})")
-        # 大粘贴折叠（bracketed paste 已启用 ESC[?2004h + readBracketedPaste
-        # 修复：连续空闲判定结束，长粘贴稳定识别不自动提交）
-        big = "长内容" * 500  # 1500 字 > 1000 阈值
+        # 短粘贴（单行 0 换行 ≤3 → 不折叠）：原文进输入框，软换行多行显示
+        big = "长内容" * 500  # 1500 码点（3000 字节，> 单行屏宽，必触发软换行）
         s.send("\x1b[200~" + big + "\x1b[201~")
-        s.expect("[Paste #1", timeout=10)  # 等粘贴被识别为 marker（4500 字节处理稍慢）
-        s.read_available(0.4)
+        s.expect("长内容长内容", timeout=15)  # 等粘贴内容渲染进输入框（4500 字节处理稍慢）
+        s.read_available(0.8)
         buf = strip_ansi(s.buf)
-        check("大粘贴折叠为 marker", "[Paste #1" in buf and "chars]" in buf, f"(buf尾部: {buf[-150:]})")
-        # 粘贴不自动提交：输入框仍是 marker（提交后输入框会被清空）
+        tail = buf[-400:]
+        check("短粘贴不折叠（无 marker）", "[Paste #" not in tail, f"(buf尾部: {tail})")
+        # 多行软换行：粘贴区出现多行"长内容"重复（软换行后的后续显示行）
+        check("短粘贴软换行多行显示", tail.count("长内容") >= 4, f"(buf尾部: {tail})")
+        # 粘贴不自动提交：输入框仍显示粘贴内容（提交后会被清空）
         s.read_available(0.6)
         buf = strip_ansi(s.buf)
-        check("粘贴后不自动发送（等 Enter）", "╰─ ❯ [Paste #1" in buf, f"(buf尾部: {buf[-120:]})")
-        # 退格整体删除 marker（原子）：单测 testPasteCollapseLarge 已完整断言
-        # （PTY 累积 buf 无法可靠验证"消失"）
+        check("粘贴后不自动发送（等 Enter）", "长内容" in buf[-400:], f"(buf尾部: {buf[-400:]})")
+        # 提交：Enter 整体提交（回显出现"长内容"）
+        s.send("\r")
+        s.expect("长内容", timeout=15)
+        s.read_available(0.8)
+        buf = strip_ansi(s.buf)
+        check("Enter 整体提交长文本", "长内容" in buf[-600:], f"(buf尾部: {buf[-600:]})")
+        # 长粘贴（4 行 >3 → 折叠 [Paste #N, +X lines]，原文不进输入框）
+        s.send("\x1b[200~段落一\n段落二\n段落三\n段落四\n\x1b[201~")
+        s.expect("[Paste #", timeout=15)  # 等 marker 渲染进输入框
+        s.read_available(0.6)
+        buf = strip_ansi(s.buf)
+        tail = buf[-300:]
+        check("长粘贴折叠为 marker", "[Paste #" in tail and "lines]" in tail, f"(buf尾部: {tail})")
+        check("折叠后原文不进输入框", "段落二" not in tail, f"(buf尾部: {tail})")
+        # 提交：Enter 展开原文提交（回显出现原文各行）
+        s.send("\r")
+        s.expect("段落一", timeout=15)
+        s.read_available(0.8)
+        buf = strip_ansi(s.buf)
+        check("Enter 展开原文提交", "段落二" in buf[-800:] and "段落四" in buf[-900:], f"(buf尾部: {buf[-600:]})")
         s.send_key(3)  # 空闲：一次退出
         s.wait_exit()
     finally:
@@ -568,7 +595,7 @@ def main() -> None:
     test_provider_paste()
     test_queue_and_autodequeue()
     test_interrupt_releases_busy()
-    test_history_and_paste_collapse()
+    test_history_and_paste_multiline()
     test_bracketed_paste_chinese()
     print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
     sys.exit(1 if FAIL else 0)

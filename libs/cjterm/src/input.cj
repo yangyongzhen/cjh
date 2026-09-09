@@ -4,12 +4,15 @@ import std.collection.*
 import std.convert.Parsable
 
 /**
- * InputBox：单行输入组件（参考 pi-tui Input 组件简化）
+ * InputBox：输入组件（参考 pi-tui Input 组件简化）
  *
  * - 提示符前缀（默认 "❯ " 亮青色，可定制）
  * - UTF-8 字节安全退格（按字符删，中文不崩）
  * - 变更回调 onChange（输入变化时触发，供下拉补全等联动）
  * - 提交回调 onSubmit（回车时触发）
+ * - 多行软换行显示（v1.3.20）：内容含真实换行（粘贴保留）且按显示宽度
+ *   自动软换行；显示区最多 maxVisibleRows 行，视口跟随光标；Enter 仍是
+ *   提交键（不换行）
  *
  * 消费按键：可打印字符 / 退格 / 回车（返回 true）；其余按键不消费，
  * 由上层（滚动/Esc 等）处理。
@@ -36,11 +39,21 @@ public class InputBox <: Component {
     private var historyDraft: String = ""  // 浏览历史前保存的当前输入（↓ 回底部恢复）
     private let historyMax: Int64 = 50
 
-    // ===== 大粘贴折叠（[Paste #N] marker，对齐 omp）=====
+    // ===== 大粘贴折叠（[Paste #N] marker，对齐 atomcode/omp 长粘贴折叠）=====
+    // 真实换行 > pasteCollapseLines 的粘贴折叠为单个原子 marker（不进入输入框），
+    // 避免长内容淹没输入区；≤3 行原文进入输入框走软换行多行显示
     private var pasteStore: ArrayList<String> = ArrayList<String>()
     private var pasteCounter: Int64 = 0
-    private let pasteCollapseChars: Int64 = 1000
-    // 最近一次提交的显示文本（折叠 marker 或原文）——供上层回显
+    private let pasteCollapseLines: Int64 = 3
+
+    // ===== 多行显示状态（v1.3.20 软换行）=====
+    // 显示区上限行数（含真实换行 + 软换行）：超长内容视口跟随光标，
+    // 避免长粘贴撑满终端；TuiApp 用 displayHeight() 动态布局输入区
+    private let maxVisibleRows: Int64 = 5
+    // 视口顶端行号（软换行后的行）：滚动状态跨帧保持，光标移出视口时
+    // 自动滚动（上滚一行 / 下滚到顶）
+    private var viewportTop: Int64 = 0
+    // 最近一次提交的文本——供上层回显
     private var lastEcho: String = ""
     // Ctrl+R 历史搜索模式：输入子串实时过滤历史，↑↓ 浏览匹配（对齐 shell reverse-search）
     private var searchMode: Bool = false
@@ -214,46 +227,202 @@ public class InputBox <: Component {
     }
 
     /**
-     * 展开提交文本：若当前内容是大粘贴折叠 marker，返回原文；否则原样
-     */
-    public func expandedText(): String {
-        let (isMarker, idx) = this.parsePasteMarker(this.text_)
-        if (isMarker && idx >= 0 && idx < Int64(this.pasteStore.size)) {
-            return this.pasteStore[idx]
-        }
-        return this.text_
-    }
-
-    /**
-     * 最近一次提交的显示文本（折叠 marker 或原文）——上层回显用
+     * 最近一次提交的文本——上层回显用
      */
     public func lastEchoText(): String {
         return this.lastEcho
     }
 
     /**
-     * 解析 "[Paste #N, +X chars]" 折叠 marker
+     * 粘贴追加到光标处：真实换行保留（CRLF→LF 归一化）。
+     * 真实换行 > pasteCollapseLines（3 行）→ 折叠为原子 marker [Paste #N, +X lines]
+     * （原文存入 pasteStore，不进入输入框，对齐 atomcode/omp 长粘贴折叠）；
+     * ≤3 行 → 原文插入光标处，按显示宽度自动软换行多行显示。
+     * 粘贴后光标置尾（对齐 atomcode "paste places cursor at end"）。
+     */
+    private func addPasteLine(paste: String): Unit {
+        let norm = paste.replace("\r\n", "\n").replace("\r", "\n")
+        if (this.countLines(norm) > this.pasteCollapseLines) {
+            this.pasteCounter += 1
+            this.pasteStore.add(norm)
+            this.insertAtCursor("[Paste #${this.pasteCounter}, +${Int64(this.countLines(norm))} lines]")
+        } else {
+            this.insertAtCursor(norm)
+        }
+    }
+
+    /**
+     * 有效内容行数（折叠判定指标，>3 行折叠）：'\n' 计数，末尾换行不计新行
+     * （"l1\nl2\nl3"=3、"l1\nl2\nl3\n"=3、"l1\nl2\nl3\nl4"=4）；空串=1
+     */
+    private func countLines(s: String): Int64 {
+        if (s.size == 0) {
+            return 1
+        }
+        var n: Int64 = 0
+        var i: Int64 = 0
+        while (i < s.size) {
+            if (s[i] == 10u8) {
+                n += 1
+            }
+            i += 1
+        }
+        if (s[s.size - 1] != 10u8) {
+            n += 1  // 末尾无换行：最后一行没有 '\n'
+        }
+        return n
+    }
+
+    /**
+     * 展开提交文本：把文本中的折叠 marker 替换为原文（保留前缀/后缀）。
+     * marker 形如 "[Paste #N, +M lines]"：N-1 在 pasteStore 范围内 → 展开；
+     * 否则原样保留（用户手敲的同形文本按字面处理）
+     */
+    public func expandedText(): String {
+        let t = this.text_
+        if (!t.contains("[Paste #")) {
+            return t
+        }
+        var out = StringBuilder()
+        var pos: Int64 = 0
+        while (pos < t.size) {
+            let hit = this.indexOf(t, "[Paste #", pos)
+            if (hit < 0) {
+                out.append(t[pos..t.size])
+                break
+            }
+            if (pos < hit) {
+                out.append(t[pos..hit])
+            }
+            let (span, idx) = this.markerSpanAt(t, hit)
+            if (span <= 0) {
+                out.append(String(Rune(t[hit])))  // 不完整 marker：按普通文本前进一步
+                pos = hit + 1
+            } else if (idx >= 0 && idx < Int64(this.pasteStore.size)) {
+                out.append(this.pasteStore[idx])  // 展开为原文
+                pos = hit + span
+            } else {
+                out.append(t[hit..hit + span])  // 同形但序号无效：原样
+                pos = hit + span
+            }
+        }
+        return out.toString()
+    }
+
+    /**
+     * 解析 "[Paste #N, +X lines]" 折叠 marker（全文即 marker 时）
      * @return (是否 marker, 序号 N-1 或 -1)
      */
     private func parsePasteMarker(s: String): (Bool, Int64) {
-        if (!s.startsWith("[Paste #")) {
-            return (false, -1)
+        let (span, idx) = this.markerSpanAt(s, 0)
+        if (span > 0) {
+            return (true, idx)
         }
+        return (false, -1)
+    }
+
+    /**
+     * 解析 hit 位置（"[Paste #" 起点）的折叠 marker：
+     * @return (marker 长度(不含结尾) 或 0, 序号 N-1 或 -1)
+     */
+    private func markerSpanAt(t: String, hit: Int64): (Int64, Int64) {
+        let tsize = t.size
+        if (tsize < hit + 8) {
+            return (0, -1)
+        }
+        // 前缀 8 个 ASCII 字节逐字节比较——t[hit..hit+8] 切片终点可能落在
+        // 多字节字符中部抛 Invalid utf8（§3.15 同族；Backspace 每次都会走到这里）
+        let prefix: String = "[Paste #"
+        var k: Int64 = 0
+        while (k < 8) {
+            if (t[hit + k] != prefix[k]) {
+                return (0, -1)
+            }
+            k += 1
+        }
+        var i: Int64 = hit + 8
         var numStr = ""
-        var i: Int64 = 8  // 跳过 "[Paste #"
-        while (i < s.size && s[i] >= 48u8 && s[i] <= 57u8) {  // 数字
-            numStr += String(Rune(s[i]))
+        while (i < tsize && t[i] >= 48u8 && t[i] <= 57u8) {  // 数字
+            numStr += String(Rune(t[i]))
             i += 1
         }
-        if (numStr.size == 0 || i >= s.size || s[i] != 44u8) {  // 数字后须 ","
-            return (false, -1)
+        if (numStr.size == 0 || i >= tsize || t[i] != 44u8) {  // 数字后须 ","
+            return (0, -1)
+        }
+        let close = this.indexOf(t, "]", i)  // 闭合 "]"
+        if (close < 0) {
+            return (0, -1)
         }
         try {
             let n = Int64.parse(numStr)
-            return (true, n - 1)
+            return (close - hit + 1, n - 1)
         } catch (e: Exception) {
-            return (false, -1)
+            return (0, -1)
         }
+    }
+
+    /**
+     * 光标所在软换行行号（从 0 计）：与 wrappedLines 同一换行模型
+     * （首行预算 width-提示符宽，续行预算 width-2 缩进），'\n' 计一次换行。
+     * 行号上限 4096 防异常数据死循环（粘贴有 2000 码点上界）。
+     */
+    private func cursorVisualLine(width: Int64): Int64 {
+        let (total, pairs) = this.wrappedLines(width)
+        var i: Int64 = 0
+        let len = this.text_.size
+        while (i < pairs.size) {
+            let (s, e) = pairs[i]
+            if (this.cursorPos > s && this.cursorPos <= e) {
+                return i
+            }
+            i += 1
+        }
+        return if (total > 1) { total - 1 } else { 0 }
+    }
+
+    /**
+     * 输入区当前显示行数（1..maxVisibleRows）——TuiApp 动态布局输入区用。
+     * 与 render 的 wrappedLines 同源，保证布局行数与渲染行数一致。
+     */
+    public func displayHeight(width: Int64): Int64 {
+        let w = if (width > 1) { width } else { 80 }
+        let (total, _) = this.wrappedLines(w)
+        if (total > this.maxVisibleRows) {
+            return this.maxVisibleRows
+        }
+        return if (total < 1) { 1 } else { total }
+    }
+
+    /**
+     * 字节偏移查找子串（仓颉 String 无 indexOf：逐窗口比较，
+     * 单行输入框长度有限，O(n*m) 可接受）。
+     * 窗口起点必须是 UTF-8 字符边界（首字节 < 0xC0），否则字节切片
+     * 落在多字节字符中部会抛 Invalid utf8（§3.15 乱码坑同族）。
+     */
+    private func indexOf(s: String, sub: String, from: Int64): Int64 {
+        if (sub.size == 0 || s.size < sub.size) {
+            return -1
+        }
+        var pos = if (from > 0) { from } else { 0 }
+        let limit = s.size - sub.size
+        while (pos <= limit) {
+            // 0x80-0xBF 是多字节 UTF-8 的后续字节：跳到下一字符边界
+            if ((s[pos] & 0xC0u8) == 0x80u8) {
+                pos += 1
+                continue
+            }
+            // 窗口终点可能落在多字节字符中部（如 ASCII 窗口切到 CJK
+            // 序列中间）：切片抛 Invalid utf8 时推进到下一位置重试
+            try {
+                if (s[pos..pos + sub.size] == sub) {
+                    return pos
+                }
+            } catch (e: Exception) {
+                ()
+            }
+            pos += 1
+        }
+        return -1
     }
 
     /**
@@ -267,15 +436,162 @@ public class InputBox <: Component {
         return w
     }
 
+    /**
+     * 按显示宽度软换行：'\n' 强制断行，累计显示宽度超可用列数软断行。
+     * 每行输出 (起始字节, 结束字节(不含)) 对；末尾 '\n' 产生空尾行。
+     * 首行可用宽度 width-promptWidth，后续行用 width（对齐 omp composer：
+     * 续行从栏左缘开始）。行宽预算下限 8 列防窄屏死循环。
+     * 返回 (总行数, 全部行段)——行段不截断：render 视口滚动后取段
+     * 仍命中正确行（截断到视口行数会让滚动视口读到过期首行段，
+     * 光标错位——2026-09-09 粘贴光标 bug 根因）。
+     */
+    private func wrappedLines(width: Int64): (Int64, ArrayList<(Int64, Int64)>) {
+        var starts = ArrayList<Int64>()
+        var ends = ArrayList<Int64>()
+        // 首行预算 = 屏宽 - 提示符宽；续行预算 = 屏宽 - 2 列缩进
+        // （续行渲染为 "  "+seg，两列缩进占位；下限 8 列防窄屏死循环）
+        let firstAvail = if (width > this.promptWidth() + 8) { width - this.promptWidth() } else { 8 }
+        let contAvail = if (width > 10) { width - 2 } else { 8 }
+        let len = this.text_.size
+        var pos: Int64 = 0
+        var segStart: Int64 = 0
+        var col: Int64 = 0
+        var budget = firstAvail  // 当前行总宽度预算（剩余= budget-col）
+        var guardCount: Int64 = 0
+        while (pos < len && guardCount < 4096) {
+            let b = this.text_[pos]
+            if (b == 10u8) {
+                starts.add(segStart)
+                ends.add(pos)
+                pos += 1
+                segStart = pos
+                col = 0
+                budget = contAvail
+            } else {
+                // 码点显示宽度：CJK/全角=2 列，其余=1 列（对齐 displayWidth 规则）
+                let b1 = if (pos + 1 < len) { this.text_[pos + 1] } else { 0u8 }
+                let adv: Int64
+                let cw: Int64
+                if (b < 0x80u8) { adv = 1; cw = 1 }
+                else if (b >= 0xF0u8) { adv = 4; cw = 2 }
+                else if (b >= 0xE0u8) { adv = 3; cw = 2 }
+                else if (b >= 0xC0u8 && b1 >= 0x80u8) { adv = 3; cw = 2 }
+                else if (b >= 0xC2u8) { adv = 2; cw = 1 }
+                else if (b == 0xC0u8 || b == 0xC1u8 || b1 == 0u8) { adv = 2; cw = 1 }
+                else { adv = 3; cw = 1 }
+                if (col + cw > budget) {
+                    starts.add(segStart)
+                    ends.add(pos)
+                    segStart = pos
+                    col = 0
+                    budget = contAvail
+                } else {
+                    col += cw
+                }
+                pos += adv
+            }
+            guardCount += 1
+        }
+        starts.add(segStart)
+        ends.add(len)
+        let count = Int64(starts.size)
+        var pairs = ArrayList<(Int64, Int64)>()
+        for (k in 0..count) {
+            pairs.add((starts[k], ends[k]))
+        }
+        return (count, pairs)
+    }
+
+    /** 取前 n 项（行数裁剪辅助） */
+    private func firstN(list: ArrayList<Int64>, n: Int64): ArrayList<Int64> {
+        var out = ArrayList<Int64>()
+        let lim = if (Int64(list.size) < n) { Int64(list.size) } else { n }
+        var k: Int64 = 0
+        while (k < lim) {
+            out.add(list[k])
+            k += 1
+        }
+        return out
+    }
+
     public override func render(canvas: TuiCanvas, row: Int64, width: Int64, height: Int64): Int64 {
-        // 输入行：提示符 + 内容
-        canvas.setLine(row, this.promptRendered + this.text_)
-        // 光标定位到 cursorPos 位置（displayWidth 计算显示列数——CJK 字符占 2 列）
-        let promptCols = TuiCanvas.displayWidth(this.promptText)
-        let textBefore = if (this.cursorPos > 0) { this.text_[0..this.cursorPos] } else { "" }
-        let textCols = TuiCanvas.displayWidth(textBefore)
-        canvas.setCursor(row + 1, promptCols + textCols)
-        return 1
+        let (total, pairs) = this.wrappedLines(width)
+        // 视口跟随光标：光标行高于视口顶 → 上滚一行；低于视口底 → 下滚到顶
+        let cursorLine = this.cursorVisualLine(width)
+        let viewH = this.maxVisibleRows
+        if (cursorLine < this.viewportTop) {
+            this.viewportTop = cursorLine
+        } else if (cursorLine >= this.viewportTop + viewH) {
+            this.viewportTop = cursorLine - viewH + 1
+        }
+        if (this.viewportTop > total - 1) {
+            this.viewportTop = if (total > 1) { total - 1 } else { 0 }
+        }
+        if (this.viewportTop < 0) {
+            this.viewportTop = 0
+        }
+        let curLineNo: Int64 = this.viewportTop
+        for (k in 0..viewH) {
+            let lineNo = curLineNo + k
+            if (lineNo >= total) {
+                break
+            }
+            let (s, e) = pairs[Int64(lineNo)]
+            let seg = if (s < e) { this.text_[s..e] } else { "" }
+            let content: String = if (lineNo == 0) {
+                this.promptRendered + seg
+            } else {
+                "  " + seg  // 续行缩进 2 列（与 ❯ 对齐，可读性）
+            }
+            canvas.setLine(row + k, content)
+        }
+        // 光标定位：光标行在视口内时落在其软换行行，否则落在视口末行
+        let curRowOff: Int64
+        if (cursorLine >= curLineNo && cursorLine < curLineNo + viewH) {
+            curRowOff = cursorLine - curLineNo
+        } else if (cursorLine >= curLineNo + viewH) {
+            curRowOff = viewH - 1
+        } else {
+            curRowOff = 0
+        }
+        // 列 = 提示符宽（仅首行）+ 2 列缩进（仅续行）+ 光标前文本从行首
+        // 累计的显示宽度（与 wrappedLines 同一预算模型；到行尾软换行点截断）。
+        // 行段按绝对行号取（curLineNo+curRowOff=光标所在软换行行），非视口内偏移
+        let cursorRowAbs: Int64 = if (curRowOff < 0) { 0 } else { curRowOff }
+        let (lineStart, _) = pairs[Int64(curLineNo + cursorRowAbs)]
+        let tlen = this.text_.size
+        let firstAvail = if (width > this.promptWidth() + 8) { width - this.promptWidth() } else { 8 }
+        let contAvail = if (width > 10) { width - 2 } else { 8 }
+        var col: Int64 = 0
+        var budget = if (curRowOff == 0) { firstAvail } else { contAvail }
+        var i: Int64 = lineStart
+        while (i < this.cursorPos && i < tlen && col < budget) {
+            let b = this.text_[i]
+            if (b == 10u8) {
+                i += 1  // 正常路径不会进入（行内无换行）；防御
+                col = 0
+                budget = contAvail
+            } else {
+                let b1 = if (i + 1 < tlen) { this.text_[i + 1] } else { 0u8 }
+                let adv: Int64
+                let cw: Int64
+                if (b < 0x80u8) { adv = 1; cw = 1 }
+                else if (b >= 0xF0u8) { adv = 4; cw = 2 }
+                else if (b >= 0xE0u8) { adv = 3; cw = 2 }
+                else if (b >= 0xC0u8 && b1 >= 0x80u8) { adv = 3; cw = 2 }
+                else if (b >= 0xC2u8) { adv = 2; cw = 1 }
+                else if (b == 0xC0u8 || b == 0xC1u8 || b1 == 0u8) { adv = 2; cw = 1 }
+                else { adv = 3; cw = 1 }
+                if (col + cw > budget) {
+                    break  // 光标在此软换行点之后：停在行首
+                }
+                col += cw
+                i += adv
+            }
+        }
+        let baseCols = if (curRowOff == 0) { TuiCanvas.displayWidth(this.promptText) } else { 2 }
+        canvas.setCursor(row + curRowOff + 1, baseCols + col)
+        return viewH
     }
 
     public override func handleKey(key: KeyEvent): Bool {
@@ -304,13 +620,15 @@ public class InputBox <: Component {
         }
         if (key.isEnter) {
             // 提交（即使内容为空也回调，由上层决定是否忽略）：
-            // 大粘贴 marker 展开为原文提交；加入历史；记录回显文本；光标归位
+            // 折叠 marker 展开为原文提交（多行换行保留）；加入历史；
+            // 记录回显文本（展开原文，输出区自动软换行）；清空并复位视口
             let expanded = this.expandedText()
-            this.lastEcho = this.text_
+            this.lastEcho = expanded
             this.addToHistory(expanded)
             this.onSubmit(expanded)
             this.text_ = ""
             this.cursorPos = 0
+            this.viewportTop = 0
             return true
         }
         if (key.isBackspace) {
@@ -332,33 +650,25 @@ public class InputBox <: Component {
                 this.onChange(this.text_)
                 return true
             }
-            // 大粘贴 marker 是原子 token：退格整体删除（对齐 omp atomic token）
+            // 折叠 marker 是原子 token：光标在末尾时退格整体删除（对齐 omp/atomcode）；
+            // 其余按光标位置删除前一个字符（UTF-8 字节安全）
             let (isMarker, _) = this.parsePasteMarker(this.text_)
-            if (isMarker) {
+            if (isMarker && this.cursorPos == this.text_.size) {
                 this.text_ = ""
                 this.cursorPos = 0
             } else {
-                // 按光标位置删除前一个字符（UTF-8 字节安全）
                 this.backspaceAtCursor()
             }
             this.historyIndex = -1  // 编辑内容：退出历史浏览
             this.onChange(this.text_)
             return true
         }
-        // 粘贴事件：整段追加（bracketed paste 含换行也不触发 Enter 提交）。
-        // 单行输入框剥离换行（多行内容贴到单行框时保持单行）。
-        // 超长粘贴（> pasteCollapseChars）折叠为 [Paste #N] marker（对齐 omp）
+        // 粘贴事件：在光标位置追加（bracketed paste 含换行也不触发 Enter 提交）。
+        // v1.3.20：真实换行保留并归一化 CRLF→LF；>3 行折叠为 [Paste #N] 原子
+        // marker（对齐 atomcode/omp），≤3 行原文走软换行多行显示；光标置尾。
         if (key.isPaste) {
             if (key.text.size > 0) {
-                let clean = key.text.replace("\n", "").replace("\r", "")
-                if (Int64(clean.size) > this.pasteCollapseChars) {
-                    this.pasteCounter += 1
-                    this.pasteStore.add(clean)
-                    this.text_ = "[Paste #${this.pasteCounter}, +${clean.toRuneArray().size} chars]"
-                    this.cursorPos = this.text_.size
-                } else {
-                    this.insertAtCursor(clean)
-                }
+                this.addPasteLine(key.text)
                 this.historyIndex = -1
                 this.onChange(this.text_)
             }
