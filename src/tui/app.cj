@@ -267,7 +267,7 @@ public class TuiApp {
             if (finalLine.size > 0) {
                 this.safeLog("info", "submit: '${finalLine}'")
                 this.appendOutput("")  // 空行：与上一轮回复分隔
-                // 回显：大粘贴折叠为 [Paste #N] marker（对齐 omp/通用 CLI），
+                // 回显：提交的文本原样（多行内容按输出区自动软换行显示），
                 // 完整内容随提交进入 agent 会话；历史持久化
                 let echoLine = this.inputBox.lastEchoText()
                 // 行内卡片只用 fg 改色（❯ accent → 正文素白），不用 reset（保整行 bg）
@@ -1529,13 +1529,15 @@ public class TuiApp {
         // 欢迎视图（启动/新会话，输出区为空）时：隐藏顶部 logo/标题/TabBar/分隔线，
         // 欢迎视图从行 0 占满到状态行上方（对齐 omp 启动画面整屏两栏布局）
 
-        // 输入区行数（编辑模式动态）
+        // 输入区行数（动态）：编辑器按内容行数、输入框按软换行行数
+        // （v1.3.20 多行显示，均上限 5 行，视口跟随光标）
+        let inputBoxH0: Int64 = this.inputBox.displayHeight(cols)
         let editBoxH0: Int64 = if (this.editMode) {
             var h = this.editor.lineCount()
             if (h < 1) { h = 1 }
             if (h > 5) { h = 5 }
             h
-        } else { 1 }
+        } else { inputBoxH0 }
 
         // 是否显示欢迎视图（对话视图且输出区为空）
         // try/finally 守锁：content() 在超大缓冲/异常路径可能抛异常，裸 lock
@@ -1559,11 +1561,11 @@ public class TuiApp {
             // 欢迎视图固定从行 0 开始（顶部展示）
             this.welcomeView.render(this.canvas, 0, cols, welcomeContentH)
             // 状态行+输入框垂直居中在欢迎视图下方的剩余空间
-            // 剩余空间 = rows - welcomeContentH，状态行+输入框占 2 行
-            // 居中起始行 = welcomeContentH + (剩余空间 - 2) / 2
+            // 剩余空间 = rows - welcomeContentH，块高 = 状态行 1 行 + 输入区 editBoxH0
+            let blockH = 1 + editBoxH0
             let remain = rows - welcomeContentH
-            if (remain > 2) {
-                statusRow = welcomeContentH + (remain - 2) / 2
+            if (remain > blockH) {
+                statusRow = welcomeContentH + (remain - blockH) / 2
             } else {
                 statusRow = welcomeContentH
             }
@@ -1643,7 +1645,8 @@ public class TuiApp {
             // 编辑器从 inputTop 起占 editBoxH0 行（顶到末行 rows-1）
             this.editor.render(this.canvas, inputTop, cols, editBoxH0)
         } else {
-            this.inputBox.render(this.canvas, inputTop, cols, 1)
+            // 输入框多行软换行：实际占用行数 = displayHeight（1..5）
+            this.inputBox.render(this.canvas, inputTop, cols, editBoxH0)
         }
 
         // / 命令下拉补全框：紧贴输入区上方渲染（覆盖状态行区域，最多 6 行）
@@ -1652,8 +1655,9 @@ public class TuiApp {
             let rendered = this.picker.render(pickerRows)
             for (pi in 0..pickerRows) {
                 let lineIdx = statusRow - pickerRows + pi
-                // 下限对齐输出区起点（行 8），不覆盖输出区内容
-                if (lineIdx >= 8 && lineIdx <= statusRow) {
+                // 下限对齐输出区起点（行 8）；上限在输入区上方（inputTop-1），
+                // 不覆盖状态行以下区域
+                if (lineIdx >= 8 && lineIdx < inputTop) {
                     this.canvas.setLine(lineIdx, rendered[pi])
                 }
             }
@@ -1741,7 +1745,7 @@ public class TuiApp {
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  ↑ / ↓          历史上下切换（滚轮亦可）" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  / 开头 ↑↓     只翻 / 命令历史" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Ctrl+R         历史搜索（输入子串过滤）" + Ansi.reset())
-        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  长粘贴         自动折叠为 [Paste #N]（回车展开提交）" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  长粘贴         软换行显示 + >3 行折叠 [Paste #N]（回车展开提交）" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_ACCENT) + "快捷键：" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Tab / ←→       切换视图（对话/帮助）" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Ctrl+E         多行输入编辑（Alt+Enter 提交）" + Ansi.reset())

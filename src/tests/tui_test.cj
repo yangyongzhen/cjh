@@ -1,6 +1,7 @@
 package cjh.tests
 
 import std.fs.*
+import std.collection.*
 import cjterm.*
 import cjh.tui.*
 
@@ -679,26 +680,35 @@ public class InputBoxHistoryTest {
     }
 
     @TestCase
-    public func testPasteCollapseLarge(): Unit {
+    public func testPasteKeepsNewlines(): Unit {
+        // v1.3.20：粘贴保留真实换行（旧版剥离），CRLF→LF 归一化；
+        // 2 个换行 ≤3 → 不折叠，原文软换行显示
         let ib = InputBox()
+        ib.handleKey(KeyEvent("line1\nline2\r\nline3"))
+        @Assert(ib.text(), "line1\nline2\nline3")
+    }
+
+    @TestCase
+    public func testPasteLargeSingleLine(): Unit {
+        // v1.3.20：单行长粘贴（0 换行，不触发 >3 行折叠）——原文全部进入输入框，
+        // 按显示宽度自动软换行多行显示
+        let ib = InputBox()
+        // 注意：仓颉 @Test 宏不支持 for(i in 0..N) 循环（§3.22），用 while 构建数据
         var big = StringBuilder()
-        // 注意：仓颉 @Test 宏不支持 for(i in 0..N) 循环（无论上限大小），
-        // 会触发 "note: which is expanded as follows" 编译错误（§3.22）。
-        // 改用 while 循环构建测试数据。
-        // 400 × 3 字节 = 1200 > pasteCollapseChars(1000)，足以触发大粘贴折叠
         var cnt: Int64 = 0
-        while (cnt < 400) {
-            big.append("长")
+        while (cnt < 500) {
+            big.append("a")
             cnt += 1
         }
-        ib.handleKey(KeyEvent(big.toString()))  // 大粘贴
-        @Assert(ib.text().startsWith("[Paste #1"), true)  // 折叠 marker
-        @Assert(ib.text().contains("400"), true)
-        // 提交展开为原文
-        @Assert(ib.expandedText().size, 400 * 3)  // 原文 3 字节/字（UTF-8）
-        // 退格整体删除 marker（原子）
-        ib.handleKey(KeyEvent(127))
-        @Assert(ib.text(), "")
+        ib.handleKey(KeyEvent(big.toString()))  // 500 码点长粘贴
+        @Assert(Int64(ib.text().size), 500)
+        @Assert(ib.text().contains("[Paste"), false)  // 无折叠 marker
+        // 显示行数：首行预算 80-5=75，续行 78 → 1+ceil(425/78)=7 → 上限 5
+        @Assert(ib.displayHeight(80), 5)
+        // 短内容保持 1 行
+        let ib2 = InputBox()
+        ib2.handleKey(KeyEvent("hello"))
+        @Assert(ib2.displayHeight(80), 1)
     }
 
     @TestCase
@@ -706,7 +716,246 @@ public class InputBoxHistoryTest {
         let ib = InputBox()
         ib.handleKey(KeyEvent("hello 世界"))
         @Assert(ib.text(), "hello 世界")
-        @Assert(ib.expandedText(), "hello 世界")
+        @Assert(ib.displayHeight(80), 1)
+    }
+
+    @TestCase
+    public func testPasteKeepsPrefix(): Unit {
+        // v1.3.20：单行长粘贴（0 换行不折叠）在光标处追加，保留已输入前缀
+        let ib = InputBox()
+        this.typeText(ib, "hello ")
+        var big = StringBuilder()
+        var cnt: Int64 = 0
+        while (cnt < 300) {
+            big.append("a")
+            cnt += 1
+        }
+        ib.handleKey(KeyEvent(big.toString()))  // 300 码点长粘贴
+        @Assert(ib.text().startsWith("hello a"), true)
+        @Assert(ib.text().contains("[Paste"), false)
+        @Assert(Int64(ib.text().size), 6 + 300)  // "hello " 6 字节 + 300 个 a
+    }
+
+    @TestCase
+    public func testPasteSequential(): Unit {
+        // v1.3.20：连续两次单行粘贴（均不折叠）按序插入光标处
+        let ib = InputBox()
+        var a = StringBuilder()
+        var b = StringBuilder()
+        var cnt: Int64 = 0
+        while (cnt < 250) {
+            a.append("a")
+            b.append("b")
+            cnt += 1
+        }
+        ib.handleKey(KeyEvent(a.toString()))
+        ib.handleKey(KeyEvent(b.toString()))
+        @Assert(Int64(ib.text().size), 500)           // 250 a + 250 b
+        @Assert(ib.text().contains("[Paste"), false)  // 无折叠 marker
+        @Assert(ib.text()[250..500].startsWith("b"), true)  // 后段全 b（顺序正确）
+    }
+
+    @TestCase
+    public func testPasteUtf8Safe(): Unit {
+        // v1.3.20：中文前缀 + 长中文粘贴（单行不折叠）：UTF-8 边界切片/软换行安全，
+        // 退格按字符删（3 字节/字）保留前缀
+        let ib = InputBox()
+        ib.handleKey(KeyEvent("中文前缀"))  // 4 字 = 12 字节
+        @Assert(Int64(ib.text().size), 12)
+        var big = StringBuilder()
+        var cnt: Int64 = 0
+        while (cnt < 250) {
+            big.append("长")
+            cnt += 1
+        }
+        ib.handleKey(KeyEvent(big.toString()))  // 250 码点长粘贴
+        @Assert(ib.text().startsWith("中文前缀长"), true)
+        @Assert(ib.text().contains("[Paste"), false)
+        @Assert(Int64(ib.text().size), 12 + 250 * 3)  // 中文 12 字节 + 250×3
+        // 退格删一个字（3 字节）
+        ib.handleKey(KeyEvent(127))
+        @Assert(Int64(ib.text().size), 12 + 249 * 3)
+        @Assert(ib.text().startsWith("中文前缀长"), true)
+    }
+
+    @TestCase
+    public func testDisplayHeightWrap(): Unit {
+        // 软换行行数：首行预算 74（80-提示符 6），续行 78；真实换行也计行
+        let ib = InputBox()
+        var t = StringBuilder()
+        var cnt: Int64 = 0
+        while (cnt < 150) {
+            t.append("a")
+            cnt += 1
+        }
+        ib.handleKey(KeyEvent(t.toString()))
+        @Assert(ib.displayHeight(80), 2)  // 150 = 74 + 76 → 2 行
+        let ib2 = InputBox()
+        ib2.handleKey(KeyEvent("l1\nl2\nl3\n"))
+        @Assert(ib2.displayHeight(80), 4)  // 3 行 + 末尾换行的空尾行
+    }
+
+    @TestCase
+    public func testPasteCollapseOverThreeLines(): Unit {
+        // v1.3.20：>3 行粘贴折叠为 [Paste #N, +X lines] marker（对齐 atomcode/omp），
+        // 原文存入 pasteStore 不进输入框；marker 是原子 token
+        let ib = InputBox()
+        ib.handleKey(KeyEvent("l1\nl2\nl3\nl4"))  // 4 有效行 > 3 → 折叠
+        @Assert(ib.text(), "[Paste #1, +4 lines]")
+        // 展开提交文本 = 原文（换行保留）
+        @Assert(ib.expandedText(), "l1\nl2\nl3\nl4")
+        // 显示高度 1 行（marker 单行），不撑高输入区
+        @Assert(ib.displayHeight(80), 1)
+    }
+
+    @TestCase
+    public func testPasteNoCollapseAtThreeLines(): Unit {
+        // 边界：恰好 3 行（末尾无换行）不折叠，原文软换行显示
+        let ib = InputBox()
+        ib.handleKey(KeyEvent("l1\nl2\nl3"))
+        @Assert(ib.text(), "l1\nl2\nl3")
+        @Assert(ib.text().contains("[Paste"), false)
+        @Assert(ib.displayHeight(80), 3)
+        // 3 行 + 末尾换行：末尾换行不计新行，仍不折叠（显示 4 行含空尾行）
+        let ib2 = InputBox()
+        ib2.handleKey(KeyEvent("l1\nl2\nl3\n"))
+        @Assert(ib2.text(), "l1\nl2\nl3\n")
+        @Assert(ib2.text().contains("[Paste"), false)
+    }
+
+    @TestCase
+    public func testPasteCollapseCrlfAndPrefix(): Unit {
+        // CRLF 归一化后判行数；折叠 marker 插入光标处保留前缀
+        let ib = InputBox()
+        this.typeText(ib, "pre ")
+        ib.handleKey(KeyEvent("a\r\nb\r\nc\r\nd"))  // 4 有效行 → 折叠
+        @Assert(ib.text(), "pre [Paste #1, +4 lines]")
+        @Assert(ib.expandedText(), "pre a\nb\nc\nd")
+    }
+
+    @TestCase
+    public func testPasteCollapseSubmitAndAtomicBackspace(): Unit {
+        // 折叠 marker：Enter 展开原文提交（换行保留）+ 历史存原文；
+        // 光标在末尾时退格整体删除（原子 token，不逐字删）
+        let ib = InputBox()
+        ib.handleKey(KeyEvent("a\nb\nc\nd\ne"))  // 5 有效行 → 折叠
+        // 仓颉坑：捕获可变 var 的 lambda 不能作为回调存储——用 let 容器承接提交值
+        let submitted = ArrayList<String>()
+        ib.onSubmit = { s =>
+            submitted.add(s)
+        }
+        ib.handleKey(KeyEvent(13))  // Enter
+        @Assert(submitted[0], "a\nb\nc\nd\ne")
+        @Assert(ib.text(), "")  // 提交后清空
+        // 原子退格：marker 整体删
+        ib.handleKey(KeyEvent("x\ny\nz\nw"))  // 4 行 → 折叠
+        @Assert(ib.text().contains("[Paste #"), true)
+        ib.handleKey(KeyEvent(127))  // 退格
+        @Assert(ib.text(), "")
+        // 历史存的是展开原文（供 ↑ 恢复）
+        let hist = ib.historyList()
+        @Assert(Int64(hist.size) >= 1, true)
+        @Assert(hist[0], "a\nb\nc\nd\ne")
+    }
+
+    @TestCase
+    public func testPasteCollapseCursorAtEnd(): Unit {
+        // 粘贴后光标置尾：折叠 marker 光标在 marker 末尾（render CUP 列=提示符+marker 宽）
+        let ib = InputBox()
+        ib.handleKey(KeyEvent("a\nb\nc\nd"))  // 折叠 "[Paste #1, +4 lines]" 21 码点
+        let canvas = TuiCanvas()
+        canvas.begin(4, 80, true)
+        ib.render(canvas, 0, 80, 5)
+        let flushed = canvas.flush()
+        // CUP: ESC[row;colH——光标行 1（首行）、列 = 提示符 5 + marker 21 = 26
+        @Assert(flushed.contains(Rune(27).toString() + "[1;26H"), true)
+    }
+
+    @TestCase
+    public func testPasteCjkCursorScroll(): Unit {
+        // 光标 bug 回归（2026-09-09）：CJK+markdown 多段落 ≤3 行不折叠，
+        // 软换行视口滚动后光标仍落在末行末列（旧版行段截断→光标错位首行）
+        let ib = InputBox()
+        // 2 个换行（≤3 不折叠）：第一段落 60 字 CJK（宽 120 > 74 预算→软换行 2 行），
+        // 第二段落 **bold** 长文 100 码点（软换行 2 行）→ 总 4 显示行
+        var para = StringBuilder()
+        var cnt: Int64 = 0
+        while (cnt < 60) {
+            para.append("长")
+            cnt += 1
+        }
+        var tail = StringBuilder()
+        cnt = 0
+        while (cnt < 100) {
+            tail.append("*")
+            cnt += 1
+        }
+        ib.handleKey(KeyEvent(para.toString() + "\n\n" + tail.toString()))
+        @Assert(ib.text().contains("[Paste"), false)  // 2 换行 ≤3 → 不折叠
+        let canvas = TuiCanvas()
+        canvas.begin(6, 80, true)
+        ib.render(canvas, 0, 80, 5)
+        let flushed = canvas.flush()
+        // 光标在末显示行（4 行，1-based 行 4）——旧版截断 bug 会让光标落第 1/2 行
+        @Assert(flushed.contains(Rune(27).toString() + "[4;"), true)
+    }
+
+    @TestCase
+    public func testBackspaceAcrossNewlines(): Unit {
+        // 退格在行首删真实换行（两行合并），换行保留于 text
+        let ib = InputBox()
+        ib.handleKey(KeyEvent("ab\ncd"))
+        ib.handleKey(KeyEvent(127))
+        @Assert(ib.text(), "ab\nc")
+        ib.handleKey(KeyEvent(127))
+        @Assert(ib.text(), "ab\n")
+        ib.handleKey(KeyEvent(127))  // 删 \n
+        @Assert(ib.text(), "ab")
+        @Assert(ib.displayHeight(80), 1)
+    }
+
+    @TestCase
+    public func testRenderMultiLineViewport(): Unit {
+        // render 多行输出 + 视口跟随：500 码点 → 光标在第 7 行（超视口 5），
+        // 光标定位落在视口末行（1-based 行 5）；首行连续 74 个 a（首行预算）
+        let ib = InputBox()
+        var big = StringBuilder()
+        var cnt: Int64 = 0
+        while (cnt < 500) {
+            big.append("a")
+            cnt += 1
+        }
+        ib.handleKey(KeyEvent(big.toString()))
+        let canvas = TuiCanvas()
+        canvas.begin(8, 80, true)
+        let used = ib.render(canvas, 0, 80, 5)
+        @Assert(used, 5)
+        let flushed = canvas.flush()
+        @Assert(flushed.contains("[Paste"), false)
+        var seg74 = StringBuilder()
+        var k: Int64 = 0
+        while (k < 74) {
+            seg74.append("a")
+            k += 1
+        }
+        @Assert(flushed.contains(seg74.toString()), true)
+        @Assert(flushed.contains(Rune(27).toString() + "[5;"), true)  // 光标 CUP 在视口末行
+    }
+
+    /** 逐字符输入（模拟按键，光标随输入前移）。
+     *  用 while + 字节索引遍历（@Test 宏不支持 for-in 循环，§3.22） */
+    private func typeText(ib: InputBox, s: String): Unit {
+        var i: Int64 = 0
+        while (i < Int64(s.size)) {
+            let b0 = Int32(s[i])
+            var len: Int64 = 1
+            if (b0 >= 0xF0) { len = 4 } else if (b0 >= 0xE0) { len = 3 } else if (b0 >= 0xC0) { len = 2 }
+            let ch = s[i..i + len]
+            let arr = ch.toArray()
+            let first: Int32 = if (arr.size > 0) { Int32(arr[0]) } else { 0 }
+            ib.handleKey(KeyEvent(first, ch))
+            i += len
+        }
     }
 
     private func keyChar(c: Int32): KeyEvent {
