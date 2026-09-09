@@ -328,7 +328,9 @@ public class TuiApp {
         // 滚轮恢复终端原生滚动行为。
         try {
             print(Ansi.clearScreen(), flush: true)
-            print(Ansi.hideCursor(), flush: true)
+            // 保持硬件光标可见：canvas.flush() 每帧末尾 moveTo 到输入框 cursorPos，
+            // 用户可见光标位置（对齐 Claude Code/omp）。旧实现 hideCursor 后整会话
+            // 无光标，输入编辑位置不可见（v1.3.18 修复）
             // 注意：不强制发送 ESC[?2004h 开启 bracketed paste——实测部分真实终端
             // 开启后粘贴闭合检测失败，readBracketedPaste 吞后续按键（Backspace/
             // 方向键 变 DDDD、删不掉）。保持默认裸流粘贴（逐字符，行为可预期）；

@@ -685,16 +685,17 @@ public class InputBoxHistoryTest {
         // 注意：仓颉 @Test 宏不支持 for(i in 0..N) 循环（无论上限大小），
         // 会触发 "note: which is expanded as follows" 编译错误（§3.22）。
         // 改用 while 循环构建测试数据。
+        // 400 × 3 字节 = 1200 > pasteCollapseChars(1000)，足以触发大粘贴折叠
         var cnt: Int64 = 0
-        while (cnt < 200) {
+        while (cnt < 400) {
             big.append("长")
             cnt += 1
         }
         ib.handleKey(KeyEvent(big.toString()))  // 大粘贴
         @Assert(ib.text().startsWith("[Paste #1"), true)  // 折叠 marker
-        @Assert(ib.text().contains("200"), true)
+        @Assert(ib.text().contains("400"), true)
         // 提交展开为原文
-        @Assert(ib.expandedText().size, 200 * 3)  // 原文 3 字节/字（UTF-8）
+        @Assert(ib.expandedText().size, 400 * 3)  // 原文 3 字节/字（UTF-8）
         // 退格整体删除 marker（原子）
         ib.handleKey(KeyEvent(127))
         @Assert(ib.text(), "")
