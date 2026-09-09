@@ -234,6 +234,34 @@ public class WindowsTerminalBackend <: TerminalBackend {
     }
 
     /**
+     * 输入缓冲区积压量：Windows 控制台无 FIONREAD 等价物，
+     * 用待读输入事件数代替（粘贴 N 字符 → N 个 KEY_EVENT，
+     * 积压事件数远超单键，是裸流粘贴回退的判据）
+     */
+    public func readPendingBytes(): Int64 {
+        unsafe {
+            if (let countBuf <- LibC.malloc<UInt8>(count: 4)) {
+                if (GetNumberOfConsoleInputEvents(this.inHandle, countBuf) == false) {
+                    LibC.free(countBuf)
+                    return 0
+                }
+                let count = this.readU32(countBuf, 0)
+                LibC.free(countBuf)
+                return Int64(count)
+            }
+            return 0
+        }
+    }
+
+    /**
+     * Windows 控制台不支持 bracketed paste（无包裹标记），粘贴以离散
+     * KEY_EVENT 流入——由 Term 层按积压量合并（supportsBracketedPaste=false）
+     */
+    public func supportsBracketedPaste(): Bool {
+        return false
+    }
+
+    /**
      * 带超时等待输入：控制台输入句柄在输入缓冲非空时 signal（等价 POSIX select）
      */
     public func waitInput(timeoutMs: Int64): Bool {
