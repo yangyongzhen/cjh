@@ -1371,14 +1371,30 @@ public class TuiApp {
                 return
             }
         }
-        // 视图切换：Tab / ←→ 交给 TabBar（对话/帮助视图都可切换回）
-        if (this.tabBar.handleKey(key)) {
-            // 与当前视图不同才切换（TabBar 已更新 activeIndex）
-            if (this.tabBar.activeIndex() != this.viewMode) {
-                this.setView(this.tabBar.activeIndex())
+        // 视图切换：Tab 交给 TabBar；←→ 优先给 InputBox 移动光标（避免与光标移动冲突）
+        if (key.isTab) {
+            if (this.tabBar.handleKey(key)) {
+                if (this.tabBar.activeIndex() != this.viewMode) {
+                    this.setView(this.tabBar.activeIndex())
+                }
+                this.markDirty()
             }
-            this.markDirty()
             return
+        }
+        // 光标移动：←→ 优先给 InputBox（输入态下移动光标，非输入态交给 TabBar）
+        if (key.isArrowLeft || key.isArrowRight) {
+            if (this.inputBox.handleKey(key)) {
+                this.markDirty()
+                return
+            }
+            // 非输入态（如帮助视图）：←→ 仍可切换 tab
+            if (this.tabBar.handleKey(key)) {
+                if (this.tabBar.activeIndex() != this.viewMode) {
+                    this.setView(this.tabBar.activeIndex())
+                }
+                this.markDirty()
+                return
+            }
         }
         // 帮助视图：PageUp/Down 滚动帮助内容（输出区滚动仅对话视图）
         if (this.viewMode == 1) {
