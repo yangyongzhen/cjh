@@ -39,12 +39,15 @@ public class InputBox <: Component {
     private var historyDraft: String = ""  // 浏览历史前保存的当前输入（↓ 回底部恢复）
     private let historyMax: Int64 = 50
 
-    // ===== 大粘贴折叠（[Paste #N] marker，对齐 atomcode/omp 长粘贴折叠）=====
-    // 真实换行 > pasteCollapseLines 的粘贴折叠为单个原子 marker（不进入输入框），
-    // 避免长内容淹没输入区；≤3 行原文进入输入框走软换行多行显示
+    // ===== 大粘贴折叠（[Paste #N] marker，对齐 atomcode 阈值）=====
+    // 粘贴 ≥ pasteFoldLines 行 或 ≥ pasteFoldChars 字符（码点）折叠为单个原子
+    // marker（原文存 pasteStore 不进输入框，避免长内容淹没输入区）；
+    // 未达阈值的粘贴原文进入输入框走软换行多行显示。
+    // 阈值对齐 atomcode：PASTE_FOLD_LINES=5 / PASTE_FOLD_CHARS=400
     private var pasteStore: ArrayList<String> = ArrayList<String>()
     private var pasteCounter: Int64 = 0
-    private let pasteCollapseLines: Int64 = 3
+    private let pasteFoldLines: Int64 = 5
+    private let pasteFoldChars: Int64 = 400
 
     // ===== 多行显示状态（v1.3.20 软换行）=====
     // 显示区上限行数（含真实换行 + 软换行）：超长内容视口跟随光标，
@@ -235,25 +238,33 @@ public class InputBox <: Component {
 
     /**
      * 粘贴追加到光标处：真实换行保留（CRLF→LF 归一化）。
-     * 真实换行 > pasteCollapseLines（3 行）→ 折叠为原子 marker [Paste #N, +X lines]
-     * （原文存入 pasteStore，不进入输入框，对齐 atomcode/omp 长粘贴折叠）；
-     * ≤3 行 → 原文插入光标处，按显示宽度自动软换行多行显示。
+     * 折叠判定（对齐 atomcode PASTE_FOLD_LINES/PASTE_FOLD_CHARS）：
+     * ≥5 行 或 ≥400 字符（码点）→ 折叠为原子 marker——多行用 "[Paste #N, +M lines]"、
+     * 单行用 "[Paste #N, M chars]"（原文存 pasteStore 不进输入框）；
+     * 未达阈值 → 原文插入光标处，按显示宽度自动软换行多行显示。
      * 粘贴后光标置尾（对齐 atomcode "paste places cursor at end"）。
      */
     private func addPasteLine(paste: String): Unit {
         let norm = paste.replace("\r\n", "\n").replace("\r", "\n")
-        if (this.countLines(norm) > this.pasteCollapseLines) {
+        let lines = this.countLines(norm)
+        let chars = this.runeCount(norm)
+        if (lines >= this.pasteFoldLines || chars >= this.pasteFoldChars) {
             this.pasteCounter += 1
             this.pasteStore.add(norm)
-            this.insertAtCursor("[Paste #${this.pasteCounter}, +${Int64(this.countLines(norm))} lines]")
+            let metric = if (lines > 1) {
+                "+${Int64(lines)} lines"
+            } else {
+                "${Int64(chars)} chars"
+            }
+            this.insertAtCursor("[Paste #${this.pasteCounter}, ${metric}]")
         } else {
             this.insertAtCursor(norm)
         }
     }
 
     /**
-     * 有效内容行数（折叠判定指标，>3 行折叠）：'\n' 计数，末尾换行不计新行
-     * （"l1\nl2\nl3"=3、"l1\nl2\nl3\n"=3、"l1\nl2\nl3\nl4"=4）；空串=1
+     * 有效内容行数（折叠判定指标）：'\n' 计数，末尾换行不计新行
+     * （"l1\nl2"=2、"l1\nl2\n"=2、空串=1）；≥ pasteFoldLines(5) 折叠
      */
     private func countLines(s: String): Int64 {
         if (s.size == 0) {
@@ -271,6 +282,14 @@ public class InputBox <: Component {
             n += 1  // 末尾无换行：最后一行没有 '\n'
         }
         return n
+    }
+
+    /**
+     * 码点数（折叠判定指标，对齐 atomcode text.chars().count()）：
+     * CJK 每字计 1（区别于字节/显示宽度）；≥ pasteFoldChars(400) 折叠
+     */
+    private func runeCount(s: String): Int64 {
+        return Int64(s.toRuneArray().size)
     }
 
     /**
@@ -664,8 +683,9 @@ public class InputBox <: Component {
             return true
         }
         // 粘贴事件：在光标位置追加（bracketed paste 含换行也不触发 Enter 提交）。
-        // v1.3.20：真实换行保留并归一化 CRLF→LF；>3 行折叠为 [Paste #N] 原子
-        // marker（对齐 atomcode/omp），≤3 行原文走软换行多行显示；光标置尾。
+        // v1.3.20：真实换行保留并归一化 CRLF→LF；≥5 行或 ≥400 字符折叠为
+        // [Paste #N] 原子 marker（对齐 atomcode PASTE_FOLD_LINES/CHARS），
+        // 未达阈值原文走软换行多行显示；光标置尾。
         if (key.isPaste) {
             if (key.text.size > 0) {
                 this.addPasteLine(key.text)

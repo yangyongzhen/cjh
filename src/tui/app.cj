@@ -1745,7 +1745,7 @@ public class TuiApp {
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  ↑ / ↓          历史上下切换（滚轮亦可）" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  / 开头 ↑↓     只翻 / 命令历史" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Ctrl+R         历史搜索（输入子串过滤）" + Ansi.reset())
-        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  长粘贴         软换行显示 + >3 行折叠 [Paste #N]（回车展开提交）" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  长粘贴         软换行显示 + 超5行/400字折叠 [Paste #N]（回车展开提交）" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_ACCENT) + "快捷键：" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Tab / ←→       切换视图（对话/帮助）" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Ctrl+E         多行输入编辑（Alt+Enter 提交）" + Ansi.reset())
