@@ -487,10 +487,10 @@ def test_interrupt_releases_busy() -> None:
 def test_history_and_paste_multiline() -> None:
     """[场景12] 输入历史（↑↓ 切换上次输入）+ 粘贴双路径（v1.3.20）
 
-    粘贴行为分两路：
-    - >3 行粘贴 → 折叠为 [Paste #N, +X lines] marker（原子 token，原文不进输入框），
+    粘贴行为分两路（阈值对齐 atomcode：≥5 行或 ≥400 码点才折叠）：
+    - ≥5 行粘贴 → 折叠为 [Paste #N, +X lines] marker（原子 token，原文不进输入框），
       Enter 展开原文提交
-    - ≤3 行粘贴（含单行长文本）→ 原文进输入框，按屏宽自动软换行多行显示
+    - <5 行且 <400 码点粘贴（含单行长文本）→ 原文进输入框，按屏宽自动软换行多行显示
       （最多 5 行视口跟随光标），Enter 整体提交
     """
     print("[场景12] 输入历史 ↑↓ + 粘贴折叠/软换行")
@@ -512,10 +512,10 @@ def test_history_and_paste_multiline() -> None:
         s.read_available(0.5)
         buf = strip_ansi(s.buf)
         check("↑ 恢复上一条历史", "历史消息二" in buf[-200:], f"(buf尾部: {buf[-200:]})")
-        # 短粘贴（单行 0 换行 ≤3 → 不折叠）：原文进输入框，软换行多行显示
-        big = "长内容" * 500  # 1500 码点（3000 字节，> 单行屏宽，必触发软换行）
+        # 短粘贴（单行 0 换行、350 码点 < 400 → 不折叠）：原文进输入框，软换行多行显示
+        big = "长内容" * 88  # 352 码点（704 字节，> 单行屏宽，必触发软换行；< 400 码点不折叠）
         s.send("\x1b[200~" + big + "\x1b[201~")
-        s.expect("长内容长内容", timeout=15)  # 等粘贴内容渲染进输入框（4500 字节处理稍慢）
+        s.expect("长内容长内容", timeout=15)  # 等粘贴内容渲染进输入框
         s.read_available(0.8)
         buf = strip_ansi(s.buf)
         tail = buf[-400:]
@@ -532,8 +532,8 @@ def test_history_and_paste_multiline() -> None:
         s.read_available(0.8)
         buf = strip_ansi(s.buf)
         check("Enter 整体提交长文本", "长内容" in buf[-600:], f"(buf尾部: {buf[-600:]})")
-        # 长粘贴（4 行 >3 → 折叠 [Paste #N, +X lines]，原文不进输入框）
-        s.send("\x1b[200~段落一\n段落二\n段落三\n段落四\n\x1b[201~")
+        # 长粘贴（5 行 ≥5 → 折叠 [Paste #N, +X lines]，原文不进输入框）
+        s.send("\x1b[200~段落一\n段落二\n段落三\n段落四\n段落五\n\x1b[201~")
         s.expect("[Paste #", timeout=15)  # 等 marker 渲染进输入框
         s.read_available(0.6)
         buf = strip_ansi(s.buf)
@@ -545,7 +545,7 @@ def test_history_and_paste_multiline() -> None:
         s.expect("段落一", timeout=15)
         s.read_available(0.8)
         buf = strip_ansi(s.buf)
-        check("Enter 展开原文提交", "段落二" in buf[-800:] and "段落四" in buf[-900:], f"(buf尾部: {buf[-600:]})")
+        check("Enter 展开原文提交", "段落二" in buf[-800:] and "段落五" in buf[-900:], f"(buf尾部: {buf[-600:]})")
         s.send_key(3)  # 空闲：一次退出
         s.wait_exit()
     finally:

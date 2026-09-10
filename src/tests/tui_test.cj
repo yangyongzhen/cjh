@@ -690,25 +690,79 @@ public class InputBoxHistoryTest {
 
     @TestCase
     public func testPasteLargeSingleLine(): Unit {
-        // v1.3.20：单行长粘贴（0 换行，不触发 >3 行折叠）——原文全部进入输入框，
+        // v1.3.20：单行长粘贴（150 码点 < 400，不折叠）——原文全部进入输入框，
         // 按显示宽度自动软换行多行显示
         let ib = InputBox()
         // 注意：仓颉 @Test 宏不支持 for(i in 0..N) 循环（§3.22），用 while 构建数据
         var big = StringBuilder()
         var cnt: Int64 = 0
-        while (cnt < 500) {
+        while (cnt < 150) {
             big.append("a")
             cnt += 1
         }
-        ib.handleKey(KeyEvent(big.toString()))  // 500 码点长粘贴
-        @Assert(Int64(ib.text().size), 500)
+        ib.handleKey(KeyEvent(big.toString()))  // 150 码点长粘贴
+        @Assert(Int64(ib.text().size), 150)
         @Assert(ib.text().contains("[Paste"), false)  // 无折叠 marker
-        // 显示行数：首行预算 80-5=75，续行 78 → 1+ceil(425/78)=7 → 上限 5
-        @Assert(ib.displayHeight(80), 5)
+        // 显示行数：首行预算 74，续行 78 → 150 = 74 + 76 → 2 行
+        @Assert(ib.displayHeight(80), 2)
         // 短内容保持 1 行
         let ib2 = InputBox()
         ib2.handleKey(KeyEvent("hello"))
         @Assert(ib2.displayHeight(80), 1)
+    }
+
+    /**
+     * 单行长粘贴 ≥400 码点：折叠为 "[Paste #1, 400 chars]" 原子 marker
+     * （对齐 atomcode PASTE_FOLD_CHARS=400；单行用 chars 指标）
+     */
+    @TestCase
+    public func testPasteLongSingleLineCollapsed(): Unit {
+        let ib = InputBox()
+        var big = StringBuilder()
+        var cnt: Int64 = 0
+        while (cnt < 400) {
+            big.append("a")
+            cnt += 1
+        }
+        ib.handleKey(KeyEvent(big.toString()))  // 400 码点 ≥ 400 → 折叠
+        @Assert(ib.text(), "[Paste #1, 400 chars]")
+        @Assert(ib.displayHeight(80), 1)  // marker 单行，不撑高输入区
+        // 展开提交：原文恢复
+        let submitted = ArrayList<String>()
+        ib.onSubmit = { s =>
+            submitted.add(s)
+        }
+        ib.handleKey(KeyEvent(13))  // Enter
+        @Assert(Int64(submitted[0].size), 400)
+        @Assert(ib.text(), "")
+    }
+
+    /**
+     * CJK 码点计数（对齐 atomcode text.chars().count()）：300 个汉字 = 300 码点
+     * < 400 不折叠（900 字节/600 显示列均不参与判定）；400 个汉字 ≥ 400 码点 → 折叠
+     */
+    @TestCase
+    public func testPasteCjkRuneCountThreshold(): Unit {
+        let ib = InputBox()
+        var big = StringBuilder()
+        var cnt: Int64 = 0
+        while (cnt < 300) {
+            big.append("汉")
+            cnt += 1
+        }
+        ib.handleKey(KeyEvent(big.toString()))  // 300 码点 < 400：不折叠
+        @Assert(Int64(ib.text().size), 900)  // 原文进框（字节数）
+        @Assert(ib.text().contains("[Paste"), false)
+        @Assert(ib.displayHeight(80), 5)  // 宽 600 列 → 软换行超 5 行，clamp 到 5
+        let ib2 = InputBox()
+        var big2 = StringBuilder()
+        cnt = 0
+        while (cnt < 400) {
+            big2.append("汉")
+            cnt += 1
+        }
+        ib2.handleKey(KeyEvent(big2.toString()))  // 400 码点 ≥ 400：折叠
+        @Assert(ib2.text(), "[Paste #1, 400 chars]")
     }
 
     @TestCase
@@ -796,26 +850,37 @@ public class InputBoxHistoryTest {
     }
 
     @TestCase
-    public func testPasteCollapseOverThreeLines(): Unit {
-        // v1.3.20：>3 行粘贴折叠为 [Paste #N, +X lines] marker（对齐 atomcode/omp），
+    public func testPasteCollapseAtFiveLines(): Unit {
+        // v1.3.20：≥5 行粘贴折叠为 [Paste #N, +X lines] marker（对齐 atomcode PASTE_FOLD_LINES=5），
         // 原文存入 pasteStore 不进输入框；marker 是原子 token
         let ib = InputBox()
-        ib.handleKey(KeyEvent("l1\nl2\nl3\nl4"))  // 4 有效行 > 3 → 折叠
-        @Assert(ib.text(), "[Paste #1, +4 lines]")
+        ib.handleKey(KeyEvent("l1\nl2\nl3\nl4\nl5"))  // 5 有效行 ≥ 5 → 折叠
+        @Assert(ib.text(), "[Paste #1, +5 lines]")
         // 展开提交文本 = 原文（换行保留）
-        @Assert(ib.expandedText(), "l1\nl2\nl3\nl4")
+        @Assert(ib.expandedText(), "l1\nl2\nl3\nl4\nl5")
         // 显示高度 1 行（marker 单行），不撑高输入区
         @Assert(ib.displayHeight(80), 1)
+        // 边界：399 字符 < 400 单行不折叠（软换行 6 显示行 → clamp 5）
+        let ib3 = InputBox()
+        var big = StringBuilder()
+        var cnt: Int64 = 0
+        while (cnt < 399) {
+            big.append("a")
+            cnt += 1
+        }
+        ib3.handleKey(KeyEvent(big.toString()))
+        @Assert(ib3.text().contains("[Paste"), false)
+        @Assert(ib3.displayHeight(80), 5)
     }
 
     @TestCase
-    public func testPasteNoCollapseAtThreeLines(): Unit {
-        // 边界：恰好 3 行（末尾无换行）不折叠，原文软换行显示
+    public func testPasteNoCollapseAtFourLines(): Unit {
+        // 边界：4 行（<5）不折叠，原文软换行显示（对齐 atomcode：短内容不值得藏进 marker）
         let ib = InputBox()
-        ib.handleKey(KeyEvent("l1\nl2\nl3"))
-        @Assert(ib.text(), "l1\nl2\nl3")
+        ib.handleKey(KeyEvent("l1\nl2\nl3\nl4"))
+        @Assert(ib.text(), "l1\nl2\nl3\nl4")
         @Assert(ib.text().contains("[Paste"), false)
-        @Assert(ib.displayHeight(80), 3)
+        @Assert(ib.displayHeight(80), 4)
         // 3 行 + 末尾换行：末尾换行不计新行，仍不折叠（显示 4 行含空尾行）
         let ib2 = InputBox()
         ib2.handleKey(KeyEvent("l1\nl2\nl3\n"))
@@ -825,12 +890,12 @@ public class InputBoxHistoryTest {
 
     @TestCase
     public func testPasteCollapseCrlfAndPrefix(): Unit {
-        // CRLF 归一化后判行数；折叠 marker 插入光标处保留前缀
+        // CRLF 归一化后判行数（5 行 ≥5 折叠）；折叠 marker 插入光标处保留前缀
         let ib = InputBox()
         this.typeText(ib, "pre ")
-        ib.handleKey(KeyEvent("a\r\nb\r\nc\r\nd"))  // 4 有效行 → 折叠
-        @Assert(ib.text(), "pre [Paste #1, +4 lines]")
-        @Assert(ib.expandedText(), "pre a\nb\nc\nd")
+        ib.handleKey(KeyEvent("a\r\nb\r\nc\r\nd\r\ne"))  // CRLF 5 有效行 → 折叠
+        @Assert(ib.text(), "pre [Paste #1, +5 lines]")
+        @Assert(ib.expandedText(), "pre a\nb\nc\nd\ne")
     }
 
     @TestCase
@@ -847,9 +912,6 @@ public class InputBoxHistoryTest {
         ib.handleKey(KeyEvent(13))  // Enter
         @Assert(submitted[0], "a\nb\nc\nd\ne")
         @Assert(ib.text(), "")  // 提交后清空
-        // 原子退格：marker 整体删
-        ib.handleKey(KeyEvent("x\ny\nz\nw"))  // 4 行 → 折叠
-        @Assert(ib.text().contains("[Paste #"), true)
         ib.handleKey(KeyEvent(127))  // 退格
         @Assert(ib.text(), "")
         // 历史存的是展开原文（供 ↑ 恢复）
@@ -862,7 +924,7 @@ public class InputBoxHistoryTest {
     public func testPasteCollapseCursorAtEnd(): Unit {
         // 粘贴后光标置尾：折叠 marker 光标在 marker 末尾（render CUP 列=提示符+marker 宽）
         let ib = InputBox()
-        ib.handleKey(KeyEvent("a\nb\nc\nd"))  // 折叠 "[Paste #1, +4 lines]" 21 码点
+        ib.handleKey(KeyEvent("a\nb\nc\nd\ne"))  // 5 行 → 折叠 "[Paste #1, +5 lines]" 21 码点
         let canvas = TuiCanvas()
         canvas.begin(4, 80, true)
         ib.render(canvas, 0, 80, 5)
@@ -873,10 +935,10 @@ public class InputBoxHistoryTest {
 
     @TestCase
     public func testPasteCjkCursorScroll(): Unit {
-        // 光标 bug 回归（2026-09-09）：CJK+markdown 多段落 ≤3 行不折叠，
+        // 光标 bug 回归（2026-09-09）：CJK+markdown 多段落（2 换行，<5 行 <400 字符不折叠），
         // 软换行视口滚动后光标仍落在末行末列（旧版行段截断→光标错位首行）
         let ib = InputBox()
-        // 2 个换行（≤3 不折叠）：第一段落 60 字 CJK（宽 120 > 74 预算→软换行 2 行），
+        // 2 个换行（<5 行 <400 字符不折叠）：第一段落 60 字 CJK（宽 120 > 74 预算→软换行 2 行），
         // 第二段落 **bold** 长文 100 码点（软换行 2 行）→ 总 4 显示行
         var para = StringBuilder()
         var cnt: Int64 = 0
@@ -891,7 +953,7 @@ public class InputBoxHistoryTest {
             cnt += 1
         }
         ib.handleKey(KeyEvent(para.toString() + "\n\n" + tail.toString()))
-        @Assert(ib.text().contains("[Paste"), false)  // 2 换行 ≤3 → 不折叠
+        @Assert(ib.text().contains("[Paste"), false)  // 3 内容行 <5 → 不折叠
         let canvas = TuiCanvas()
         canvas.begin(6, 80, true)
         ib.render(canvas, 0, 80, 5)
@@ -916,12 +978,13 @@ public class InputBoxHistoryTest {
 
     @TestCase
     public func testRenderMultiLineViewport(): Unit {
-        // render 多行输出 + 视口跟随：500 码点 → 光标在第 7 行（超视口 5），
-        // 光标定位落在视口末行（1-based 行 5）；首行连续 74 个 a（首行预算）
+        // render 多行输出 + 视口跟随：399 码点（<400 不折叠）→ 软换行 6 显示行，
+        // 光标在第 6 行（超视口 5），光标定位落在视口末行（1-based 行 5）；
+        // 首行连续 74 个 a（首行预算）
         let ib = InputBox()
         var big = StringBuilder()
         var cnt: Int64 = 0
-        while (cnt < 500) {
+        while (cnt < 399) {
             big.append("a")
             cnt += 1
         }
