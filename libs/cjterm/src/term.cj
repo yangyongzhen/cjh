@@ -153,14 +153,37 @@ private let BULK_PASTE_MIN: Int64 = 48
 private let BULK_PASTE_MAX: Int64 = 2000
 
 /**
+ * burst 聚合两级窗口（v1.3.21，对齐 atomcode input/reader.rs）：
+ * - PENDING：首个候选字符后的首次探测窗口。正常打字有毫秒级人类间隔，
+ *   短窗口即过期 → 单键近零延迟（此前每键全跑 ACTIVE 窗口会引入输入延迟）；
+ *   非零（而非严格 poll(0)）给分块到达的第一块稍作喘息，避免真粘贴被误判单键
+ * - ACTIVE：第 2 个候选字符确认 burst 后的桥接窗口，覆盖 conhost/WT 分块
+ *   粘贴记录间 5-12ms 的间隙（Windows 实测口径）
+ */
+private let BURST_PENDING_MS: Int64 = 4
+private let BURST_ACTIVE_MS: Int64 = 15
+
+/**
  * 终端控制器：委托 TerminalBackend 实现平台差异，对外 API 与旧版一致
  */
 public class Term {
     private let backend: TerminalBackend
     private var rawOn: Bool = false
+    // burst 聚合的延迟重排队：合并判定为"非粘贴"（无换行）时，已吞读的
+    // 字符必须按序还给后续 readKey，不得丢弃（对齐 atomcode per-key 重放）
+    private var replay: ArrayList<KeyEvent> = ArrayList<KeyEvent>(0)
 
     public init() {
         this.backend = createTerminalBackend()
+    }
+
+    /**
+     * 测试注入：替换 backend + 复位 burst 聚合状态。
+     * 生产构建走默认 init；此重载仅供单元测试用 mock backend
+     * 模拟 Windows 离散按键流（真实 conhost 无法在 CI 里驱动）。
+     */
+    public init(injected: TerminalBackend) {
+        this.backend = injected
     }
 
     public func enableRaw(): Bool {
@@ -206,11 +229,18 @@ public class Term {
     /**
      * 读取一个按键事件（阻塞）。无输入返回 None。
      *
-     * 裸流粘贴合并（v1.3.19）：Windows 控制台不支持 bracketed paste，
-     * 粘贴以离散按键事件涌入——靠 backend 输入缓冲积压量识别：
-     * 积压 ≥ 阈值时连续吞读可打印字符（有上限），合并为单个 isPaste 事件；
-     * 中途的控制键（↑↓←→、Enter、ESC）立即停止合并并**原样返回该键**
-     * （不丢事件），后续 readKey 继续正常处理。
+     * 裸流粘贴合并（v1.3.19，v1.3.20 修复）：Windows 控制台不支持 bracketed
+     * paste，粘贴以离散按键事件涌入——靠 backend 输入缓冲积压量识别：
+     * 积压 ≥ 阈值时连续吞读可打印字符（有上限），合并为单个 isPaste 事件。
+     *
+     * 合并循环内的事件分类（对齐 atomcode input/reader.rs paste_candidate_char
+     * 与 bracketed paste 语义——粘贴内容的换行绝不能触发提交）：
+     *  - 可打印字符 → 并入粘贴文本
+     *  - **Enter（\r，无修饰）→ 视为粘贴内容里的换行并入**（conhost 粘贴的
+     *    换行就是裸 Enter 事件；若停合并丢弃，剩余缓冲逐键消费时下一个 \r
+     *    会变成真实 Enter 触发提交——v1.3.20 修复的根因）
+     *  - 其他控制键（↑↓←→、ESC、Backspace、Ctrl 组合）→ 命令而非粘贴内容，
+     *    停止合并并原样返回该键（不丢事件），后续 readKey 继续正常处理
      */
     public func readKey(): Option<KeyEvent> {
         // bracketed paste 后端（POSIX）：backend 自行解析 ESC[200~...ESC[201~，
@@ -218,48 +248,257 @@ public class Term {
         if (this.backend.supportsBracketedPaste()) {
             return this.backend.readKey()
         }
-        // 裸流后端（Windows 控制台）：输入积压探测（POSIX=字节数，
-        // Windows=控制台事件数；单键至多 ~10 字节/2 事件），超阈值即疑似粘贴
+        // 重放队（burst 聚合判定为"非粘贴"后按序还回的按键）：严格 FIFO
+        // 先于 backend 消费（顺序语义：重放键早于后续 backend 输入到达；
+        // 且重放键已分类完毕，不得重新进入 burst 检测）
+        if (let Some(k) <- this.replay.get(Int64(0))) {
+            this.replay.remove(at: 0)
+            return Some(k)
+        }
+        return this.readRawStreamKey()
+    }
+
+    /**
+     * 裸流后端（Windows 控制台）单键读取，含两级粘贴检测（v1.3.19 积压合并 +
+     * v1.3.21 burst 窗口聚合，对齐 atomcode input/reader.rs）：
+     *
+     * 1. 积压 ≥ BULK_PASTE_MIN（长粘贴）：一次性吞读合并（原有路径）
+     * 2. 单键为粘贴候选字符（可打印/裸 Enter/裸 Tab）：两级窗口聚合
+     *    - PENDING（4ms）探测第 2 个候选字符：正常打字有人类间隔即超时，
+     *      单键近零延迟返回
+     *    - 第 2 个候选确认后切 ACTIVE（15ms）桥接 conhost/WT 分块记录间隙
+     *    - 聚合结果满足"粘贴签名"（≥2 字符 + 含换行 + 含非空白 + 防 IME
+     *      逐字提交风暴）→ 合并为单个 isPaste 事件（多行换行并入文本，
+     *      绝不逐键触发提交）；否则按原键序重放（不丢事件）
+     *
+     * 两级窗口只作用于裸 Enter/裸 Tab/可打印字符：方向键、Esc、Ctrl 组合、
+     * 退格、鼠标等"命令键"直接返回，不受聚合延迟影响。
+     */
+    private func readRawStreamKey(): Option<KeyEvent> {
+        // 输入积压探测（Windows=控制台待读事件数；单键至多 1-2 事件），
+        // 超阈值 = 长粘贴，直接吞读合并
         let pending = this.backend.readPendingBytes()
         if (pending >= BULK_PASTE_MIN) {
-            var sb = StringBuilder()
-            var count: Int64 = 0
-            while (count < BULK_PASTE_MAX) {
-                // hasInput 非阻塞守卫：粘贴读完即停，绝不阻塞等下一个键
-                if (!this.backend.hasInput()) {
+            return this.readRawStreamPaste()
+        }
+        // 常规读键；非候选（命令键/无输入）原样返回
+        if (!this.backend.hasInput()) {
+            return None
+        }
+        if (let Some(k) <- this.backend.readKey()) {
+            if (!this.isPasteCandidate(k)) {
+                return Some(k)
+            }
+            return this.tryAggregateBurst(k)
+        }
+        return None
+    }
+
+    /**
+     * 粘贴候选判定（对齐 atomcode paste_candidate_char）：
+     * 可打印字符 / 裸 Enter（\r，粘贴内容的换行）/ 裸 Tab → 候选；
+     * 方向键、Esc、Ctrl 组合、退格、鼠标等命令键 → 非候选（用户命令，
+     * 不并入粘贴，也不引入聚合延迟）
+     */
+    private func isPasteCandidate(k: KeyEvent): Bool {
+        return (k.text.size > 0 && !k.isEsc && !k.isEnter
+            && !k.isBackspace && !k.isArrowUp && !k.isArrowDown
+            && !k.isArrowLeft && !k.isArrowRight && !k.isMouse && !k.isPaste)
+            || (k.isEnter && k.text.size == 1)
+            || (k.isTab && k.text.size == 1)
+    }
+
+    /**
+     * 两级窗口 burst 聚合：首候选字符已读入（firstKey），继续探测后续
+     * 候选字符直到窗口超时 / 遇到命令键 / 达到上限。
+     */
+    private func tryAggregateBurst(firstKey: KeyEvent): Option<KeyEvent> {
+        var chars = ArrayList<String>(4)
+        var trailing = ArrayList<KeyEvent>(0)
+        chars.add(this.candidateChar(firstKey))
+        var confirmed: Bool = false
+        while (chars.size < BULK_PASTE_MAX) {
+            let timeoutMs: Int64 = if (confirmed) { BURST_ACTIVE_MS } else { BURST_PENDING_MS }
+            if (!this.backend.waitInput(timeoutMs)) {
+                break
+            }
+            if (!this.backend.hasInput()) {
+                break
+            }
+            let nextOpt = this.backend.readKey()
+            if (let Some(n) <- nextOpt) {
+                if (n.isPaste) {
+                    // 粘贴内混入的 bracketed paste 事件：整段并入
+                    chars.add(n.text)
+                    confirmed = true
+                    continue
+                }
+                if (this.isPasteCandidate(n)) {
+                    chars.add(this.candidateChar(n))
+                    confirmed = true
+                } else {
+                    // 命令键打断 burst：入重放队（不丢事件），停止聚合
+                    trailing.add(n)
                     break
                 }
-                if (let Some(k) <- this.backend.readKey()) {
-                    // 粘贴内可能混入的 bracketed paste 事件（部分终端）：整段并入
-                    if (k.isPaste) {
-                        sb.append(k.text)
-                        count += k.text.toRuneArray().size
-                        continue
-                    }
-                    // 只合并可打印字符；控制键停止合并并原样返回（不丢）
-                    if (k.text.size == 0 || k.isEnter || k.isBackspace || k.isEsc
-                        || k.isArrowUp || k.isArrowDown || k.isArrowLeft || k.isArrowRight) {
-                        if (count > 0) {
-                            // 已收部分作为粘贴事件先行返回；该控制键丢弃。
-                            // 粘贴场景下夹带的 Enter 语义上就是粘贴内容里的
-                            // 换行（不应触发提交，对齐 bracketed paste 语义）；
-                            // 正常单键打字积压远低于 BULK_PASTE_MIN 不进此路径。
-                            return Some(KeyEvent(sb.toString()))
-                        }
-                        return Some(k)
-                    }
+            } else {
+                break
+            }
+        }
+        if (this.isPasteBurst(chars)) {
+            var sb = StringBuilder()
+            for (c in chars) {
+                sb.append(c)
+            }
+            // 打断 burst 的命令键已入 trailing：同样还回重放队
+            for (t in trailing) {
+                this.replay.add(t)
+            }
+            return Some(KeyEvent(sb.toString()))
+        }
+        // 非粘贴签名（如快速单行打字）：首键立即原样返回（保留原始
+        // KeyEvent），后续已读字符按序入重放队（对齐 atomcode per-key 重放，
+        // 不丢事件）
+        chars.remove(at: 0)  // chars[0] 即 firstKey，已直接返回
+        for (c in chars) {
+            this.replay.add(this.reconstructKey(c))
+        }
+        for (t in trailing) {
+            this.replay.add(t)
+        }
+        return Some(firstKey)
+    }
+
+    /**
+     * 候选字符的文本表示：裸 Enter → "\r"（InputBox.addPasteLine 归一化
+     * CRLF→LF 后并入多行文本）；Tab → "\t"；可打印字符 → 原 text
+     */
+    private func candidateChar(k: KeyEvent): String {
+        if (k.isEnter) {
+            return "\r"
+        }
+        if (k.isTab) {
+            return "\t"
+        }
+        return k.text
+    }
+
+    /**
+     * 重放重建：聚合字符 → 最小按键事件（无修饰，对齐 atomcode 重放语义）
+     */
+    private func reconstructKey(c: String): KeyEvent {
+        if (c == "\r") {
+            return KeyEvent(13)
+        }
+        if (c == "\t") {
+            return KeyEvent(9)
+        }
+        var first: Int32 = 0
+        if (c.size > 0) {
+            first = Int32(c.toArray()[0])
+        }
+        return KeyEvent(first, c)
+    }
+
+    /**
+     * 粘贴签名判定（对齐 atomcode is_paste_burst 四条件）：
+     *  1. ≥2 字符（单键是正常打字）
+     *  2. 含换行（"这是多行内容"的无歧义信号；无换行 burst 走逐键路径）
+     *  3. 含至少一个非空白字符（排除 tty 队列残留的连续 Enter/Tab）
+     *  4. ≥3 行时每行平均 >1 非换行字符（排除 Windows IME 逐字提交风暴
+     *     "字↵字↵字" 被误判粘贴）
+     */
+    private func isPasteBurst(chars: ArrayList<String>): Bool {
+        if (chars.size < 2) {
+            return false
+        }
+        var hasEnter: Bool = false
+        var hasText: Bool = false
+        var newlineCount: Int64 = 0
+        for (c in chars) {
+            if (c == "\r" || c == "\n") {
+                hasEnter = true
+                newlineCount += 1
+            } else if (this.hasNonBlankRune(c)) {
+                hasText = true
+            }
+        }
+        if (!hasEnter || !hasText) {
+            return false
+        }
+        let lineCount = newlineCount + 1
+        let nonNewline = Int64(chars.size) - newlineCount
+        if (lineCount >= 3 && nonNewline <= lineCount) {
+            return false  // 平均每行 ≤1 字符：IME 逐字提交，非粘贴
+        }
+        return true
+    }
+
+    /**
+     * 字符串是否含至少一个非空白码点（粘贴签名条件 3）。
+     * 不用 trim()：trim 仅去首尾空白，中间空白仍留（"a " → "a"），
+     * 但"全空白"字符串判空语义与 is_paste_burst 的 is_whitespace 一致即可。
+     */
+    private func hasNonBlankRune(s: String): Bool {
+        for (r in s.toRuneArray()) {
+            let v = Int64(UInt32(r))
+            // 空白码点（对齐 atomcode char::is_whitespace 的常见控制/空格集）
+            if (v != 32 && v != 9 && v != 10 && v != 13 && v != 12 && v != 11) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /**
+     * 裸流粘贴合并（Windows 控制台回退路径）。
+     * 抽出为独立方法便于测试注入（TestTerminalBackend 模拟离散按键流）。
+     */
+    public func readRawStreamPaste(): Option<KeyEvent> {
+        var sb = StringBuilder()
+        var count: Int64 = 0
+        while (count < BULK_PASTE_MAX) {
+            // hasInput 非阻塞守卫：粘贴读完即停，绝不阻塞等下一个键
+            if (!this.backend.hasInput()) {
+                break
+            }
+            if (let Some(k) <- this.backend.readKey()) {
+                // 粘贴内可能混入的 bracketed paste 事件（部分终端）：整段并入
+                if (k.isPaste) {
                     sb.append(k.text)
                     count += k.text.toRuneArray().size
-                } else {
-                    break
+                    continue
                 }
+                // Enter（\r）：粘贴内容里的换行并入文本（对齐 atomcode
+                // paste_candidate_char：无修饰 Enter = '\n' 粘贴内容）。
+                // 若停合并丢弃，剩余缓冲逐键消费时下一个 \r 变成真实
+                // Enter 触发提交（"粘贴带换行长文本直接发送"根因）。
+                if (k.isEnter && k.text.size == 1) {
+                    sb.append("\r")
+                    count += 1
+                    continue
+                }
+                // 其他控制键（↑↓←→、ESC、Backspace、Ctrl 组合）= 命令，
+                // 停止合并；已收部分作为粘贴事件先行返回，该命令键入重放队
+                // （不丢事件，下次 readKey 原样还回）。
+                if (k.text.size == 0 || k.isBackspace || k.isEsc
+                    || k.isArrowUp || k.isArrowDown || k.isArrowLeft || k.isArrowRight) {
+                    if (count > 0) {
+                        this.replay.add(k)
+                        return Some(KeyEvent(sb.toString()))
+                    }
+                    return Some(k)
+                }
+                sb.append(k.text)
+                count += k.text.toRuneArray().size
+            } else {
+                break
             }
-            if (count > 0) {
-                return Some(KeyEvent(sb.toString()))
-            }
-            // 积压全是控制序列：退回常规读取（上面 while 已逐键读完则 None）
-            return this.backend.readKey()
         }
+        if (count > 0) {
+            return Some(KeyEvent(sb.toString()))
+        }
+        // 积压全是控制序列：退回常规读取（上面 while 已逐键读完则 None）
         return this.backend.readKey()
     }
 

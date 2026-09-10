@@ -1,0 +1,351 @@
+package cjterm
+
+import std.collection.*
+
+/**
+ * v1.3.21 Windows 裸流粘贴修复的单元测试（回归防护）
+ *
+ * 根因：Windows 控制台不支持 bracketed paste，粘贴以离散按键事件涌入。
+ * 旧实现只在"积压 ≥48 事件"时合并，且合并循环遇第一个 \r（isEnter）即
+ * 停合并、丢弃该 \r → 长粘贴剩余部分留缓冲区，主循环逐帧读键时尾部 \r
+ * 被当真实 Enter 触发提交（"粘贴带换行长文本直接发送"）；短粘贴（<48
+ * 事件）带换行则全程走单键路径，每个 \r 直接 = 一次提交。
+ *
+ * 修复（对齐 atomcode input/reader.rs）：
+ *   1. 长粘贴合并：Enter 视为粘贴内容里的换行并入文本（不再丢弃/停合并）
+ *   2. burst 两级窗口聚合（PENDING 4ms / ACTIVE 15ms）：候选字符（可打印/
+ *      裸 Enter/裸 Tab）连续到达即聚合；满足粘贴签名（≥2 字符 + 含换行 +
+ *      含非空白 + 防 IME 逐字风暴）→ 单个 isPaste 事件；否则按序重放
+ *   3. 重放队（replay）：非粘贴 burst 与合并打断的命令键不丢事件，
+ *      下次 readKey 按序还回
+ *
+ * 用 MockBackend 模拟 conhost 离散按键流（CI 无真实 Windows 控制台）：
+ * 队列即"输入缓冲"，readPendingBytes 返回队列长度（对齐 Windows 语义：
+ * 待读 KEY_EVENT 数）。
+ */
+
+/**
+ * mock 后端：预置按键队列模拟 Windows 控制台的离散 KEY_EVENT 流
+ */
+public class MockBackend <: TerminalBackend {
+    var queue: ArrayList<KeyEvent>
+    var bracketed: Bool
+
+    public init(_q: ArrayList<KeyEvent>, _b: Bool) {
+        this.queue = _q
+        this.bracketed = _b
+    }
+
+    // ===== TerminalBackend 接口 =====
+
+    public func enableRaw(): Bool {
+        return true
+    }
+
+    public func disableRaw(): Unit {}
+
+    public func hasInput(): Bool {
+        return this.queue.size > 0
+    }
+
+    // Windows 语义：待读输入事件数（粘贴 N 字符 = N 个 KEY_EVENT）
+    public func readPendingBytes(): Int64 {
+        return this.queue.size
+    }
+
+    public func supportsBracketedPaste(): Bool {
+        return this.bracketed
+    }
+
+    // burst 窗口等待：mock 队列非空即"有输入"（模拟分块到达的后续块）
+    public func waitInput(_timeoutMs: Int64): Bool {
+        return this.queue.size > 0
+    }
+
+    public func readKey(): Option<KeyEvent> {
+        if (this.queue.size == 0) {
+            return None
+        }
+        let k = this.queue[0]
+        this.queue.remove(at: 0)
+        return Some(k)
+    }
+
+    public func size(): (Int64, Int64) {
+        return (24, 80)
+    }
+
+    public func isUtf8(): Bool {
+        return true
+    }
+
+    public func suppressStderr(): Bool {
+        return true
+    }
+
+    public func restoreStderr(): Unit {}
+}
+
+@Test
+public class TermPasteBurstTest {
+
+    // 测试辅助：单字符键（可打印，对齐 Windows ch != 0 路径）
+    static func ch(_s: String): KeyEvent {
+        var first: Int32 = 0
+        if (_s.size > 0) {
+            first = Int32(_s.toArray()[0])
+        }
+        return KeyEvent(first, _s)
+    }
+
+    /** 主路径：短多行粘贴（<48 事件）合并为单个 isPaste，\r 并入文本不触发提交 */
+    @TestCase
+    public func testShortMultilinePasteCoalesced(): Unit {
+        var q = ArrayList<KeyEvent>(0)
+        q.add(ch("h"))
+        q.add(ch("i"))
+        q.add(KeyEvent(13))  // 裸 Enter（conhost VK_RETURN，text="\r"）
+        q.add(ch("!"))
+        let term = Term(MockBackend(q, false))
+        if (let Some(k) <- term.readKey()) {
+            @Assert(k.isPaste, true)
+            @Assert(k.isEnter, false)
+            @Assert(k.text, "hi\r!")
+        } else {
+            @Assert(false)
+        }
+        // 缓冲已耗尽
+        @Assert(term.readKey().isNone(), true)
+    }
+
+    /** 回归根因：长粘贴（>48 事件）尾部 \r 并入粘贴文本，不残留触发提交 */
+    @TestCase
+    public func testLongPasteTailEnterAbsorbed(): Unit {
+        var q = ArrayList<KeyEvent>(0)
+        for (i in 0..50) {
+            q.add(ch("a"))
+        }
+        q.add(KeyEvent(13))  // 尾部换行：旧实现在此停合并丢弃 → 后续帧当 Enter 提交
+        let term = Term(MockBackend(q, false))
+        if (let Some(k) <- term.readKey()) {
+            @Assert(k.isPaste, true)
+            @Assert(k.text.size, 51)
+            @Assert(k.text[50] == 13u8, true)  // 末字节 = \r
+        } else {
+            @Assert(false)
+        }
+        // 全部吞读完：无残留键（旧实现此处残留尾部内容 → 逐帧读到 \r → 提交）
+        @Assert(term.readKey().isNone(), true)
+    }
+
+    /** 非粘贴 burst（无换行）+ 后续命令键：按序重放不丢事件 */
+    @TestCase
+    public func testControlKeyReplayedInOrder(): Unit {
+        var q = ArrayList<KeyEvent>(0)
+        q.add(ch("x"))
+        q.add(ch("y"))
+        q.add(KeyEvent(27, TermEsc.LEFT))  // 方向键 = 命令，打断 burst
+        q.add(ch("z"))
+        let term = Term(MockBackend(q, false))
+        // 'x' 触发 burst，聚合 'xy' 遇方向键停止；无换行 → 非粘贴签名
+        // 按序还回：'x'、'y'、方向键、'z'
+        if (let Some(k1) <- term.readKey()) {
+            @Assert(k1.isPaste, false)
+            @Assert(k1.text, "x")
+        } else {
+            @Assert(false)
+        }
+        if (let Some(k2) <- term.readKey()) {
+            @Assert(k2.text, "y")
+        } else {
+            @Assert(false)
+        }
+        if (let Some(k3) <- term.readKey()) {
+            @Assert(k3.isArrowLeft, true)
+        } else {
+            @Assert(false)
+        }
+        if (let Some(k4) <- term.readKey()) {
+            @Assert(k4.text, "z")
+        } else {
+            @Assert(false)
+        }
+        @Assert(term.readKey().isNone(), true)
+    }
+
+    /** IME 逐字提交风暴（字↵字↵字）不得误判为粘贴：按序重放 */
+    @TestCase
+    public func testImeStormNotCoalesced(): Unit {
+        var q = ArrayList<KeyEvent>(0)
+        q.add(ch("首"))
+        q.add(KeyEvent(13))
+        q.add(ch("页"))
+        q.add(KeyEvent(13))
+        q.add(ch("中"))
+        q.add(KeyEvent(13))
+        let term = Term(MockBackend(q, false))
+        // 3 行、每行 1 字符（平均 ≤1）→ is_paste_burst 条件 4 拒绝
+        if (let Some(k1) <- term.readKey()) {
+            @Assert(k1.isPaste, false)
+            @Assert(k1.text, "首")
+        } else {
+            @Assert(false)
+        }
+        if (let Some(k2) <- term.readKey()) {
+            @Assert(k2.isEnter, true)
+        } else {
+            @Assert(false)
+        }
+        if (let Some(k3) <- term.readKey()) {
+            @Assert(k3.text, "页")
+        } else {
+            @Assert(false)
+        }
+        if (let Some(k4) <- term.readKey()) {
+            @Assert(k4.isEnter, true)
+        } else {
+            @Assert(false)
+        }
+        if (let Some(k5) <- term.readKey()) {
+            @Assert(k5.text, "中")
+        } else {
+            @Assert(false)
+        }
+        if (let Some(k6) <- term.readKey()) {
+            @Assert(k6.isEnter, true)
+        } else {
+            @Assert(false)
+        }
+        @Assert(term.readKey().isNone(), true)
+    }
+
+    /** 单键打字不受 burst 窗口影响：单字符 + 无后续输入 → 原样返回 */
+    @TestCase
+    public func testLoneCharNotCoalesced(): Unit {
+        var q = ArrayList<KeyEvent>(0)
+        q.add(ch("a"))
+        let term = Term(MockBackend(q, false))
+        if (let Some(k1) <- term.readKey()) {
+            @Assert(k1.isPaste, false)
+            @Assert(k1.text, "a")
+        } else {
+            @Assert(false)
+        }
+        @Assert(term.readKey().isNone(), true)
+    }
+
+    /** 快速单行打字（无换行 burst）：按序重放，不合并不丢 */
+    @TestCase
+    public func testFastTypingReplayedPerKey(): Unit {
+        var q = ArrayList<KeyEvent>(0)
+        q.add(ch("a"))
+        q.add(ch("b"))
+        q.add(ch("c"))
+        let term = Term(MockBackend(q, false))
+        if (let Some(k1) <- term.readKey()) {
+            @Assert(k1.isPaste, false)
+            @Assert(k1.text, "a")
+        } else {
+            @Assert(false)
+        }
+        if (let Some(k2) <- term.readKey()) {
+            @Assert(k2.text, "b")
+        } else {
+            @Assert(false)
+        }
+        if (let Some(k3) <- term.readKey()) {
+            @Assert(k3.text, "c")
+        } else {
+            @Assert(false)
+        }
+        @Assert(term.readKey().isNone(), true)
+    }
+
+    /** 2 行粘贴且每行 >1 字符 → 判为粘贴（IME 防御仅 ≥3 行生效） */
+    @TestCase
+    public func testTwoLinePasteCoalesced(): Unit {
+        var q = ArrayList<KeyEvent>(0)
+        q.add(ch("a"))
+        q.add(ch("b"))
+        q.add(KeyEvent(13))
+        q.add(ch("c"))
+        q.add(ch("d"))
+        let term = Term(MockBackend(q, false))
+        if (let Some(k) <- term.readKey()) {
+            @Assert(k.isPaste, true)
+            @Assert(k.text, "ab\rcd")
+        } else {
+            @Assert(false)
+        }
+        @Assert(term.readKey().isNone(), true)
+    }
+
+    /** 多行粘贴（4 行）每行 2 字符：IME 防御不误伤 → 判为粘贴 */
+    @TestCase
+    public func testMultilinePasteEachLineTwoChars(): Unit {
+        var q = ArrayList<KeyEvent>(0)
+        q.add(ch("a"))
+        q.add(ch("b"))
+        q.add(KeyEvent(13))
+        q.add(ch("c"))
+        q.add(ch("d"))
+        q.add(KeyEvent(13))
+        q.add(ch("e"))
+        q.add(ch("f"))
+        q.add(KeyEvent(13))
+        q.add(ch("g"))
+        q.add(ch("h"))
+        let term = Term(MockBackend(q, false))
+        if (let Some(k) <- term.readKey()) {
+            @Assert(k.isPaste, true)
+            @Assert(k.text, "ab\r" + "cd\r" + "ef\r" + "gh")
+        } else {
+            @Assert(false)
+        }
+        @Assert(term.readKey().isNone(), true)
+    }
+
+    /** 全空白 + 换行的 burst（tty 队列残留 Enter）不得判为粘贴 */
+    @TestCase
+    public func testWhitespaceOnlyBurstNotCoalesced(): Unit {
+        var q = ArrayList<KeyEvent>(0)
+        q.add(ch(" "))
+        q.add(KeyEvent(13))
+        q.add(ch(" "))
+        let term = Term(MockBackend(q, false))
+        if (let Some(k1) <- term.readKey()) {
+            @Assert(k1.isPaste, false)
+            @Assert(k1.text, " ")
+        } else {
+            @Assert(false)
+        }
+        if (let Some(k2) <- term.readKey()) {
+            @Assert(k2.isEnter, true)
+        } else {
+            @Assert(false)
+        }
+        if (let Some(k3) <- term.readKey()) {
+            @Assert(k3.text, " ")
+        } else {
+            @Assert(false)
+        }
+        @Assert(term.readKey().isNone(), true)
+    }
+
+    /** 中文多行粘贴：多字节字符 + 换行合并，文本完整不乱码 */
+    @TestCase
+    public func testChineseMultilinePaste(): Unit {
+        var q = ArrayList<KeyEvent>(0)
+        q.add(ch("你好"))
+        q.add(KeyEvent(13))
+        q.add(ch("世界"))
+        let term = Term(MockBackend(q, false))
+        if (let Some(k) <- term.readKey()) {
+            @Assert(k.isPaste, true)
+            @Assert(k.text, "你好\r世界")
+        } else {
+            @Assert(false)
+        }
+        @Assert(term.readKey().isNone(), true)
+    }
+}
