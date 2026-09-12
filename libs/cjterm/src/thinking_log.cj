@@ -21,9 +21,38 @@ public class ThinkingBlock {
     public var omitted: Int64 = 0
     /** text 的 Rune 数（增量维护：追加时加增量，截断时重算） */
     public var runes: Int64 = 0
+    /**
+     * 折行用 Rune 数组缓存。
+     *
+     * 动机：折行需要 Array<Rune>，而 `String.toRuneArray()` 每次都为整轮重新分配
+     * （上限轮 8192 rune ≈ 32KB）；展开态每帧都要折"进行中"那一轮，这批分配是
+     * 渲染路径的主要抖动来源。缓存只在**活跃轮**上有意义（冻结轮次只折一次），
+     * 故轮结束时立即释放，内存上界始终是单轮 ≈ 32KB。
+     */
+    private var runeCache: Option<Array<Rune>> = None
 
     init(round: Int64) {
         this.round = round
+    }
+
+    /** 折行用 Rune 数组（命中缓存；文本变更/轮结束由 ThinkingLog 负责失效） */
+    public func runeArray(): Array<Rune> {
+        if (let Some(a) <- this.runeCache) {
+            return a
+        }
+        let a = this.text.toRuneArray()
+        this.runeCache = a
+        return a
+    }
+
+    /** 使折行缓存失效（文本变更 / 轮结束时调用；包内可见） */
+    func invalidateRuneCache(): Unit {
+        this.runeCache = None
+    }
+
+    /** 是否持有折行缓存（测试观察点：验证失效时机与内存释放） */
+    public func hasRuneCache(): Bool {
+        return this.runeCache.isSome()
     }
 }
 
@@ -45,7 +74,7 @@ public class ThinkingBlock {
  * PageUp/PageDown 机制——思考块是消息流末尾的合成段，总行数已计入滚动范围。
  */
 public class ThinkingLog {
-    /** 单轮上限（Rune 数）：超出保留头一半 + 尾一半 */
+    /** 单轮上限（Rune 数）：超出保留头一半 + 尾一半；触发截断留 1/4 余量摊薄（见 applyRoundCap） */
     public static let MAX_ROUND_CHARS: Int64 = 8192
     /** 保留的最大轮数：超出淘汰最旧 */
     public static let MAX_ROUNDS: Int64 = 32
@@ -55,6 +84,8 @@ public class ThinkingLog {
     private let maxRoundChars: Int64
     private let maxRounds: Int64
     private let maxTotalChars: Int64
+    /** 截断摊薄的余量分母：slack = 单轮上限 / 该值（4 → 余量 1/4 上限） */
+    private let roundSlackDiv: Int64 = 4
     private var blocks: ArrayList<ThinkingBlock> = ArrayList<ThinkingBlock>()
     private var nextRound: Int64 = 1
 
@@ -121,6 +152,7 @@ public class ThinkingLog {
         let b = this.blocks[this.blocks.size - 1]
         b.text += delta
         b.runes += delta.toRuneArray().size
+        b.invalidateRuneCache()
         this.applyRoundCap(b)
         this.evict()
     }
@@ -137,6 +169,7 @@ public class ThinkingLog {
         b.text = text
         b.runes = text.toRuneArray().size
         b.done = done
+        b.invalidateRuneCache()
         this.applyRoundCap(b)
         this.evict()
     }
@@ -144,7 +177,9 @@ public class ThinkingLog {
     /** 结束当前轮（正式 content 开始 / 新一轮开始前调用） */
     public func finishCurrent(): Unit {
         if (this.isActive()) {
-            this.blocks[this.blocks.size - 1].done = true
+            let b = this.blocks[this.blocks.size - 1]
+            b.done = true
+            b.invalidateRuneCache()   // 冻结轮次只折一次：此处释放，内存上界保持单轮
         }
     }
 
@@ -174,10 +209,16 @@ public class ThinkingLog {
 
     /**
      * 单轮上限：按 Rune 边界做中间截断，保留头尾并插入省略标记。
-     * 未超限时零开销；超限后每次追加只重算一次 slice（上限固定，量级可控）。
+     *
+     * 摊薄（性能点）：超限后**不是每次追加都重截**——留 1/4 上限的 slack，
+     * 攒够 slack 才截回上限。截断本身是 O(上限)（重建整串 + 两次切片分配），
+     * 若每次追加都做，长思考流式期间这部分开销会与被重截次数同阶；留 slack 后
+     * 触发频次降为 1/4，而**语义完全不变**（下次截断仍截回上限，头/尾/省略计数一致）。
+     * 不变量：轮长 ≤ 上限 + slack（总量上限 evict 独立生效）。
      */
     private func applyRoundCap(b: ThinkingBlock): Unit {
-        if (this.maxRoundChars <= 0 || b.runes <= this.maxRoundChars) {
+        let trigger = this.maxRoundChars + this.maxRoundChars / this.roundSlackDiv
+        if (this.maxRoundChars <= 0 || b.runes <= trigger) {
             return
         }
         let runes = b.text.toRuneArray()
@@ -190,6 +231,7 @@ public class ThinkingLog {
         b.omitted = omitted
         b.text = head + "\n" + ThinkingLog.omittedMarker(omitted) + "\n" + tail
         b.runes = headN + tailN
+        b.invalidateRuneCache()   // 截断重写整串：折行缓存必须失效，否则折的是旧文本
     }
 
     /** 取 Rune 片段并拼回 String（Rune 边界安全，中文不会被切坏） */
