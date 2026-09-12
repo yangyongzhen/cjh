@@ -19,6 +19,14 @@ public class ThinkingBlock {
     public var tokens: Int64 = 0
     /** 被中间截断省略的字符数（0 = 未截断） */
     public var omitted: Int64 = 0
+
+    /**
+     * 中间截断后"头部"覆盖的 Rune 数（0 = 未截断）。
+     * 头部一经截断即永久稳定（后续截断只重算尾部与省略计数），
+     * 渲染层据此冻结头部折行结果，避免每次截断都从 0 重折整轮。
+     */
+    public var headRunes: Int64 = 0
+
     /** text 的 Rune 数（增量维护：追加时加增量，截断时重算） */
     public var runes: Int64 = 0
     /**
@@ -112,6 +120,19 @@ public class ThinkingLog {
     }
 
     /** 已保留的轮数 */
+    /**
+     * 轮次身份计数器：每开一轮 +1（只增不减，淘汰旧轮也不回退）。
+     * 渲染层用它判断"当前这条是不是同一轮"，从而决定增量折行状态是复用还是丢弃。
+     */
+    public var roundGen: Int64 = 0
+
+    /**
+     * 文本代数：任何"非纯追加"的改写（单轮中间截断重写、整体 setCurrent）+1。
+     * 渲染层用它判断增量折行状态能否复用——纯追加不改代数（展开态每帧只折新增片段），
+     * 而改写会打乱既有行的断点，必须整体重折。
+     */
+    public var textEpoch: Int64 = 0
+
     public func roundCount(): Int64 {
         return this.blocks.size
     }
@@ -162,6 +183,7 @@ public class ThinkingLog {
      * 流式增量路径用 append，本方法供整体替换/测试使用）
      */
     public func setCurrent(text: String, done: Bool): Unit {
+        this.textEpoch += 1   // 整体改写（非纯追加）：增量折行状态须失效
         if (!this.isActive()) {
             this.startRound()
         }
@@ -199,6 +221,7 @@ public class ThinkingLog {
     // ===== 内部：上限维护 =====
 
     private func startRound(): Unit {
+        this.roundGen += 1   // 轮次身份：渲染层据此丢弃上一轮的增量折行状态
         this.blocks.add(ThinkingBlock(this.nextRound))
         this.nextRound += 1
         // 轮数上限：淘汰最旧（刚开的新轮在末位，不受影响）
@@ -232,6 +255,8 @@ public class ThinkingLog {
         b.text = head + "\n" + ThinkingLog.omittedMarker(omitted) + "\n" + tail
         b.runes = headN + tailN
         b.invalidateRuneCache()   // 截断重写整串：折行缓存必须失效，否则折的是旧文本
+        this.textEpoch += 1       // 非纯追加改写：渲染层增量折行状态同样失效
+        b.headRunes = headN       // 头部长度（内容永久稳定，渲染层可冻结头部折行）
     }
 
     /** 取 Rune 片段并拼回 String（Rune 边界安全，中文不会被切坏） */
