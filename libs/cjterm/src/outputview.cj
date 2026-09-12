@@ -190,39 +190,100 @@ public class OutputView <: Component {
      * 把一轮思考折成渲染行：头部 + "› " 内容行（行内 Markdown 高亮）。
      * 折行按 Rune 边界与显示宽度计算，与旧实现逐字符行为一致。
      */
-    private func foldThinkingBlock(b: ThinkingBlock, width: Int64): ArrayList<String> {
-        var lines = ArrayList<String>()
-        lines.add(this.thinkingCard(Ansi.fg(244) + this.thinkingHeader(b, this.thinkLog.roundCount()), width))
-        let contentW: Int64 = if (width > 4) { width - 4 } else { 10 }
-        // 行内缓冲用 StringBuilder：旧写法逐字符 `cur += ch` 每行要 O(长度) 次字符串分配
-        // （上层限轮 ≈ 82 行 × 近百次分配），是展开态每帧的主要抖动来源之一
-        var cur = StringBuilder()
-        var curLen: Int64 = 0
-        var curW: Int64 = 0
-        for (r in b.runeArray()) {
-            let ch = r.toString()
-            if (ch == "\n") {
-                lines.add(this.thinkingCard(Ansi.fg(249) + Ansi.italic() + "› " + this.renderInlineMd(cur.toString()), width))
-                cur = StringBuilder()
-                curLen = 0
-                curW = 0
-                continue
+    /**
+     * 观察点（渲染热点的可观测契约，供测试与实测取证）：
+     * 最近一次"活跃轮折行"真正渲染出的内容行数。
+     *
+     * 展开态每帧都要折进行中的轮次——整轮重折时该值 = 轮内行数（O(轮长)），
+     * 改成"已完成行复用 + 未完成行增量"后仅为 1（未完成行）+ 本帧新完成行（O(增量)）。
+     */
+    public var foldLineWork: Int64 = 0
+
+    /** 展开态"进行中轮次"的增量折行状态（见 thinking_fold.cj 的失效条件说明） */
+    private var activeFold: ThinkingActiveFoldCache = ThinkingActiveFoldCache()
+
+    /** 内容行渲染：统一 "› " 前缀 + 行内 Markdown + 卡片补白（整轮/增量两条路径共用） */
+    private func thinkingContentLine(raw: String, width: Int64): String {
+        return this.thinkingCard(Ansi.fg(249) + Ansi.italic() + "› " + this.renderInlineMd(raw), width)
+    }
+
+    /**
+     * 折"进行中"的那一轮（展开态每帧的渲染热点）：已完成行直接复用，只增量折未完成行 + 新片段。
+     *
+     * 每帧工作量：断行只走"未完成行 + 本帧新增"（≤ 一行宽 + 增量），渲染只做
+     * "本帧新完成行 + 1 行未完成行"——旧实现是整轮 O(轮长) 重折 + 每行重渲染。
+     * 失效（轮次/文本代数/宽度/文本变短）时从 0 重折一次，其余帧均为增量。
+     */
+    private func foldThinkingActive(b: ThinkingBlock, width: Int64): ArrayList<String> {
+        let runes = b.runeArray()
+        let contentW = thinkingContentWidth(width)
+        let cache = this.activeFold
+        let headRunes = b.headRunes
+        if (cache.roundGen != this.thinkLog.roundGen || cache.textEpoch != this.thinkLog.textEpoch
+            || cache.width != width || cache.tailStart > runes.size) {
+            // 截断后的头部（前 headRunes 个 Rune）内容永久稳定：内容与长度都没变就直接复用，
+            // 只从"省略标记行"起重折；否则从头折一次并把头部冻住
+            var reuseHead = false
+            if (headRunes > 0 && cache.headRunes == headRunes) {
+                reuseHead = cache.headText == thinkingHeadText(runes, headRunes)
             }
-            let chW: Int64 = TuiCanvas.displayWidth(ch)
-            if (curW + chW > contentW) {
-                lines.add(this.thinkingCard(Ansi.fg(249) + Ansi.italic() + "› " + this.renderInlineMd(cur.toString()), width))
-                cur = StringBuilder()
-                cur.append(ch)
-                curLen = 1
-                curW = chW
+            cache.roundGen = this.thinkLog.roundGen
+            cache.textEpoch = this.thinkLog.textEpoch
+            cache.width = width
+            cache.lines = ArrayList<String>()
+            if (reuseHead) {
+                // head + "\n" + 省略标记 + "\n" + tail：标记行紧跟在头部那个换行之后
+                cache.tailStart = if (headRunes < runes.size) { headRunes + 1 } else { headRunes }
             } else {
-                cur.append(ch)
-                curLen += 1
-                curW += chW
+                cache.headRunes = 0
+                cache.headText = ""
+                cache.headLines = ArrayList<String>()
+                cache.tailStart = 0
+                if (headRunes > 0) {
+                    let headAll = foldThinkingSpans(runes, 0, contentW)
+                    var k: Int64 = 0
+                    while (k < headAll.lines.size && headAll.starts[k] < headRunes) {
+                        cache.headLines.add(this.thinkingContentLine(headAll.lines[k], width))
+                        k += 1
+                    }
+                    cache.headRunes = headRunes
+                    cache.headText = thinkingHeadText(runes, headRunes)
+                    cache.tailStart = if (k < headAll.lines.size) { headAll.starts[k] } else { headRunes }
+                }
             }
         }
-        if (curLen > 0) {
-            lines.add(this.thinkingCard(Ansi.fg(249) + Ansi.italic() + "› " + this.renderInlineMd(cur.toString()), width))
+        let spans = foldThinkingSpans(runes, cache.tailStart, contentW)
+        let n = spans.lines.size
+        var rendered: Int64 = 0
+        // 除最后一行外都已断行完成：渲染一次后进入缓存，后续帧不再重折/重渲染
+        if (n > 0) {
+            for (i in 0..(n - 1)) {
+                cache.lines.add(this.thinkingContentLine(spans.lines[i], width))
+                rendered += 1
+            }
+        }
+        let out = ArrayList<String>()
+        // 头部卡片行（与整轮折行一致，必须每帧产出且置顶）
+        out.add(this.thinkingCard(Ansi.fg(244) + this.thinkingHeader(b, this.thinkLog.roundCount()), width))
+        this.appendLines(out, cache.headLines)
+        this.appendLines(out, cache.lines)
+        // 最后一行可能尚未完成（还可能被追加），每帧重渲染；下一帧从它的起点续折
+        if (n > 0) {
+            out.add(this.thinkingContentLine(spans.lines[n - 1], width))
+            rendered += 1
+        }
+        cache.tailStart = spans.lastStart
+        this.foldLineWork = rendered
+        return out
+    }
+
+    /** 整轮一次性折行（轮次结束后的冻结路径）：断行规则与增量路径共用 thinking_fold.cj */
+    private func foldThinkingBlock(b: ThinkingBlock, width: Int64): ArrayList<String> {
+        let lines = ArrayList<String>()
+        lines.add(this.thinkingCard(Ansi.fg(244) + this.thinkingHeader(b, this.thinkLog.roundCount()), width))
+        let spans = foldThinkingSpans(b.runeArray(), 0, thinkingContentWidth(width))
+        for (raw in spans.lines) {
+            lines.add(this.thinkingContentLine(raw, width))
         }
         return lines
     }
@@ -454,7 +515,8 @@ public class OutputView <: Component {
                 this.appendLines(thinkLines, this.thinkFrozenFor(width))
                 for (b in this.thinkLog.blocksView()) {
                     if (!b.done) {
-                        this.appendLines(thinkLines, this.foldThinkingBlock(b, width))
+                        let activeLines = this.foldThinkingActive(b, width)
+                        this.appendLines(thinkLines, activeLines)
                         foldRunes += b.runes
                     }
                 }
