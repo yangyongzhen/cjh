@@ -69,16 +69,12 @@ public class TuiApp {
     private var agentTokenLock: Mutex = Mutex()
     // Agent 当前执行状态（实时状态行显示用：Thinking/Running bash/Streaming 等）
     private var agentState: String = ""
-    // 思考窗口缓冲：reasoning_content 实时累积
-    // 升级（pi 风格）：内容保留全文可回看，默认折叠为 1 行，Ctrl+T 展开/折叠
-    private var reasoningBuffer: String = ""
+    // 思考（reasoning_content）内容本体由 OutputView 的多轮思考历史持有
+    // （cjterm.ThinkingLog）：逐轮累积、上限淘汰、随输出区滚动回看。
+    // 旧实现只在本类保留"最新一轮"字符串且超限截尾——历史与开头都留不住。
     private var reasoningLock: Mutex = Mutex()
     // 思考块展开状态（Ctrl+T 切换）
     private var reasoningExpanded: Bool = false
-    // 思考是否已结束（正式 content 开始；结束前显示"思考中"，结束后可回看）
-    private var reasoningDone: Bool = false
-    // 思考内容上限（防内存膨胀；超出截断保留尾部）
-    private let reasoningMaxChars: Int64 = 8192
     // 输入队列：Agent 执行期间提交的消息排队，执行完毕后自动处理
     private var inputQueue: ArrayList<String> = ArrayList<String>()
     private var inputQueueLock: Mutex = Mutex()
@@ -592,6 +588,9 @@ public class TuiApp {
         return t
     }
     public func testEditMode(): Bool { return this.editMode }
+    // 思考历史观测（单测用）：已保留轮数 / 末轮是否仍在思考
+    public func testThinkingRounds(): Int64 { return this.outputView.thinkingRounds() }
+    public func testThinkingActive(): Bool { return this.outputView.thinkingActive() }
 
     /**
      * 设置 Agent 执行状态（方案 B：执行期间输入可编辑，提交时入队 + 提示）
@@ -668,25 +667,15 @@ public class TuiApp {
     }
 
     /**
-     * 追加思考内容（reasoning_content 增量）——方案 B：思考并入消息流
-     * 累积到 OutputView 的思考块（折叠/展开段），渲染在消息末尾，随输出滚动
+     * 追加思考内容（reasoning_content 增量）——思考并入消息流
+     * 增量交给 OutputView 的多轮思考历史：末轮已结束时自动开新轮，
+     * 上一轮保留在历史中（旧实现在此处清空上一轮），随输出区滚动回看
      */
     public func appendReasoning(text: String): Unit {
         if (text.size == 0) { return }
         this.reasoningLock.lock()
         try {
-            // 新一轮思考开始：上一轮已结束（done）则清空重启
-            if (this.reasoningDone && this.reasoningBuffer.size > 0) {
-                this.reasoningBuffer = ""
-                this.reasoningDone = false
-            }
-            this.reasoningBuffer += text
-            // 上限保护：超出截断保留尾部（最新思考内容）
-            if (this.reasoningBuffer.size > this.reasoningMaxChars) {
-                let cut = this.reasoningBuffer.size - this.reasoningMaxChars
-                this.reasoningBuffer = this.reasoningBuffer[cut..this.reasoningBuffer.size]
-            }
-            this.outputView.setThinking(this.reasoningBuffer, this.reasoningDone)
+            this.outputView.appendThinking(text)
         } finally {
             this.reasoningLock.unlock()
         }
@@ -700,9 +689,9 @@ public class TuiApp {
         this.reasoningLock.lock()
         var mark: Bool = false
         try {
-            if (this.reasoningBuffer.size > 0 && !this.reasoningDone) {
-                this.reasoningDone = true
-                this.outputView.setThinking(this.reasoningBuffer, true)
+            // 结束当前轮：内容留在思考历史里（多轮累积），可 Ctrl+T 展开滚动回看
+            if (this.outputView.thinkingActive()) {
+                this.outputView.finishThinking()
                 mark = true
             }
         } finally {
@@ -775,7 +764,7 @@ public class TuiApp {
         // 思考中 token 计数同步到思考块折叠行（显示增长）
         this.reasoningLock.lock()
         try {
-            if (this.reasoningBuffer.size > 0 && !this.reasoningDone) {
+            if (this.outputView.thinkingActive()) {
                 this.outputView.setThinkingTokens(estimate)
             }
         } finally {
@@ -1618,9 +1607,13 @@ public class TuiApp {
                 this.sessionSelect.paintCanvas(this.canvas, 8, cols, outH)
             } else {
                 this.outputLock.lock()
+                this.reasoningLock.lock()
                 try {
+                    // 思考历史由 Agent 线程追加、主循环渲染读取：渲染路径持同一把锁，
+                    // 避免读轮次列表时被并发追加/淘汰撕裂（锁序恒为 output → reasoning）
                     this.outputView.render(this.canvas, 8, cols, outH)
                 } finally {
+                    this.reasoningLock.unlock()
                     this.outputLock.unlock()
                 }
                 // Tasks 面板：有任务时在输出区右下角渲染
@@ -1757,7 +1750,7 @@ public class TuiApp {
         lines.add(Ansi.fg(Ansi.THEME_ACCENT) + "快捷键：" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Tab / ←→       切换视图（对话/帮助）" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Ctrl+E         多行输入编辑（Alt+Enter 提交）" + Ansi.reset())
-        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Ctrl+T         思考过程展开/折叠（推理模型）" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Ctrl+T         思考过程展开/折叠（推理模型），展开后可上滚回看多轮历史" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  PageUp/Down    输出区滚动（Ctrl+U/D 亦可）" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Ctrl+C         空闲退出 / 忙时中断，再按强制退出" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Esc            关闭弹窗 / 退出编辑 / 回对话视图 / 忙时中断并立即发送排队消息" + Ansi.reset())

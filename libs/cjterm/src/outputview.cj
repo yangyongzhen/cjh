@@ -21,11 +21,18 @@ public class OutputView <: Component {
     // 思考块（消息流成员，pi transcript 模式）：
     // 渲染时作为消息末尾的合成段（折叠 1 行 / 展开全文），随输出滚动回看；
     // 不写入 output（会话存档不含思考过程）
-    public var thinkingText: String = ""
     public var thinkingExpanded: Bool = false
-    public var thinkingDone: Bool = false
-    // 思考中已消耗 token（流式估算，折叠行显示增长——动态且稳定）
-    public var thinkingTokens: Int64 = 0
+    // 多轮思考历史：每轮独立保留。旧实现只留"最新一轮"（新一轮开始时清空上一轮），
+    // 历史无从回看；现在逐轮累积，展开后作为消息流末尾的合成段，
+    // 复用输出区既有 PageUp/PageDown/Ctrl+U/Ctrl+D（见本类 handleKey）滚动回看。
+    private var thinkLog: ThinkingLog = ThinkingLog()
+    // 已完成轮次的冻结渲染行：避免每帧重排全部历史（轮数越多越明显）。
+    // thinkFrozenCount 记录建缓存时的总轮数，轮数变化（新开轮/淘汰）即整体重建，
+    // 保证头部文案（单轮 "思考过程" / 多轮 "#n"）与轮次编号始终一致。
+    private var thinkFrozen: ArrayList<String> = ArrayList<String>()
+    private var thinkFrozenRounds: Int64 = 0
+    private var thinkFrozenCount: Int64 = 0
+    private var thinkFrozenWidth: Int64 = -1
 
     // 行缓存：恒等于 output.toString().split("\n", -1) 的行列表。
     // append/appendDelta/endStream/ensureNewline 增量维护（O(本帧文本)），
@@ -40,8 +47,41 @@ public class OutputView <: Component {
      * 设置思考块内容（reasoning_content 累积）
      */
     public func setThinking(text: String, done: Bool): Unit {
-        this.thinkingText = text
-        this.thinkingDone = done
+        this.thinkLog.setCurrent(text, done)
+    }
+
+    /**
+     * 追加思考增量（流式路径）：末轮已完成时自动开新轮，
+     * 上一轮不再被清空——这是"可回看历史思考"的关键。
+     */
+    public func appendThinking(delta: String): Unit {
+        this.thinkLog.append(delta)
+    }
+
+    /**
+     * 结束当前轮思考（正式 content 开始 / 新一轮开始前）
+     */
+    public func finishThinking(): Unit {
+        this.thinkLog.finishCurrent()
+    }
+
+    /** 已保留的思考轮数（TUI/测试观察点） */
+    public func thinkingRounds(): Int64 {
+        return this.thinkLog.roundCount()
+    }
+
+    /** 末轮是否仍在思考中 */
+    public func thinkingActive(): Bool {
+        return this.thinkLog.isActive()
+    }
+
+    /** 清空思考历史（含冻结行缓存） */
+    public func clearThinking(): Unit {
+        this.thinkLog.clear()
+        this.thinkFrozen = ArrayList<String>()
+        this.thinkFrozenRounds = 0
+        this.thinkFrozenCount = 0
+        this.thinkFrozenWidth = -1
     }
 
     /**
@@ -110,10 +150,118 @@ public class OutputView <: Component {
     }
 
     /**
+     * 折叠态：1 行摘要。单轮沿用原有文案（既有测试锁死该契约）；
+     * 多轮显示轮数，提示可展开回看历史。
+     */
+    private func collapsedThinkingLine(rounds: Int64): String {
+        let active = this.thinkLog.isActive()
+        if (rounds == 1) {
+            if (!active) {
+                return Ansi.fg(244) + "💭 思考过程 · Ctrl+T 查看" + Ansi.reset()
+            }
+            let tokens = this.thinkLog.blocksView()[0].tokens
+            var label = "💭 思考中…"
+            if (tokens > 0) {
+                label = "💭 思考中… (↑ ${tokens} tokens)"
+            }
+            return Ansi.fg(244) + label + Ansi.reset() +
+                Ansi.fg(Ansi.THEME_MUTED) + " · Ctrl+T 展开" + Ansi.reset()
+        }
+        if (!active) {
+            return Ansi.fg(244) + "💭 思考过程（${rounds} 轮） · Ctrl+T 查看" + Ansi.reset()
+        }
+        return Ansi.fg(244) + "💭 思考中…（第 ${rounds} 轮）" + Ansi.reset() +
+            Ansi.fg(Ansi.THEME_MUTED) + " · Ctrl+T 展开" + Ansi.reset()
+    }
+
+    /** 展开态：某轮思考的头部文案（单轮沿用原文案） */
+    private func thinkingHeader(b: ThinkingBlock, rounds: Int64): String {
+        if (rounds <= 1) {
+            return if (b.done) { "💭 思考过程 · Ctrl+T 折叠" } else { "💭 思考中… · Ctrl+T 折叠" }
+        }
+        return if (b.done) {
+            "💭 思考 #${b.round} · Ctrl+T 折叠"
+        } else {
+            "💭 思考 #${b.round} · 思考中… · Ctrl+T 折叠"
+        }
+    }
+
+    /**
+     * 把一轮思考折成渲染行：头部 + "› " 内容行（行内 Markdown 高亮）。
+     * 折行按 Rune 边界与显示宽度计算，与旧实现逐字符行为一致。
+     */
+    private func foldThinkingBlock(b: ThinkingBlock, width: Int64): ArrayList<String> {
+        var lines = ArrayList<String>()
+        lines.add(this.thinkingCard(Ansi.fg(244) + this.thinkingHeader(b, this.thinkLog.roundCount()), width))
+        let contentW: Int64 = if (width > 4) { width - 4 } else { 10 }
+        var cur: String = ""
+        var curW: Int64 = 0
+        for (r in b.text.toRuneArray()) {
+            let ch = r.toString()
+            if (ch == "\n") {
+                lines.add(this.thinkingCard(Ansi.fg(249) + Ansi.italic() + "› " + this.renderInlineMd(cur), width))
+                cur = ""
+                curW = 0
+                continue
+            }
+            let chW: Int64 = TuiCanvas.displayWidth(ch)
+            if (curW + chW > contentW) {
+                lines.add(this.thinkingCard(Ansi.fg(249) + Ansi.italic() + "› " + this.renderInlineMd(cur), width))
+                cur = ch
+                curW = chW
+            } else {
+                cur += ch
+                curW += chW
+            }
+        }
+        if (cur.size > 0) {
+            lines.add(this.thinkingCard(Ansi.fg(249) + Ansi.italic() + "› " + this.renderInlineMd(cur), width))
+        }
+        return lines
+    }
+
+    /**
+     * 展开态的冻结行：完成轮次只折一次并缓存，每帧只为"进行中"那一轮重排
+     * （旧实现每帧重排全部思考，长会话下随内容线性增重）。
+     */
+    private func thinkFrozenFor(width: Int64): ArrayList<String> {
+        let count = this.thinkLog.roundCount()
+        if (this.thinkFrozenWidth != width || this.thinkFrozenCount != count) {
+            this.rebuildThinkFrozen(width, count)
+        } else {
+            let blocks = this.thinkLog.blocksView()
+            while (this.thinkFrozenRounds < blocks.size && blocks[this.thinkFrozenRounds].done) {
+                this.appendLines(this.thinkFrozen, this.foldThinkingBlock(blocks[this.thinkFrozenRounds], width))
+                this.thinkFrozenRounds += 1
+            }
+        }
+        return this.thinkFrozen
+    }
+
+    private func rebuildThinkFrozen(width: Int64, count: Int64): Unit {
+        this.thinkFrozen = ArrayList<String>()
+        this.thinkFrozenRounds = 0
+        this.thinkFrozenCount = count
+        this.thinkFrozenWidth = width
+        let blocks = this.thinkLog.blocksView()
+        while (this.thinkFrozenRounds < blocks.size && blocks[this.thinkFrozenRounds].done) {
+            this.appendLines(this.thinkFrozen, this.foldThinkingBlock(blocks[this.thinkFrozenRounds], width))
+            this.thinkFrozenRounds += 1
+        }
+    }
+
+    /** 批量追加行（ArrayList 无批量接口，集中一处避免重复循环） */
+    private func appendLines(dst: ArrayList<String>, src: ArrayList<String>): Unit {
+        for (line in src) {
+            dst.add(line)
+        }
+    }
+
+    /**
      * 设置思考中 token 计数（折叠行显示增长）
      */
     public func setThinkingTokens(tokens: Int64): Unit {
-        this.thinkingTokens = tokens
+        this.thinkLog.setTokens(tokens)
     }
 
     // ===== 行缓存增量维护（P2/G4）=====
@@ -283,49 +431,22 @@ public class OutputView <: Component {
         if (!this.cacheValid) {
             this.rebuildCache()
         }
-        // 思考块：折叠 1 行 / 展开全部内容行（前缀 "› "），作为消息流成员
+        // 思考块：折叠 1 行摘要 / 展开逐轮全文（前缀 "› "），作为消息流成员。
+        // 多轮历史全部保留并计入下方滚动范围，展开后即可用 PageUp/PageDown
+        // （本类 handleKey）回看任意历史轮次的思考内容
         var thinkLines = ArrayList<String>()
-        if (this.thinkingText.size > 0) {
+        let thinkRounds = this.thinkLog.roundCount()
+        if (thinkRounds > 0) {
             if (this.thinkingExpanded) {
-                let status: String = if (this.thinkingDone) { "思考过程 · Ctrl+T 折叠" } else { "思考中… · Ctrl+T 折叠" }
-                thinkLines.add(this.thinkingCard(Ansi.fg(244) + "💭 " + status, width))
-                let contentW: Int64 = if (width > 4) { width - 4 } else { 10 }
-                var cur: String = ""
-                var curW: Int64 = 0
-                for (r in this.thinkingText.toRuneArray()) {
-                    let ch = r.toString()
-                    if (ch == "\n") {
-                        thinkLines.add(this.thinkingCard(Ansi.fg(249) + Ansi.italic() + "› " + this.renderInlineMd(cur), width))
-                        cur = ""
-                        curW = 0
-                        continue
+                // 已完成轮次走冻结缓存；进行中轮次每帧重排（量级受单轮上限约束）
+                this.appendLines(thinkLines, this.thinkFrozenFor(width))
+                for (b in this.thinkLog.blocksView()) {
+                    if (!b.done) {
+                        this.appendLines(thinkLines, this.foldThinkingBlock(b, width))
                     }
-                    let chW: Int64 = TuiCanvas.displayWidth(ch)
-                    if (curW + chW > contentW) {
-                        thinkLines.add(this.thinkingCard(Ansi.fg(249) + Ansi.italic() + "› " + this.renderInlineMd(cur), width))
-                        cur = ch
-                        curW = chW
-                    } else {
-                        cur += ch
-                        curW += chW
-                    }
-                }
-                if (cur.size > 0) {
-                    thinkLines.add(this.thinkingCard(Ansi.fg(249) + Ansi.italic() + "› " + this.renderInlineMd(cur), width))
                 }
             } else {
-                if (this.thinkingDone) {
-                    thinkLines.add(Ansi.fg(244) + "💭 思考过程 · Ctrl+T 查看" + Ansi.reset())
-                } else {
-                    // 思考中：显示 token 计数增长（+ 动态状态行 spinner），
-                    // 不做内容滚动——尾部窗口逐字符前进会碎片闪烁（用户实测）
-                    var label = "💭 思考中…"
-                    if (this.thinkingTokens > 0) {
-                        label = "💭 思考中… (↑ ${this.thinkingTokens} tokens)"
-                    }
-                    thinkLines.add(Ansi.fg(244) + label + Ansi.reset() +
-                        Ansi.fg(Ansi.THEME_MUTED) + " · Ctrl+T 展开" + Ansi.reset())
-                }
+                thinkLines.add(this.collapsedThinkingLine(thinkRounds))
             }
         }
         // 滚动边界修正：最多滚到"最后一行可见"（总行数 = 基础行 + 思考行）
