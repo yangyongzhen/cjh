@@ -36,7 +36,7 @@
 | **Provider 配置表单** | `/provider` 无参数时弹出配置表单 |
 | **输入队列方案 B** | Agent 执行期间输入可编辑，提交入队 + 提示，执行完自动处理下一条 |
 | **Tasks 面板** | Agent 内置任务列表实时展示，对齐 Claude Code TodoWrite |
-| **回合总结条** | 每轮结束后显示 `─── ✓ 2 rounds · 3 tools · 42.6s · 1.53K tokens · 99% cached ───`（token 为模型 usage 真实值逐轮累加，缓存率按 provider 协议解析——DeepSeek `prompt_cache_hit_tokens` / Anthropic `cache_read_input_tokens` / OpenAI 标准嵌套 `prompt_tokens_details.cached_tokens` 三字段全解析） |
+| **回合总结条** | 每轮结束后显示 `─── ✓ 2 rounds · 3 tools · 42.6s · 1.5k tokens · 99% cached ───`（token 为模型 usage 真实值逐轮累加，缓存率按 provider 协议解析——DeepSeek `prompt_cache_hit_tokens` / Anthropic `cache_read_input_tokens` / OpenAI 标准嵌套 `prompt_tokens_details.cached_tokens` 三字段全解析） |
 | **增量行缓存** | OutputView 行级增量维护，渲染复杂度 O(全部行)→O(变化行)，长会话无卡顿无闪屏（等价性有专项单测锁定） |
 | **思考过程折叠** | 推理/思考段独立视图 + Ctrl+T 折叠 |
 | **bracketed paste** | 粘贴走独立读取路径，按字符边界解码（中文粘贴不乱码，v1.3.12 根治） |

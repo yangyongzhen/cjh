@@ -6,6 +6,8 @@ cjh 版本变更记录。依据 git tag 史 + 提交史整理；版本号规则�
 
 ## [Unreleased]
 
+## [v1.3.27] - 2026-09-12
+
 ### Changed
 - **长思考渲染改为「增量折行 + 头段冻结」**（新增 `libs/cjterm/src/thinking_fold.cj`；改 `libs/cjterm/src/outputview.cj`、`libs/cjterm/src/thinking_log.cj`）：`Ctrl+T` 展开的思考块原先每帧对当前轮**从 0 全量重折 + 全量重渲染**——长思考（8192 字符）实测单帧平均 4459µs、峰值 17337µs。现将断行规则抽成共享纯函数模块（渲染表达式仍只在 `OutputView` 一处，避免两份规则漂移），渲染层按 `roundGen`（轮次）/`textEpoch`（文本代数，纯追加不变）/宽度/文本变短判定失效，只重折"尚未写完的最后一行"并推进 `tailStart`，已完成行的渲染结果留在缓存；单轮超限触发中间截断后，头部（前 4096 Rune）内容永久稳定，其折行结果只折一次即冻结（`headText` 快照校验，防文本被整体改写时误用），后续截断只重折"省略标记行 + 尾段"。实测（release 二进制、40×120 终端、8192 字符思考流）：
 
@@ -17,7 +19,19 @@ cjh 版本变更记录。依据 git tag 史 + 提交史整理；版本号规则�
 
   典型帧平均 **4459µs → 311µs（约 14 倍）**，峰值 **17337µs → 4783µs（约 3.6 倍）**；峰值只出现在中间截断帧（重折省略标记 + 尾段 ≈150 行，截断会重排尾部 Rune 下标、已渲染行无法按下标复用，属已知上界）。折叠文案、单轮中间截断语义、展开后逐行输出**均不变**。
 
+- **思考块改为「锚点交织」——每轮思考钉在本轮起点、落在自己那条回复之前**（`libs/cjterm/src/thinking_log.cj` 新增 `ThinkingBlock.anchorLines`；`libs/cjterm/src/outputview.cj` 新增 `anchorNewRound()` 并把展开态渲染改为段表交织）：原布局把思考块统一堆在会话末尾（"思考在回复下方"），是早期为流式可见性做的妥协（放消息流上方时滚动后看不见）。思考历史可回看落地后该约束解除，按用户诉求改为**逐轮交织**：每轮开轮时把"下一段内容将要落笔"的行位记为锚点，展开态渲染按锚点把基础行段（`lineCache` 切片）与思考段**交替**输出（段数 ≤ 2×轮数+1，只遍历可见窗口、不做整段拼接拷贝），阅读顺序即 pi transcript 顺序（先看想到什么，再看那条回复）。锚点必须取**末行下标**：`lineCache` 按 `split("\n",-1)` 语义维护、**末行是"当前行"**，而回复是**就地写入**该行，锚点若取 `lineCache.size` 会把思考排到回复之后（退回老布局）。折叠态（默认）**不变**：一行全局摘要贴消息流末尾，作为"有思考可展开"的状态提示始终可见；键位零新增（沿用 `Ctrl+T` / `PageUp` / `Ctrl+U`）。
+
+- **token 计数统一按 k 显示**（`libs/cjterm/src/term_util.cj` 新增 `public func fmtTokenCount`）：实时状态行与思考折叠行此前直接打原始数字（`↑ 123456 tokens` 把状态行挤爆），回合总结条又自己写了一份 k 换算（`1.5K tokens`）——三处格式漂移。现统一入口：< 1000 原样十进制（842）、1000~99999 一位小数（1.2k、99.9k）、≥ 100000 取整 k（128k，省宽度）；整数运算实现（`1.0k` 恰为 `1.0k`，不会出现 `1.10k`），小写 `k` 三处一致（回合总结条 `1.5K tokens` → `1.5k tokens`，并删掉内联换算）。
+- **思考内容行去掉逐行 `› ` 前缀**（`libs/cjterm/src/outputview.cj`）：长思考下每行一个 `>` 状符号噪音大、观感差（用户反馈）；块身份已由 `💭` 头部 + 灰斜体（fg 249）+ 背景卡片表达，改为**两格缩进**。缩进宽度与原前缀一致（均为 2 显示列），故折行宽度 `thinkingContentWidth = width - 4` 与全部折行/滚动行为**不变**（零折行风险）。
+
+### Fixed
+- **裸控制键泄进输入文本**（`libs/cjterm/src/term.cj`、`libs/cjterm/src/term_util.cj`、`libs/cjterm/src/input.cj`、`libs/cjterm/src/editor.cj`）：`KeyEvent.init(ch)` 无条件把 `Rune(ch)` 写进 `text`，Windows 下 `Ctrl+O`（0x0F）等组合键的字符码因此以"可打印文本"形态泄进输入框（`term_windows.cj` 另有一处 `ch != 0` 分支同源）。现改为控制码不生成 `text`，输入框/编辑器侧再以 `isLoneControlText()` 兜一道；同时保证 Enter/Tab 的 `text` 不被误清（`isPasteCandidate` 依赖 `isEnter && text.size == 1`）。
+
 ### Tests
+- 新增 `src/tests/outputview_weave_test.cj`（6 例）：单轮"用户消息 < 思考 < 本轮回复"次序、多轮交织序（轮1思考/轮1回复/轮2思考/轮2回复/轮3思考）、进行中轮次贴底流式可见且早期轮随流滚出、折叠态不泄思考正文、上滚回看交织在流中的早期思考、改宽触发冻结缓存重建后交织序不变
+- 新增 `libs/cjterm/src/control_key_test.cj`（裸控制键不生成可打印 `text`、Enter/Tab 的 `text` 不受影响）；`src/tests/tui_test.cj` 两例改名并改锁**折叠态**契约（`testCollapsedHintPinnedAtTailWhenDone` / `testCollapsedHintPinnedAtTailWhileStreaming`：折叠摘要钉末尾、不受锚点影响）；`scripts/tui_pty_test.py` 场景15 改为"`Ctrl+T` 展开 → `Ctrl+U` 上滚回看"（新语义下展开后正文不再贴底，视口仍锚会话底部）
+- 新增 `libs/cjterm/src/token_fmt_test.cj`（4 例：千以下原样十进制 / 千级一位小数 / 999→1000 与 99999→100000 形态切换 / 负值兜底）；`src/tests/thinking_history_test.cj` 增 `testCollapsedTokenCountInK`（折叠行 `(↑ 1.2k tokens)`、计数为 0 时不显示计数）；`src/tests/tui_test.cj` 增断言「展开态内容行不再带 `› ` 前缀、仅两格缩进」
+- 发版门禁：根 `./scripts/test.sh` **379/379**、`libs/cjterm` **93/93**、PTY **61/61**、`cjpm build` 通过、`--mock` 端到端 exit 0
 - 新增 `src/tests/thinking_incremental_test.cj`（5 例）：增量性（本帧重折 ≤3 行）、分块渲染与一次性渲染逐行等价、截断态分块等价、进行中与结束后交叉等价、截断后仍保持流式便宜；`ThinkingBlock.headRunes` 由 `applyRoundCap` 写入供渲染层冻结头部。
 
 ## [v1.3.26] - 2026-09-12
