@@ -424,9 +424,10 @@ def test_provider_paste() -> None:
 
 
 def test_queue_and_autodequeue() -> None:
-    """[场景10] 输入队列：执行中提交入队（状态行提示，不污染 transcript），
-    执行完自动处理下一条（不重复回显）。"""
-    print("[场景10] 忙时 Enter 强制插入发送：打断当前回合 → 排队消息立即处理")
+    """[场景10] steer：执行中提交只入队、不打断（状态行排队提示）；
+    Agent 每轮 LLM 请求前拉取队列注入 user 消息——排队消息在本回合内
+    被处理（不产生新 turn、FINAL-DONE 恰好一次）。"""
+    print("[场景10] steer：忙时 Enter 只入队（不打断）→ 轮边界注入排队输入")
     cfg = make_config_dir()
     # 慢 mock（每轮 2.5s 延迟，4 轮 ≈ 10s 忙窗口）保证第二条消息提交时仍在执行；
     # 必须在 PtuSession 构造前设置（构造时快照 os.environ）
@@ -437,18 +438,48 @@ def test_queue_and_autodequeue() -> None:
         time.sleep(1.0)
         s.send("任务一\n")
         time.sleep(1.2)  # 等进入执行态（Thinking/Streaming）
-        # 执行中提交第二条：应入队，状态行出现排队提示
+        # 执行中提交第二条：steer 语义=只入队、不打断当前回合
         s.send("任务二\n")
-        s.expect("排队")
-        buf = strip_ansi(s.buf)
-        check("执行中提交显示排队提示", "排队 1 条待发送" in buf, f"(buf尾部: {buf[-300:]})")
-        check("transcript 无'已入队'残留提示", "已入队" not in buf, f"(buf尾部: {buf[-300:]})")
-        # 忙时 Enter = 强制插入发送（对齐 omp followup）：
-        # 打断当前回合（[已中断]），排队消息随后自动处理（FINAL-DONE）
-        s.expect("已中断", timeout=30)
-        check("忙时 Enter 打断当前回合", True)
+        s.expect("排队 1 条待发送", timeout=15)
+        check("忙时入队显示排队提示（状态行）", True)
+        # 轮边界（上一轮工具完成后、本轮请求前）Agent 拉取队列注入 user 消息
+        s.expect("收到排队输入", timeout=30)
+        check("轮边界注入排队输入（收到排队输入标记）", True)
+        # 排队消息在本回合内处理：整回合正常跑完，无中断
         s.expect("FINAL-DONE", timeout=30)
-        check("排队消息打断后立即发送", True)
+        buf = strip_ansi(s.buf)
+        check("忙时 Enter 不打断当前回合（无'已中断'）", "已中断" not in buf, f"(buf尾部: {buf[-300:]})")
+        check("排队消息不产生新 turn（FINAL-DONE 恰好一次）", buf.count("FINAL-DONE") == 1,
+              f"(count={buf.count('FINAL-DONE')})")
+        s.send_key(3)  # 空闲：一次退出
+        s.wait_exit()
+    finally:
+        os.environ.pop("CJH_MOCK_DELAY_MS", None)
+        s.close()
+
+
+def test_esc_interrupt_sends_queue() -> None:
+    """[场景11] Esc 中断并立即发送：忙时入队后按 Esc → 中断当前回合（已中断提示），
+    排队消息在 run 结束后作为新 turn 自动发送（FINAL-DONE 恰好一次）。"""
+    print("[场景11] Esc 忙时中断 → 排队消息作为新 turn 立即发送")
+    cfg = make_config_dir()
+    os.environ["CJH_MOCK_DELAY_MS"] = "2500"
+    s = PtuSession(cfg)
+    try:
+        s.expect("cjh")
+        time.sleep(1.0)
+        s.send("任务一\n")
+        time.sleep(1.2)  # 进入执行态
+        # 忙时 Enter：只入队不打断
+        s.send("任务二\n")
+        s.expect("排队 1 条待发送", timeout=15)
+        # 裸 Esc：中断当前回合（不退出 TUI）
+        s.send_esc_seq("\x1b")
+        s.expect("已中断", timeout=30)
+        check("Esc 中断当前回合（已中断提示）", True)
+        # 排队消息在 run 结束后作为新 turn 自动发送
+        s.expect("FINAL-DONE", timeout=30)
+        check("排队消息中断后作为新 turn 发送", True)
         s.send_key(3)  # 空闲：一次退出
         s.wait_exit()
     finally:
@@ -457,9 +488,9 @@ def test_queue_and_autodequeue() -> None:
 
 
 def test_interrupt_releases_busy() -> None:
-    """[场景11] Ctrl+C 中断：忙碌中中断 → 回合明确结束（已中断提示）+ 执行锁释放
+    """[场景12] Ctrl+C 中断：忙碌中中断 → 回合明确结束（已中断提示）+ 执行锁释放
     （不再"已请求中断…正在停止"挂死、新消息不再排队）。"""
-    print("[场景11] Ctrl+C 中断释放执行锁 → 后续消息直接执行")
+    print("[场景12] Ctrl+C 中断释放执行锁 → 后续消息直接执行")
     cfg = make_config_dir()
     os.environ["CJH_MOCK_DELAY_MS"] = "3000"  # 慢 mock：每轮 3s，制造忙碌窗口
     s = PtuSession(cfg)
@@ -485,7 +516,7 @@ def test_interrupt_releases_busy() -> None:
 
 
 def test_history_and_paste_multiline() -> None:
-    """[场景12] 输入历史（↑↓ 切换上次输入）+ 粘贴双路径（v1.3.20）
+    """[场景13] 输入历史（↑↓ 切换上次输入）+ 粘贴双路径（v1.3.20）
 
     粘贴行为分两路（阈值对齐 atomcode：≥5 行或 ≥400 码点才折叠）：
     - ≥5 行粘贴 → 折叠为 [Paste #N, +X lines] marker（原子 token，原文不进输入框），
@@ -493,7 +524,7 @@ def test_history_and_paste_multiline() -> None:
     - <5 行且 <400 码点粘贴（含单行长文本）→ 原文进输入框，按屏宽自动软换行多行显示
       （最多 5 行视口跟随光标），Enter 整体提交
     """
-    print("[场景12] 输入历史 ↑↓ + 粘贴折叠/软换行")
+    print("[场景13] 输入历史 ↑↓ + 粘贴折叠/软换行")
     cfg = make_config_dir()
     s = PtuSession(cfg)
     try:
@@ -553,9 +584,9 @@ def test_history_and_paste_multiline() -> None:
 
 
 def test_bracketed_paste_chinese() -> None:
-    """[场景13] bracketed paste 中文进输入框（回归：逐字节 Rune 拼接导致
+    """[场景14] bracketed paste 中文进输入框（回归：逐字节 Rune 拼接导致
     中文 UTF-8 字节被当 Latin-1 码点，"好"=E5 A5 BD → "å¥½" 乱码）。"""
-    print("[场景13] bracketed paste 中文/emoji 进输入框不乱码")
+    print("[场景14] bracketed paste 中文/emoji 进输入框不乱码")
     cfg = make_config_dir()
     s = PtuSession(cfg)
     try:
@@ -594,6 +625,7 @@ def main() -> None:
     test_provider_dialog_protocol()
     test_provider_paste()
     test_queue_and_autodequeue()
+    test_esc_interrupt_sends_queue()
     test_interrupt_releases_busy()
     test_history_and_paste_multiline()
     test_bracketed_paste_chinese()
