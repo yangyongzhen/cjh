@@ -615,7 +615,7 @@ def test_bracketed_paste_chinese() -> None:
 
 
 def test_thinking_history_expand() -> None:
-    print("[场景15] 思考历史：Ctrl+T 展开 + Ctrl+U 回看思考开头")
+    print("[场景15] 思考历史：Ctrl+T 展开 + Ctrl+U 回看思考开头（交织锚点）")
     cfg = make_config_dir()
     s = PtuSession(cfg)
     try:
@@ -629,16 +629,24 @@ def test_thinking_history_expand() -> None:
         s.expect("思考过程 · Ctrl+T 查看")
         check("折叠态显示思考摘要", True)
         check("折叠态不显示思考正文", "分析用户任务" not in strip_ansi(s.buf))
-        # Ctrl+T 展开：先看到思考尾部
+
+        def scroll_up_until(text: str, max_press: int) -> bool:
+            """Ctrl+U 上滚直至 text 可见。必须由 expect 驱动读取（sleep 后直读 buf 会漏读）。"""
+            for _ in range(max_press):
+                try:
+                    s.expect(text, timeout=0.5)
+                    return True
+                except TimeoutError:
+                    s.send_key(21)   # Ctrl+U = 上滚 8 行
+            return False
+
+        # Ctrl+T 展开：交织布局下思考钉在本轮起点（消息流上方，自己那条回复之前），
+        # 视口仍锚在会话底部，故需上滚回看正文——思考不再贴底（本次语义修订）。
         s.send_key(20)   # Ctrl+T
-        s.expect("测试驱动")
-        check("Ctrl+T 展开可见思考正文", True)
-        # Ctrl+U 上滚回看：思考开头（最早增量）可见——旧实现按 8192 截尾只留尾部、
+        check("Ctrl+T 展开 + 上滚可见思考正文", scroll_up_until("测试驱动", 12))
+        # 继续上滚回看：思考开头（最早增量）可见——旧实现按 8192 截尾只留尾部、
         # 且新一轮清空上一轮，开头无从回看
-        for _ in range(8):
-            s.send_key(21)   # Ctrl+U = 上滚 8 行
-        s.expect("分析用户任务")
-        check("Ctrl+U 回看思考开头", True)
+        check("Ctrl+U 回看思考开头", scroll_up_until("分析用户任务", 12))
         # 折叠回摘要 + Ctrl+C 干净退出
         s.send_key(20)
         s.send_key(3)

@@ -19,17 +19,22 @@ public class OutputView <: Component {
     private var streamStartPos: Int64 = -1
     private var scrollOffset: Int64 = 0
     // 思考块（消息流成员，pi transcript 模式）：
-    // 渲染时作为消息末尾的合成段（折叠 1 行 / 展开全文），随输出滚动回看；
-    // 不写入 output（会话存档不含思考过程）
+    // 每轮按 anchorLines 交织回消息流（默认折叠 1 行 / Ctrl+T 展开全文），
+    // 随输出滚动回看；不写入 output（会话存档不含思考过程）
     public var thinkingExpanded: Bool = false
     // 多轮思考历史：每轮独立保留。旧实现只留"最新一轮"（新一轮开始时清空上一轮），
-    // 历史无从回看；现在逐轮累积，展开后作为消息流末尾的合成段，
-    // 复用输出区既有 PageUp/PageDown/Ctrl+U/Ctrl+D（见本类 handleKey）滚动回看。
+    // 历史无从回看；旧布局又把全部思考堆在消息流末尾（会话底部）。现在逐轮累积
+    // 且按锚点插回各自位置（见 render），复用输出区既有 PageUp/PageDown/Ctrl+U/Ctrl+D
+    // （见本类 handleKey）滚动回看。
     private var thinkLog: ThinkingLog = ThinkingLog()
     // 已完成轮次的冻结渲染行：避免每帧重排全部历史（轮数越多越明显）。
     // thinkFrozenCount 记录建缓存时的总轮数，轮数变化（新开轮/淘汰）即整体重建，
     // 保证头部文案（单轮 "思考过程" / 多轮 "#n"）与轮次编号始终一致。
+    // 渲染按 anchorLines 把每轮插回消息流（见 render），故这里额外记每轮边界。
     private var thinkFrozen: ArrayList<String> = ArrayList<String>()
+    // 每轮在 thinkFrozen 中的结束下标（切片用）：轮 k 的行 = ends[k-1]..ends[k]。
+    // 交织渲染要按轮取行，这里只记边界、不复制，避免每帧 O(全历史) 切片拷贝。
+    private var thinkFrozenEnds: ArrayList<Int64> = ArrayList<Int64>()
     private var thinkFrozenRounds: Int64 = 0
     private var thinkFrozenCount: Int64 = 0
     private var thinkFrozenWidth: Int64 = -1
@@ -47,7 +52,11 @@ public class OutputView <: Component {
      * 设置思考块内容（reasoning_content 累积）
      */
     public func setThinking(text: String, done: Bool): Unit {
+        let gen = this.thinkLog.roundGen
         this.thinkLog.setCurrent(text, done)
+        if (this.thinkLog.roundGen != gen) {
+            this.anchorNewRound()
+        }
     }
 
     /**
@@ -55,7 +64,41 @@ public class OutputView <: Component {
      * 上一轮不再被清空——这是"可回看历史思考"的关键。
      */
     public func appendThinking(delta: String): Unit {
+        let gen = this.thinkLog.roundGen
         this.thinkLog.append(delta)
+        if (this.thinkLog.roundGen != gen) {
+            this.anchorNewRound()
+        }
+    }
+
+    /**
+     * 新开轮次钉交织锚点 = 消息流中"下一段内容将要落笔"的行位。
+     *
+     * 此刻本轮回复还没写入，故渲染时思考块落在自己那条回复**之前**；
+     * 多轮则各自钉在自己的位置，不再全部堆到会话末尾。
+     *
+     * 取行位的规则（关键，勿简化回 lineCache.size）：行缓存按 split(-1) 语义，
+     * 末行是"当前行"。推理开始时通常末行为空（刚写完换行/空行分隔），随后的回复
+     * 就近写入该行，因此锚点须取**该行下标**（size-1）；若取 size（其后一位），
+     * 回复落笔在这一行，思考块就被排到回复之后——即"思考在回复下方"的老布局。
+     * 末行非空（半行未收尾）时按 size 插在其后，保证不吞行。
+     */
+    private func anchorNewRound(): Unit {
+        if (!this.cacheValid) {
+            this.rebuildCache()
+        }
+        let blocks = this.thinkLog.blocksView()
+        if (blocks.size == 0) {
+            return
+        }
+        var a = this.lineCache.size
+        if (a > 0 && this.lineCache[a - 1].size == 0) {
+            a -= 1
+        }
+        if (a < 0) {
+            a = 0
+        }
+        blocks[blocks.size - 1].anchorLines = a
     }
 
     /**
@@ -79,6 +122,7 @@ public class OutputView <: Component {
     public func clearThinking(): Unit {
         this.thinkLog.clear()
         this.thinkFrozen = ArrayList<String>()
+        this.thinkFrozenEnds = ArrayList<Int64>()
         this.thinkFrozenRounds = 0
         this.thinkFrozenCount = 0
         this.thinkFrozenWidth = -1
@@ -162,7 +206,7 @@ public class OutputView <: Component {
             let tokens = this.thinkLog.blocksView()[0].tokens
             var label = "💭 思考中…"
             if (tokens > 0) {
-                label = "💭 思考中… (↑ ${tokens} tokens)"
+                label = "💭 思考中… (↑ ${fmtTokenCount(tokens)} tokens)"
             }
             return Ansi.fg(244) + label + Ansi.reset() +
                 Ansi.fg(Ansi.THEME_MUTED) + " · Ctrl+T 展开" + Ansi.reset()
@@ -187,7 +231,7 @@ public class OutputView <: Component {
     }
 
     /**
-     * 把一轮思考折成渲染行：头部 + "› " 内容行（行内 Markdown 高亮）。
+     * 把一轮思考折成渲染行：头部 + 内容行（两格缩进，行内 Markdown 高亮）。
      * 折行按 Rune 边界与显示宽度计算，与旧实现逐字符行为一致。
      */
     /**
@@ -202,9 +246,15 @@ public class OutputView <: Component {
     /** 展开态"进行中轮次"的增量折行状态（见 thinking_fold.cj 的失效条件说明） */
     private var activeFold: ThinkingActiveFoldCache = ThinkingActiveFoldCache()
 
-    /** 内容行渲染：统一 "› " 前缀 + 行内 Markdown + 卡片补白（整轮/增量两条路径共用） */
+    /**
+     * 内容行渲染：两格缩进 + 行内 Markdown + 卡片补白（整轮/增量两条路径共用）。
+     *
+     * 曾用 `› ` 前缀逐行标记，但每行一个 `>` 状符号在长思考下噪音大、观感差；
+     * 块身份已由 💭 头部 + 灰斜体 + 背景卡片表达，故只留缩进。
+     * 缩进宽度与原前缀一致（均为 2 显示列），折行宽度 thinkingContentWidth 不受影响。
+     */
     private func thinkingContentLine(raw: String, width: Int64): String {
-        return this.thinkingCard(Ansi.fg(249) + Ansi.italic() + "› " + this.renderInlineMd(raw), width)
+        return this.thinkingCard(Ansi.fg(249) + Ansi.italic() + "  " + this.renderInlineMd(raw), width)
     }
 
     /**
@@ -292,30 +342,38 @@ public class OutputView <: Component {
      * 展开态的冻结行：完成轮次只折一次并缓存，每帧只为"进行中"那一轮重排
      * （旧实现每帧重排全部思考，长会话下随内容线性增重）。
      */
-    private func thinkFrozenFor(width: Int64): ArrayList<String> {
+    private func thinkFrozenFor(width: Int64): Unit {
         let count = this.thinkLog.roundCount()
         if (this.thinkFrozenWidth != width || this.thinkFrozenCount != count) {
             this.rebuildThinkFrozen(width, count)
         } else {
             let blocks = this.thinkLog.blocksView()
             while (this.thinkFrozenRounds < blocks.size && blocks[this.thinkFrozenRounds].done) {
-                this.appendLines(this.thinkFrozen, this.foldThinkingBlock(blocks[this.thinkFrozenRounds], width))
-                this.thinkFrozenRounds += 1
+                this.freezeRound(blocks[this.thinkFrozenRounds], width)
             }
         }
-        return this.thinkFrozen
     }
 
     private func rebuildThinkFrozen(width: Int64, count: Int64): Unit {
         this.thinkFrozen = ArrayList<String>()
+        this.thinkFrozenEnds = ArrayList<Int64>()
         this.thinkFrozenRounds = 0
         this.thinkFrozenCount = count
         this.thinkFrozenWidth = width
         let blocks = this.thinkLog.blocksView()
         while (this.thinkFrozenRounds < blocks.size && blocks[this.thinkFrozenRounds].done) {
-            this.appendLines(this.thinkFrozen, this.foldThinkingBlock(blocks[this.thinkFrozenRounds], width))
-            this.thinkFrozenRounds += 1
+            this.freezeRound(blocks[this.thinkFrozenRounds], width)
         }
+    }
+
+    /**
+     * 冻结一轮：折行追加到平铺缓存，并记下该轮结束下标（render 按轮切片交织）。
+     * 只记边界不复制——避免每帧为每轮做一次 O(该轮行数) 的切片拷贝。
+     */
+    private func freezeRound(b: ThinkingBlock, width: Int64): Unit {
+        this.appendLines(this.thinkFrozen, this.foldThinkingBlock(b, width))
+        this.thinkFrozenEnds.add(this.thinkFrozen.size)
+        this.thinkFrozenRounds += 1
     }
 
     /** 批量追加行（ArrayList 无批量接口，集中一处避免重复循环） */
@@ -493,13 +551,11 @@ public class OutputView <: Component {
 
     public override func render(canvas: TuiCanvas, row: Int64, width: Int64, height: Int64): Int64 {
         // 消息流行：output 基础行（行缓存，P2：每帧 O(可见窗口) 而非 O(总量)）
-        // + 思考块合成段（消息流末尾，回复下方）
-        // 位置在回复下方是刻意的：流式时输出区锚定底部，思考块始终可见；
-        // 若插到回复上方，长回复增长时思考块会先滚出可视区（用户实测反馈）
+        // + 每轮思考段按其 anchorLines 交织回消息流（落在自己那条回复之前）
         if (!this.cacheValid) {
             this.rebuildCache()
         }
-        // 思考块：折叠 1 行摘要 / 展开逐轮全文（前缀 "› "），作为消息流成员。
+        // 思考块：折叠 1 行摘要（贴消息流末尾）/ 展开逐轮全文（内容行两格缩进，各归其位）。
         // 多轮历史全部保留并计入下方滚动范围，展开后即可用 PageUp/PageDown
         // （本类 handleKey）回看任意历史轮次的思考内容
         // 渲染性能埋点（默认关闭；关闭时不读时钟、不落盘，见 perf.cj）：
@@ -507,26 +563,87 @@ public class OutputView <: Component {
         PerfTrace.onRender()
         let foldStartUs = PerfTrace.beginFold()
         var foldRunes: Int64 = 0
-        var thinkLines = ArrayList<String>()
+        // 思考分组（按轮序）：来源 0=冻结行平铺 / 1=活跃轮本帧折行 / 2=折叠摘要单行
+        let grpSrc = ArrayList<Int64>()
+        let grpFrom = ArrayList<Int64>()
+        let grpCount = ArrayList<Int64>()
+        let grpAnchor = ArrayList<Int64>()
+        var activeLines = ArrayList<String>()
+        var collapsedLine = ArrayList<String>()
         let thinkRounds = this.thinkLog.roundCount()
         if (thinkRounds > 0) {
             if (this.thinkingExpanded) {
                 // 已完成轮次走冻结缓存；进行中轮次每帧重排（量级受单轮上限约束）
-                this.appendLines(thinkLines, this.thinkFrozenFor(width))
-                for (b in this.thinkLog.blocksView()) {
-                    if (!b.done) {
-                        let activeLines = this.foldThinkingActive(b, width)
-                        this.appendLines(thinkLines, activeLines)
+                this.thinkFrozenFor(width)
+                let blocks = this.thinkLog.blocksView()
+                for (i in 0..blocks.size) {
+                    let b = blocks[i]
+                    var src: Int64 = 1
+                    var from: Int64 = 0
+                    var cnt: Int64 = 0
+                    if (b.done && i < this.thinkFrozenRounds) {
+                        src = 0
+                        from = if (i == 0) { 0 } else { this.thinkFrozenEnds[i - 1] }
+                        cnt = this.thinkFrozenEnds[i] - from
+                    } else {
+                        from = activeLines.size
+                        this.appendLines(activeLines, this.foldThinkingActive(b, width))
+                        cnt = activeLines.size - from
                         foldRunes += b.runes
                     }
+                    grpSrc.add(src)
+                    grpFrom.add(from)
+                    grpCount.add(cnt)
+                    grpAnchor.add(this.roundAnchor(b))
                 }
             } else {
-                thinkLines.add(this.collapsedThinkingLine(thinkRounds))
+                collapsedLine.add(this.collapsedThinkingLine(thinkRounds))
+                grpSrc.add(2)
+                grpFrom.add(0)
+                grpCount.add(1)
+                grpAnchor.add(this.lineCache.size)
             }
         }
-        PerfTrace.foldDone(foldStartUs, thinkLines.size, foldRunes)
+        var thinkLines: Int64 = 0
+        for (c in grpCount) {
+            thinkLines += c
+        }
+        PerfTrace.foldDone(foldStartUs, thinkLines, foldRunes)
+        // 交织段表：基础行段（lineCache 切片）与思考段交替，段数 ≤ 2×轮数+1；
+        // 可见窗口只遍历段表 O(可见行)，不做整段拼接拷贝（锚点单调化保证段序）
+        let segStart = ArrayList<Int64>()
+        let segCount = ArrayList<Int64>()
+        let segBase = ArrayList<Int64>()
+        let segGrp = ArrayList<Int64>()
+        var cursor: Int64 = 0
+        var total: Int64 = 0
+        for (g in 0..grpCount.size) {
+            var a = grpAnchor[g]
+            if (a < cursor) {
+                a = cursor
+            }
+            if (a > cursor) {
+                segStart.add(total)
+                segCount.add(a - cursor)
+                segBase.add(cursor)
+                segGrp.add(-1)
+                total += a - cursor
+                cursor = a
+            }
+            segStart.add(total)
+            segCount.add(grpCount[g])
+            segBase.add(grpFrom[g])
+            segGrp.add(g)
+            total += grpCount[g]
+        }
+        if (cursor < this.lineCache.size) {
+            segStart.add(total)
+            segCount.add(this.lineCache.size - cursor)
+            segBase.add(cursor)
+            segGrp.add(-1)
+            total += this.lineCache.size - cursor
+        }
         // 滚动边界修正：最多滚到"最后一行可见"（总行数 = 基础行 + 思考行）
-        let total = this.lineCache.size + thinkLines.size
         let maxOffset = if (total > height) { total - height } else { 0 }
         if (this.scrollOffset > maxOffset) {
             this.scrollOffset = maxOffset
@@ -538,17 +655,47 @@ public class OutputView <: Component {
         if (startIdx < 0) {
             startIdx = 0
         }
-        // 可见窗口：基础行直接取缓存、尾部取思考行（虚拟拼接，无整段拷贝）
+        // 可见窗口：按段表取行（基础行直接读缓存、思考段读冻结/活跃行，虚拟拼接无拷贝）
         var r: Int64 = 0
-        for (i in startIdx..total) {
+        for (k in 0..segStart.size) {
             if (r >= height) {
                 break
             }
-            let line: String = if (i < this.lineCache.size) { this.lineCache[i] } else { thinkLines[i - this.lineCache.size] }
-            canvas.setLine(row + r, line)
-            r += 1
+            let s0 = segStart[k]
+            let s1 = s0 + segCount[k]
+            if (s1 <= startIdx) {
+                continue
+            }
+            var j = if (s0 < startIdx) { startIdx } else { s0 }
+            while (j < s1 && r < height) {
+                let off = j - s0
+                let line: String = if (segGrp[k] < 0) {
+                    this.lineCache[segBase[k] + off]
+                } else if (grpSrc[segGrp[k]] == 0) {
+                    this.thinkFrozen[grpFrom[segGrp[k]] + off]
+                } else if (grpSrc[segGrp[k]] == 1) {
+                    activeLines[grpFrom[segGrp[k]] + off]
+                } else {
+                    collapsedLine[grpFrom[segGrp[k]] + off]
+                }
+                canvas.setLine(row + r, line)
+                r += 1
+                j += 1
+            }
         }
         return r
+    }
+
+    /**
+     * 某轮的交织锚点：未定锚（-1）或越界（输出被外部替换后变短）一律贴消息流末尾，
+     * 保证不崩、不吞行；锚点单调化由 render 的段表游标兜底。
+     */
+    private func roundAnchor(b: ThinkingBlock): Int64 {
+        var a = b.anchorLines
+        if (a < 0 || a > this.lineCache.size) {
+            a = this.lineCache.size
+        }
+        return a
     }
 
     public override func handleKey(key: KeyEvent): Bool {
