@@ -58,7 +58,17 @@ public class KeyEvent {
         this.isCtrlU = (ch == 21)
         this.isCtrlD = (ch == 4)
         this.escapeSeq = ""
-        this.text = Rune(ch).toString()
+        // 仅可打印字符带 text；Enter/Tab 保留（粘贴候选判定依赖 text.size == 1），
+        // 其余控制字节（0x0F=Ctrl+O、0x1A=Ctrl+Z 等）text 置空——否则会经
+        // InputBox/Editor 可打印分支（只判 !isEsc && !isEnter && !isBackspace）
+        // 漏进输入框：真机 Windows Ctrl+O、POSIX raw 模式同一路径（v1.3.28）
+        this.text = if (ch >= 32 && ch != 127) {
+            Rune(ch).toString()
+        } else if (ch == 13 || ch == 10 || ch == 9) {
+            Rune(ch).toString()
+        } else {
+            ""
+        }
         this.isMouse = false
         this.mouseButton = -1
         this.mouseX = -1
@@ -109,9 +119,11 @@ public class KeyEvent {
         this.isPageDown = (seq == TermEsc.PGDN)
         this.isCtrlU = (ch == 21)
         this.isCtrlD = (ch == 4)
-        // 若是转义序列则 text 为空（非输入字符）；否则为输入字符
+        // 若是转义序列则 text 为空（非输入字符）；否则为输入字符。
+        // isLoneControlText 兜底：Windows Ctrl+数字等经 uChar 带出的控制字符
+        // （term_windows.cj 的 ch != 0 分支）不得当可打印 text（v1.3.28）
         this.escapeSeq = if (seq.startsWith(TermEsc.ESC)) { seq } else { "" }
-        this.text = if (seq.startsWith(TermEsc.ESC)) { "" } else { seq }
+        this.text = if (seq.startsWith(TermEsc.ESC) || isLoneControlText(seq)) { "" } else { seq }
         this.isPaste = false
         // SGR 鼠标：ESC[<b;x;yM（按下）或 m（释放）
         if (seq.startsWith(TermEsc.ESC + "[<")) {
