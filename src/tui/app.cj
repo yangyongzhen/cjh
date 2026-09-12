@@ -1697,7 +1697,7 @@ public class TuiApp {
         var line = Ansi.fg(Ansi.THEME_ACCENT) + frame + " " + Ansi.reset() +
             Ansi.fg(Ansi.THEME_OK) + stateLabel + Ansi.reset() +
             Ansi.fg(Ansi.THEME_MUTED) + " (" + elapsed.toString() + "s · ↑ " + Ansi.reset() +
-            Ansi.fg(Ansi.THEME_WARN) + tokens.toString() + Ansi.reset() +
+            Ansi.fg(Ansi.THEME_WARN) + fmtTokenCount(tokens) + Ansi.reset() +
             Ansi.fg(Ansi.THEME_MUTED) + " tokens" + Ansi.reset()
         // 多轮任务：显示当前轮次（用户可判断 run 在推进、排队消息还要等几轮）
         if (this.agentRounds > 1) {

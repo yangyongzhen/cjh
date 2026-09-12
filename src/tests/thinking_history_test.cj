@@ -13,7 +13,7 @@ import cjterm.*
  *
  * 本用例锁死修复后的 observable 契约：
  * - 折叠态：单轮沿用原文案；多轮显示轮数
- * - 展开态：逐轮 "💭 思考 #n" 标题 + "› " 内容行，多轮全部可见
+ * - 展开态：逐轮 "💭 思考 #n" 标题 + 内容行（两格缩进），多轮全部可见
  * - 回看：思考块计入输出区滚动范围，scrollUp 后能看到更早轮次（复用既有 PageUp 语义，未加新键位）
  */
 
@@ -40,6 +40,21 @@ public class ThinkingHistoryTest {
         let expanded = renderThink(ov, 12, 40)
         @Assert(expanded.contains("思考过程 · Ctrl+T 折叠"), true)
         @Assert(expanded.contains("一轮思考"), true)
+    }
+
+    /** 折叠态 token 计数按 k 显示（用户观感反馈：1.2k 比 1234 友好）；0 时不显示计数 */
+    @TestCase
+    public func testCollapsedTokenCountInK(): Unit {
+        let ov = OutputView()
+        ov.append("回复文本")
+        ov.setThinking("思考内容", false)   // 未结束 = 进行中，折叠行才带 token 计数
+        ov.setThinkingTokens(1234)
+        let folded = renderThink(ov, 12, 40)
+        @Assert(folded.contains("(↑ 1.2k tokens)"), true)
+        @Assert(folded.contains("1234"), false)   // 不再打原始 4 位数
+        ov.setThinkingTokens(0)
+        let zero = renderThink(ov, 12, 40)
+        @Assert(zero.contains("tokens"), false)   // 0 时不显示计数（原契约不变）
     }
 
     /** 多轮：折叠态显示轮数（历史不再被清空） */

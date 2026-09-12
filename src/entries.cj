@@ -705,13 +705,11 @@ func runTui(sessionId: String): Int64 {
             // 耗时：ms → 秒.十分位（42.6s）
             let secInt = s.durationMs / 1000
             let secTenths = (s.durationMs % 1000) / 100
-            // tokens → K.十分位（1.5K tokens）
+            // tokens 走 cjterm.fmtTokenCount（与实时状态行/思考折叠行同格式：1.2k）
             let tokTotal = s.totalTokens()
-            let kInt = tokTotal / 1000
-            let kTenths = (tokTotal % 1000) / 100
-            // 格式：─── ✓ 2 rounds · 3 tools · 42.6s · 1.5K tokens · 99% cached ───
+            // 格式：─── ✓ 2 rounds · 3 tools · 42.6s · 1.5k tokens · 99% cached ───
             // 整行统一灰色（THEME_MUTED），居中：左右横线等分
-            let stat = "✓ ${s.rounds} ${roundWord} · ${s.toolCalls} ${toolWord} · ${secInt}.${secTenths}s · ${kInt}.${kTenths}K tokens · ${rate}% cached"
+            let stat = "✓ ${s.rounds} ${roundWord} · ${s.toolCalls} ${toolWord} · ${secInt}.${secTenths}s · ${fmtTokenCount(tokTotal)} tokens · ${rate}% cached"
             let (rows, cols) = TermSize.get()
             let statW = TuiCanvas.displayWidth(stat)
             // 内容总宽 = 左横线 + 1空格 + stat + 1空格 + 右横线

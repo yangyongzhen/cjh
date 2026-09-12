@@ -290,8 +290,8 @@ public class ScreenRenderTest {
 
 /**
  * OutputView 思考块位置测试：
- * 思考块渲染在消息流末尾（回复下方）——流式/阅读时输出区锚定底部，
- * 思考块始终可见；插到回复上方会在长回复增长时先滚出可视区（用户实测反馈）
+ * 展开态（Ctrl+T）：思考块钉在本轮起点，落在自己那条回复之前，多轮各自穿插在消息流中；
+ * 折叠态（默认）：仅一行全局摘要提示，钉在消息流末尾（保证"有思考可展开"始终可见）
  */
 @Test
 public class OutputViewThinkingTest {
@@ -308,13 +308,14 @@ public class OutputViewThinkingTest {
     }
 
     @TestCase
-    public func testThinkingBelowReplyWhenDone(): Unit {
-        // 回合完成：echo + 空行 + 回复；思考块位于回复下方（末尾，底部可见）
+    public func testCollapsedHintPinnedAtTailWhenDone(): Unit {
+        // 折叠态（默认）：摘要为一行全局提示，钉在消息流末尾；
+        // 即使思考轮先开、回复后写入，摘要仍在回复下方（区别于展开态的交织布局）
         let ov = OutputView()
         ov.append("❯ 用户问题")
         ov.append("")
+        ov.setThinking("分析过程……", true)  // 思考先开始（本轮回复尚未写入）
         ov.append("最终回复文本")
-        ov.setThinking("分析过程……", true)  // 思考已结束
         let flushed = this.renderText(ov, 12, 40)
         let echoIdx = flushed.indexOf("❯ 用户问题")
         let thinkIdx = flushed.indexOf("💭")
@@ -322,19 +323,19 @@ public class OutputViewThinkingTest {
         @Assert(echoIdx.isSome(), true)
         @Assert(thinkIdx.isSome(), true)
         @Assert(replyIdx.isSome(), true)
-        // 顺序：用户消息 < 回复 < 思考块（末尾）
+        // 顺序：用户消息 < 回复 < 折叠摘要（摘要钉末尾，不受锚点影响）
         @Assert(echoIdx.getOrThrow() < replyIdx.getOrThrow(), true)
         @Assert(replyIdx.getOrThrow() < thinkIdx.getOrThrow(), true)
     }
 
     @TestCase
-    public func testThinkingBelowStreamingText(): Unit {
-        // 流式中：内容已 appendDelta 到输出，思考块仍在末尾（流式内容下方）
+    public func testCollapsedHintPinnedAtTailWhileStreaming(): Unit {
+        // 折叠态流式中：思考轮先开、内容随后到达，摘要仍钉在末尾（流式内容下方）
         let ov = OutputView()
         ov.append("❯ 用户问题")
         ov.append("")
-        ov.appendDelta("流式内容第一段")  // 流式进行中
-        ov.setThinking("正在分析……", false)
+        ov.setThinking("正在分析……", false)  // 思考先开始
+        ov.appendDelta("流式内容第一段")  // 流式内容随后到达
         let flushed = this.renderText(ov, 12, 40)
         let thinkIdx = flushed.indexOf("💭")
         let streamIdx = flushed.indexOf("流式内容第一段")
@@ -351,11 +352,12 @@ public class OutputViewThinkingTest {
         let ov = OutputView()
         ov.append("回复文本")
         ov.setThinking("分析内容……", true)
-        ov.toggleThinking()  // 展开：渲染内容行（前缀 "› "）
+        ov.toggleThinking()  // 展开：渲染内容行（两格缩进，不再逐行加 `› ` 前缀）
         let flushed = this.renderText(ov, 12, 40)
-        @Assert(flushed.contains(Ansi.fg(249) + Ansi.italic() + "›"), true)  // 内容 omp muted 斜体
-        @Assert(flushed.contains(Ansi.fg(Ansi.COLOR_TEXT) + Ansi.italic() + "›"), false)  // 非正文色
-        @Assert(flushed.contains(Ansi.fg(Ansi.THEME_MUTED) + Ansi.italic() + "›"), false)  // 非中灰
+        @Assert(flushed.contains(Ansi.fg(249) + Ansi.italic() + "  "), true)  // 内容 omp muted 斜体 + 缩进
+        @Assert(flushed.contains(Ansi.fg(249) + Ansi.italic() + "›"), false)  // 内容行不带 `>` 状前缀（观感反馈）
+        @Assert(flushed.contains(Ansi.fg(Ansi.COLOR_TEXT) + Ansi.italic() + "  "), false)  // 非正文色
+        @Assert(flushed.contains(Ansi.fg(Ansi.THEME_MUTED) + Ansi.italic() + "  "), false)  // 非中灰
         @Assert(flushed.contains(Ansi.fg(244) + "💭"), true)  // 标签 omp faint
     }
 

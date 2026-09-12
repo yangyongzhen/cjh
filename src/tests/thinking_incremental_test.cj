@@ -29,12 +29,12 @@ private func paddedChunk(tag: String): String {
     return sb.toString()
 }
 
-/** 抽取"思考内容行"（行内以 '›' 前缀标记）：绕开轮次头部措辞差异，只比对折出来的内容 */
+/** 抽取"思考内容行"（按内容行专属样式 fg249 + 斜体选行）：绕开轮次头部措辞差异，只比对折出来的内容 */
 private func contentSignature(rendered: String): String {
     let sb = StringBuilder()
     // 画布 flush 用 ANSI 光标定位 + clearLine 逐行输出，行间没有换行符，故按 clearLine 切行
     for (row in rendered.split(Ansi.esc() + "[2K", -1)) {
-        if (row.contains("›")) {
+        if (row.contains(Ansi.fg(249) + Ansi.italic())) {
             sb.append(row + "\n")
         }
     }
@@ -139,7 +139,7 @@ public class ThinkingIncrementalTest {
     /**
      * 交叉等价（防两份断行规则漂移）：同一轮文本，
      * "进行中（增量折行）"的内容行必须与"结束后（整轮重折 + 冻结缓存）"逐行一致。
-     * 轮次头部措辞（思考中 / 思考过程）不参与比对，故只取带 '›' 前缀的内容行。
+     * 轮次头部措辞（思考中 / 思考过程）不参与比对，故只取内容行样式（fg249 斜体）的行。
      */
     @TestCase
     public func testActiveIncrementalMatchesFrozenFullFold(): Unit {
