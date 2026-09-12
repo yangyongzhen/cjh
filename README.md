@@ -220,6 +220,7 @@ coding agent 的执行效率直接决定用户等待时间。cjh 从三个维度
 - **Markdown 渲染**：标题 / 列表 / 代码块 / 表格 / 链接
 - **10 套主题**：starfrost（星霜青，默认）/ classic / dracula / nord / gruvbox / tokyo-night / catppuccin / rose-pine / solarized / monokai，`/theme` 实时切换，边框色随主题填充
 - **视觉层次**：状态栏/用户回显/工具调用/思考块整行背景卡片 + 行内代码芯片，`NO_COLOR` 环境自动关闭全部颜色/样式转义
+- **思考历史回看**：`Ctrl+T` 展开思考块，`PageUp`/`Ctrl+U` 上滚回看历史思考（推理模型）；单轮超长按**中间截断**保留头尾（不再丢开头），逐轮保序保留、可回看
 - **多行编辑器**：Ctrl+E 进入，Alt+Enter 提交
 - **斜杠命令补全**：`/` 触发下拉补全
 - **Tasks 面板**：Agent 内置任务列表实时展示

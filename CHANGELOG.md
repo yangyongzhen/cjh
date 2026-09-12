@@ -15,6 +15,9 @@ cjh 版本变更记录。依据 git tag 史 + 提交史整理；版本号规则�
 - `libs/cjterm/src/win_mods.cj`：Win32 控制键状态位掩码常量 + `winCtrlPressed/winAltPressed/winShiftPressed` 判定，作为**平台无关纯函数**（置于 `@When[os == "Windows"]` 之外，Linux 门禁方可覆盖）
 - `libs/cjterm/src/win_mods_test.cj`（6 例）；`libs/cjterm/src/term_paste_fallback_test.cj`（用例 `TermPasteFallbackTest.testBulkFallbackKeyUpDoesNotLeakPasteCr`）
 - `libs/cjterm/src/term_paste_drain_test.cj`（2 例）：`testSingleFramePasteDrainedInFewReads`（一帧投递 200 字符、每 5 字符插 1 抬键；断言文本完整且 `readKey()` 调用 `calls <= 4`）、`testSingleFramePasteFoldsCrWithKeyUps`（断言 `isPaste == true`、`isEnter == false`、CR 折进粘贴文本）
+- **思考(thinking) 历史可回看**（`libs/cjterm/src/thinking_log.cj` 新建 + `libs/cjterm/src/outputview.cj` + `src/tui/app.cj` 接入，版本号沿用 v1.3.26）：原实现把思考存在单个 `String` 里，**新一轮思考开始即清空上一轮**、且超 8192 字符**只留尾部**（开头被丢弃）——历史无从回看、回看也看不到开头。现在改为多轮**保序缓冲**（`ThinkingLog`：逐轮 `text/done/tokens/omitted`，单轮超限做「头 + 省略标记 + 尾」**中间截断**（按 Rune 边界切分，中文不截半），轮数上限淘汰最旧、总量上限兜底但**永不淘汰当前轮**）；`OutputView` 折叠态单轮沿用原文案、多轮显示「（N 轮）」，展开态逐轮 `💭 思考 #n` 标题 + `› ` 内容行，**复用既有 `PageUp`/`Ctrl+U`、`PageDown`/`Ctrl+D` 滚动回看**（未加新键位）；已完成轮次行冻结缓存，每帧只重建进行中一轮。`src/tui/app.cj` 增加 `testThinkingRounds()/testThinkingActive()` 观测点，帮助页 `Ctrl+T` 一行补「展开后可上滚回看多轮历史」
+- `libs/cjterm/src/thinking_log_test.cj`（8 例：逐轮累积 / 空增量与无轮 `setTokens` 不造轮 / 单轮中间截断（头尾都在、中段确实省略）/ 上限 1 字边界 / 轮数淘汰且编号单调 / 总量淘汰不淘汰当前轮 / `setCurrent` 同轮覆盖与 `clear` 归零 / token 落在当前轮）
+- `src/tests/thinking_history_test.cj`（5 例：单轮文案契约不变 / 多轮折叠显示轮数 / 多轮展开逐轮标题与内容 / `scrollUp` 回看到被滚出窗口的更早轮次 / 轮数变化后冻结缓存整体重建）；`src/tests/tui_app_test.cj` 增 `TuiAppReasoningHistoryTest`（3 例：跨轮累积、同轮增量不另开轮、空增量忽略）
 
 ### Tests
 - 红→绿：改前 `cd libs/cjterm && cjpm test` = **FAILED: 3**（`testShiftIsNotCtrl`、`testLockKeysAndEnhancedNotCtrl`、ABI 钉桩）；改后 **PASSED: 57, SKIPPED: 0, ERROR: 0, FAILED: 0**（exit 0）。根因 A 用例红阶段原文 `Assert Failed: (k.isEnter == false)  left: true`（FAILED: 1）
@@ -22,6 +25,7 @@ cjh 版本变更记录。依据 git tag 史 + 提交史整理；版本号规则�
 - 定性结论（详见 `docs/开发文档与踩坑记录.md` §3.29）：粘贴合成记录带**真实 scan 码**（粘贴产生的换行是 `vk=0xD scan=0x1C uChar=0xD`，与手按回车完全同构；只有 CJK 才是 `vk=0/scan=0`），故"用 `scan==0` 区分粘贴换行与真实回车"**不可用**，只能靠上下文/时序判据
 - 滴灌修复红→绿（`libs/cjterm/src/term_paste_drain_test.cj` 2 例）：改前 `cd libs/cjterm && cjpm test` = `TOTAL: 59, PASSED: 57, FAILED: 2`（exit 1），失败断言原文 `Assert Failed: (k.isPaste == true)`、`Assert Failed: k.text != expected.toString()`；改后 `TOTAL: 59, PASSED: 59, SKIPPED: 0, ERROR: 0, FAILED: 0`（exit 0）
 - 门禁：cjterm 59/59；`./scripts/test.sh` = `TOTAL: 359, FAILED: 0`（exit 0）；`cjpm build` exit 0；`--mock` exit 0（命中 6 条工具调用链）；PTY `56 通过 / 0 失败`（exit 0）
+- 思考历史门禁（v1.3.26 复打追加）：`cd libs/cjterm && cjpm test` = **PASSED: 67, FAILED: 0**（59→67，新增 `ThinkingLogTest` 8 例）；`./scripts/test.sh` = **TOTAL: 367, FAILED: 0**（359→367，新增 `thinking_history_test.cj` 5 例 + `TuiAppReasoningHistoryTest` 3 例）；`tui_pty_test.py` 新增场景 15「思考历史：`Ctrl+T` 展开 + `Ctrl+U` 回看思考开头」5 项断言全过——展开后上滚能看到**最早的思考增量**，旧实现（8192 截尾只留尾部 + 新一轮清空上一轮）下结构上不可能；多轮轮次标题（`思考 #n` / `（N 轮）`）由单测锁死（mock 的工具轮之间无 content，多轮推理会合并成同一轮思考，PTY 层不断言轮数）
 
 ### Changed
 - **按键追踪（`KeyTrace`）恢复默认关闭（opt-in）**：真机粘贴投递问题已定性闭环（见下方"实测确认"），诊断无需常驻——现在只有显式真值（`CJH_TRACE_KEYS=1`/`on`/`true`/`yes`/`y`/`enable`，大小写不敏感、容忍引号与空白）才记录；不设变量或设 `0`/`off`/`false`/`no`/`n`/`disable` 均不记录、`describe()` 静默，**正式使用零副作用**。无法识别的值按"不开启"处理（安全默认），但 `describe()` 会回显正确写法——既不误开，也不"设了却不生效"
@@ -29,6 +33,7 @@ cjh 版本变更记录。依据 git tag 史 + 提交史整理；版本号规则�
 
 ### Build
 - `dist/` 产物重建（**版本号沿用 v1.3.26，不升**）：`cjh-windows-x64.exe` 13,626,368 B、`cjh-linux-x64` 16,541,736 B、`cjh-v1.3.26-windows-x64.zip` 4,662,469 B、`cjh-v1.3.26-windows-x64-selfcontained.zip` 7,723,424 B；`SHA256SUMS` 4/4 OK；zip 内 exe 与 `dist/cjh-windows-x64.exe` 同哈希（前 16 位 `b79cade062b46490`）；selfcontained 四枚 DLL 取自 `dist/windows-v1.3.25/`（与已交付包逐字节一致）
+- `dist/` 产物重建（第四十一轮追加，思考历史特性进入全部产物，**版本号沿用 v1.3.26 不升**）：`cjh-windows-x64.exe` 13,651,968 B（`scripts/winbuild.sh` 交叉构建）、`cjh-linux-x64` 16,571,744 B、`cjh-v1.3.26-windows-x64.zip` 4,671,601 B、`cjh-v1.3.26-windows-x64-selfcontained.zip` 7,732,764 B；`SHA256SUMS` 4/4 OK（exe 前 16 位 `a12d295ae0a8f365`、linux 前 16 位 `d81e695bed193e06`）；zip 内 exe 与 `dist/cjh-windows-x64.exe` 同哈希；`dist/cjh-linux-x64 --mock` exit 0（32 行、命中 `FINAL-DONE`）；**两个产物各 `grep -c "展开后可上滚回看多轮历史"` = 1**（确认改动真的进了产物，排除"改库后产物陈旧"，见 §3.33）；`ldd` 仅 6 项系统库、`cjpm.toml` 保持静态（winbuild 临时改动已还原）
 
 ### Known limitations
 - 无（本轮已消化第三十九轮的遗留滴灌项，详见 `docs/开发文档与踩坑记录.md` §3.30）
