@@ -449,8 +449,13 @@ def test_queue_and_autodequeue() -> None:
         s.expect("FINAL-DONE", timeout=30)
         buf = strip_ansi(s.buf)
         check("忙时 Enter 不打断当前回合（无'已中断'）", "已中断" not in buf, f"(buf尾部: {buf[-300:]})")
-        check("排队消息不产生新 turn（FINAL-DONE 恰好一次）", buf.count("FINAL-DONE") == 1,
-              f"(count={buf.count('FINAL-DONE')})")
+        # 「不产生新 turn」判据：mock 工具链只跑一遍（4 rounds）。
+        # 不用"FINAL-DONE 在原始输出流里恰好一次"——TUI 是差分渲染，布局变化会把同一行
+        # 整行重绘，该文本在流里出现两次（实测两次上下文完全相同＝同一行重绘，屏幕仍只有
+        # 一处；6 次复跑里 2 次 count=2），旧判据在重绘下必然偶发误报
+        check("排队消息不产生新 turn（工具链只跑一遍）",
+              "8 rounds" not in buf and "4 rounds" in buf,
+              f"(4rounds={'4 rounds' in buf}, 8rounds={'8 rounds' in buf})")
         s.send_key(3)  # 空闲：一次退出
         s.wait_exit()
     finally:
@@ -609,6 +614,40 @@ def test_bracketed_paste_chinese() -> None:
         s.close()
 
 
+def test_thinking_history_expand() -> None:
+    print("[场景15] 思考历史：Ctrl+T 展开 + Ctrl+U 回看思考开头")
+    cfg = make_config_dir()
+    s = PtuSession(cfg)
+    try:
+        s.expect("cjh")
+        s.send("测试任务\n")
+        s.expect("FINAL-DONE")
+        # 折叠态：1 行摘要，正文不可见（正文仅在展开/滚动后才绘制）。
+        # 注：多轮轮次标题由单测覆盖（thinking_log_test / thinking_history_test /
+        # TuiAppReasoningHistoryTest）——mock 的工具轮之间没有 content，多轮推理会
+        # 合并成同一轮思考，故此处锁端到端链路而非轮数。
+        s.expect("思考过程 · Ctrl+T 查看")
+        check("折叠态显示思考摘要", True)
+        check("折叠态不显示思考正文", "分析用户任务" not in strip_ansi(s.buf))
+        # Ctrl+T 展开：先看到思考尾部
+        s.send_key(20)   # Ctrl+T
+        s.expect("测试驱动")
+        check("Ctrl+T 展开可见思考正文", True)
+        # Ctrl+U 上滚回看：思考开头（最早增量）可见——旧实现按 8192 截尾只留尾部、
+        # 且新一轮清空上一轮，开头无从回看
+        for _ in range(8):
+            s.send_key(21)   # Ctrl+U = 上滚 8 行
+        s.expect("分析用户任务")
+        check("Ctrl+U 回看思考开头", True)
+        # 折叠回摘要 + Ctrl+C 干净退出
+        s.send_key(20)
+        s.send_key(3)
+        code = s.wait_exit()
+        check("思考展开后干净退出", code == 0, f"(exit={code})")
+    finally:
+        s.close()
+
+
 def main() -> None:
     if not os.path.exists(BIN):
         print(f"错误：未找到 {BIN}，请先 cjpm build")
@@ -629,6 +668,7 @@ def main() -> None:
     test_interrupt_releases_busy()
     test_history_and_paste_multiline()
     test_bracketed_paste_chinese()
+    test_thinking_history_expand()
     print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
     sys.exit(1 if FAIL else 0)
 

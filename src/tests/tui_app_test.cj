@@ -367,3 +367,53 @@ public class TuiAppKeyTest {
         @Assert(app.testAgentPromptTokens(), 120)
     }
 }
+
+/**
+ * 思考历史（多轮保留）TuiApp 层回归测试
+ *
+ * 旧行为：appendReasoning 在"上一轮已结束"时清空上一轮缓冲，历史无从回看；
+ * clearReasoning 只把当前轮标记结束。新行为：逐轮累积到 OutputView 的
+ * 多轮思考历史，clearReasoning 仅结束当前轮。
+ */
+@Test
+public class TuiAppReasoningHistoryTest {
+
+    @TestCase
+    public func testRoundsAccumulateAcrossContent(): Unit {
+        let app = TuiApp()
+        app.appendReasoning("第一轮思考")
+        @Assert(app.testThinkingRounds(), 1)
+        @Assert(app.testThinkingActive(), true)
+        app.clearReasoning()                    // 正式 content 开始 → 本轮结束
+        @Assert(app.testThinkingActive(), false)
+        @Assert(app.testThinkingRounds(), 1)
+        app.appendReasoning("第二轮思考")        // 旧实现会在此清空上一轮
+        @Assert(app.testThinkingRounds(), 2)
+        @Assert(app.testThinkingActive(), true)
+        app.clearReasoning()
+        @Assert(app.testThinkingRounds(), 2)
+        @Assert(app.testThinkingActive(), false)
+    }
+
+    @TestCase
+    public func testSameRoundAppendsKeepOneRound(): Unit {
+        let app = TuiApp()
+        app.appendReasoning("增量一")
+        app.appendReasoning("增量二")
+        @Assert(app.testThinkingRounds(), 1)
+        app.clearReasoning()
+        app.clearReasoning()                    // 幂等：重复结束不产生新轮
+        @Assert(app.testThinkingRounds(), 1)
+        @Assert(app.testThinkingActive(), false)
+    }
+
+    @TestCase
+    public func testEmptyAppendIgnored(): Unit {
+        let app = TuiApp()
+        app.appendReasoning("")
+        @Assert(app.testThinkingRounds(), 0)
+        app.clearReasoning()                    // 无轮次时结束为无操作
+        @Assert(app.testThinkingRounds(), 0)
+        @Assert(app.testThinkingActive(), false)
+    }
+}
