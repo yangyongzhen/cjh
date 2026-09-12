@@ -24,6 +24,8 @@ cangjie-stdx-windows-*.zip
 # Python
 __pycache__/
 
-# dist 打包中间产物与上一版包（自包含包的 DLL 暂存目录、v1.3.25 包）
-dist/windows-v1.3.*/
-dist/cjh-v1.3.25-windows-x64*.zip
+# dist 交付产物：逐版本归档包与打包暂存目录只做本地留存，不进版本库。
+# 不写死版本号；已纳管的文件不受忽略规则影响，需要纳管某个包时用 git add -f。
+dist/windows-*/
+dist/linux/
+dist/cjh-v*-x64*.zip
