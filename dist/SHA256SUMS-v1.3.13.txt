@@ -1,2 +1,0 @@
-d603164a7c08b1aefc3beb1ff42c5389f083134c213018376f5cb4ba7c1d86d1  dist/linux/cjh-v1.3.13-linux-x64
-b0827cd64d78c46b226f8f785f9e29ed7cf736b95038ecf4822b93c5e590daff  dist/cjh-v1.3.13-windows-x64.zip
