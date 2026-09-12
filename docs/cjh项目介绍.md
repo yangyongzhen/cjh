@@ -99,7 +99,7 @@ git clone https://github.com/yangyongzhen/cjh
 cd cjh && source cj-env.sh && cjpm build
 ```
 
-**从源码到可用的完整质量保障**：238 个单元测试全绿 + 36 个 PTY 真实终端集成测试——每项能力都有测试兜底，不是演示级项目。
+**从源码到可用的完整质量保障**：379 个单元测试全绿（另有 `libs/cjterm` 库包 93 例）+ 61 个 PTY 真实终端集成测试——每项能力都有测试兜底，不是演示级项目。
 
 ---
 

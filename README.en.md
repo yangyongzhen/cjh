@@ -86,7 +86,7 @@ cjh's orientation is **parallel sub-agents + context isolation** (Linux-fork-lik
 |---|---|
 | **Cangjie ecosystem** | The most complete "AI application in Cangjie" reference: TUI (cjterm), SSE streaming (cjllm), MCP client, plugin SM2 signature, cross-platform terminal layer — "first" or "most complete" implementations in five directions; the 5 standalone libraries under libs/ are infrastructure ready to be reused |
 | **Xinchuang / government & enterprise** | Single binary with zero dependencies + no foreign runtime dependency + SM2 national-cryptography signing — "no foreign dependencies" is a real differentiator in sensitive scenarios |
-| **Engineering quality** | 325 unit tests + 15 PTY scenarios (49 assertions); tests have genuinely caught 10+ latent bugs (including the edit tool that "never actually worked" before); performance optimization backed by measured data (prompt peak 42.9K→9.4K, per-round 5-22s→2-5s); CI gate (all-green tests, red-first-then-green) enforced |
+| **Engineering quality** | 379 unit tests (root package) + 93 in the `libs/cjterm` package + 61 PTY scenarios; tests have genuinely caught 10+ latent bugs (including the edit tool that "never actually worked" before); performance optimization backed by measured data (prompt peak 42.9K→9.4K, per-round 5-22s→2-5s); CI gate (all-green tests, red-first-then-green) enforced |
 | **Design judgment** | Truncation + spill-to-disk backtrack for token savings (not naive truncation — no middle information lost); hashline anchor-point editing; multi-agent takes parallel sub-agents + context isolation, explicitly "claiming no conceptual novelty, choosing an implementation orientation" |
 | **Learning / porting** | Well-commented source (16%–26% on critical paths, comments explain "why" rather than restate code) + a complete docs set (architecture design, 30+ pitfall records, tool design docs); low cost to pick up |
 
@@ -224,6 +224,7 @@ Built-in HTTP Server + WebSocket streaming conversation + REST API + frontend SP
 - **Markdown rendering**: headings / lists / code blocks / tables / links
 - **10 themes**: starfrost (default) / classic / dracula / nord / gruvbox / tokyo-night / catppuccin / rose-pine / solarized / monokai, `/theme` live switching, border color filled per theme
 - **Visual hierarchy**: full-line background cards for status bar / user echo / tool invocations / thinking blocks + inline code chips; `NO_COLOR` disables all color/style escapes
+- **Thinking (reasoning models)**: collapsed mode (default) keeps a one-line summary pinned to the end of the message flow — `Ctrl+T` expands it; expanded mode **weaves each round's thinking at that round's start** (right before its own reply, pi-transcript order: what it thought, then the reply) instead of dumping everything at the end of the session; content lines use a two-space indent + muted italics + the background card; `PageUp`/`Ctrl+U` scrolls back through earlier rounds' thinking; an over-long round is **middle-truncated** (head and tail kept, order preserved per round); rendering uses incremental folding with frozen head segments (typical frame 4459µs→311µs)
 - **Multi-line editor**: Ctrl+E to enter, Alt+Enter to submit
 - **Slash command completion**: `/` triggers dropdown completion
 - **Tasks panel**: Agent's built-in task list displayed in real time
@@ -440,7 +441,7 @@ cjh has a built-in MCP client supporting stdio transport + JSON-RPC 2.0. After c
 
 ## 🧪 Testing & Quality Assurance
 
-**325 unit tests, all green** (4 packages, 30+ test classes, one-shot `./scripts/test.sh`, auto-switches to dynamic linking) + **15 PTY integration scenarios (49 assertions)** (`python3 scripts/tui_pty_test.py`, real TUI driven via pseudo-terminal), covering all 14 built-in tools + Agent core + TUI rendering/events + infrastructure:
+**379 unit tests, all green** (root package + 93 in the `libs/cjterm` package, the latter run via `cd libs/cjterm && cjpm test`; one-shot `./scripts/test.sh` auto-switches to dynamic linking) + **61 PTY integration scenarios** (`python3 scripts/tui_pty_test.py`, real TUI driven via pseudo-terminal), covering all 14 built-in tools + Agent core + TUI rendering/events/thinking weaving + infrastructure:
 
 | Test domain | Coverage |
 |---|---|
@@ -449,8 +450,8 @@ cjh has a built-in MCP client supporting stdio transport + JSON-RPC 2.0. After c
 | Agent end-to-end | DAG parallel batch (measured 3-way concurrency), write-then-read same-path serial, tool result truncation + full spill |
 | Infrastructure | session save/restore/fork, skill frontmatter parsing, UTF-8 tolerant decode/byte-safe truncation, WebBudget, BM25 retrieval, web_search degradation chain, KeyRotator |
 | Pure functions | ToolResultTruncator thresholds/head-tail/spill, parseSgJsonLine, escapeRegex, formatToolArgs |
-| **TUI rendering & events** | Markdown bold/inline-code/code-block/cross-frame streaming/finish reset, Screen diff rendering (changed lines/Chinese/clone), Ansi sequences, **TuiApp key protocol** (Ctrl+C quit/typing/submit/completion/view switch/multiline/backspace crash-guard) |
-| **PTY integration (real terminal)** | `scripts/tui_pty_test.py`: startup rendering, mock toolchain e2e, `/` completion, help view, **approval dialog yes/no** (blocking approval path unit tests can't cover) |
+| **TUI rendering & events** | Markdown bold/inline-code/code-block/cross-frame streaming/finish reset, Screen diff rendering (changed lines/Chinese/clone), Ansi sequences, **TuiApp key protocol** (Ctrl+C quit/typing/submit/completion/view switch/multiline/backspace crash-guard), **thinking anchor weaving** (single-round order / multi-round interleave / collapsed-vs-expanded contracts / scroll-back / resize-stable) + token k formatting |
+| **PTY integration (real terminal)** | `scripts/tui_pty_test.py`: startup rendering, mock toolchain e2e, `/` completion, help view, **approval dialog yes/no** (blocking approval path unit tests can't cover), expand-then-scroll-back thinking review |
 
 **CI gate (mandatory, see `AGENTS.md`)**: `./scripts/test.sh` all-green (incl. TUI PTY scenarios) is the sole delivery credential; new features/fixes must ship with tests; bug fixes require a reproducing test written first.
 
@@ -489,6 +490,20 @@ cjh has a built-in MCP client supporting stdio transport + JSON-RPC 2.0. After c
 
 | Version | Main Features |
 |---|---|
+| **v1.3.27** | **Thinking anchor weaving + visual polish**: thinking blocks no longer pile up at the end of the session — each round's thinking is pinned to that round's start (right before its own reply) and interleaved round by round; collapsed mode (default) still shows a one-line summary pinned to the end of the message flow; thinking content lines drop the per-line `› ` prefix for a **two-space indent** (same 2 display columns, folding behaviour unchanged); token counts unified to **k display** (`fmtTokenCount` reused by the live status line / thinking line / round summary bar); bare control keys (`Ctrl+O`, 0x0F) no longer leak into the input box; gates: 379 unit tests + 93 cjterm + 61 PTY all green |
+| **v1.3.26** | **Three Windows paste fixes + diagnostics wrap-up**: (1) uppercase letters mistaken for Ctrl combos (`dwControlKeyState` bit mask wrong — `0x10` is actually SHIFT), so `A..Z` decoded into control codes and produced phantom CR/LF plus `Broker`→`\x02roker`; masks and checks extracted into the platform-neutral `win_mods.cj`. (2) The raw-stream paste merge's early-exit branch (`term.cj` line 679) bypassed the paste guard → a pasted CR reached the app and auto-submitted mid-paste; it now goes through `readGuardedRawKey()`. (3) **Long-paste "drip feed"**: the drain loop broke on the first key-up record, so each `readKey()` consumed only 1–3 records → 414 characters delivered in 6.6s; it now drains the whole frame (`MAX_DRAIN_RECORDS=4096` budget, key-up records treated as consumed) — on real hardware `TERM bulk` events 422→8, one drain per burst with `pending≈890`, paste collapsed to `[Paste #N]`. (4) `KeyTrace` is **off by default again** (opt-in via `CJH_TRACE_KEYS=1/on/true/yes/y/enable`), so normal use has zero side effects |
+| **v1.3.25** | **Key tracing on by default (zero config)**: diagnostics no longer depend on remembering an env var — every run logs to `~/.cjh/cjh_keys.log` (same directory as `cjh.log`, `CJH_TRACE_FILE` overrides the path), and only `CJH_TRACE_KEYS=0/off` disables it; startup resets the file and writes a header (path + version), the TUI writes the path into `cjh.log` as a breadcrumb; value parsing tolerates quotes/whitespace/case |
+| **v1.3.24** | **Windows Terminal frame-split paste re-sent Enter now judged by arrival rate**: WT delivers input in frames (1–3 events each, tens of ms apart), defeating both the burst window and the run-density criterion → new 300ms arrival-rate criterion (non-newline candidates ≥12 with sparse newlines) + a `Clock` abstraction (time logic unit-testable) + the `KeyTrace` real-device trace facility (`CJH_TRACE_KEYS=1`) |
+| **v1.3.23** | **Windows chunked-paste Enter guard**: conhost delivers in waves (>15ms apart), so the clipboard's trailing newline arrived as its own wave and the paste signature was missed → the old code treated it as a real Enter and submitted. Added a paste-stream guard window (200ms) + run-density criterion (≥8 chars), swallowing the terminal's re-sent newline without eating real Enters |
+| **v1.3.22** | **atomcode-style steer**: while busy, Enter only enqueues (the Agent pulls the queue before each LLM request and injects a user message); Esc while busy interrupts and sends the queued message immediately (as a new turn after the run ends); the two-stage Ctrl+C interrupt is unchanged |
+| **v1.3.21** | **Windows pasted long text containing newlines no longer auto-submits** (two-level burst-window aggregation + four-condition paste signature + replay queue, aligned with atomcode's `reader.rs`) |
+| **v1.3.20** | **Soft-wrapped long-paste display + `[Paste #N]` collapse and restore** (collapse at ≥5 lines or ≥400 code points, Enter expands the original text, dynamic input-box height) |
+| **v1.3.19** | **Paste no longer over-collapses (byte → code-point threshold) + Windows long-path status-bar wrapping fixed + raw-stream paste merging** |
+| **v1.3.18** | **InputBox Chinese cursor offset fixed** (columns computed with `displayWidth`) |
+| **v1.3.17** | **Windows `bash` tool: /bin/bash missing — shell fallback** (Git Bash candidates + `CJH_SHELL` override) |
+| **v1.3.16** | **Windows TUI box-drawing mixed-render fixed** (dual criteria isUtf8 + actively switching the console to 65001 + unified `BoxChars`) |
+| **v1.3.15** | **P2b reasoning_effort / thinking budget config pass-through + background (async) compaction** |
+| **v1.3.14** | **V3 trust chain Step 3: trust-management CLI + third-party plugin example** (`trust` / `untrust` / `trust-list` + five-library ecosystem cold start v0.1.0) |
 | **v1.3.13** | **P2 OutputView incremental line cache + P2b TUI visual polish**: per-frame O(total) `split` replaced by O(delta) `lineCache`; Unicode solid borders filled per theme (10 themes, live `/theme` switching) + full-line background cards (status bar / user echo / tool lines / thinking blocks) + inline code chips + `NO_COLOR` support (325 tests + 49 PTY assertions green, dual-platform release) |
 | **v1.3.12** | **Pasted-Chinese mojibake fixed** (bracketed paste whole-chunk `safeFromUtf8`); ships with v1.3.11 long-session TUI main-coroutine stall fix (lock leaks + exit cleanup) |
 | **v1.3.10** | **TUI freeze / unresponsive input fixed** (cjlog `sleepMs` spin-wait → real sleep) |
@@ -517,11 +532,11 @@ cjh has a built-in MCP client supporting stdio transport + JSON-RPC 2.0. After c
 - [x] **V2c**: Compaction + AGENTS.md project instructions
 - [x] **V2d concurrent engine**: DAG dependency analysis + topological group scheduling + performance baseline
 - [x] **V3 trust chain Step 1+2**: SHA256 checksum + SM2 signature verification
+- [x] **V3 trust chain Step 3**: Trust management CLI (`cjh trust` / `untrust` / `trust-list`) + third-party plugin example (v1.3.14)
 - [x] **Web support Step 1-5**: HTTP Server + WebSocket + REST API + frontend SPA + auth
 
 ### 🔜 In Progress
 
-- [ ] **V3 trust chain Step 3**: Trust management CLI (`/cjh trust` / `untrust` / `trust-list`)
 - [ ] **V2e IM gateway**: Channel abstraction + Web channel + remote approval
 
 ### 📋 Planned
@@ -606,7 +621,7 @@ cjh/
 │   ├── web/                # Web Server (HTTP + WS + REST + frontend)
 │   ├── entries.cj          # assembly entry (CLI/TUI/JSON/Web/Mock)
 │   ├── main.cj             # program entry (provider factory + dispatch)
-│   ├── tests/              # unit tests (tools/session/truncator/router/TUI/perf)
+│   ├── tests/              # unit tests (tools/session/truncator/router/TUI/thinking weaving/perf)
 │   └── core_funcs_test.cj  # root-package pure-function tests
 ├── libs/                   # Independent reusable libraries
 │   ├── cjterm/             # Terminal UI library (ANSI / diff rendering / termios / themes)
