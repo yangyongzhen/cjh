@@ -31,10 +31,15 @@ public class MultiLineEditor <: Component {
     // 内容变更回调（任一编辑操作后触发，参数为完整文本）
     public var onChange: (String) -> Unit = { _ => }
 
-    public init() {}
+    public init() {
+        // 保底一行空行（与 setText 的空内容不变量一致）：否则首次可打印键
+        // 在 lines[0] 上越界——app.cj 也按"可能 0 行"兜底（lineCount < 1）
+        this.lines.add("")
+    }
 
     public init(placeholder: String) {
         this.placeholder = placeholder
+        this.lines.add("")
     }
 
     /**
@@ -215,7 +220,9 @@ public class MultiLineEditor <: Component {
             return true
         }
         // 可打印字符：在光标处插入（UTF-8 多字节安全）
-        if (key.text.size > 0 && !key.isEsc && !key.isEnter && !key.isBackspace) {
+        // isLoneControlText 兜底：控制键 text 应为空（构造层已保证，此处再兜一层）
+        if (key.text.size > 0 && !isLoneControlText(key.text)
+            && !key.isEsc && !key.isEnter && !key.isBackspace) {
             this.lines[this.row] = this.insertAtRunes(this.lines[this.row], this.col, key.text)
             this.col += this.runeCount(key.text)
             this.onChange(this.text())

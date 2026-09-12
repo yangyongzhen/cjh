@@ -22,6 +22,47 @@ internal func truncateUtf8(text: String, maxBytes: Int64): String {
 }
 
 /**
+ * 单个控制字符判定（`KeyEvent.text` 契约兜底）：控制键的 text 应为空串。
+ *
+ * 背景（v1.3.28）：`KeyEvent(ch)` 旧实现无条件 `text = Rune(ch).toString()`，
+ * Ctrl+O(0x0F)、Ctrl+Z(0x1A) 等控制字节因此带上 text，经 InputBox/Editor
+ * 可打印分支（只判 `!isEsc && !isEnter && !isBackspace`）漏进输入框。
+ * `\t`(9)/`\n`(10)/`\r`(13) 例外——Enter/Tab 语义由 isEnter/isTab 承载，
+ * 且粘贴聚合判定依赖其 `text.size == 1`（见 term.cj isPasteCandidate）。
+ */
+internal func isLoneControlText(s: String): Bool {
+    if (s.size != 1) {
+        return false
+    }
+    let b = s.toArray()[0]
+    if (b >= 32u8 && b != 127u8) {
+        return false
+    }
+    return b != 9u8 && b != 10u8 && b != 13u8
+}
+
+/**
+ * token 计数的人类可读格式（k 单位）——UI 侧唯一入口。
+ *
+ * 契约：< 1000 原样十进制（842）；1000 ~ 99999 一位小数 k（1.2k、99.9k）；
+ * ≥ 100000 取整 k（128k，省宽度，避免 6 位数字挤爆状态行）；负值原样返回兜底。
+ *
+ * 集中定义（勿在各调用点各写一份）：实时状态行 `↑ 1.2k tokens`、思考折叠行
+ * `(↑ 1.2k tokens)`、回合总结条 `1.5k tokens` 共用同一格式，避免小数位/单位漂移。
+ * 整数运算实现（不用浮点格式化）：1.0k 恰为 "1.0k"、进位不产生 "1.10k"。
+ */
+public func fmtTokenCount(n: Int64): String {
+    if (n < 1000) {
+        return n.toString()
+    }
+    let kInt = n / 1000
+    if (kInt >= 100) {
+        return kInt.toString() + "k"
+    }
+    return kInt.toString() + "." + ((n % 1000) / 100).toString() + "k"
+}
+
+/**
  * 统一边框字符集（所有组件 ASCII 降级的唯一来源）
  *
  * 背景（v1.3.16 修复 Windows 框线混排）：此前各组件各自 if (utf8) {...} 硬编码，
