@@ -86,6 +86,103 @@ public class MockBackend <: TerminalBackend {
     public func restoreStderr(): Unit {}
 }
 
+/**
+ * 分块投递 mock 后端（v1.3.23）：模拟 conhost 把一次粘贴拆成多"波" KEY_EVENT
+ * 写入输入缓冲、波与波之间存在毫秒级间隙的真实行为。
+ *
+ * 上一版 MockBackend 把队列一次性全部可见，于是合并循环必然把尾部 \r 一起
+ * 吞进粘贴文本——测不出"尾部 Enter 单独成波"这一实测故障场景。
+ *
+ * 虚拟时钟语义（确定性，不依赖真实计时）：
+ *  - 当前可见波非空：waitInput 立即 true，不阻塞、时钟不前进
+ *  - 当前波耗尽：waitInput(ms) 推进虚拟时钟 ms，到期才把延迟波转可见
+ *  - 测试用 advance(ms) 模拟帧间流逝（TUI 主循环每帧 16ms+）——
+ *    延迟波因此在"下一个 readKey 的入口探测"时可见，与实测一致
+ */
+public class ChunkedMockBackend <: TerminalBackend {
+    var visible: ArrayList<KeyEvent>
+    var deferred: ArrayList<KeyEvent>
+    var delayMs: Int64
+    var clockMs: Int64 = 0
+    var bracketed: Bool
+
+    public init(_visible: ArrayList<KeyEvent>, _deferred: ArrayList<KeyEvent>,
+        _delayMs: Int64, _b: Bool) {
+        this.visible = _visible
+        this.deferred = _deferred
+        this.delayMs = _delayMs
+        this.bracketed = _b
+    }
+
+    /** 测试驱动：模拟经过 ms 毫秒（延迟波到期即转可见） */
+    public func advance(_ms: Int64): Unit {
+        this.clockMs += _ms
+        this.promote()
+    }
+
+    private func promote(): Unit {
+        if (this.deferred.size > 0 && this.clockMs >= this.delayMs) {
+            for (k in this.deferred) {
+                this.visible.add(k)
+            }
+            this.deferred = ArrayList<KeyEvent>(0)
+        }
+    }
+
+    public func enableRaw(): Bool {
+        return true
+    }
+
+    public func disableRaw(): Unit {}
+
+    public func hasInput(): Bool {
+        this.promote()
+        return this.visible.size > 0
+    }
+
+    public func readPendingBytes(): Int64 {
+        this.promote()
+        return this.visible.size
+    }
+
+    public func supportsBracketedPaste(): Bool {
+        return this.bracketed
+    }
+
+    public func waitInput(_timeoutMs: Int64): Bool {
+        if (this.visible.size > 0) {
+            return true  // 有立即可读输入：不阻塞、时钟不前进
+        }
+        this.clockMs += _timeoutMs
+        this.promote()
+        return this.visible.size > 0
+    }
+
+    public func readKey(): Option<KeyEvent> {
+        this.promote()
+        if (this.visible.size == 0) {
+            return None
+        }
+        let k = this.visible[0]
+        this.visible.remove(at: 0)
+        return Some(k)
+    }
+
+    public func size(): (Int64, Int64) {
+        return (24, 80)
+    }
+
+    public func isUtf8(): Bool {
+        return true
+    }
+
+    public func suppressStderr(): Bool {
+        return true
+    }
+
+    public func restoreStderr(): Unit {}
+}
+
 @Test
 public class TermPasteBurstTest {
 
@@ -96,6 +193,42 @@ public class TermPasteBurstTest {
             first = Int32(_s.toArray()[0])
         }
         return KeyEvent(first, _s)
+    }
+
+    /**
+     * 用户实测粘贴文本 → 逐字符 KEY_EVENT 波（对齐 conhost 一个 UTF-16
+     * 单元一个 KEY_EVENT 的投递粒度；行间换行 = 裸 Enter 事件）
+     */
+    static func pasteWave(_lines: ArrayList<String>): ArrayList<KeyEvent> {
+        var out = ArrayList<KeyEvent>(0)
+        var i: Int64 = 0
+        while (i < _lines.size) {
+            for (r in _lines[i].toRuneArray()) {
+                let s = r.toString()
+                var first: Int32 = 0
+                if (s.size > 0) {
+                    first = Int32(s.toArray()[0])
+                }
+                out.add(KeyEvent(first, s))
+            }
+            if (i < _lines.size - 1) {
+                out.add(KeyEvent(13))
+            }
+            i += 1
+        }
+        return out
+    }
+
+    /** 读键直到无输入（排空粘贴前半段逐键余项），返回读到的键数 */
+    static func drain(_term: Term): Int64 {
+        var n: Int64 = 0
+        while (n < 500) {
+            if (_term.readKey().isNone()) {
+                break
+            }
+            n += 1
+        }
+        return n
     }
 
     /** 主路径：短多行粘贴（<48 事件）合并为单个 isPaste，\r 并入文本不触发提交 */
@@ -347,5 +480,116 @@ public class TermPasteBurstTest {
             @Assert(false)
         }
         @Assert(term.readKey().isNone(), true)
+    }
+
+    // ===== v1.3.23：分块投递下的"粘贴补发 Enter"回归锁 =====
+    // 实测故障：conhost 把一次粘贴拆成多波写入输入缓冲，剪贴板末尾换行
+    // 单独成一波（波间 >15ms）。旧实现把该波当作单键 burst（chars 仅 1）
+    // → 判非粘贴签名 → 原样返回裸 Enter → InputBox 立即提交（用户没按回车）。
+
+    /** 用户实测文本（短版，走 burst 合并路径）+ 尾部补发 Enter 不得提交 */
+    @TestCase
+    public func testChunkedMultilinePasteTrailingEnterNotSubmitted(): Unit {
+        var lines = ArrayList<String>(0)
+        lines.add("内存安全：杜绝野指针；")
+        lines.add("零外部依赖部署：编译期嵌入。")
+        var first = pasteWave(lines)
+        @Assert(first.size < 48, true)  // 锁：本用例走 burst 路径（非 bulk）
+        var tail = ArrayList<KeyEvent>(0)
+        tail.add(KeyEvent(13))
+        let mock = ChunkedMockBackend(first, tail, 40, false)
+        let term = Term(mock)
+        if (let Some(k) <- term.readKey()) {
+            @Assert(k.isPaste, true)  // 前半段已识别为粘贴（含换行）
+        } else {
+            @Assert(false)
+        }
+        mock.advance(50)  // 下一帧：尾部补发 Enter 波到达
+        // 关键：尾部补发 Enter 必须被吞掉（None），绝不能当真实提交键
+        @Assert(term.readKey().isNone(), true)
+    }
+
+    /** 用户实测长文本（≥48 事件，走 bulk 粘贴流合并路径）尾部 Enter 不得提交 */
+    @TestCase
+    public func testChunkedBulkPasteTrailingEnterNotSubmitted(): Unit {
+        var lines = ArrayList<String>(0)
+        lines.add("AtomMQTT Broker 是一个面向生产环境的轻量级 MQTT Broker。与 Mosquitto 等成熟 Broker 相比，它用现代 Rust + Tokio 异步运行时重新实现了 MQTT 核心链路，带来以下直接收益：")
+        lines.add("内存安全：Rust 所有权系统从语言层面杜绝了野指针、数据竞争与缓冲区溢出；")
+        var first = pasteWave(lines)
+        @Assert(first.size >= 48, true)  // 锁：本用例走 bulk 路径
+        var tail = ArrayList<KeyEvent>(0)
+        tail.add(KeyEvent(13))
+        let mock = ChunkedMockBackend(first, tail, 40, false)
+        let term = Term(mock)
+        if (let Some(k) <- term.readKey()) {
+            @Assert(k.isPaste, true)
+        } else {
+            @Assert(false)
+        }
+        mock.advance(50)
+        @Assert(term.readKey().isNone(), true)
+    }
+
+    /** 波界恰好落在换行前：前半段无换行成波，换行单独成波 —— 亦不得提交 */
+    @TestCase
+    public func testChunkBoundaryBeforeNewlineNotSubmitted(): Unit {
+        var lines = ArrayList<String>(0)
+        lines.add("AtomMQTT Broker 是一个面向生产环境的轻量级 MQTT Broker")
+        var first = pasteWave(lines)
+        var tail = ArrayList<KeyEvent>(0)
+        tail.add(KeyEvent(13))
+        let mock = ChunkedMockBackend(first, tail, 40, false)
+        let term = Term(mock)
+        let typed = drain(term)  // 无换行 burst 不做粘贴合并，逐键重放
+        @Assert(typed > 0, true)
+        mock.advance(50)
+        @Assert(term.readKey().isNone(), true)
+    }
+
+    /** 反例锁：手敲少量字符（无换行、密度不足）后的 Enter 必须照常提交 */
+    @TestCase
+    public func testTrailingEnterAfterTypedCharsStillSubmits(): Unit {
+        var first = ArrayList<KeyEvent>(0)
+        first.add(ch("a"))
+        first.add(ch("b"))
+        first.add(ch("c"))
+        var tail = ArrayList<KeyEvent>(0)
+        tail.add(KeyEvent(13))
+        let mock = ChunkedMockBackend(first, tail, 40, false)
+        let term = Term(mock)
+        @Assert(drain(term), 3)
+        mock.advance(50)
+        if (let Some(k) <- term.readKey()) {
+            @Assert(k.isEnter, true)
+            @Assert(k.isPaste, false)
+        } else {
+            @Assert(false)
+        }
+    }
+
+    /** 反例锁：守护窗口过期后，用户 Enter 照常提交（不长期吞键） */
+    @TestCase
+    public func testPasteEnterGuardExpires(): Unit {
+        var lines = ArrayList<String>(0)
+        lines.add("内存安全：Rust 所有权系统从语言层面杜绝了野指针；")
+        lines.add("零外部依赖部署：前端静态文件在编译期嵌入二进制。")
+        var first = pasteWave(lines)
+        var tail = ArrayList<KeyEvent>(0)
+        tail.add(KeyEvent(13))
+        let mock = ChunkedMockBackend(first, tail, 40, false)
+        let term = Term(mock)
+        if (let Some(k) <- term.readKey()) {
+            @Assert(k.isPaste, true)
+        } else {
+            @Assert(false)
+        }
+        sleep(Duration.millisecond * 300)  // 越过 PASTE_ENTER_GUARD_MS
+        mock.advance(50)
+        if (let Some(k) <- term.readKey()) {
+            @Assert(k.isEnter, true)
+            @Assert(k.isPaste, false)
+        } else {
+            @Assert(false)
+        }
     }
 }
