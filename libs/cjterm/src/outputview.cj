@@ -194,28 +194,35 @@ public class OutputView <: Component {
         var lines = ArrayList<String>()
         lines.add(this.thinkingCard(Ansi.fg(244) + this.thinkingHeader(b, this.thinkLog.roundCount()), width))
         let contentW: Int64 = if (width > 4) { width - 4 } else { 10 }
-        var cur: String = ""
+        // 行内缓冲用 StringBuilder：旧写法逐字符 `cur += ch` 每行要 O(长度) 次字符串分配
+        // （上层限轮 ≈ 82 行 × 近百次分配），是展开态每帧的主要抖动来源之一
+        var cur = StringBuilder()
+        var curLen: Int64 = 0
         var curW: Int64 = 0
-        for (r in b.text.toRuneArray()) {
+        for (r in b.runeArray()) {
             let ch = r.toString()
             if (ch == "\n") {
-                lines.add(this.thinkingCard(Ansi.fg(249) + Ansi.italic() + "› " + this.renderInlineMd(cur), width))
-                cur = ""
+                lines.add(this.thinkingCard(Ansi.fg(249) + Ansi.italic() + "› " + this.renderInlineMd(cur.toString()), width))
+                cur = StringBuilder()
+                curLen = 0
                 curW = 0
                 continue
             }
             let chW: Int64 = TuiCanvas.displayWidth(ch)
             if (curW + chW > contentW) {
-                lines.add(this.thinkingCard(Ansi.fg(249) + Ansi.italic() + "› " + this.renderInlineMd(cur), width))
-                cur = ch
+                lines.add(this.thinkingCard(Ansi.fg(249) + Ansi.italic() + "› " + this.renderInlineMd(cur.toString()), width))
+                cur = StringBuilder()
+                cur.append(ch)
+                curLen = 1
                 curW = chW
             } else {
-                cur += ch
+                cur.append(ch)
+                curLen += 1
                 curW += chW
             }
         }
-        if (cur.size > 0) {
-            lines.add(this.thinkingCard(Ansi.fg(249) + Ansi.italic() + "› " + this.renderInlineMd(cur), width))
+        if (curLen > 0) {
+            lines.add(this.thinkingCard(Ansi.fg(249) + Ansi.italic() + "› " + this.renderInlineMd(cur.toString()), width))
         }
         return lines
     }
@@ -434,6 +441,11 @@ public class OutputView <: Component {
         // 思考块：折叠 1 行摘要 / 展开逐轮全文（前缀 "› "），作为消息流成员。
         // 多轮历史全部保留并计入下方滚动范围，展开后即可用 PageUp/PageDown
         // （本类 handleKey）回看任意历史轮次的思考内容
+        // 渲染性能埋点（默认关闭；关闭时不读时钟、不落盘，见 perf.cj）：
+        // 这里正是"展开态每帧重折进行中轮"的热点，用于实测单帧折行耗时/行数/活跃轮长度
+        PerfTrace.onRender()
+        let foldStartUs = PerfTrace.beginFold()
+        var foldRunes: Int64 = 0
         var thinkLines = ArrayList<String>()
         let thinkRounds = this.thinkLog.roundCount()
         if (thinkRounds > 0) {
@@ -443,12 +455,14 @@ public class OutputView <: Component {
                 for (b in this.thinkLog.blocksView()) {
                     if (!b.done) {
                         this.appendLines(thinkLines, this.foldThinkingBlock(b, width))
+                        foldRunes += b.runes
                     }
                 }
             } else {
                 thinkLines.add(this.collapsedThinkingLine(thinkRounds))
             }
         }
+        PerfTrace.foldDone(foldStartUs, thinkLines.size, foldRunes)
         // 滚动边界修正：最多滚到"最后一行可见"（总行数 = 基础行 + 思考行）
         let total = this.lineCache.size + thinkLines.size
         let maxOffset = if (total > height) { total - height } else { 0 }

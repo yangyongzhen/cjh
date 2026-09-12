@@ -155,4 +155,96 @@ public class ThinkingLogTest {
         @Assert(blocks[1].tokens, 456)
         @Assert(log.isActive(), true)
     }
+
+    /** 生成重复字符（避免手数长字面量，断言可读） */
+    private func repeatChar(c: String, n: Int64): String {
+        let sb = StringBuilder()
+        for (i in 1..=n) {
+            sb.append(c)
+        }
+        return sb.toString()
+    }
+
+    /**
+     * 截断摊薄的边界：未越过「上限 + 余量(上限/4)」不截断；
+     * 越过则**一次截回上限**，头/尾/省略计数语义与旧实现完全一致。
+     */
+    @TestCase
+    public func testRoundCapSlackAmortizes(): Unit {
+        let log = ThinkingLog(100, 32, 100000)   // 余量 = 100/4 = 25 → 阈值 125
+        log.append(this.repeatChar("A", 120))
+        var b = log.blocksView()[0]
+        // 120 ≤ 125：不触发截断——这正是摊薄省掉的那次全量重截
+        @Assert(b.runes, 120)
+        @Assert(b.omitted, 0)
+        @Assert(b.text.size, 120)
+        // 130 > 125：触发截断，一次截回上限（头 50 + 标记 + 尾 50）
+        log.append(this.repeatChar("B", 10))
+        b = log.blocksView()[0]
+        @Assert(b.runes, 100)
+        @Assert(b.omitted, 30)
+        @Assert(b.text.indexOf(ThinkingLog.omittedMarker(30)).isSome(), true)
+        @Assert(b.text.indexOf(this.repeatChar("A", 10)).isSome(), true)   // 头仍在
+        @Assert(b.text.indexOf(this.repeatChar("B", 10)).isSome(), true)   // 尾仍在
+        @Assert(b.text.indexOf(this.repeatChar("A", 51)).isNone(), true)   // 头只留 50 字
+    }
+
+    /** 小上限：余量按上限/4 取整（4 → 1），且截断仍按 Rune 边界（中文不截半） */
+    @TestCase
+    public func testRoundCapSlackSmallCapBoundary(): Unit {
+        let log = ThinkingLog(4, 32, 100000)   // 余量 = 1 → 阈值 5
+        log.append("甲乙丙丁戊")               // 5 ≤ 5：不截断
+        var b = log.blocksView()[0]
+        @Assert(b.runes, 5)
+        @Assert(b.omitted, 0)
+        log.append("己")                       // 6 > 5：截回 4（头 2 字 + 尾 2 字）
+        b = log.blocksView()[0]
+        @Assert(b.runes, 4)
+        @Assert(b.omitted, 2)
+        @Assert(b.text.indexOf("甲乙").isSome(), true)
+        @Assert(b.text.indexOf("戊己").isSome(), true)
+        @Assert(b.text.indexOf("丙").isNone(), true)
+    }
+
+    /** 折行缓存：命中后文本再变必须失效重建（陈旧缓存会让折行按旧文本排版） */
+    @TestCase
+    public func testRuneArrayCacheInvalidatedOnAppend(): Unit {
+        let log = ThinkingLog(1000, 32, 100000)
+        log.append("甲乙丙")
+        var b = log.blocksView()[0]
+        @Assert(b.hasRuneCache(), false)      // 首次访问前无缓存
+        @Assert(b.runeArray().size, 3)        // 访问填充缓存
+        @Assert(b.hasRuneCache(), true)
+        log.append("丁")
+        b = log.blocksView()[0]
+        @Assert(b.hasRuneCache(), false)      // 追加即失效
+        @Assert(b.runeArray().size, 4)        // 重建后是新长度（陈旧缓存会得到 3）
+    }
+
+    /** 折行缓存：轮结束即释放（冻结轮只折一次，内存上界保持单轮） */
+    @TestCase
+    public func testRuneArrayCacheReleasedOnFinish(): Unit {
+        let log = ThinkingLog(1000, 32, 100000)
+        log.append("甲乙丙")
+        let b = log.blocksView()[0]
+        @Assert(b.runeArray().size, 3)
+        @Assert(b.hasRuneCache(), true)
+        log.finishCurrent()
+        @Assert(b.hasRuneCache(), false)
+    }
+
+    /** 折行缓存：截断重写整串后失效（否则会按截断前的旧文本折行） */
+    @TestCase
+    public func testRuneArrayCacheInvalidatedOnTruncation(): Unit {
+        let log = ThinkingLog(10, 32, 100000)   // 余量 = 2 → 阈值 12
+        log.append("甲")
+        let b = log.blocksView()[0]
+        @Assert(b.runeArray().size, 1)
+        @Assert(b.hasRuneCache(), true)
+        log.append(this.repeatChar("乙", 20))   // 21 > 12：触发截断
+        @Assert(b.hasRuneCache(), false)
+        @Assert(b.runes, 10)
+        // 缓存重建后与当前 text 完全一致（含省略标记行）
+        @Assert(b.runeArray().size, b.text.toRuneArray().size)
+    }
 }

@@ -194,10 +194,15 @@ public class KeyTrace {
 
     /** 默认落点：有家目录 → 与 cjh.log/tui.log 同目录；否则回退进程当前目录 */
     public static func defaultPathFor(home: String): String {
+        return KeyTrace.defaultPathNamed(home, "cjh_keys.log")
+    }
+
+    /** 同目录下的指定文件名落点（包内复用：PerfTrace 走同一套路径规则，不复制逻辑） */
+    static func defaultPathNamed(home: String, name: String): String {
         if (home.size > 0) {
-            return "${home}/.cjh/cjh_keys.log"
+            return "${home}/.cjh/${name}"
         }
-        return "cjh_keys.log"
+        return name
     }
 
     // ===== 测试注入 =====
@@ -271,8 +276,8 @@ public class KeyTrace {
         return -1
     }
 
-    /** 落点父目录不存在则创建（失败忽略——appendLine 还有 CWD 回退兜底） */
-    private static func ensureParentDir(path: String): Unit {
+    /** 落点父目录不存在则创建（失败忽略——appendLine 还有 CWD 回退兜底）；包内复用 */
+    static func ensureParentDir(path: String): Unit {
         let idx = KeyTrace.lastSep(path)
         if (idx <= 0) {
             return
@@ -287,7 +292,8 @@ public class KeyTrace {
         }
     }
 
-    private static func stampUs(): Int64 {
+    /** 进程启动以来的微秒数（包内复用：PerfTrace 的系统时间源） */
+    static func stampUs(): Int64 {
         let now = DateTime.now()
         if (let Some(s) <- KeyTrace.start) {
             return (now - s).toMicroseconds()
@@ -337,7 +343,7 @@ public class KeyTrace {
         }
     }
 
-    private static func writeLine(path: String, line: String, truncate: Bool): Bool {
+    static func writeLine(path: String, line: String, truncate: Bool): Bool {
         let mode = if (truncate) { "w" } else { "a" }
         unsafe {
             let fp = fopen(LibC.mallocCString(path), LibC.mallocCString(mode))
