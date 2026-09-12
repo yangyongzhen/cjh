@@ -68,11 +68,9 @@ private let VK_DOWN: UInt16 = 0x28
 private let VK_DELETE: UInt16 = 0x2E
 
 // ===== dwControlKeyState =====
-private let LEFT_ALT_PRESSED: UInt32 = 0x2
-private let RIGHT_ALT_PRESSED: UInt32 = 0x4
-private let LEFT_CTRL_PRESSED: UInt32 = 0x8
-private let RIGHT_CTRL_PRESSED: UInt32 = 0x10
-private let SHIFT_PRESSED: UInt32 = 0x10  // 与 RIGHT_CTRL 同值（Win32 历史怪癖）
+// 位掩码与判定已抽到平台无关的 win_mods.cj（win_mods_test.cj 覆盖，Linux 门禁可跑）。
+// 此处曾把 RIGHT_CTRL_PRESSED 写成 0x10（= SHIFT 位）→ Shift 被判成 Ctrl，
+// 粘贴的大写字母被解码成控制码（M→13=CR、J→10=LF），见 docs §3.29。
 
 // ===== CreateFileW 参数 =====
 private let GENERIC_WRITE: UInt32 = 0x40000000
@@ -309,14 +307,19 @@ public class WindowsTerminalBackend <: TerminalBackend {
                 //   + wVirtualScanCode(2) + uChar(2) + dwControlKeyState(4)
                 let keyDown = this.readU32(rec, 4) != 0
                 let vk = this.readU16(rec, 10)
+                let scan = this.readU16(rec, 12)        // wVirtualScanCode
                 let ch = this.readU16(rec, 14)          // uChar（UTF-16 单元）
                 let ctrlState = this.readU32(rec, 16)
                 LibC.free(rec)
+                if (KeyTrace.isEnabled()) {
+                    // 诊断：真机投递节奏与字段（粘贴合成事件是否能靠 scan/vk 区分？）
+                    KeyTrace.mark("RAW down=${if (keyDown) { 1 } else { 0 }} vk=${KeyTrace.hex(Int64(vk))} scan=${KeyTrace.hex(Int64(scan))} uChar=${KeyTrace.hex(Int64(ch))} ctrl=${KeyTrace.hex(Int64(ctrlState))}")
+                }
                 if (!keyDown) {
                     return None  // 只处理按下事件（重复按键由 wRepeatCount 分发）
                 }
-                let ctrl = (ctrlState & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED)) != 0
-                let alt = (ctrlState & (LEFT_ALT_PRESSED | RIGHT_ALT_PRESSED)) != 0
+                let ctrl = winCtrlPressed(ctrlState)
+                let alt = winAltPressed(ctrlState)
                 // Ctrl 组合 → 控制字符（对齐 POSIX raw 模式 ISIG 关闭后的字节语义）
                 if (ctrl) {
                     if (vk == 0x43 /* VK_C */) { return Some(KeyEvent(Int32(3))) }    // Ctrl+C
