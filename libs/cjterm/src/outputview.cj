@@ -643,45 +643,67 @@ public class OutputView <: Component {
             segGrp.add(-1)
             total += this.lineCache.size - cursor
         }
-        // 滚动边界修正：最多滚到"最后一行可见"（总行数 = 基础行 + 思考行）
-        let maxOffset = if (total > height) { total - height } else { 0 }
+        // 段间空行：思考段与回复段交界处留 1 行（否则"想什么"与"答什么"贴在一起）；
+        // 相邻行本身已是空行时不重复插，避免叠成两行
+        let segGap: Int64 = 1
+        let gapTotal = if (segStart.size > 1) { (segStart.size - 1) * segGap } else { 0 }
+        let totalV = total + gapTotal
+        // 滚动边界修正：最多滚到"最后一行可见"（总行数 = 基础行 + 思考行 + 段间空行）
+        let maxOffset = if (totalV > height) { totalV - height } else { 0 }
         if (this.scrollOffset > maxOffset) {
             this.scrollOffset = maxOffset
         }
         if (this.scrollOffset < 0) {
             this.scrollOffset = 0
         }
-        var startIdx = total - height - this.scrollOffset
+        var startIdx = totalV - height - this.scrollOffset
         if (startIdx < 0) {
             startIdx = 0
         }
         // 可见窗口：按段表取行（基础行直接读缓存、思考段读冻结/活跃行，虚拟拼接无拷贝）
         var r: Int64 = 0
+        var vrow: Int64 = 0
+        var lastAbs: Int64 = -2
+        var lastEmpty = false
         for (k in 0..segStart.size) {
             if (r >= height) {
                 break
             }
             let s0 = segStart[k]
             let s1 = s0 + segCount[k]
-            if (s1 <= startIdx) {
-                continue
-            }
-            var j = if (s0 < startIdx) { startIdx } else { s0 }
-            while (j < s1 && r < height) {
-                let off = j - s0
-                let line: String = if (segGrp[k] < 0) {
-                    this.lineCache[segBase[k] + off]
-                } else if (grpSrc[segGrp[k]] == 0) {
-                    this.thinkFrozen[grpFrom[segGrp[k]] + off]
-                } else if (grpSrc[segGrp[k]] == 1) {
-                    activeLines[grpFrom[segGrp[k]] + off]
-                } else {
-                    collapsedLine[grpFrom[segGrp[k]] + off]
+            if (k > 0) {
+                let gapRow = vrow - 1
+                if (gapRow >= startIdx && gapRow < startIdx + height && r < height) {
+                    let dup = r > 0 && gapRow == lastAbs + 1 && lastEmpty
+                    if (!dup) {
+                        canvas.setLine(row + r, "")
+                        r += 1
+                        lastAbs = gapRow
+                        lastEmpty = true
+                    }
                 }
-                canvas.setLine(row + r, line)
-                r += 1
-                j += 1
             }
+            if (s1 > startIdx) {
+                var j = if (s0 < startIdx) { startIdx } else { s0 }
+                while (j < s1 && r < height) {
+                    let off = j - s0
+                    let line: String = if (segGrp[k] < 0) {
+                        this.lineCache[segBase[k] + off]
+                    } else if (grpSrc[segGrp[k]] == 0) {
+                        this.thinkFrozen[grpFrom[segGrp[k]] + off]
+                    } else if (grpSrc[segGrp[k]] == 1) {
+                        activeLines[grpFrom[segGrp[k]] + off]
+                    } else {
+                        collapsedLine[grpFrom[segGrp[k]] + off]
+                    }
+                    canvas.setLine(row + r, line)
+                    lastAbs = vrow + off
+                    lastEmpty = line.size == 0
+                    r += 1
+                    j += 1
+                }
+            }
+            vrow += segCount[k] + segGap
         }
         return r
     }
