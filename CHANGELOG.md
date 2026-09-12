@@ -4,6 +4,148 @@ cjh 版本变更记录。依据 git tag 史 + 提交史整理；版本号规则�
 
 > 注：v1.0.0 / v1.1.0（首个 tag 前）/ v1.2.2 / v1.3.0 / v1.3.5 等版本未打 tag，日期与内容按提交史还原，以「无 tag」标注。
 
+## [v1.3.26] - 2026-09-12
+
+### Fixed
+- **大写字母被当成 Ctrl 组合 → 文本乱码 + 凭空回车/换行**（`libs/cjterm/src/term_windows.cj`）：控制键状态位掩码常量写错——`RIGHT_ALT_PRESSED` 误写 `0x4`、`RIGHT_CTRL_PRESSED` 误写 `0x10`（`0x10` 实为 `SHIFT_PRESSED`），旁附"与 RIGHT_CTRL 同值（Win32 历史怪癖）"的错误注释为其背书。`readKey()` 的 `if (ctrl) { … vk-64 … }` 分支由此把带 SHIFT 位的记录判成 Ctrl，`A..Z` 走 `vk-64`：`M`(0x4D)→13=`CR`、`J`(0x4A)→10=`LF`、`B`→2、`R`→18、`T`→20。Windows Terminal 粘贴大写字母（带 SHIFT 位）→ `Broker`→`\x02roker`、`Rust`→`\x12ust`，且 `M`/`J` 凭空造出回车/换行。修复：按 Win32 规范（wincon.h）改正位掩码（右 Alt `0x1`、左 Alt `0x2`、右 Ctrl `0x4`、左 Ctrl `0x8`、Shift `0x10`），并把判别抽到平台无关新文件 `libs/cjterm/src/win_mods.cj`（`WIN_*` 常量 + `winCtrlPressed/winAltPressed/winShiftPressed`），`term_windows.cj` 改为调用（本地错常量删除，留指向 `win_mods.cj` 的注释）
+- **粘贴换行绕过守护直达应用 → 粘贴过程中自动提交**（`libs/cjterm/src/term.cj` 第 679 行）：`readRawStreamPaste()` 末尾早退分支原为 `return this.backend.readKey()`，绕过 `readGuardedRawKey()`（第 361 行：无输入返 `None`；命中 `isGuardedPasteEnter` 则记 `TERM GUARD-DROP` 并 continue）。drain 循环遇抬键记录（Windows 后端 `readKey()` 对抬键返回 `None`）即 `break`，此时 `count == 0` 落入该分支；Windows 裸流粘贴按帧投递（每帧 1~3 条、按下/抬起成对），粘贴文本里的 CR 恰紧跟抬键之后 → 被当真实回车直达应用 → 粘贴中多次自动提交。修复：第 679 行改为 `return this.readGuardedRawKey()`（第 304 行同名调用属另一路径，不动）
+- **长文本裸流粘贴逐字逐帧爬行 → 单帧吃干**（`libs/cjterm/src/term.cj`）：真机 `cjh_keys.log`（v1.3.26，13:22 那轮）定量——bulk 窗口 `t=11893970→18502849`（≈6.6 秒）仅投递 **414 字符**（≈63 字符/秒）；标记计数 `TERM pending` **2939**、`TERM bulk` **422**、`mark-paste-stream` 183、`burst` 25、`rate-armed` 12、`GUARD-DROP` 1、`GUARD-MISS` 3；窗口内 14 个 CR 中 13 个折进粘贴文本、1 个被守护丢弃（未泄成真实回车）。根因：`readRawStreamPaste()` drain 循环原为 `while (count < BULK_PASTE_MAX)`，遇 `readKey()` 返 `None`（Windows 后端抬键记录）走 `else { break }` → 每次上层 `readKey()` 只吃 1~3 条记录；粘贴期「按下/抬起」成对投递、抬键紧跟字符之后 → 每帧基本只前进一个字。修复：`term.cj:167` 新增 `private let MAX_DRAIN_RECORDS: Int64 = 4096`（Windows 控制台输入缓冲约 64KB、单条 `INPUT_RECORD` 约 16~20B → 一帧记录总数数千条，4096 足以一次吃干；同时作硬预算兜底，病态后端即使 `hasInput()` 恒真且不消费记录也不会死循环）；`term.cj:652` 循环条件改 `while (count < BULK_PASTE_MAX && records < MAX_DRAIN_RECORDS)`、每轮 `records += 1`、**删除 `else { break }`**（`None` 视为已消费的抬键记录继续 drain 至 `hasInput()` 为假或预算耗尽）；仅 `count == 0` 回落 `readGuardedRawKey()`（`term.cj:701`，未动），`readGuardedRawKey()`（375 行）与 bracketed paste 分支（318 行）均未动
+
+### Added
+- `libs/cjterm/src/win_mods.cj`：Win32 控制键状态位掩码常量 + `winCtrlPressed/winAltPressed/winShiftPressed` 判定，作为**平台无关纯函数**（置于 `@When[os == "Windows"]` 之外，Linux 门禁方可覆盖）
+- `libs/cjterm/src/win_mods_test.cj`（6 例）；`libs/cjterm/src/term_paste_fallback_test.cj`（用例 `TermPasteFallbackTest.testBulkFallbackKeyUpDoesNotLeakPasteCr`）
+- `libs/cjterm/src/term_paste_drain_test.cj`（2 例）：`testSingleFramePasteDrainedInFewReads`（一帧投递 200 字符、每 5 字符插 1 抬键；断言文本完整且 `readKey()` 调用 `calls <= 4`）、`testSingleFramePasteFoldsCrWithKeyUps`（断言 `isPaste == true`、`isEnter == false`、CR 折进粘贴文本）
+
+### Tests
+- 红→绿：改前 `cd libs/cjterm && cjpm test` = **FAILED: 3**（`testShiftIsNotCtrl`、`testLockKeysAndEnhancedNotCtrl`、ABI 钉桩）；改后 **PASSED: 57, SKIPPED: 0, ERROR: 0, FAILED: 0**（exit 0）。根因 A 用例红阶段原文 `Assert Failed: (k.isEnter == false)  left: true`（FAILED: 1）
+- 测试保真度局限：现有 `DribbleMockBackend` 对任何事件都返回 `Some`、`hasInput()` 恒等于可见队列长度，无法表达真机"消费抬键记录却返回 `None`"语义；故用组合包装（`PasteFallbackKeyUpBackend`）把抬键哨兵翻译为 `None`，否则第 679 行在纯 mock 下是死代码、构不出红用例
+- 定性结论（详见 `docs/开发文档与踩坑记录.md` §3.29）：粘贴合成记录带**真实 scan 码**（粘贴产生的换行是 `vk=0xD scan=0x1C uChar=0xD`，与手按回车完全同构；只有 CJK 才是 `vk=0/scan=0`），故"用 `scan==0` 区分粘贴换行与真实回车"**不可用**，只能靠上下文/时序判据
+- 滴灌修复红→绿（`libs/cjterm/src/term_paste_drain_test.cj` 2 例）：改前 `cd libs/cjterm && cjpm test` = `TOTAL: 59, PASSED: 57, FAILED: 2`（exit 1），失败断言原文 `Assert Failed: (k.isPaste == true)`、`Assert Failed: k.text != expected.toString()`；改后 `TOTAL: 59, PASSED: 59, SKIPPED: 0, ERROR: 0, FAILED: 0`（exit 0）
+- 门禁：cjterm 59/59；`./scripts/test.sh` = `TOTAL: 359, FAILED: 0`（exit 0）；`cjpm build` exit 0；`--mock` exit 0（命中 6 条工具调用链）；PTY `56 通过 / 0 失败`（exit 0）
+
+### Changed
+- **按键追踪（`KeyTrace`）恢复默认关闭（opt-in）**：真机粘贴投递问题已定性闭环（见下方"实测确认"），诊断无需常驻——现在只有显式真值（`CJH_TRACE_KEYS=1`/`on`/`true`/`yes`/`y`/`enable`，大小写不敏感、容忍引号与空白）才记录；不设变量或设 `0`/`off`/`false`/`no`/`n`/`disable` 均不记录、`describe()` 静默，**正式使用零副作用**。无法识别的值按"不开启"处理（安全默认），但 `describe()` 会回显正确写法——既不误开，也不"设了却不生效"
+- **实测确认（v1.3.26 复打包，真机 13:41 那次运行轨迹）**：`TERM bulk` 事件 **422 → 8**，每次进入 bulk 路径时队列积压 `pending=862~891`（此前每次 `readKey()` 只吃 1~3 条），单次 drain 即吃干整帧；83 个 CR 全部作为粘贴内容折进（`GUARD-DROP=0`、`GUARD-MISS=1` 为真实回车）；用户在 TUI 中观察到粘贴**折叠为 `[Paste #N]`**——折叠阈值是**单次 paste 事件** ≥400 码点或 ≥5 行，滴灌实现下结构上不可能触发，折叠本身即"整段一次性到达"的证据
+
+### Build
+- `dist/` 产物重建（**版本号沿用 v1.3.26，不升**）：`cjh-windows-x64.exe` 13,626,368 B、`cjh-linux-x64` 16,541,736 B、`cjh-v1.3.26-windows-x64.zip` 4,662,469 B、`cjh-v1.3.26-windows-x64-selfcontained.zip` 7,723,424 B；`SHA256SUMS` 4/4 OK；zip 内 exe 与 `dist/cjh-windows-x64.exe` 同哈希（前 16 位 `b79cade062b46490`）；selfcontained 四枚 DLL 取自 `dist/windows-v1.3.25/`（与已交付包逐字节一致）
+
+### Known limitations
+- 无（本轮已消化第三十九轮的遗留滴灌项，详见 `docs/开发文档与踩坑记录.md` §3.30）
+
+## [v1.3.25] - 2026-09-12
+
+### Changed
+- **按键追踪（`KeyTrace`）改为默认开启、免配置**：诊断设施不该依赖"记得设环境变量"——v1.3.24 让用户按指引采集轨迹时只找到 `cjh.log`/`tui.log`，排查被迫先花一轮证明仪器是否启动。现在**每次运行都记录**，仅显式设置关闭值（`CJH_TRACE_KEYS=0`/`off`/`false`/`no`/`n`/`disable`，大小写不敏感、容忍引号与空白）才关。
+  - **每次运行重置**：启动时以 `w` 打开并写头行（版本 + 启动时刻 + 实际落点），之后逐行追加——文件只保留最近一次运行、永不无界增长；头行同时让"文件存在"成为"追踪确实在写"的自证
+  - 轨迹含键入键码（RAW 行 `uChar` 为十六进制码点），仅用于终端投递诊断；不需要时用上述关闭值关掉
+
+### Fixed
+- **按键追踪"设了变量却找不到文件"的两条成因**：
+  - 值解析曾苛求字面量 `1`：cmd 的 `set CJH_TRACE_KEYS="1"` 会把**引号写进值里**，尾随空白同样常见 —— 旧实现直接比较必然不等 → 追踪静默不开启、无任何提示。现统一去首尾空白 + 去成对引号 + 大小写不敏感（`1/on/true/yes/y/enable`）；**无法识别的值按默认开启处理**，并由 `describe()` 回显写法——开关不再可能静默失效
+  - 默认落点曾跟随**进程当前目录**（双击 exe 时即 exe 目录），与用户已知的 `cjh.log`（`~/.cjh/logs/`）/`tui.log`（`~/.cjh/`）不是一处，按日志位置翻必然落空。现默认落点改为 `${USERPROFILE|HOME}/.cjh/cjh_keys.log`（同目录）；父目录不存在自动创建；落点不可写时回退当前目录并在文件内留痕
+- **TUI 启动面包屑**（`src/entries.cj`）：把实际落点写进 `cjh.log`，用户不必猜文件在哪（显式关闭时静默）
+
+### Tests
+- `libs/cjterm/src/trace_test.cj` +10 用例（cjterm **50/50** 全绿）：
+  - 默认开启：未设任何环境变量 → 仍在记录，且头行落盘
+  - 复现用例：带引号的值（`"1"`）→ 仍开启并落头行
+  - 显式关闭：`CJH_TRACE_KEYS=0` → `describe()` 为空、`mark` 不落盘
+  - 配置有误可自证：无法识别的值 → 按默认开启且 `describe()` 给出提示
+  - 纯函数：`normalizeValue`（引号/空白/单字符/引号不配对边界）、`isTruthy`/`isFalsy`（大小写与多种写法）、`isRecognized`（垃圾值）、`defaultPathFor`（有/无家目录，含 Windows 路径）
+
+### Build
+- `dist/` 产物重建为 v1.3.25
+- ⚠️ v1.3.24 的分帧粘贴修复仍待 Windows Terminal 真机确认；本版让轨迹采集不再受任何书写方式或落点差异影响
+
+## [v1.3.24] - 2026-09-12
+
+### Fixed
+- **Windows Terminal 分帧投递的粘贴换行仍被当成真实 Enter 提交**（v1.3.23 守护窗实测未命中，用户复现）：v1.3.21 的 burst（`BURST_PENDING_MS = 4` / `BURST_ACTIVE_MS = 15`）与 v1.3.23 的守护窗 + 成串密度判据，前提都是"粘贴内容短时间**成串**到达"；WT 实测按**帧**分块投递（每帧 1~3 事件、帧间可达数十毫秒）时，每次聚合只看到 1 个候选字符 → `isPasteBurst` 恒假、密度恒不足、守护窗口永不置位 → 尾部/行间 `\r` 与用户手按 Enter 事件层同构（`KeyEvent(13,"\r")`）→ `InputBox` 立即提交。
+- **判据从"时间窗口/积压"升级为"到达速率"**（`libs/cjterm/src/term.cj`）：新增 `notePasteCandidate()` 维护 300ms 滚动到达窗口 `(时刻, 是否换行)`，窗口内**非换行候选 ≥ `PASTE_STREAM_RATE_MIN = 12`** 且**换行数 × `PASTE_STREAM_RATE_NL_DIV = 3` < 字符数** → 认定处于粘贴流，持续刷新 `PASTE_ENTER_GUARD_MS = 200` 守护窗口（沿用 v1.3.23 的 `readGuardedRawKey()` 吞键）。不依赖任何单次间隙/瞬时积压。
+  - 排除误判：人类打字 ≤10 字符/秒达不到 12/300ms；输入法逐字提交是"字+回车"交替（换行占比 ≈1:1，被换行占比条件排除）；held-key 连发（同字符 <10/300ms）同样达不到。
+  - 影响面：仅裸流后端（Windows 控制台）；POSIX 走 bracketed paste 解析（`\r` 不会单独成键），行为不变。
+
+### Added
+- **`Clock` 时间源抽象**（`libs/cjterm/src/clock.cj`）：`Term` 新增 `init(injected: TerminalBackend, clock: Clock)` 注入点，粘贴守护窗口与到达速率窗口统一走 `this.clock.now()` —— 时间窗口逻辑可用虚拟时钟确定性验证，不再依赖真实 `sleep` 与机器速度（v1.3.21/23 的"测试全绿但实测复现"结构性成因之一）。
+- **`KeyTrace` 按键轨迹诊断**（`libs/cjterm/src/trace.cj`）：`CJH_TRACE_KEYS=1` 时把每个 `INPUT_RECORD` 的 `down/vk/scan/uChar/ctrl` 与 Term 层决策（`pending/path/GUARD-DROP/GUARD-MISS/rate-armed`）逐行追加到 `cjh_keys.log`（`CJH_TRACE_FILE` 可覆盖输出路径），用于只在真机复现的终端投递问题定性；关闭时仅一次 Bool 判断，零开销。
+
+### Tests
+- `libs/cjterm/src/term_paste_rate_test.cj` +4 用例（cjterm 39 全绿）：新增 `FakeClock` + `DribbleMockBackend`（按帧投递 mock，帧间由测试 `frame(ms)` 推进、与 Term 共享虚拟时钟）——
+  - 分帧粘贴（每帧 1 字符、帧间 16ms）尾部换行必须被吞（`None`），不得提交
+  - 分帧粘贴正文含空行：行间换行同样被吞
+  - 反例锁：人类打字节奏（400ms/字符）后回车照常提交
+  - 反例锁：高频"字+回车"风暴（10ms/事件）回车照常提交（防输入法回归）
+- `libs/cjterm/src/trace_test.cj` +3 用例：hex 字段格式化（0xD/0x1C/0xFFFF）/ 开启时逐行追加（含序号）/ 关闭时绝不落盘
+- 敏感性验证：临时把 `PASTE_STREAM_RATE_MIN` 置 9999（等价关闭速率判据）→ 2 个复现用例转红；还原后全绿
+
+### Build
+- `dist/cjh-v1.3.24-windows-x64.zip`（单 exe）+ `dist/cjh-v1.3.24-windows-x64-selfcontained.zip`（exe + DLL）+ `dist/windows-v1.3.24/` + `SHA256SUMS`；Linux `dist/cjh-linux-x64`
+- ⚠️ 真机复测状态：Windows Terminal 实测确认中；若仍复现，用 `CJH_TRACE_KEYS=1` 采集 `cjh_keys.log` 轨迹（含投递节奏与 `scan` 码）再定性
+
+## [v1.3.23] - 2026-09-12
+
+### Fixed
+- **Windows 分块投递的粘贴换行仍被当成真实 Enter 提交**（用户实测复现，v1.3.21 burst 修复的残余场景）：conhost/Windows Terminal 把一次粘贴拆成多"波"写入输入缓冲，**波间间隙实测超出 burst 的 PENDING 4ms / ACTIVE 15ms 窗口**——剪贴板末尾换行一旦单独成一波，该波只含 1 个候选字符，`isPasteBurst` 的四条件（≥2 字符 + 含换行 + 含非空白 + 行长平均）必然不成立，旧实现原样返回裸 Enter → `InputBox` 立即提交（用户并未按回车）。该键与"用户手按 Enter"在事件层完全同构（conhost `VK_RETURN` `uChar=0x0D`），单键分类无解。
+- **判据从"单键"升级为"上下文"**（`libs/cjterm/src/term.cj`）：新增**粘贴流守护窗口** `PASTE_ENTER_GUARD_MS = 200` —— 处于粘贴流时，紧随其后的裸 Enter 判为终端为粘贴补发的换行，直接吞掉并同帧继续读键，绝不作为提交键返回。
+  - **置位条件 ①**：任一路径发出 `isPaste` 事件（`readRawStreamPaste` bulk 合并的两处 return / `tryAggregateBurst` 签名命中——bulk 路径最终 return 分支曾漏置位，测试当场抓出）。
+  - **置位条件 ②**：成串输入密度达标（一次聚合内 ≥`PASTE_STREAM_MIN_CHARS = 8` 个非换行候选字符）——覆盖"波界恰好落在换行前、前半段无换行"的分块场景。人类打字/输入法提交不可能在 4/15ms 窗口内凑齐 8 字符，故该密度只对机器成串投递成立。
+  - 窗口取 200ms：人手从 Ctrl+V 移到 Enter 通常 ≥300ms，故不长期吞真实 Enter；即便极端手速命中，最坏结果是需要再按一次 Enter（不丢内容、不误发）。
+  - 仅作用于裸流后端（Windows 控制台）；POSIX 走 bracketed paste 解析（`\r` 不会单独成键），行为不变。
+
+### Tests
+- `libs/cjterm/src/term_paste_burst_test.cj` +5 用例（32 全绿）：新增**分块投递 mock** `ChunkedMockBackend`（虚拟时钟模拟 conhost 分波投递 + 波间延迟，修掉了旧 `MockBackend` "整块一次性可见"导致**测不出分块场景**的保真度缺口）——
+  - 用户实测文本短版（burst 路径）+ 尾部补发 Enter 不得提交
+  - 用户实测长文本（≥48 事件，bulk 路径）+ 尾部补发 Enter 不得提交
+  - 波界恰落在换行前（无换行前半段 + 换行单独成波）不得提交
+  - 反例锁：手敲 3 字符后 Enter 照常提交（不误吞）
+  - 反例锁：守护窗口过期（真实 sleep 300ms）后 Enter 照常提交
+- 修复前 3 个新用例红（复现确认）→ 修复后全绿；门禁：`./scripts/test.sh` 359 + cjterm 32 全绿 + `cjpm build` + `--mock` + PTY 56/56
+
+### Build
+- 发布 v1.3.23 双平台产物（同 v1.3.22 布局）：`dist/cjh-linux-x64`（静态，`ldd` 仅 6 系统库）+ `dist/cjh-v1.3.23-windows-x64.zip`（单 exe）+ `dist/cjh-v1.3.23-windows-x64-selfcontained.zip`（exe + runtime/openssl DLL）+ `dist/windows-v1.3.23/`；exe 导入表 7 DLL（stdx 静态链接，无 libstdx DLL），`dist/SHA256SUMS` 三产物校验全 OK
+
+## [v1.3.22] - 2026-09-11
+
+### Changed
+- **atomcode 式 steer：忙时 Enter 只入队、不打断当前回合**（旧"强制插入发送"行为回归——commit `2cae3f1` 引入的忙时打断副作用大：当前 LLM 请求被 abort、半截响应丢弃）。新交互语义：
+  - 忙时 **Enter** = 只入队（状态行"排队 N 条待发送"，不触发中断回调），Agent 每轮 LLM 请求前拉取队列注入 user 消息（本回合内处理，不产生新 turn）
+  - 忙时 **Esc** = 中断当前回合并立即发送（保留队列，run 结束后作为新 turn 自动发送）
+  - 忙时 **Ctrl+C** = 两级中断不变（第一次请求中断，第二次强制退出）
+- **Agent 轮边界排队输入注入**（`src/agent/loop.cj`）：新增 `onRequestPendingInput: () -> Option<String>` 回调（默认 None=无排队），runLoop 每轮 LLM 请求前（`checkPendingCompact()` 之后，防新指令被 compact 摘要吞掉）while-let 排空队列注入 user 消息 + `[steer] 收到排队输入: …` 标记；轮顶 interrupt 检查在前 = 中断优先于注入（Esc 后 drain 跳过，剩余队列留给 run 后新 turn）。`entries.cj` 接线 `agent.onRequestPendingInput = { => tui.dequeueInput() }`。
+- 帮助页快捷键更新：Esc 行补"忙时中断并立即发送排队消息"。
+
+### Tests
+- +7 单测：`src/agent/pending_input_test.cj`（drain 4 用例：轮顶注入位置/多条 FIFO 排空/工具完成后边界注入/中断跳过 drain）+ `tui_app_test.cj`（忙时 Enter 不打断回归锁/忙时 Esc 中断且队列保留/空闲 Esc 不误触发中断）
+- PTY 场景10 改 steer 断言（入队提示 + "收到排队输入"标记 + 无"已中断" + FINAL-DONE 恰好一次）；新增场景11（Esc 中断 → 排队消息作新 turn 发送），原 11/12/13 顺延为 12/13/14
+- 门禁：359 单测全绿 + `cjpm build` + `--mock` + PTY 56/56
+
+### Build
+- 发布 v1.3.22 双平台产物：`dist/cjh-linux-x64`（静态）+ `dist/cjh-v1.3.22-windows-x64.zip`（单 exe，4.6MB）+ `dist/cjh-v1.3.22-windows-x64-selfcontained.zip`（exe + `libcangjie-runtime.dll`/`libboundscheck.dll`/`libssl-3-x64.dll`/`libcrypto-3-x64.dll`，解压即用）；`SHA256SUMS` 重打校验。Windows exe 导入表 7 DLL（stdx 静态进 exe），与 v1.3.21 一致
+
+## [v1.3.21] - 2026-09-11
+
+### Fixed
+- **Windows 粘贴带换行长文本直接触发提交修复**：根因 = 裸流合并路径遇第一个 `\r`（isEnter）停合并并丢弃 + 短粘贴（<48 事件）无聚合全程单键路径——多行粘贴的换行与用户 Enter 在 conhost 是同一事件（VK_RETURN `uChar=0x0D` → `KeyEvent(13,"\r")`），残留缓冲里的 `\r` 被主循环当真实 Enter 消费。修复对齐 atomcode `input/reader.rs` burst 检测器：长粘贴合并循环吸收裸 Enter 为内容换行 + burst 两级窗口聚合（PENDING 4ms 单键探测 + ACTIVE 15ms 桥接 conhost/WT 分块间隙）+ 粘贴签名四条件（防拼音 IME 逐字提交风暴误判）+ 重放队（非粘贴 burst 按序还回）+ `Term.init(injected:)` 测试注入点。
+
+## [v1.3.20] - 2026-09-10
+
+### Changed
+- **输入框长粘贴软换行显示 + [Paste #N] 折叠恢复**：粘贴保留真实换行（CRLF→LF 归一化）并在光标处插入（保留已有前缀）；≥5 行（有效内容行）**或** ≥400 码点折叠为 `[Paste #N]` 原子 marker（多行 `+X lines`/单行 `X chars`，对齐 atomcode `PASTE_FOLD_LINES=5`/`PASTE_FOLD_CHARS=400`；原文存 pasteStore，Enter 展开原文提交、退格整体删、支持前缀+marker 混合展开）；未达阈值原文按显示宽度自动软换行（首行预算 `cols-提示符宽`、续行 `cols-2` 缩进、CJK=2 列），显示区最多 5 行、视口跟随光标；`TuiApp` 输入区改动态高度（`displayHeight()`）。修复粘贴光标错位（`wrappedLines` 截断 5 行后视口滚动读到过期首行段，改为返回全部行段按绝对行号取段）。
+
+## [v1.3.19] - 2026-09-10
+
+### Fixed
+- **TUI 粘贴不折叠**：旧阈值按字节计 1000（中文 1 字 3 字节 ≈333 汉字才触发），改码点 200；折叠由整段替换 `text_`（静默丢前缀）改 `insertAtCursor` 追加。
+- **Windows 长工作路径状态栏折行**：`StatusBar.render` 从不截断，超行宽终端自动折行挤乱布局。新增 `truncateContent`（ANSI 感知 + CJK=2 列 + 尾部 `…`），超 `width-5` 预算截断。
+- **裸流粘贴合并（Windows）**：Windows 控制台不支持 bracketed paste，粘贴以离散 KEY_EVENT 涌入逐键处理卡顿。`TerminalBackend` 加 `supportsBracketedPaste()`（POSIX=true 走自身解析/Windows=false 走 Term 层合并）+ `readPendingBytes()`（POSIX=FIONREAD/Windows=待读事件数），`Term.readKey` 积压超阈值时连续吞读可打印字符合并为单个 `isPaste` 事件（`hasInput` 非阻塞守卫防冻结）。
+
+## [v1.3.18] - 2026-09-09
+
+### Fixed
+- **InputBox 中文光标偏移（Windows）**：`render()` 用 rune 计数算光标位置，CJK 占 2 列致显示偏左（输入正确）。改用 `TuiCanvas.displayWidth()` 算显示列数。
+- 附带修复 `InputBoxHistoryTest` 编译错误——仓颉 `@Test` 宏不支持 `for(i in 0..N)` 循环，改 `while`（踩坑 §3.22）。
+
 ## [v1.3.17] - 2026-09-08
 
 ### Fixed

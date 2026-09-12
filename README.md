@@ -485,6 +485,19 @@ cjh 内置 MCP 客户端，支持 stdio 传输 + JSON-RPC 2.0。配置 `mcp_serv
 
 | 版本 | 主要功能 |
 |---|---|
+| **v1.3.26** | **Windows 粘贴三项修复 + 诊断收尾**：① 大写字母被当 Ctrl 组合（`dwControlKeyState` 位掩码写错，`0x10` 实为 SHIFT）→ `A..Z` 走 `vk-64` 解码成控制码，`M`/`J` 凭空回车/换行、`Broker`→`\x02roker`；位掩码与判定抽为平台无关纯函数 `win_mods.cj`。② 裸流粘贴批量合并的末尾早退分支（`term.cj` 第 679 行）绕过粘贴守护 → 粘贴文本的 CR 直达应用、粘贴中多次自动提交；改为走 `readGuardedRawKey()`。③ **长文粘贴"滴灌"**：drain 循环遇抬键记录即 `break`，每次 `readKey()` 只吃 1~3 条 → 6.6 秒仅投递 414 字符；改为单帧吃干（`MAX_DRAIN_RECORDS=4096` 硬预算 + 抬键记录视为已消费继续 drain），真机验证 `TERM bulk` 事件 422→8、每次一次吃干 `pending≈890` 条、粘贴整体折叠为 `[Paste #N]`。④ 按键追踪（`KeyTrace`）**恢复默认关闭**（opt-in）：仅 `CJH_TRACE_KEYS=1/on/true/yes/y/enable` 才记录，正式使用零副作用 |
+| **v1.3.25** | **按键追踪默认开启（免配置）**：诊断不再依赖"记得设环境变量"——每次运行都记录到 `~/.cjh/cjh_keys.log`（与 `cjh.log` 同目录，`CJH_TRACE_FILE` 可改路径），仅 `CJH_TRACE_KEYS=0/off` 才关；启动重置 + 写头行（落点 + 版本），TUI 启动把落点写进 `cjh.log` 作面包屑；值解析容忍引号/空白/大小写 |
+| **v1.3.24** | **Windows Terminal 分帧粘贴补发 Enter 改用"到达速率"判据**：WT 按帧分块投递（每帧 1~3 事件、帧间数十毫秒）使 burst 窗口与成串密度判据全部落空 → 新增 300ms 到达速率判据（非换行候选 ≥12 且换行稀疏）+ `Clock` 时钟抽象（时间逻辑可确定性单测）+ `KeyTrace` 真机轨迹设施（`CJH_TRACE_KEYS=1`） |
+| **v1.3.23** | **Windows 分块粘贴补发 Enter 守护**：conhost 分波投递（波间 >15ms）使剪贴板末尾换行单独成波、判不出粘贴签名 → 旧实现当真实 Enter 提交。新增粘贴流守护窗口（200ms）+ 成串密度判据（≥8 字符），吞掉终端补发换行、不误吞真实 Enter |
+| **v1.3.22** | **atomcode 式 steer**：忙时 Enter 只入队不打断（Agent 每轮 LLM 请求前拉取队列注入 user 消息）；忙时 Esc = 中断并立即发送排队消息（run 结束后作为新 turn）；Ctrl+C 两级中断不变 |
+| **v1.3.21** | **Windows 粘贴带换行长文本自动提交根治**（burst 两级窗口聚合 + 粘贴签名四条件 + 重放队，对齐 atomcode reader.rs） |
+| **v1.3.20** | **长粘贴软换行显示 + [Paste #N] 折叠恢复**（≥5 行/≥400 码点折叠、Enter 展开原文、输入框动态高度） |
+| **v1.3.19** | **粘贴不折叠（阈值字节→码点）+ Windows 长路径状态栏折行根治 + 裸流粘贴合并** |
+| **v1.3.18** | **InputBox 中文光标偏移根治（displayWidth 算列）** |
+| **v1.3.17** | **Windows bash 工具 /bin/bash 不存在：Shell 降级**（Git Bash 候选 + CJH_SHELL 覆盖） |
+| **v1.3.16** | **Windows TUI 框线混排根治**（双判据 isUtf8 + 主动切 65001 + BoxChars 统一边框） |
+| **v1.3.15** | **P2b reasoning_effort/thinking budget 配置穿透 + compaction 后台异步化** |
+| **v1.3.14** | **V3 信任链 Step 3 信任管理 CLI + 第三方插件示例**（trust/untrust/trust-list + 五库生态冷启动 v0.1.0） |
 | **v1.3.13** | **P2 OutputView 增量行缓存 + P2b TUI 视觉美化**：render 每帧 O(总量) `split` 改 `lineCache` 增量维护（O(本帧文本)）；Unicode 实线边框按主题填充（10 主题 `/theme` 即时变色）+ 整行背景卡片（状态栏/用户回显/工具行/思考块）+ 行内代码芯片 + `NO_COLOR` 支持（325 单测 + 49 PTY 全绿，双平台发布包） |
 | **v1.3.12** | **粘贴中文乱码根治**（bracketed paste 整段 `safeFromUtf8`）；同批含 v1.3.11 长会话 TUI 主协程停摆根治（锁泄漏 + 退出清理） |
 | **v1.3.10** | **TUI 假死/无法输入根治**（cjlog sleepMs 忙等空转 → 真实 sleep） |
