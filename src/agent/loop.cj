@@ -276,6 +276,12 @@ public class Agent {
     public var onTodosChanged: () -> Unit = { => }
     // 回合结束回调（渲染回合总结条：轮数/工具数/耗时/token用量/缓存命中率）
     public var onRunComplete: (RunSummary) -> Unit = { s => }
+    // 排队输入拉取回调（atomcode 式"steer"：TUI 忙时提交只入队不打断，
+    // 每轮 LLM 请求前由 Agent 拉取——即"上一次工具调用完成后"的边界。
+    // None=当前回合无排队输入；非 None 注入为 user 消息让模型感知新指令。
+    // 注意：必须在 runLoop 循环内、interrupt 检查之后调用——用户 Esc 中断
+    // 时当前 turn 提前退出，剩余排队消息由 TUI 在 run 结束后作为新 turn 发送。
+    public var onRequestPendingInput: () -> Option<String> = { => None }
 
     // ==================== Agent 事件钩子（Claude Code 式，统一事件化 + 外部扩展）====================
     // 内部回调（onX）负责 UI 展示；hook 是外部注册点（插件/工具/宿主代码），
@@ -616,6 +622,25 @@ public class Agent {
             // 必须放在循环内——单次 run() 可能跑几十轮，prompt 随轮次膨胀，
             // 只在 run() 开头检查的话压缩永远不会触发（实测 48 轮 prompt 涨到 31K token）
             this.checkPendingCompact()
+
+            // 排队输入注入（atomcode 式"steer"）：上一轮工具调用完成、本轮
+            // 请求发出前的边界消费 TUI 队列——用户忙时提交的消息不打断当前
+            // 回合，在此作为 user 消息让模型在继续执行时感知新指令并可调整计划。
+            // 一次性排空队列（多条连发合并进本回合）。放在 checkPendingCompact
+            // 之后：避免刚注入的新指令随即被换装成摘要。Esc 中断优先于注入：
+            // 排空前再查一次 isInterrupted——中断后剩余队列消息由 TUI 在 run
+            // 结束后作为新 turn 发送（"中断并立即发送"，见 TuiApp Esc 分支）。
+            if (!this.isInterrupted()) {
+                try {
+                    // while-let 语法糖：条件每轮重新求值，拉到 Some 就注入，None 退出
+                    while (let Some(msg) <- this.onRequestPendingInput()) {
+                        this.messages.add(ChatMessage("user", msg))
+                        this.onAssistantText("\n[收到排队输入，将在本轮响应中处理]\n")
+                    }
+                } catch (e: Exception) {
+                    Log.warn("排队输入拉取回调异常: ${e}")
+                }
+            }
 
             // 顶层兜底：LLM 响应解析可能抛 IllegalArgumentException（非法 UTF-8 字节）
             // 不让它崩 TUI，转成错误消息返回

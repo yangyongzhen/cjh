@@ -62,7 +62,7 @@ public class TuiApp {
     // Agent 执行开始时间（实时状态行计时用）
     private var agentStartTime: DateTime = DateTime.now()
     // Agent 当前 LLM 轮次计数（状态行"第 N 轮"：让用户看到 run 在推进、
-    // 排队消息要等多轮任务结束——队列等待透明化）
+    // 排队消息将在下一轮 LLM 请求前被 Agent 拉取处理（atomcode 式 steer））
     private var agentRounds: Int64 = 0
     // Agent 执行期间累计输入 token（实时状态行显示用）
     private var agentPromptTokens: Int64 = 0
@@ -280,18 +280,15 @@ public class TuiApp {
                 // 排队状态由动态状态行实时显示（"排队 N 条"），agent 结束自动消失。
                 // busy || 队列非空都入队：堵住 run 结束→下一条启动的窗口期
                 // （否则该窗口提交的消息绕过队列、与续跑消息并发执行同一 Agent）。
-                // 忙时 Enter = 强制插入发送（对齐 omp followup）：打断当前回合，
-                // 排队消息在中断后（≤5s）自动开始处理——模型思考卡住无新增时
-                // 不必等 180s 空闲预算，用户 Enter 即可夺回输入权
+                // atomcode 式 steer：忙时提交只入队、不打断当前回合——Agent 每轮
+                // LLM 请求前经 onRequestPendingInput 拉取队列（"上一次工具调用
+                // 完成后"的边界），模型在继续执行时感知新指令并可调整计划。
+                // 想夺回输入权：Esc（中断并立即发送）或 Ctrl+C 两级中断。
                 if (this.isAgentBusy() || this.queueLength() > 0) {
-                    if (this.isAgentBusy()) {
-                        this.interruptPending = true  // 已请求打断：Ctrl+C 可直达强退
-                        this.onInterrupt()
-                        this.safeLog("info", "Enter: 忙时强制插入发送（打断当前回合）")
-                        this.appendOutput(Ansi.fg(Ansi.THEME_WARN) +
-                            "⏸ 已打断当前回合，排队消息即将发送…" + Ansi.reset())
-                    }
                     this.enqueueInput(finalLine)
+                    if (this.isAgentBusy()) {
+                        this.safeLog("info", "Enter: 忙时入队（不打断，回合边界自动处理）")
+                    }
                 } else {
                     this.onSubmit(finalLine)
                 }
@@ -1314,6 +1311,17 @@ public class TuiApp {
                     this.picker.hide()
                     this.markDirty()
                 }
+                return
+            }
+            // atomcode 式：agent 执行中按 Esc = 中断并立即发送（中断当前回合，
+            // 未消费的排队消息由 entries.cj 在 run 结束后作为新 turn 自动发送）。
+            // 仅在"干净对话视图"触发——editMode/帮助视图/下拉框的 Esc 语义优先。
+            if (this.isAgentBusy()) {
+                this.onInterrupt()
+                this.safeLog("info", "Esc: 中断当前回合（排队消息中断后作为新 turn 发送）")
+                this.appendOutput(Ansi.fg(Ansi.THEME_WARN) +
+                    "⏸ 已中断当前回合，排队消息将立即发送…" + Ansi.reset())
+                return
             }
             return
         }
@@ -1752,7 +1760,7 @@ public class TuiApp {
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Ctrl+T         思考过程展开/折叠（推理模型）" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  PageUp/Down    输出区滚动（Ctrl+U/D 亦可）" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Ctrl+C         空闲退出 / 忙时中断，再按强制退出" + Ansi.reset())
-        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Esc            关闭弹窗 / 退出编辑 / 回对话视图" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Esc            关闭弹窗 / 退出编辑 / 回对话视图 / 忙时中断并立即发送排队消息" + Ansi.reset())
         var r: Int64 = 0
         var idx: Int64 = this.helpScroll
         while (idx < Int64(lines.size) && r < height) {

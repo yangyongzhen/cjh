@@ -616,6 +616,10 @@ func runTui(sessionId: String): Int64 {
             tui.resetAgentTokens()
             tui.setAgentState("Thinking…")
         }
+        // 排队输入拉取（atomcode 式 steer）：Agent 每轮 LLM 请求前调用，
+        // 从 TUI 输入队列 FIFO 取一条；无则 None（回合边界不打断当前任务）。
+        // 在 agent spawn 线程执行，TuiApp 队列自带锁，无死锁风险。
+        agent.onRequestPendingInput = { => tui.dequeueInput() }
         agent.onTokens = { tokens =>
             tui.addAgentTokens(tokens)
         }

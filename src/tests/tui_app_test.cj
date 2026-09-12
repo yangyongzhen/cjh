@@ -235,15 +235,22 @@ public class TuiAppKeyTest {
 
     @TestCase
     public func testQueueWhileBusyNoDirectSubmit(): Unit {
-        // 方案 B：agent 执行中提交 → 入队，不直接 onSubmit
-        let (app, submitted) = this.buildApp()
+        // steer：agent 执行中提交 → 入队，不直接 onSubmit、不打断当前回合
+        // （旧 commit 行为是"强制插入发送"=onInterrupt 打断——现回归为纯入队）
+        let app = TuiApp()
+        let submitted = ArrayList<String>()
+        let interrupts = ArrayList<String>()
+        app.onSubmit = { line => submitted.add(line) }
+        app.onInterrupt = { => interrupts.add("yes") }
         app.setAgentRunning(true)
         app.handleKey(this.keyChar(104))  // h
         app.handleKey(this.keyChar(105))  // i
         app.handleKey(KeyEvent(13))       // Enter
         @Assert(submitted.size, 0)        // busy：不直接提交
+        @Assert(interrupts.size, 0)       // steer：不打断当前回合
         @Assert(app.queueLength(), 1)     // 已入队
         @Assert(app.testInputText(), "")  // 输入框已清空
+        app.setAgentRunning(false)
     }
 
     @TestCase
@@ -279,6 +286,39 @@ public class TuiAppKeyTest {
         app.handleKey(KeyEvent(13))       // Enter
         @Assert(submitted.size, 0)        // 不直接提交
         @Assert(app.queueLength(), 2)     // 追加入队
+    }
+
+    // ==================== atomcode 式 steer：Esc = 中断并立即发送 ====================
+    // 忙时 Enter 只入队不打断（见 testQueueWhileBusyNoDirectSubmit）；
+    // 想夺回输入权：Esc（中断当前回合，剩余队列由 entries.cj 在 run 结束后
+    // 作为新 turn 自动发送）或 Ctrl+C 两级中断。
+
+    @TestCase
+    public func testEscWhileBusyInterruptsAndKeepsQueue(): Unit {
+        // 忙时裸 Esc = 中断当前回合（onInterrupt 触发），不退出 TUI，
+        // 已入队消息保留（run 结束后由 entries.cj 作为新 turn 发送）
+        let app = TuiApp()
+        let interrupts = ArrayList<String>()
+        app.onInterrupt = { => interrupts.add("yes") }
+        app.setAgentRunning(true)
+        app.enqueueInput("排队消息")  // 模拟之前 Enter 已入队
+        app.handleKey(KeyEvent(27, TermEsc.ESC))  // 干净对话视图（无 picker/帮助/编辑）
+        @Assert(interrupts.size, 1)    // 中断已触发
+        @Assert(app.testRunning(), true)  // 不退出 TUI
+        @Assert(app.queueLength(), 1)  // 队列保留（中断后作为新 turn 发送）
+        app.setAgentRunning(false)
+    }
+
+    @TestCase
+    public func testEscIdleDoesNotInterrupt(): Unit {
+        // 空闲时裸 Esc 不触发中断（仅关闭下拉框/帮助视图/编辑模式——
+        // 无可见组件时直接返回）：避免空闲误按 Esc 误触中断回调
+        let app = TuiApp()
+        let interrupts = ArrayList<String>()
+        app.onInterrupt = { => interrupts.add("yes") }
+        app.handleKey(KeyEvent(27, TermEsc.ESC))  // 空闲 + 干净对话视图
+        @Assert(interrupts.size, 0)
+        @Assert(app.testRunning(), true)
     }
 
     // ==================== 空闲看门狗误杀回归（"连续几轮会话总被打断"） ====================
