@@ -153,6 +153,20 @@ private let BULK_PASTE_MIN: Int64 = 48
 private let BULK_PASTE_MAX: Int64 = 2000
 
 /**
+ * 裸流粘贴单次 drain 循环的硬迭代预算（v1.3.26）：
+ * drain 现在把 readKey() 返回 None（后端消费了一条记录但不上报）也当"已消费"
+ * 继续读——真机 Windows 控制台一次粘贴会混入大量 bKeyDown=false 的抬键记录
+ * （hasInput 取自记录总数、readKey 只认按下，二者可同时成立），必须在同一
+ * readKey() 里全部跳过，否则每次只吃 1~3 条、粘贴逐字爬行（414 字符实测 6.6s）。
+ * 取值 4096 的理由：
+ *  - 覆盖量级：Windows 控制台输入缓冲上限约 64KB，单条 INPUT_RECORD 约 16~20
+ *    字节 → 一次粘贴的记录总数（含抬键）约数千条；4096 足以吃干一整帧。
+ *  - 终止兜底：即使后端 hasInput() 恒真却反复返 None 而**不消费**记录（病态/
+ *    异常后端），计数器每轮必增，循环最迟在 4096 轮后退出 → 绝不死循环。
+ */
+private let MAX_DRAIN_RECORDS: Int64 = 4096
+
+/**
  * burst 聚合两级窗口（v1.3.21，对齐 atomcode input/reader.rs）：
  * - PENDING：首个候选字符后的首次探测窗口。正常打字有毫秒级人类间隔，
  *   短窗口即过期 → 单键近零延迟（此前每键全跑 ACTIVE 窗口会引入输入延迟）；
@@ -664,21 +678,27 @@ public class Term {
                     || k.isArrowUp || k.isArrowDown || k.isArrowLeft || k.isArrowRight) {
                     if (count > 0) {
                         this.replay.add(k)
+                        this.markPasteStream()  // 已发出粘贴事件：守护补发 Enter
                         return Some(KeyEvent(sb.toString()))
                     }
                     return Some(k)
                 }
                 sb.append(k.text)
                 count += k.text.toRuneArray().size
-            } else {
-                break
             }
+            // readKey() 返回 None = 后端**已消费**一条记录但不上报（真机
+            // Windows 控制台 bKeyDown=false 的抬键记录：hasInput 按记录总数
+            // 计数、readKey 只认按下）。它不是"输入读完"，必须当作已消费的
+            // 一条记录继续 drain——否则首遇抬键即 break 且 count==0，每次
+            // readKey() 只吃 1~3 条，粘贴在 TUI 里逐字爬行（414 字符实测
+            // 6.6s，TERM pending 标记 2939 条）。终止由 records 预算兜底。
         }
         if (count > 0) {
+            this.markPasteStream()  // 已发出粘贴事件：守护补发 Enter
             return Some(KeyEvent(sb.toString()))
         }
         // 积压全是控制序列：退回常规读取（上面 while 已逐键读完则 None）
-        return this.backend.readKey()
+        return this.readGuardedRawKey()
     }
 
     /**
