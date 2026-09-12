@@ -23,3 +23,7 @@ cangjie-stdx-windows-*.zip
 
 # Python
 __pycache__/
+
+# dist 打包中间产物与上一版包（自包含包的 DLL 暂存目录、v1.3.25 包）
+dist/windows-v1.3.*/
+dist/cjh-v1.3.25-windows-x64*.zip
