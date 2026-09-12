@@ -38,7 +38,7 @@
 | **Tasks 面板** | Agent 内置任务列表实时展示，对齐 Claude Code TodoWrite |
 | **回合总结条** | 每轮结束后显示 `─── ✓ 2 rounds · 3 tools · 42.6s · 1.5k tokens · 99% cached ───`（token 为模型 usage 真实值逐轮累加，缓存率按 provider 协议解析——DeepSeek `prompt_cache_hit_tokens` / Anthropic `cache_read_input_tokens` / OpenAI 标准嵌套 `prompt_tokens_details.cached_tokens` 三字段全解析） |
 | **增量行缓存** | OutputView 行级增量维护，渲染复杂度 O(全部行)→O(变化行)，长会话无卡顿无闪屏（等价性有专项单测锁定） |
-| **思考过程折叠** | 推理/思考段独立视图 + Ctrl+T 折叠 |
+| **思考过程折叠** | 推理/思考段独立视图；折叠态（默认）一行全局摘要贴消息流末尾（状态提示、始终可见），`Ctrl+T` 展开后**逐轮交织**——每轮思考钉在**本轮回复之前**（不再全堆到会话末尾）、内容行两格缩进 + 灰斜体 + 背景卡片；**思考块与回复之间留一行空行间隔**（交织段边界 gap；相邻行本身已空则不重复插，滚动总行数已计入 gap）；`PageUp`/`Ctrl+U` 上滚回看历史轮次；单轮超长处**中间截断**保头尾 |
 | **bracketed paste** | 粘贴走独立读取路径，按字符边界解码（中文粘贴不乱码，v1.3.12 根治） |
 | **双平台输入** | POSIX termios / Windows 控制台 API（含 UTF-8 中文输入、快捷键体系），`@When` 条件编译隔离 |
 | **NO_COLOR 支持** | 终端禁用颜色时自动降级（v1.3.13） |
