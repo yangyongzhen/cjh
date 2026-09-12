@@ -155,7 +155,7 @@ echo "[echo plugin] message: ${MESSAGE}"
 ❯ 用 echo 工具回显消息 "hello from plugin"
 ▶ echo message: hello from plugin
   ↳ echo: [echo plugin] message: hello from plugin
-✓ 2 rounds · 1 tools · 4.062s · 4.855K tokens · 96% cached
+✓ 2 rounds · 1 tools · 4.062s · 4.9k tokens · 96% cached
 ```
 
 ## log-pruner：事件钩子插件示例

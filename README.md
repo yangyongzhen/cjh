@@ -107,7 +107,7 @@ LLM API 按 token 计费，coding agent 多轮工具调用累积 token 消耗惊
 | **工具结果截断与回溯** | 超阈值工具结果保留头尾 + **完整落盘** `~/.cjh/spill/<sessionId>/<toolCallId>.txt` + 省略标记含落盘路径，模型可用 `read_file` 按需读回 | 避免像某些 agent（如 d'sh）只取开头和结尾丢失中间信息；落盘回溯既省 token 又不丢信息 |
 | **自动 Compaction** | 消息条数或估算 token 超阈值触发 LLM 摘要压缩早期历史，`compactThreshold` / `compact_token_threshold` / `compactKeep` 可配 | 长会话不爆上下文窗口，省 token 又防溢出 |
 | **prompt cache 利用** | DeepSeek `prompt_cache_hit_tokens` + Anthropic `cache_read_input_tokens` 统计与展示 | 利用 Provider 的 prompt 缓存，重复前缀不重复计费 |
-| **回合总结条** | 每轮结束显示 `✓ 2 rounds · 3 tools · 42.6s · 1.53K tokens · 99% cached` | token 消耗实时可见，便于人工干预 |
+| **回合总结条** | 每轮结束显示 `✓ 2 rounds · 3 tools · 42.6s · 1.5k tokens · 99% cached` | token 消耗实时可见，便于人工干预 |
 
 **工具结果截断与回溯的精妙设计**：不同于简单截断（只保留前 N 行），cjh 采用 **头尾保留 + 中间落盘** 策略。模型看到结果的开头和结尾（保留上下文连贯性），中间完整内容落盘到 `~/.cjh/spill/`，省略标记中包含落盘路径。当模型需要中间信息时，可用 `read_file` 按需读回。这样既大幅省 token，又不丢失任何信息——**这是 cjh 区别于简单截断 agent 的核心设计**。
 
@@ -224,7 +224,7 @@ coding agent 的执行效率直接决定用户等待时间。cjh 从三个维度
 - **多行编辑器**：Ctrl+E 进入，Alt+Enter 提交
 - **斜杠命令补全**：`/` 触发下拉补全
 - **Tasks 面板**：Agent 内置任务列表实时展示
-- **回合总结条**：`✓ 2 rounds · 3 tools · 42.6s · 1.53K tokens · 99% cached`
+- **回合总结条**：`✓ 2 rounds · 3 tools · 42.6s · 1.5k tokens · 99% cached`
 - **审批弹窗**：危险操作内嵌 y/n 审批
 - **欢迎视图**：两栏布局（logo+模型 / Tips+会话）
 

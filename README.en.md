@@ -105,7 +105,7 @@ LLM APIs charge per token, and coding agents' multi-turn tool calls accumulate s
 | **Tool result truncation & backtrack** | Results exceeding threshold keep head+tail + **full spill** to `~/.cjh/spill/<sessionId>/<toolCallId>.txt` + ellipsis marker contains spill path, model can use `read_file` to read back on demand | Avoids losing middle information like some agents (e.g., d'sh) that only keep head and tail; spill-backtrack saves tokens without losing info |
 | **Auto Compaction** | Message count OR estimated prompt tokens (real `usage.promptTokens`) exceeding threshold triggers LLM summary compression, `compactThreshold` / `compact_token_threshold` / `compactKeep` configurable | Long sessions don't blow context window, saves tokens and prevents overflow |
 | **Prompt cache utilization** | DeepSeek `prompt_cache_hit_tokens` + Anthropic `cache_read_input_tokens` stats and display | Leverages Provider's prompt cache, repeated prefixes not repeatedly billed |
-| **Round summary bar** | End of each round shows `✓ 2 rounds · 3 tools · 42.6s · 1.53K tokens · 99% cached` | Token consumption visible in real time, enabling manual intervention |
+| **Round summary bar** | End of each round shows `✓ 2 rounds · 3 tools · 42.6s · 1.5k tokens · 99% cached` | Token consumption visible in real time, enabling manual intervention |
 
 **The exquisite design of tool result truncation & backtrack**: Unlike simple truncation (only keeping first N lines), cjh adopts a **head+tail retention + middle spill** strategy. The model sees the beginning and end of the result (preserving context coherence), while the complete middle content spills to `~/.cjh/spill/`, with the ellipsis marker containing the spill path. When the model needs middle info, it can use `read_file` to read it back on demand. This both drastically saves tokens and loses no information — **this is cjh's core design distinguishing it from simple truncation agents**.
 
@@ -227,7 +227,7 @@ Built-in HTTP Server + WebSocket streaming conversation + REST API + frontend SP
 - **Multi-line editor**: Ctrl+E to enter, Alt+Enter to submit
 - **Slash command completion**: `/` triggers dropdown completion
 - **Tasks panel**: Agent's built-in task list displayed in real time
-- **Round summary bar**: `✓ 2 rounds · 3 tools · 42.6s · 1.53K tokens · 99% cached`
+- **Round summary bar**: `✓ 2 rounds · 3 tools · 42.6s · 1.5k tokens · 99% cached`
 - **Approval popup**: dangerous operations with embedded y/n approval
 - **Welcome view**: two-column layout (logo+model / Tips+sessions)
 
