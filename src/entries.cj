@@ -450,6 +450,12 @@ func runTui(sessionId: String): Int64 {
         } catch (e: Exception) {}
     }
     mark("runTui enter")
+    // 按键追踪诊断面包屑（CJH_TRACE_KEYS）：把实际落点写进 cjh.log，
+    // 用户不必猜文件在哪（曾经"设了环境变量却找不到文件"）
+    let traceNote = KeyTrace.describe()
+    if (traceNote.size > 0) {
+        Log.warn("按键追踪 ${traceNote}")
+    }
     // 在屏蔽 stderr 前先缓存终端尺寸（suppress 后 ioctl(STDERR) 失效）
     let (initRows, initCols) = TermSize.get()
     // TUI 全屏模式：立即屏蔽 stderr（配置生成等提示不污染屏幕）

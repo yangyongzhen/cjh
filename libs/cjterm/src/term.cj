@@ -164,17 +164,62 @@ private let BURST_PENDING_MS: Int64 = 4
 private let BURST_ACTIVE_MS: Int64 = 15
 
 /**
+ * 粘贴补发 Enter 守护（v1.3.23，Windows 分块投递实测修复）：
+ * conhost 把一次粘贴拆成多"波"写入输入缓冲，剪贴板末尾换行常单独成一波
+ * （波间 5~60ms，超出上面的 4/15ms 窗口）——该波只含 1 个候选字符，
+ * 判不出粘贴签名，旧实现原样返回裸 Enter，InputBox 立即提交（用户并未按回车）。
+ *
+ * 判据改为"上下文"而非"单键"：处于粘贴流（GUIARD_MS 窗口内）时紧随的
+ * 裸 Enter 是终端为粘贴补发的换行 → 吞掉，绝不提交。
+ * 窗口取 200ms：人手从 Ctrl+V 移到 Enter 通常 ≥300ms，故不长期吞真实 Enter；
+ * 即便极端手速命中，最坏结果是需再按一次 Enter（不丢内容、不误发）。
+ */
+private let PASTE_ENTER_GUARD_MS: Int64 = 200
+
+/**
+ * 认定"正在粘贴流"的成串输入密度阈值（非换行候选字符数）：
+ * 人类打字受键程/输入法编码限制，不可能在 4/15ms 窗口内凑齐 8 个字符，
+ * 故该密度只对机器成串投递（粘贴）成立。
+ * 用途：波界恰好落在换行前时（前半段无换行、换行单独成波），单靠"已发出
+ * 粘贴事件"标记会漏掉该波，需靠密度提前置位守护。
+ */
+private let PASTE_STREAM_MIN_CHARS: Int64 = 8
+
+/**
+ * 粘贴流"到达速率"判据（v1.3.24）：窗口内非换行候选到达数下限，以及换行占比
+ * 要求（换行数 × DIV 必须小于字符数）。
+ *
+ * 动机（v1.3.23 实测证伪"波间 5~60ms"模型）：Windows Terminal 按帧分块投递
+ * 粘贴，波间间隙可远大于 4/15ms 探测窗、每波只 1~3 个字符——"密集聚合"与
+ * "积压计数"都会整段漏判，尾部换行仍被当作真实 Enter 提交。
+ * 速率判据不依赖任何单次间隙：人类打字 ≤10 字符/秒达不到 12 字符/300ms；
+ * 输入法逐字提交是"字+回车"交替（换行占比 ≈1:1，被 NL_DIV 排除）；粘贴则
+ * 一帧可投数十字符且换行稀疏 → 明确命中。
+ */
+private let PASTE_STREAM_RATE_WINDOW_MS: Int64 = 300
+private let PASTE_STREAM_RATE_MIN: Int64 = 12
+private let PASTE_STREAM_RATE_NL_DIV: Int64 = 3
+
+/**
  * 终端控制器：委托 TerminalBackend 实现平台差异，对外 API 与旧版一致
  */
 public class Term {
     private let backend: TerminalBackend
+    private let clock: Clock
     private var rawOn: Bool = false
     // burst 聚合的延迟重排队：合并判定为"非粘贴"（无换行）时，已吞读的
     // 字符必须按序还给后续 readKey，不得丢弃（对齐 atomcode per-key 重放）
     private var replay: ArrayList<KeyEvent> = ArrayList<KeyEvent>(0)
+    // 粘贴流守护截止时刻（v1.3.23）：now < 截止 时，紧随其后的裸 Enter 判为
+    // 终端给粘贴补发的换行（吞掉），不作为用户提交。None = 当前无守护。
+    private var pasteStreamUntil: ?DateTime = None
+    // 粘贴流到达速率窗口（v1.3.24）：近 RATE_WINDOW_MS 内的候选到达记录
+    // (到达时刻, 是否换行)。超出窗口即丢弃，保持数组短小。
+    private var candidateStamps: ArrayList<(DateTime, Bool)> = ArrayList<(DateTime, Bool)>(0)
 
     public init() {
         this.backend = createTerminalBackend()
+        this.clock = SystemClock()
     }
 
     /**
@@ -184,6 +229,16 @@ public class Term {
      */
     public init(injected: TerminalBackend) {
         this.backend = injected
+        this.clock = SystemClock()
+    }
+
+    /**
+     * 测试注入：backend + 虚拟时钟。粘贴守护/到达速率都是时间窗口判定，
+     * 真机节奏无法在 CI 里重现，故时间源可注入（见 clock.cj）。
+     */
+    public init(injected: TerminalBackend, clock: Clock) {
+        this.backend = injected
+        this.clock = clock
     }
 
     public func enableRaw(): Bool {
@@ -278,20 +333,110 @@ public class Term {
         // 输入积压探测（Windows=控制台待读事件数；单键至多 1-2 事件），
         // 超阈值 = 长粘贴，直接吞读合并
         let pending = this.backend.readPendingBytes()
+        if (KeyTrace.isEnabled()) {
+            var path = "burst"
+            if (pending >= BULK_PASTE_MIN) {
+                path = "bulk"
+            }
+            KeyTrace.mark("TERM pending=${pending} path=${path} replay=${this.replay.size}")
+        }
         if (pending >= BULK_PASTE_MIN) {
             return this.readRawStreamPaste()
         }
         // 常规读键；非候选（命令键/无输入）原样返回
-        if (!this.backend.hasInput()) {
-            return None
-        }
-        if (let Some(k) <- this.backend.readKey()) {
+        if (let Some(k) <- this.readGuardedRawKey()) {
             if (!this.isPasteCandidate(k)) {
                 return Some(k)
             }
             return this.tryAggregateBurst(k)
         }
         return None
+    }
+
+    /**
+     * 裸流读键（含粘贴补发 Enter 守护，v1.3.23）：
+     * 处于粘贴流窗口内的裸 Enter 是终端为分块投递的粘贴补发的换行，
+     * 直接吞掉并在同一帧继续读下一个键（绝不作为用户提交返回）。
+     */
+    private func readGuardedRawKey(): Option<KeyEvent> {
+        var scanned: Int64 = 0
+        while (scanned < 8) {
+            scanned += 1
+            if (!this.backend.hasInput()) {
+                return None
+            }
+            if (let Some(k) <- this.backend.readKey()) {
+                if (this.isGuardedPasteEnter(k)) {
+                    if (KeyTrace.isEnabled()) {
+                        KeyTrace.mark("TERM GUARD-DROP enter ch=${k.ch}")
+                    }
+                    continue  // 吞掉：粘贴补发换行，非用户提交
+                }
+                if (KeyTrace.isEnabled() && k.isEnter) {
+                    // 关键行：未被守护拦住的裸 Enter 会直达 InputBox 提交
+                    KeyTrace.mark("TERM GUARD-MISS enter ch=${k.ch} textLen=${k.text.size} -> APP")
+                }
+                return Some(k)
+            }
+            return None
+        }
+        return None
+    }
+
+    /**
+     * 记录候选字符到达并判定是否处于"粘贴流"（v1.3.24 速率判据）：
+     * 窗口内非换行候选 ≥ RATE_MIN，且换行数 × NL_DIV < 字符数 → 判定为粘贴，
+     * 持续刷新 Enter 守护窗口（粘贴补发的尾部/行间换行必须被吞掉）。
+     *
+     * 只看"到达速率 + 换行占比"，不看单次间隙——这是对 Windows Terminal
+     * 分帧投递（波间可达数十毫秒）唯一稳健的判据。
+     */
+    private func notePasteCandidate(k: KeyEvent): Unit {
+        let now = this.clock.now()
+        this.candidateStamps.add((now, k.isEnter))
+        var recent = ArrayList<(DateTime, Bool)>(0)
+        var chars: Int64 = 0
+        var nls: Int64 = 0
+        for (item in this.candidateStamps) {
+            let (t, isNl) = item
+            if ((now - t).toMilliseconds() <= PASTE_STREAM_RATE_WINDOW_MS) {
+                recent.add(item)
+                if (isNl) {
+                    nls += 1
+                } else {
+                    chars += 1
+                }
+            }
+        }
+        this.candidateStamps = recent
+        if (chars >= PASTE_STREAM_RATE_MIN && nls * PASTE_STREAM_RATE_NL_DIV < chars) {
+            this.markPasteStream()
+            if (KeyTrace.isEnabled()) {
+                KeyTrace.mark("TERM rate-armed chars=${chars} nl=${nls}")
+            }
+        }
+    }
+
+    /** 标记进入粘贴流窗口（此后 PASTE_ENTER_GUARD_MS 内的裸 Enter 被吞掉） */
+    private func markPasteStream(): Unit {
+        this.pasteStreamUntil = Some(this.clock.now() + Duration.millisecond * PASTE_ENTER_GUARD_MS)
+        if (KeyTrace.isEnabled()) {
+            KeyTrace.mark("TERM mark-paste-stream window=${PASTE_ENTER_GUARD_MS}ms")
+        }
+    }
+
+    /**
+     * 粘贴补发 Enter 判定：处于粘贴流窗口内、且是"无修饰裸 Enter"——
+     * 终端给粘贴补发的换行（用户提交 Enter 在窗口外，见 PASTE_ENTER_GUARD_MS）
+     */
+    private func isGuardedPasteEnter(k: KeyEvent): Bool {
+        if (!k.isEnter || k.text.size != 1 || k.isPaste) {
+            return false
+        }
+        if (let Some(until) <- this.pasteStreamUntil) {
+            return this.clock.now() < until
+        }
+        return false
     }
 
     /**
@@ -313,6 +458,9 @@ public class Term {
      * 候选字符直到窗口超时 / 遇到命令键 / 达到上限。
      */
     private func tryAggregateBurst(firstKey: KeyEvent): Option<KeyEvent> {
+        // 速率判据（v1.3.24）：先记录到达，判定是否已处于粘贴流 → 刷新守护窗口。
+        // 放在聚合之前：即使本次只读到 1 个字符（分帧投递），也能命中粘贴流。
+        this.notePasteCandidate(firstKey)
         var chars = ArrayList<String>(4)
         var trailing = ArrayList<KeyEvent>(0)
         chars.add(this.candidateChar(firstKey))
@@ -320,6 +468,10 @@ public class Term {
         while (chars.size < BULK_PASTE_MAX) {
             let timeoutMs: Int64 = if (confirmed) { BURST_ACTIVE_MS } else { BURST_PENDING_MS }
             if (!this.backend.waitInput(timeoutMs)) {
+                if (KeyTrace.isEnabled()) {
+                    // 投递节奏关键证据：等多久、等到没有
+                    KeyTrace.mark("TERM burst wait=${timeoutMs}ms timeout chars=${chars.size}")
+                }
                 break
             }
             if (!this.backend.hasInput()) {
@@ -345,7 +497,26 @@ public class Term {
                 break
             }
         }
-        if (this.isPasteBurst(chars)) {
+        // 成串输入密度达标 → 认定处于粘贴流（守护紧随其后的补发 Enter）。
+        // 覆盖"波界恰好落在换行前、前半段无换行"的分块投递场景
+        var nonNewline: Int64 = 0
+        for (c in chars) {
+            if (c != "\r" && c != "\n") {
+                nonNewline += 1
+            }
+        }
+        if (nonNewline >= PASTE_STREAM_MIN_CHARS) {
+            this.markPasteStream()
+        }
+        let pasteSig = this.isPasteBurst(chars)
+        if (KeyTrace.isEnabled()) {
+            var sig = 0
+            if (pasteSig) {
+                sig = 1
+            }
+            KeyTrace.mark("TERM burst chars=${chars.size} nonNL=${nonNewline} sig=${sig}")
+        }
+        if (pasteSig) {
             var sb = StringBuilder()
             for (c in chars) {
                 sb.append(c)
@@ -354,6 +525,7 @@ public class Term {
             for (t in trailing) {
                 this.replay.add(t)
             }
+            this.markPasteStream()  // 已发出粘贴事件：守护补发 Enter
             return Some(KeyEvent(sb.toString()))
         }
         // 非粘贴签名（如快速单行打字）：首键立即原样返回（保留原始
@@ -455,13 +627,20 @@ public class Term {
      * 抽出为独立方法便于测试注入（TestTerminalBackend 模拟离散按键流）。
      */
     public func readRawStreamPaste(): Option<KeyEvent> {
+        if (KeyTrace.isEnabled()) {
+            KeyTrace.mark("TERM bulk start")
+        }
         var sb = StringBuilder()
         var count: Int64 = 0
-        while (count < BULK_PASTE_MAX) {
+        // records：已消费的记录数（含抬键）。与 count（码点数）分开计数——
+        // 抬键不产出字符，只推进 records，硬预算据此保证循环必然终止。
+        var records: Int64 = 0
+        while (count < BULK_PASTE_MAX && records < MAX_DRAIN_RECORDS) {
             // hasInput 非阻塞守卫：粘贴读完即停，绝不阻塞等下一个键
             if (!this.backend.hasInput()) {
                 break
             }
+            records += 1
             if (let Some(k) <- this.backend.readKey()) {
                 // 粘贴内可能混入的 bracketed paste 事件（部分终端）：整段并入
                 if (k.isPaste) {
