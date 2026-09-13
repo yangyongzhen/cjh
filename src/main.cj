@@ -89,6 +89,13 @@ main(args: Array<String>): Int64 {
     // 这些日志走 stdx.log 全局 logger 直接到 stderr，污染 TUI 输入框
     // 必须在任何 stdx 库调用之前设置，否则早期日志仍会漏出
     setGlobalLogger(NoopLogger())
+    // cjh ref：知识层语料维护（status / verify 纯本地；update 是唯一联网入口，必须人显式触发）
+    if (args.size > 0 && args[0] == "ref") {
+        let refCfg = CjhConfig()
+        let refRet = refCliMain(args, refCfg.cangjieRefDir)
+        print(refRet.output)
+        return refRet.exitCode
+    }
     if (args.size > 0 && args[0] == "--mock") {
         return runMockVerify()
     }
