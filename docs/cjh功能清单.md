@@ -1,7 +1,7 @@
 # cjh 功能清单
 
-> 最后更新：2026-09-07
-> 版本：v1.3.15
+> 最后更新：2026-09-13
+> 版本：v1.5.0
 > 性质：cjh 已具备和支持的功能完整列表
 
 ---
@@ -64,6 +64,7 @@
 | **hashline_edit** | 行号锚点 `@@N` + 内容验证编辑，`@@{hash}` 哈希锚点向后兼容 |
 | **grep** | 目录树递归搜索，gitignore 感知，上下文行参数 |
 | **list_dir** | 列出目录树 |
+| **cangjie_ref** | 仓颉知识层离线检索：对 `~/.cjh/cangjie-ref/` 语料做 CJK 2-gram + ASCII 词混合分词、行级打分，命中带绝对 `路径:行号` 供精读；纯离线不联网，语料目录不存在则**不注册**（零开销） |
 | **todo_write** | LLM 通过工具调用管理任务列表（add/doing/done/update/clear/list） |
 | **web_search** | 联网搜索，多后端路由（Tavily/Exa/SearXNG/DDG）+ per-engine key rotation，snippet 截断 500 字符 |
 | **web_fetch** | 抓取网页，三级降级链（仓颉 HTTP GET → curl → Firecrawl）+ SSRF 防护 + HTML 清洗 → Markdown，截断 ~32KB |
@@ -268,6 +269,8 @@
 | v1.3.13 | P2 OutputView 增量行缓存（渲染 O(全部行)→O(变化行)）+ P2b TUI 视觉层次美化 + `NO_COLOR` 支持 + 主题扩至 10 套 + 双平台发布包 |
 | v1.3.14 | V3 信任链 Step 3 信任管理 CLI（`cjh trust/untrust/trust-list` + `~/.cjh/trusted-publishers`，空列表开放/非空严格）+ 第三方风格插件示例（git-status / tool-result-banner）+ libs 生态冷启动发布（cjterm/cjlog/cjconfig/cjutil/cjllm 独立仓库 v0.1.0） |
 | v1.3.15 | 回合统计缓存率统计缺口修复：解析 OpenAI 标准/智谱 GLM 嵌套字段 `prompt_tokens_details.cached_tokens`（此前 GLM/OpenAI 兼容接口恒显示 0% cached） |
+| v1.4.0 | 仓颉内置知识层一 + 二期：技能「入口 / 全文分离」（`~/.cjh/skills/<name>.md` 只留描述 + 指向全文的绝对路径，9 篇常驻 20,086 → 6,588 B），`scripts/install-cangjie-knowledge.sh` 投影安装 + `--with-cangjie-skills` 分级收录；只读工具 `cangjie_ref` 对 `~/.cjh/cangjie-ref/` 语料纯离线检索（CJK 2-gram + ASCII 词分词、行级打分、命中带 `路径:行号`） |
+| v1.5.0 | 仓颉内置知识层三期 + TUI `/ref` 面板：`cjh ref status / verify / rebuild / update` 子命令（前三者纯本地；`update` 唯一联网入口、只能人显式触发，`--source` 离线刷新、`--repo`/`--branch` 换源、`--dry-run` 只预演、`--restore` 快照回滚）+ 覆盖前快照与自检失败自动回滚 + **同名技能只对齐 `.md`**（保留上游非 md 资产、来源没有的技能目录不动）+ `cjh ref search` 复用二期检索；TUI `/ref [status\|verify\|rebuild\|search <词>\|update]`（联网动作需 `--yes` 二次确认） |
 
 ## 十七、代码组织原则
 
@@ -294,5 +297,5 @@
 | 项 | 说明 |
 |----|------|
 | **独立开源库包** | cjllm（LLM 协议/SSE/多 provider）/ cjterm（TUI 渲染/主题/双平台输入）/ cjutil（UTF-8 安全/SHA256/SM2/hex/runWithBudget）/ cjlog（异步分级日志）/ cjconfig（配置管理）——均含 LICENSE + README + 发布指南 + examples + CI，已发布独立仓库 v0.1.0；cjcfg 为内部架构库不独立发布 |
-| **测试门禁** | `scripts/test.sh`（根包 335 用例，自动切动态链接配置）+ `cd libs/cjllm && cjpm test`（34 用例）+ `python3 scripts/tui_pty_test.py`（TUI 伪终端 14 场景）+ `--mock` 端到端（工具调用链验证）；交付前必须全绿 |
+| **测试门禁** | `scripts/test.sh`（根包 441 用例，自动切动态链接配置）+ `python3 scripts/tui_pty_test.py`（TUI 伪终端 16 场景）+ `--mock` 端到端（工具调用链验证）；库包另有 `cd libs/cjterm && cjpm test`；交付前必须全绿 |
 | **发版流程** | 版本号三处同步（cjpm.toml + logo.cj VERSION + 标题栏注释）+ 打 tag + 双远端推送；重大更新递增中间位、小更新递增最后位 |
