@@ -19,11 +19,20 @@ if [ ! -f "$DYNAMIC_CFG" ]; then
     exit 1
 fi
 
+# 兜底自检：若进来时已是动态配置（上次运行被强杀未还原），提醒先恢复基线再跑
+if grep -q '^  compile-option = ""' "$STATIC_CFG"; then
+    echo "[test.sh] 警告：cjpm.toml 当前是动态配置（上次运行可能被强杀未还原）——"
+    echo "         请先恢复静态基线再跑：git show <release-commit>:cjpm.toml > cjpm.toml"
+fi
+
 # 切换前备份静态配置；结束（含出错）时恢复
 cp "$STATIC_CFG" "$BACKUP"
 cp "$DYNAMIC_CFG" "$STATIC_CFG"
 restore() { cp "$BACKUP" "$STATIC_CFG"; }
-trap restore EXIT
+# 除 EXIT 外还接 TERM/INT/HUP：被 timeout/中断杀死时同样要还原。只 trap EXIT
+# 时，一次被强杀的运行会把动态配置留在仓库里（v1.3.27 发布提交即因此把
+# 动态态 + 陈旧 version 带进 git），下面这行是那次事故的根因修复
+trap restore EXIT INT TERM HUP
 
 echo "[test.sh] 已切动态配置跑测试（静态下测试框架 double free 崩溃）..."
 # 配置隔离：测试进程读隔离配置目录（空），避免读到真实 ~/.cjh 的
