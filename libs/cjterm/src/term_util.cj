@@ -24,7 +24,7 @@ internal func truncateUtf8(text: String, maxBytes: Int64): String {
 /**
  * 单个控制字符判定（`KeyEvent.text` 契约兜底）：控制键的 text 应为空串。
  *
- * 背景（v1.3.28）：`KeyEvent(ch)` 旧实现无条件 `text = Rune(ch).toString()`，
+ * 背景（v1.4.0）：`KeyEvent(ch)` 旧实现无条件 `text = Rune(ch).toString()`，
  * Ctrl+O(0x0F)、Ctrl+Z(0x1A) 等控制字节因此带上 text，经 InputBox/Editor
  * 可打印分支（只判 `!isEsc && !isEnter && !isBackspace`）漏进输入框。
  * `\t`(9)/`\n`(10)/`\r`(13) 例外——Enter/Tab 语义由 isEnter/isTab 承载，

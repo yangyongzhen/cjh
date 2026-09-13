@@ -6,6 +6,16 @@ cjh 版本变更记录。依据 git tag 史 + 提交史整理；版本号规则�
 
 ## [Unreleased]
 
+## [v1.4.0] - 2026-09-12
+
+### 新增
+- **仓颉内置知识层（一期）**：仓内 `skills/` 六篇自研技能 + `scripts/install-cangjie-knowledge.sh` 投影安装。**入口 / 全文分离**——`~/.cjh/skills/<name>.md` 只留描述 + 全文绝对路径（9 篇常驻 6,588 B，此前 20,086 B），全文落 `~/.cjh/cangjie-ref/skills/<name>/SKILL.md` 按需 `read_file` / `grep`；`--with-cangjie-skills` 从 CangjieSkills 分级收录（两个纯 Markdown 技能 + 需 Python 3.11+ 的 `cangjie-coding`，缺 Python 则跳过并提示）；安装幂等，旧版整篇入口自动备份后迁移（`~/.cjh/skills/.backup/`）。
+- **仓颉内置知识层（二期）**：只读内置工具 `cangjie_ref`（`src/tools/cangjie_ref.cj`）——对 `~/.cjh/cangjie-ref/` 语料做**纯离线**检索（CJK 2-gram + ASCII 词混合分词、行级打分、命中带绝对 `路径:行号` + 最近小节标题，模型一次调用即可定位后再精读）。语料目录不存在则**不注册该工具**，工具描述常驻 334 B。
+
+### 说明
+- **二进制体积硬约束**：技能与语料一律作运行时数据（`~/.cjh/`），全仓 `cjpm.toml` 无 `resource` / `embed`；本次二进制 16,638,088 → 16,694,504 B（+56,416 B，纯代码）。
+- 单元测试 379 → **397**（新增 `src/tests/cangjie_ref_test.cj` 18 例），`./scripts/test.sh` 全绿、`--mock` 端到端通过。
+
 ## [v1.3.28] - 2026-09-12
 
 ### Changed
