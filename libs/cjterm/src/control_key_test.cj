@@ -1,7 +1,7 @@
 package cjterm
 
 /**
- * 原始控制键泄漏修复的单元测试（v1.3.28 回归防护）
+ * 原始控制键泄漏修复的单元测试（v1.4.0 回归防护）
  *
  * 根因：`KeyEvent(ch)` 旧实现无条件 `text = Rune(ch).toString()`，Ctrl+O(0x0F)、
  * Ctrl+Z(0x1A) 等控制字节因此带上 text，经 InputBox/Editor 可打印分支

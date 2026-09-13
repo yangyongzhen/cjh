@@ -696,7 +696,7 @@ public class InputBox <: Component {
         }
         // 可打印字符（含中文等多字节 UTF-8；排除控制键）
         // isLoneControlText 兜底：KeyEvent 构造已保证控制键 text 为空，
-        // 此处于上层/测试构造的裸控制字符再兜一层（v1.3.28）
+        // 此处于上层/测试构造的裸控制字符再兜一层（v1.4.0）
         if (key.text.size > 0 && !isLoneControlText(key.text)
             && !key.isEsc && !key.isEnter && !key.isBackspace) {
             // 编辑内容：退出历史浏览（draft 失效）
