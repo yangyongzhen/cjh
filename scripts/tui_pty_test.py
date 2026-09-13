@@ -656,6 +656,33 @@ def test_thinking_history_expand() -> None:
         s.close()
 
 
+def test_ref_panel_gate() -> None:
+    print("[场景16] /ref 面板：联网闸门 + 未知子命令用法")
+    cfg = make_config_dir()
+    s = PtuSession(cfg)
+    try:
+        s.expect("cjh")
+        # `/ref update` 不带 --yes：只打印计划，绝不联网。
+        # 自动化测试永远不跑 `/ref update --yes` 那条路（那条会真的 git clone）。
+        s.send("/ref update\n")
+        s.read_available(0.8)
+        buf = strip_ansi(s.buf)
+        check("/ref update 走联网闸门（只打印计划）", "唯一会联网的操作" in buf, f"(buf 尾部: {buf[-160:]})")
+        check("计划里给出语料目录", "cangjie-ref" in buf, f"(buf 尾部: {buf[-160:]})")
+        check("计划里给出确认方式", "--yes" in buf, f"(buf 尾部: {buf[-160:]})")
+        # 未知子命令回到 CLI 用法（纯本地，不碰语料、不联网）
+        s.send("/ref zzz\n")
+        s.read_available(0.8)
+        buf2 = strip_ansi(s.buf)
+        check("/ref 未知子命令回退到用法", "未知子命令" in buf2, f"(buf 尾部: {buf2[-160:]})")
+        check("用法里列出 search 子命令", "search" in buf2, f"(buf 尾部: {buf2[-160:]})")
+        s.send_key(3)
+        code = s.wait_exit()
+        check("退出码 0", code == 0, f"(实际 {code})")
+    finally:
+        s.close()
+
+
 def main() -> None:
     if not os.path.exists(BIN):
         print(f"错误：未找到 {BIN}，请先 cjpm build")
@@ -677,6 +704,7 @@ def main() -> None:
     test_history_and_paste_multiline()
     test_bracketed_paste_chinese()
     test_thinking_history_expand()
+    test_ref_panel_gate()
     print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
     sys.exit(1 if FAIL else 0)
 

@@ -322,6 +322,7 @@ public func refUsageText(): String {
     sb.append("             --dry-run        只预演报告，不改动任何文件\n")
     sb.append("             --restore        回滚到覆盖前快照（<语料目录>.prev）\n")
     sb.append("  rebuild  重扫语料重建清单（纯本地，不联网）\n")
+    sb.append("  search <关键词…>  跑一次语料检索（纯本地，不联网；与 cangjie_ref 工具同一实现）\n")
     return sb.toString()
 }
 
@@ -360,6 +361,33 @@ public func refCliMain(args: Array<String>, refDir: String): RefCliResult {
             }
             return refUpdate(refDir, opts)
         case "rebuild" => return refRebuild(refDir)
+        case "search" => return refSearchResult(args, refDir)
         case _ => return RefCliResult("未知子命令：" + sub + "\n" + refUsageText(), 2)
     }
+}
+
+/**
+ * `cjh ref search <关键词…>`：直接跑一次二期只读检索（纯本地、离线）。
+ * 复用 CangjieRefTool 的实现，避免 TUI 面板另造一套检索逻辑。
+ */
+public func refSearchResult(args: Array<String>, refDir: String): RefCliResult {
+    if (args.size < 3) {
+        return RefCliResult("用法：cjh ref search <关键词…>\n", 2)
+    }
+    var query = ""
+    var i = 2
+    while (i < args.size) {
+        if (query.size > 0) {
+            query += " "
+        }
+        query += args[i]
+        i++
+    }
+    let ja = JsonObject()
+    ja.put("query", JsonString(query))
+    let r = CangjieRefTool(refDir).execute(ja)
+    if (r.isError) {
+        return RefCliResult(r.content + "\n", 1)
+    }
+    return RefCliResult(r.content + "\n", 0)
 }

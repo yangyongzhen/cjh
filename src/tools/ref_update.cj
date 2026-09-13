@@ -428,9 +428,23 @@ func refGitClone(repo: String, branch: String, dest: String): Int64 {
 
 // ---------------------------------------------------------------- update / restore
 
-/** 应用一次替换：把 staging 里的技能目录覆盖到 live（同名先删后写，其他技能保持不动）。 */
-func refApplyStaging(staging: String, refDir: String, skills: ArrayList<RefSkillSource>): Int64 {
-    var n = 0
+/** 一次覆盖的计数（供输出报告：覆盖了几个技能、写了几个文件、清了几个旧 md、留了几个非 md）。 */
+class RefApplyStats {
+    var skills: Int64 = 0
+    var copied: Int64 = 0
+    var removedMd: Int64 = 0
+    var keptOther: Int64 = 0
+}
+
+/**
+ * 把 staging 里的技能目录覆盖到 live。
+ * 语义：**只对齐 .md 正文**——同名技能目录里残留的旧 .md 会被清掉（让 md 集合镜像来源），
+ * 非 .md 资产（上游技能自带的脚本 / 知识库等）保留；来源里没有的技能目录原样不动。
+ * 早期实现是「整树删除再复制」，会把 cangjie-coding 自带的 doc_search 脚本与
+ * knowledge.sqlite3（8.9 MB）一起清掉，与 install 脚本装出来的语料不一致。
+ */
+func refApplyStaging(staging: String, refDir: String, skills: ArrayList<RefSkillSource>): RefApplyStats {
+    let st = RefApplyStats()
     try {
         Directory.create(refDir + "/skills", recursive: true)
     } catch (e: Exception) {
@@ -442,10 +456,23 @@ func refApplyStaging(staging: String, refDir: String, skills: ArrayList<RefSkill
         if (!exists(src)) {
             continue
         }
-        refRemoveTree(target)
-        n = n + refCopyTree(src, target, true)
+        st.skills = st.skills + 1
+        // 只清同名技能目录里的旧 md；非 md 资产留着不动
+        for (f in refScanTreeAll(target, false).files) {
+            if (f.endsWith(".md")) {
+                try {
+                    remove(target + "/" + f)
+                    st.removedMd = st.removedMd + 1
+                } catch (e: Exception) {
+                    ()
+                }
+            } else {
+                st.keptOther = st.keptOther + 1
+            }
+        }
+        st.copied = st.copied + refCopyTree(src, target, true)
     }
-    return n
+    return st
 }
 
 /**
@@ -665,7 +692,9 @@ public func refUpdate(refDir: String, opts: RefUpdateOptions): RefCliResult {
     sb.append("  目标   : " + refDir + "\n")
     sb.append("  技能   : " + refJoinSkills(m.skills) + "\n")
     sb.append("  正文   : " + m.entries.size.toString() + " 个文件、" + m.totalBytes.toString() +
-        " 字节（本次写入 " + applied.toString() + " 个文件）\n")
+        " 字节（本次写入 " + applied.copied.toString() + " 个文件）\n")
+    sb.append("  同名技能: 覆盖 " + applied.skills.toString() + " 个（清理旧 md " +
+        applied.removedMd.toString() + " 个，保留非 md " + applied.keptOther.toString() + " 个）\n")
     if (hadLive) {
         sb.append("  快照   : " + prev + "（可 cjh ref update --restore 回滚）\n")
     }

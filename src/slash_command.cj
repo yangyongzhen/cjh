@@ -12,6 +12,7 @@ import std.convert.Parsable
 import std.fs.*
 import std.io.*
 import cjh.agent.*
+import cjh.tools.refCliMain
 import cjh.tui.*
 import cjterm.*
 import cjcfg.*
@@ -32,6 +33,7 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
             tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /model [id|#]  列出/切换模型" + Ansi.reset())
             tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /provider [name] [key]  切换 provider（deepseek/openai/glm/qwen/kimi/doubao/siliconflow/ollama；无参弹窗可配 custom 自定义端点+协议）" + Ansi.reset())
             tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /skills        列出技能与启用状态" + Ansi.reset())
+            tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /ref [status|verify|rebuild|search <词>|update]  仓颉知识层语料（仅 update 联网，需 --yes 二次确认）" + Ansi.reset())
             tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /compact       手动压缩历史（LLM 摘要早期消息）" + Ansi.reset())
             tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /tree          树形列示会话分支" + Ansi.reset())
             tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /fork          从当前会话分支新会话" + Ansi.reset())
@@ -356,6 +358,25 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
             let newId = store.saveFork(history, curId)
             SessionState.current = newId
             tui.appendOutput(Ansi.fg(Ansi.THEME_OK) + "[已分支为 ${newId}（parent=${curId}）]" + Ansi.reset())
+        case "/ref" =>
+            // 仓颉知识层语料面板：status/verify/rebuild/search 纯本地；update 联网须 --yes 二次确认
+            // （模型回答途中永不触发下载——这条闸门就是"人显式触发"在 TUI 里的落点）
+            let parts = args.split(" ", -1)
+            if (refPanelNeedsConfirm(parts)) {
+                for (line in refPanelConfirmText(parts, cfg.cangjieRefDir).split("\n", -1)) {
+                    if (line.size > 0) {
+                        tui.appendOutput(Ansi.fg(Ansi.THEME_WARN) + line + Ansi.reset())
+                    }
+                }
+            } else {
+                let r = refCliMain(refPanelStrip(parts), cfg.cangjieRefDir)
+                let color = if (r.exitCode == 0) { Ansi.THEME_OK } else { Ansi.THEME_ERR }
+                for (line in r.output.split("\n", -1)) {
+                    if (line.size > 0) {
+                        tui.appendOutput(Ansi.fg(color) + line + Ansi.reset())
+                    }
+                }
+            }
         case "/quit" =>
             tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "[再见]" + Ansi.reset())
             // 退出由主循环处理；先短暂刷新再退出
@@ -377,4 +398,78 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
         case _ =>
             tui.appendOutput(Ansi.fg(Ansi.THEME_ERR) + "未知命令: ${cmd}（输入 /help 查看）" + Ansi.reset())
     }
+}
+
+// ---------------------------------------------------------------------------
+// /ref 面板的纯函数部分（便于单测：不碰 TUI、不落盘、不联网）
+// ---------------------------------------------------------------------------
+
+/** /ref 子命令名：无参默认 status（对齐 `cjh ref` 无参给用法之外的最常用诉求）。 */
+func refPanelSub(args: Array<String>): String {
+    if (args.size < 2 || args[1].size == 0) {
+        return "status"
+    }
+    return args[1]
+}
+
+/** /ref 面板参数 → 透传给 `cjh.tools.refCliMain` 的 argv（补回 "ref"，去掉 `--yes` 闸门标记）。 */
+func refPanelStrip(args: Array<String>): Array<String> {
+    let out = ArrayList<String>()
+    out.add("ref")
+    var i = 1
+    while (i < args.size) {
+        if (args[i] != "--yes") {
+            out.add(args[i])
+        }
+        i++
+    }
+    return out.toArray()
+}
+
+/**
+ * /ref 是否需要先弹「联网确认」。
+ * 规则：只有 update、且既未指定 `--source`（离线来源）、也未带 `--yes` 时才算待确认；
+ * status / verify / rebuild / search、离线 update、已确认的 update 都不需要。
+ */
+func refPanelNeedsConfirm(args: Array<String>): Bool {
+    if (refPanelSub(args) != "update") {
+        return false
+    }
+    var hasSource = false
+    var hasYes = false
+    var i = 1
+    while (i < args.size) {
+        if (args[i] == "--source") {
+            hasSource = true
+        }
+        if (args[i] == "--yes") {
+            hasYes = true
+        }
+        i++
+    }
+    return !hasSource && !hasYes
+}
+
+/** 取 `--name value` 形式选项的值（未指定时返回 fallback）。 */
+func refPanelOptionOf(args: Array<String>, name: String, fallback: String): String {
+    var i = 1
+    while (i + 1 < args.size) {
+        if (args[i] == name) {
+            return args[i + 1]
+        }
+        i++
+    }
+    return fallback
+}
+
+/** /ref update 待确认时打印的「先看计划」文本（本步不落盘、不联网）。 */
+func refPanelConfirmText(args: Array<String>, refDir: String): String {
+    let sb = StringBuilder()
+    sb.append("[cjh ref update] 这是唯一会联网的操作：拉取来源后覆盖本地语料目录。")
+    sb.append("\n  语料目录 : " + refDir)
+    sb.append("\n  来源     : " + refPanelOptionOf(args, "--repo", "https://atomgit.com/Cangjie-SIG/CangjieSkills"))
+    sb.append("\n  分支     : " + refPanelOptionOf(args, "--branch", "cangjie-1.0.5"))
+    sb.append("\n  流程     : 暂存来源 → 覆盖前快照 → 覆盖同名技能 → 重扫清单 + 自检（失败自动回滚，可 --restore 手回）")
+    sb.append("\n  下一步   : /ref update --dry-run 先看计划；确认执行请输入 /ref update --yes")
+    return sb.toString()
 }
