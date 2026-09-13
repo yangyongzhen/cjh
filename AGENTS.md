@@ -50,7 +50,8 @@
 
 ## 交付检查清单
 
-- [ ] `./scripts/test.sh` 全绿（含新增测试）
+- [ ] `./scripts/test.sh` 全绿（含新增测试）——跑前先 `source /opt/cangjie/cangjie/envsetup.sh`（`cjpm` 不在默认 PATH，否则脚本直接 exit 127）
 - [ ] `cjpm build` 通过
 - [ ] `--mock` 端到端通过
 - [ ] 行为变更同步更新 docs/（进度记录、踩坑记录）
+- [ ] 二进制体积核对：`stat -c%s dist/linux-*/cjh-*-linux-x64`（基线 16.6 MB）+ `tar tzf dist/*.tar.gz | wc -l`（应为 1）；技能/语料一律作**运行时数据**（`~/.cjh/`），禁止在 `cjpm.toml` 写 `resource` / `embed`

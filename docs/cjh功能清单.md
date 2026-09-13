@@ -168,6 +168,10 @@
 | **技能白名单** | `enabled_skills` 配置启用技能 |
 | **技能携带工具** | 技能 frontmatter 的 `tools` 段注册声明式工具 |
 | **`/skills` 命令** | 列出技能与启用状态 |
+| **仓颉知识层（一期）** | 仓内 `skills/` 六篇自研技能（资源地图 / 环境搭建 / 速查 / PR 模板 / README 模板 / 中心仓发布），`scripts/install-cangjie-knowledge.sh` 投影安装：**入口 / 全文分离**——`~/.cjh/skills/<name>.md` 只留描述 + 指向全文的绝对路径（9 篇合计 6,588 B 常驻），全文落 `~/.cjh/cangjie-ref/skills/<name>/SKILL.md` 按需 `read_file` / `grep` |
+| **仓颉知识层（二期）** | 只读工具 `cangjie_ref`（`src/tools/cangjie_ref.cj`）：对 `~/.cjh/cangjie-ref/` 语料做**纯离线**检索——CJK 2-gram + ASCII 词混合分词、行级打分（覆盖率 / 频次 / 小节标题加成）、命中带绝对 `路径:行号` 供 `read_file` 精读；语料目录不存在则**不注册**（未装知识层零开销），工具描述 334 B，不联网、语料不进二进制 |
+| **外部技能收录** | `--with-cangjie-skills` 从 CangjieSkills 分级收录三个技能：两个纯 Markdown 零依赖（`cangjie-code-review` / `cangjie-build-diagnose`）+ `cangjie-coding` 需 Python 3.11+（上游 `search_docs.py` + `knowledge.sqlite3`，缺 Python 则跳过）；语料落 `~/.cjh/cangjie-ref/skills/<name>/`（8.9 MB，只作运行时数据，不进二进制） |
+| **安装幂等与迁移** | 入口带标记 `cjh-knowledge-entry v1`，重跑即幂等刷新；旧版整篇入口自动迁移（先备份到 `~/.cjh/skills/.backup/` 再改写，不丢内容）；非本工具生成的文件默认跳过，`--force` 覆盖 |
 
 ## 十、安全模型
 
