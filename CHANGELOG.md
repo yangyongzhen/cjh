@@ -22,6 +22,13 @@ cjh 版本变更记录。依据 git tag 史 + 提交史整理；版本号规则�
 - 空行间隔的验收证据取自真实 PTY 流（差分渲染流解析，非目测）：展开态下思考末行 row 20、空行 row 21、回复 row 22。
 - 配置修复的验收证据：`cjpm.toml` 恢复静态后 `ldd` 仅 6 项系统库、产物内 `v1.3.28` 命中 1 次；`./scripts/test.sh` 跑完自动还原静态（`CFG_AFTER=compile-option = "--static --static-std --static-libs"`）。
 
+### Build
+- **Linux**：`dist/cjh-linux-x64` = `dist/linux-v1.3.28/cjh-v1.3.28-linux-x64` **16,638,088 B**（静态单文件，`ldd` 仅 6 项系统库；`env -i PATH=/usr/bin:/bin HOME=/tmp` 下 `--mock` exit 0、命中 `FINAL-DONE`）；另出 `dist/cjh-v1.3.28-linux-x64.tar.gz` **5,533,227 B**（内含单一可执行文件，解压即用）。
+- **Windows**：`./scripts/winbuild.sh` 交叉编译 → `dist/windows-v1.3.28/cjh-v1.3.28-windows-x64.exe` **13,716,480 B**（同时刷 `dist/cjh-windows-x64.exe`，两者 sha256 前 16 位 `98724a4ed2c0bee1`）+ `dist/cjh-v1.3.28-windows-x64.zip` **4,696,641 B**（单 exe）+ `dist/cjh-v1.3.28-windows-x64-selfcontained.zip` **7,757,804 B**（exe + `libcangjie-runtime.dll` / `libboundscheck.dll` / `libcrypto-3-x64.dll` / `libssl-3-x64.dll`，解压即用）。
+- exe 导入表 **7 个 DLL**（CRYPT32 / KERNEL32 / msvcrt / SHELL32 / WS2_32 + libboundscheck + libcangjie-runtime；stdx 静态链接进 exe，无 libstdx DLL）——与 v1.3.22~v1.3.26 一致。
+- `dist/SHA256SUMS` 重打 **5 产物**（新增 linux tar.gz）→ `sha256sum -c` **5/5 OK**；zip 内 exe 与 `dist/cjh-windows-x64.exe` 哈希相同；两平台产物均含 `v1.3.28`。
+- `dist/windows-v1.3.28/` 暂存目录（exe + 4 DLL）。旧版本产物（`dist/cjh-v1.3.26-*.zip`、`dist/windows-v1.3.25/`、`dist/windows-v1.3.26/`）保留在 dist/ 但不再列入清单——与既往做法一致：`SHA256SUMS` 只覆盖当前版本产物。
+
 ## [v1.3.27] - 2026-09-12
 
 ### Changed
