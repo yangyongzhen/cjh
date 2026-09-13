@@ -6,6 +6,22 @@ cjh 版本变更记录。依据 git tag 史 + 提交史整理；版本号规则�
 
 ## [Unreleased]
 
+## [v1.3.28] - 2026-09-12
+
+### Changed
+- **展开态思考块与其后回复之间留一行空行间隔**（`libs/cjterm/src/outputview.cj`）：交织段表在每个段边界预留 1 个虚拟行（`segGap = 1`），并**计入滚动总行数**（`gapTotal` 进 `totalV`，滚动上限 `maxOffset`、可见窗口起点与行号记账同步改用 `totalV`，上滚范围不漂移）；紧邻的上一行本身已空时**跳过**该 gap，不与消息流自带空行叠成两行。实证取自真实 PTY 差分流（非目测）：思考末行 row 20、空行 row 21、回复 row 22。
+
+### Fixed
+- **根 `cjpm.toml` 被动态测试态覆盖**（`cjpm.toml`、`scripts/test.sh`、`cjpm.toml.dynamic.bak`）：v1.3.27 发布提交 `b6a11f3` 把动态配置（`compile-option = ""` + `dynamic/stdx`，`version` 一步退回陈旧的 `1.3.4`）带进了仓库——`git show b6a11f3~1:cjpm.toml` 仍是静态 + `version = "1.3.26"`，该提交对 cjpm.toml 的 5 行改动正是"静态 → 动态"。根因：`./scripts/test.sh` 只 `trap restore EXIT`，一次被强杀（超时/中断）的运行把 `cjpm.toml.dynamic.bak` 留在仓库中并随后被提交，此后每次构建产的都是**动态**二进制（README"静态单文件、零运行时依赖"失效，与踩坑 §3.7 / §3.33 同源）。修复：`cjpm.toml` 恢复静态基线（`--static --static-std --static-libs` + `static/stdx`）并升 `version = "1.3.28"`；`test.sh` 的 trap 扩为 `EXIT INT TERM HUP`，并在入口检测到动态态时告警提示先恢复基线；`dynamic.bak` 的 `version` 同步 1.3.28，避免下次意外覆盖再退版本。复验：`ldd` 仅 6 项系统库（linux-vdso / libstdc++ / libm / libc / ld-linux / libgcc_s），产物内 `v1.3.28` 命中 1 次。
+
+### Docs
+- `README.md` / `README.en.md` 版本历史补 v1.3.28 行、功能清单指针同步；`docs/cjh功能清单.md` 思考行补齐交织 / 两格缩进 / 空行间隔 / 中间截断描述；`docs/进度记录.md` 补本轮记录。
+
+### Tests
+- 本轮是小改动（间距 + 构建配置修复），按用户要求不新增用例，门禁沿用既有全部用例并全绿：`./scripts/test.sh` **379/379**（PASSED 379、SKIPPED 0、ERROR 0、FAILED 0，exit 0）、`libs/cjterm` 包测试 **93/93**（`cd libs/cjterm && cjpm test`，exit 0）、PTY 集成 **61 通过 / 0 失败**（exit 0）、`--mock` 端到端 exit 0（32 行、命中 `FINAL-DONE`）、`cjpm build` success（42 warnings）。
+- 空行间隔的验收证据取自真实 PTY 流（差分渲染流解析，非目测）：展开态下思考末行 row 20、空行 row 21、回复 row 22。
+- 配置修复的验收证据：`cjpm.toml` 恢复静态后 `ldd` 仅 6 项系统库、产物内 `v1.3.28` 命中 1 次；`./scripts/test.sh` 跑完自动还原静态（`CFG_AFTER=compile-option = "--static --static-std --static-libs"`）。
+
 ## [v1.3.27] - 2026-09-12
 
 ### Changed
