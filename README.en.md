@@ -86,7 +86,7 @@ cjh's orientation is **parallel sub-agents + context isolation** (Linux-fork-lik
 |---|---|
 | **Cangjie ecosystem** | The most complete "AI application in Cangjie" reference: TUI (cjterm), SSE streaming (cjllm), MCP client, plugin SM2 signature, cross-platform terminal layer — "first" or "most complete" implementations in five directions; the 5 standalone libraries under libs/ are infrastructure ready to be reused |
 | **Xinchuang / government & enterprise** | Single binary with zero dependencies + no foreign runtime dependency + SM2 national-cryptography signing — "no foreign dependencies" is a real differentiator in sensitive scenarios |
-| **Engineering quality** | 397 unit tests (root package) + 93 in the `libs/cjterm` package + 61 PTY scenarios; tests have genuinely caught 10+ latent bugs (including the edit tool that "never actually worked" before); performance optimization backed by measured data (prompt peak 42.9K→9.4K, per-round 5-22s→2-5s); CI gate (all-green tests, red-first-then-green) enforced |
+| **Engineering quality** | 441 unit tests (root package) + 93 in the `libs/cjterm` package + 67 PTY checks (16 scenarios); tests have genuinely caught 10+ latent bugs (including the edit tool that "never actually worked" before); performance optimization backed by measured data (prompt peak 42.9K→9.4K, per-round 5-22s→2-5s); CI gate (all-green tests, red-first-then-green) enforced |
 | **Design judgment** | Truncation + spill-to-disk backtrack for token savings (not naive truncation — no middle information lost); hashline anchor-point editing; multi-agent takes parallel sub-agents + context isolation, explicitly "claiming no conceptual novelty, choosing an implementation orientation" |
 | **Learning / porting** | Well-commented source (16%–26% on critical paths, comments explain "why" rather than restate code) + a complete docs set (architecture design, 30+ pitfall records, tool design docs); low cost to pick up |
 
@@ -253,6 +253,32 @@ Built-in HTTP Server + WebSocket streaming conversation + REST API + frontend SP
 - **Skills as Markdown**: `~/.cjh/skills/<name>.md`, frontmatter declares metadata + tools
 - **Skill whitelist**: `enabled_skills` config to enable skills
 - **Skill-carried tools**: skill frontmatter's `tools` section registers declarative tools
+
+### Built-in Cangjie Knowledge Layer
+
+cjh is written in Cangjie, and it ships a runtime knowledge layer for the Cangjie language itself: a skill corpus, offline retrieval, and a human-triggered refresh chain. The corpus lives as **runtime data** under `~/.cjh/cangjie-ref/` and **nothing is bundled into the binary** — the single-file distribution does not grow with the knowledge base.
+
+- **Offline retrieval tool `cangjie_ref`**: mixed CJK 2-gram + ASCII word tokenisation, line-level recall with scoring, fully local
+- **Skill corpus**: skill bodies (Markdown) from the upstream `Cangjie-SIG/CangjieSkills` repo; local skill entrypoints keep only frontmatter plus an absolute-path pointer while the body is read on demand, which cuts the resident footprint sharply
+- **Refresh chain**: `cjh ref update` fetches the source → stages it → snapshots the current corpus → **aligns `.md` only for same-named skills** (non-md assets shipped with a skill, such as scripts or knowledge bases, are kept) → rescans the manifest and self-checks, with automatic rollback if any step fails
+- **Verify / rollback**: `cjh ref verify` compares per-file SHA-256 against the manifest; `cjh ref update --restore` restores the pre-overwrite snapshot
+- **Offline guarantee**: no model-triggered path ever touches the network; `ref update` is the only network action and is strictly human-triggered (the TUI additionally requires `--yes`)
+
+```bash
+cjh ref status               # corpus status (files / bytes / source / branch)
+cjh ref verify               # verify the manifest and per-file SHA-256
+cjh ref rebuild              # rescan the corpus and rebuild the manifest (local)
+cjh ref search 编译报错      # try a search — same implementation as the cangjie_ref tool
+
+cjh ref update --dry-run     # dry run: fetch over the network, write nothing
+cjh ref update               # refresh: stage -> snapshot -> align same-named .md -> self-check
+cjh ref update --source DIR  # refresh from a local directory, fully offline
+cjh ref update --restore     # roll back to the pre-overwrite snapshot
+
+./scripts/install-cangjie-knowledge.sh   # one-shot corpus install / migration (in-place slimming: entrypoint + external body)
+```
+
+In the TUI the same operations are available as `/ref status`, `/ref verify`, `/ref rebuild` and `/ref search <query>`; `/ref update` without `--yes` **only prints the plan** (corpus directory, source, branch, flow) and reaches the network only with `--yes`.
 
 ### Headless Mode
 
@@ -441,7 +467,7 @@ cjh has a built-in MCP client supporting stdio transport + JSON-RPC 2.0. After c
 
 ## 🧪 Testing & Quality Assurance
 
-**379 unit tests, all green** (root package + 93 in the `libs/cjterm` package, the latter run via `cd libs/cjterm && cjpm test`; one-shot `./scripts/test.sh` auto-switches to dynamic linking) + **61 PTY integration scenarios** (`python3 scripts/tui_pty_test.py`, real TUI driven via pseudo-terminal), covering all 14 built-in tools + Agent core + TUI rendering/events/thinking weaving + infrastructure:
+**441 unit tests, all green** (root package + 93 in the `libs/cjterm` package, the latter run via `cd libs/cjterm && cjpm test`; one-shot `./scripts/test.sh` auto-switches to dynamic linking) + **67 PTY integration checks (16 scenarios)** (`python3 scripts/tui_pty_test.py`, real TUI driven via pseudo-terminal), covering all 15 built-in tools + Agent core + TUI rendering/events/thinking weaving + infrastructure:
 
 | Test domain | Coverage |
 |---|---|
@@ -490,6 +516,7 @@ cjh has a built-in MCP client supporting stdio transport + JSON-RPC 2.0. After c
 
 | Version | Main Features |
 |---|---|
+| **v1.5.0** | **Cangjie built-in knowledge layer (phase 3) + TUI `/ref` panel**: adds the `cjh ref status / verify / rebuild / update` subcommands — `status` / `verify` / `rebuild` are fully local (`verify` recomputes SHA-256 per file against the manifest and reports missing / modified / extra entries), while `update` is the **only network entry point** and strictly human-triggered (`--source` refreshes offline, `--repo` / `--branch` switch the source, `--dry-run` previews only, `--restore` rolls back from the pre-overwrite snapshot); the snapshot lives outside the corpus directory, and after overwriting the manifest is rescanned and self-checked with automatic rollback if any step fails; **same-named skills align `.md` only** (old md removed, upstream non-md assets kept, skills absent upstream untouched); `cjh ref search` reuses the phase-2 retrieval; the TUI `/ref` panel mirrors it (network actions require `--yes`) |
 | **v1.4.0** | **Cangjie built-in knowledge layer (phases 1 + 2)**: phase 1 slimmed the six in-repo skills into short entries (description + absolute path to the full text; resident bytes 21,988 → 7,624) and added tiered ingestion from CangjieSkills; phase 2 adds the read-only `cangjie_ref` tool, which searches the `~/.cjh/cangjie-ref/` corpus fully offline (CJK 2-gram tokenization + line scoring, hits carry `path:line` for follow-up reading) and is not registered when that corpus is absent. Skills and corpus remain runtime data and never enter the binary |
 | **v1.3.28** | **Blank line between expanded thinking blocks and replies + build-config incident fix**: in the expanded (`Ctrl+T`) view the thinking and reply segments used to sit flush against each other — every segment boundary now reserves one blank row (the virtual row is counted into the scroll total, so the scroll range stays put; it is skipped when the row above is already blank, so message spacing cannot double up). Also fixed the root `cjpm.toml` being clobbered by the dynamic test config (the v1.3.27 release commit replaced the `--static` config, dropping `version` back to 1.3.4 and turning the build into a dynamically linked binary) — static baseline restored and the `scripts/test.sh` restore trap hardened |
 | **v1.3.27** | **Thinking anchor weaving + visual polish**: thinking blocks no longer pile up at the end of the session — each round's thinking is pinned to that round's start (right before its own reply) and interleaved round by round; collapsed mode (default) still shows a one-line summary pinned to the end of the message flow; thinking content lines drop the per-line `› ` prefix for a **two-space indent** (same 2 display columns, folding behaviour unchanged); token counts unified to **k display** (`fmtTokenCount` reused by the live status line / thinking line / round summary bar); bare control keys (`Ctrl+O`, 0x0F) no longer leak into the input box; gates: 379 unit tests + 93 cjterm + 61 PTY all green |
