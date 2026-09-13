@@ -63,6 +63,9 @@ public class CjhConfig {
     public let sessionsDir: String
     // 技能目录（~/.cjh/skills/<name>.md，按需加载注入 system prompt）
     public let skillsDir: String
+    // 仓颉知识层语料目录（~/.cjh/cangjie-ref：安装脚本投影的 Markdown 全文，
+    // 进场技能入口只常驻描述 + 绝对路径；本目录由 cangjie_ref 工具按需检索）
+    public let cangjieRefDir: String
 
     // 配置值
     public var baseUrl: String = "https://api.openai.com/v1/chat/completions"
@@ -158,6 +161,7 @@ public class CjhConfig {
         this.authPath = this.configDir + s + "auth.json"
         this.sessionsDir = this.configDir + s + "sessions"
         this.skillsDir = this.configDir + s + "skills"
+        this.cangjieRefDir = this.configDir + s + "cangjie-ref"
         this.spillDir = this.configDir + s + "spill"
         this.pluginsDir = this.configDir + s + "plugins"
         this.memoryDir = this.configDir + s + "project-memory"

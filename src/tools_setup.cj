@@ -9,6 +9,7 @@ package cjh
  */
 
 import std.collection.*
+import std.fs.*
 import cjlog.*
 import cjcfg.*
 import cjh.tools.*
@@ -69,6 +70,18 @@ func registerWebTools(cjhCfg: CjhConfig, registry: ToolRegistry): Unit {
     if (cjhCfg.webFetchEnabled) {
         let tool = WebFetchTool(cjhCfg.webFetchAllowInternal, cjhCfg.webFetchMaxChars, cjhCfg.webFetchTimeoutSeconds, budget)
         registry.register(tool)
+    }
+}
+
+/**
+ * 注册仓颉知识层检索工具（cangjie_ref）
+ *
+ * 语料目录不存在（没跑过 scripts/install-cangjie-knowledge.sh）时**不注册**：
+ * 工具描述会随每轮请求进 LLM，未装知识层的用户不该为它付常驻 token。
+ */
+func registerKnowledgeTools(cjhCfg: CjhConfig, registry: ToolRegistry): Unit {
+    if (exists(cjhCfg.cangjieRefDir)) {
+        registry.register(CangjieRefTool(cjhCfg.cangjieRefDir))
     }
 }
 

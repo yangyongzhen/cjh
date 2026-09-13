@@ -89,6 +89,7 @@ func runWeb(args: Array<String>): Int64 {
     registry.register(EditTool())
     registry.register(AstGrepTool())
     registerWebTools(cjhCfg, registry)
+    registerKnowledgeTools(cjhCfg, registry)
     loadSkillTools(cjhCfg.skillsDir, registry, cjhCfg.enabledSkills)
     let pluginManager = loadPlugins(cjhCfg.pluginsDir, cjhCfg.configDir, registry, cjhCfg.enabledPlugins, cjhCfg.requireSignature)
     let mcpManager = loadMcpServers(cjhCfg.mcpServers, registry)
@@ -153,6 +154,8 @@ func runCli(sessionId: String): Int64 {
     Theme.apply(cjhCfg.theme)
     // 注册 web_search + web_fetch 工具
     registerWebTools(cjhCfg, registry)
+    // 注册仓颉知识层检索（语料未安装时自动不注册）
+    registerKnowledgeTools(cjhCfg, registry)
     // 注册技能携带的声明式工具（Skill 自定义工具）
     loadSkillTools(cjhCfg.skillsDir, registry, cjhCfg.enabledSkills)
     // 加载插件（V2b Step 1：plugin.json + shell 工具）
@@ -298,6 +301,8 @@ func runJson(prompt: String, sessionId: String): Int64 {
     Theme.apply(cjhCfg.theme)
     // 注册 web_search + web_fetch 工具
     registerWebTools(cjhCfg, registry)
+    // 注册仓颉知识层检索（语料未安装时自动不注册）
+    registerKnowledgeTools(cjhCfg, registry)
     loadSkillTools(cjhCfg.skillsDir, registry, cjhCfg.enabledSkills)
     // 加载插件（V2b Step 1：plugin.json + shell 工具）
     let pluginManager = loadPlugins(cjhCfg.pluginsDir, cjhCfg.configDir, registry, cjhCfg.enabledPlugins, cjhCfg.requireSignature)
@@ -483,6 +488,8 @@ func runTui(sessionId: String): Int64 {
     mark("theme applied")
     // 注册 web_search + web_fetch 工具
     registerWebTools(cjhCfg, registry)
+    // 注册仓颉知识层检索（语料未安装时自动不注册）
+    registerKnowledgeTools(cjhCfg, registry)
     // 注册技能携带的声明式工具（Skill 自定义工具）
     loadSkillTools(cjhCfg.skillsDir, registry, cjhCfg.enabledSkills)
     mark("skill tools loaded")
