@@ -97,6 +97,51 @@ public func testRefRebuildKeepsPreviousSourceLabels(): Unit {
     @Assert(back.entries.size, 2)
 }
 
+// ---------------------------------------------------------------- update：同名技能覆盖语义
+
+@Test
+public func testRefUpdateKeepsNonMdAssetsOfSameNamedSkill(): Unit {
+    // 现网同名技能目录：旧 md（该被清，镜像来源）+ 非 md 资产（上游自带，该保留）
+    let corpus = refNewCorpus("ru_upd_keep_nonmd")
+    refPutFile(corpus, "skills/foo", "SKILL.md", "old-body")
+    refPutFile(corpus, "skills/foo", "stale.md", "stale-should-be-removed")
+    refPutFile(corpus, "skills/foo/notes", "keep.txt", "asset-kept")
+    // 来源：同名技能的新正文（skills/<名>/ 布局）
+    let src = refNewCorpus("ru_upd_keep_nonmd_src")
+    refPutFile(src, "skills/foo", "SKILL.md", "new-body")
+
+    let r = refUpdate(corpus, ruLocalOpts(src))
+    @Assert(r.exitCode, 0)
+    // 正文被覆盖
+    @Assert(safeFromUtf8(File.readFrom(corpus + "/skills/foo/SKILL.md")), "new-body")
+    // 非 md 资产必须保留（修复前这里是 false：整树删除把 notes/keep.txt 一起清掉）
+    @Assert(exists(corpus + "/skills/foo/notes/keep.txt"), true)
+    // 残留旧 md 清掉（镜像来源）
+    @Assert(exists(corpus + "/skills/foo/stale.md"), false)
+    // 输出报告计数
+    @Assert(r.output.contains("保留非 md"), true)
+    @Assert(r.output.contains("清理旧 md"), true)
+    // 语料仍自洽
+    let v = refVerifyResult(corpus)
+    @Assert(v.ok, true)
+}
+
+@Test
+public func testRefUpdateLeavesUnrelatedSkillsUntouched(): Unit {
+    // 来源里没有的技能目录应原样不动（含非 md 资产）
+    let corpus = refNewCorpus("ru_upd_keep_other")
+    refPutFile(corpus, "skills/other", "SKILL.md", "other-body")
+    refPutFile(corpus, "skills/other/data", "keep.json", "{}")
+    let src = refNewCorpus("ru_upd_keep_other_src")
+    refPutFile(src, "skills/foo", "SKILL.md", "foo-body")
+
+    let r = refUpdate(corpus, ruLocalOpts(src))
+    @Assert(r.exitCode, 0)
+    @Assert(safeFromUtf8(File.readFrom(corpus + "/skills/other/SKILL.md")), "other-body")
+    @Assert(exists(corpus + "/skills/other/data/keep.json"), true)
+    @Assert(safeFromUtf8(File.readFrom(corpus + "/skills/foo/SKILL.md")), "foo-body")
+}
+
 // ---------------------------------------------------------------- update：预演
 
 @Test

@@ -512,3 +512,64 @@ public class CoreTrustTest {
         removeTreeForTest(base)
     }
 }
+
+// ---------------------------------------------------------------------------
+// /ref 面板纯函数（TUI 斜杠命令解析 + 联网闸门，见 src/slash_command.cj）
+// ---------------------------------------------------------------------------
+
+@Test
+public func testRefPanelSubDefaultsToStatus(): Unit {
+    @Assert(refPanelSub(["/ref"]), "status")
+    @Assert(refPanelSub(["/ref", ""]), "status")
+    @Assert(refPanelSub(["/ref", "verify"]), "verify")
+    @Assert(refPanelSub(["/ref", "search", "ArrayList"]), "search")
+}
+
+@Test
+public func testRefPanelStripDropsYesGate(): Unit {
+    let a = refPanelStrip(["/ref", "update", "--yes", "--dry-run"])
+    @Assert(a.size, 3)
+    @Assert(a[0], "ref")
+    @Assert(a[1], "update")
+    @Assert(a[2], "--dry-run")
+    let b = refPanelStrip(["/ref"])
+    @Assert(b.size, 1)
+    @Assert(b[0], "ref")
+}
+
+@Test
+public func testRefPanelNeedsConfirmOnlyForNetworkUpdate(): Unit {
+    // 只有「未指定离线来源、也未经人确认」的 update 才拦一道
+    @Assert(refPanelNeedsConfirm(["/ref", "update"]), true)
+    @Assert(refPanelNeedsConfirm(["/ref", "update", "--branch", "b"]), true)
+    @Assert(refPanelNeedsConfirm(["/ref", "update", "--yes"]), false)
+    @Assert(refPanelNeedsConfirm(["/ref", "update", "--source", "/tmp/x"]), false)
+    @Assert(refPanelNeedsConfirm(["/ref", "update", "--source", "/tmp/x", "--dry-run"]), false)
+    // 纯本地动作一律不拦
+    @Assert(refPanelNeedsConfirm(["/ref", "status"]), false)
+    @Assert(refPanelNeedsConfirm(["/ref", "search", "ArrayList"]), false)
+    @Assert(refPanelNeedsConfirm(["/ref", "rebuild"]), false)
+    @Assert(refPanelNeedsConfirm(["/ref", "verify"]), false)
+}
+
+@Test
+public func testRefPanelOptionOfReadsValueOrDefault(): Unit {
+    let a = ["/ref", "update", "--repo", "https://example.com/r", "--branch", "dev"]
+    @Assert(refPanelOptionOf(a, "--repo", "d"), "https://example.com/r")
+    @Assert(refPanelOptionOf(a, "--branch", "d"), "dev")
+    @Assert(refPanelOptionOf(a, "--source", "fallback"), "fallback")
+    // 选项在末尾但没有值时退回默认
+    @Assert(refPanelOptionOf(["/ref", "update", "--repo"], "--repo", "dft"), "dft")
+}
+
+@Test
+public func testRefPanelConfirmTextShowsPlanAndGate(): Unit {
+    let t = refPanelConfirmText(["/ref", "update"], "/tmp/corpus")
+    @Assert(t.contains("/tmp/corpus"), true)
+    @Assert(t.contains("CangjieSkills"), true)
+    @Assert(t.contains("cangjie-1.0.5"), true)
+    @Assert(t.contains("--yes"), true)
+    let t2 = refPanelConfirmText(["/ref", "update", "--repo", "https://x/y", "--branch", "b9"], "/d")
+    @Assert(t2.contains("https://x/y"), true)
+    @Assert(t2.contains("b9"), true)
+}

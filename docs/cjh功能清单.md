@@ -170,7 +170,7 @@
 | **`/skills` 命令** | 列出技能与启用状态 |
 | **仓颉知识层（一期）** | 仓内 `skills/` 六篇自研技能（资源地图 / 环境搭建 / 速查 / PR 模板 / README 模板 / 中心仓发布），`scripts/install-cangjie-knowledge.sh` 投影安装：**入口 / 全文分离**——`~/.cjh/skills/<name>.md` 只留描述 + 指向全文的绝对路径（9 篇合计 6,588 B 常驻），全文落 `~/.cjh/cangjie-ref/skills/<name>/SKILL.md` 按需 `read_file` / `grep` |
 | **仓颉知识层（二期）** | 只读工具 `cangjie_ref`（`src/tools/cangjie_ref.cj`）：对 `~/.cjh/cangjie-ref/` 语料做**纯离线**检索——CJK 2-gram + ASCII 词混合分词、行级打分（覆盖率 / 频次 / 小节标题加成）、命中带绝对 `路径:行号` 供 `read_file` 精读；语料目录不存在则**不注册**（未装知识层零开销），工具描述 334 B，不联网、语料不进二进制 |
-| **仓颉知识层（三期）** | `cjh ref status / verify / rebuild / update`：`status`（语料概况）、`verify`（按清单逐文件重算 SHA-256，报缺失 / 被改 / 多余，失败非零退出）、`rebuild`（人工增删改语料后重扫重建清单）**全部纯本地**；`update` 是**唯一联网入口**（`git clone --depth 1` AtomGit `Cangjie-SIG/CangjieSkills`，必须人显式敲命令，模型回答途中永不触发下载），`--source <目录>` 可离线刷新、`--repo` / `--branch` 换源、`--dry-run` 只预演、`--restore` 用覆盖前快照回滚。覆盖前快照落 `~/.cjh/cangjie-ref.prev`（**在语料目录之外**，避免回滚时被一起删）；覆盖后重扫清单 + 自检，任一环失败自动回滚 |
+| **仓颉知识层（三期）** | `cjh ref status / verify / rebuild / update`：`status`（语料概况）、`verify`（按清单逐文件重算 SHA-256，报缺失 / 被改 / 多余，失败非零退出）、`rebuild`（人工增删改语料后重扫重建清单）**全部纯本地**；`update` 是**唯一联网入口**（`git clone --depth 1` AtomGit `Cangjie-SIG/CangjieSkills`，必须人显式敲命令，模型回答途中永不触发下载），`--source <目录>` 可离线刷新、`--repo` / `--branch` 换源、`--dry-run` 只预演、`--restore` 用覆盖前快照回滚。覆盖前快照落 `~/.cjh/cangjie-ref.prev`（**在语料目录之外**，避免回滚时被一起删）；覆盖后重扫清单 + 自检，任一环失败自动回滚；**同名技能只对齐 `.md`**（旧 md 清掉、非 md 资产保留），来源里没有的技能目录不动；TUI 侧另有 `/ref` 面板，联网动作需 `--yes` 二次确认 |
 | **外部技能收录** | `--with-cangjie-skills` 从 CangjieSkills 分级收录三个技能：两个纯 Markdown 零依赖（`cangjie-code-review` / `cangjie-build-diagnose`）+ `cangjie-coding` 需 Python 3.11+（上游 `search_docs.py` + `knowledge.sqlite3`，缺 Python 则跳过）；语料落 `~/.cjh/cangjie-ref/skills/<name>/`（8.9 MB，只作运行时数据，不进二进制） |
 | **安装幂等与迁移** | 入口带标记 `cjh-knowledge-entry v1`，重跑即幂等刷新；旧版整篇入口自动迁移（先备份到 `~/.cjh/skills/.backup/` 再改写，不丢内容）；非本工具生成的文件默认跳过，`--force` 覆盖 |
 
@@ -210,6 +210,7 @@
 | `/model [id|#]` | 列出/切换模型 |
 | `/provider [name] [key]` | 切换 provider（deepseek/openai/glm/ollama） |
 | `/skills` | 列出技能与启用状态 |
+| `/ref [status\|verify\|rebuild\|search <词>\|update]` | 仓颉知识层语料面板：**纯本地** `status`/`verify`/`rebuild`/`search` 直接出结果（与 `cjh ref` 同一实现）；`update` 是唯一联网动作——**不带 `--yes` 只打印计划**（语料目录 / 来源 / 分支 / 流程），带 `--yes` 才执行，`--source <目录>` 走离线不拦 |
 | `/compact` | 手动压缩历史（LLM 摘要早期消息） |
 | `/tree` | 树形列示会话分支 |
 | `/fork` | 从当前会话分支新会话 |
