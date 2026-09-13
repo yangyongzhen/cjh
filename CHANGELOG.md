@@ -6,6 +6,24 @@ cjh 版本变更记录。依据 git tag 史 + 提交史整理；版本号规则�
 
 ## [Unreleased]
 
+## [v1.5.0] - 2026-09-13
+
+### 新增
+- **仓颉内置知识层（三期）**：新增 `cjh ref status / verify / rebuild / update` 子命令（`src/tools/ref_cli.cj` + 新建 `src/tools/ref_update.cj` + `src/main.cj` 子命令分发）。`status`（语料概况）、`verify`（按清单逐文件重算 SHA-256，报缺失 / 被改 / 多余）、`rebuild`（人工增删改语料后重扫重建清单）**全部纯本地**；`update` 是**唯一联网入口**（`git clone --depth 1`，默认 AtomGit `Cangjie-SIG/CangjieSkills` @ `cangjie-1.0.5`），`--source <目录>` 离线刷新、`--repo` / `--branch` 换源、`--dry-run` 只预演、`--restore` 从覆盖前快照回滚。
+- **`cjh ref search <关键词>`**：命令行直接复用二期只读检索工具 `cangjie_ref`，与工具同一实现、同一输出。
+- **TUI `/ref` 面板**：`/ref [status|verify|rebuild|search <词>|update]` —— 纯本地子命令直接出结果（与 `cjh ref` 同实现）；`update` 不带 `--yes` 时**只打印计划**（语料目录 / 来源 / 分支 / 流程），带 `--yes` 才真正执行；Tab 补全与 `/help` 同步收录。
+- **安全设计**：覆盖前快照落 `~/.cjh/cangjie-ref.prev`（**刻意放在语料目录之外**，否则回滚时的"删现网"会连快照一起删）；覆盖流程 = 暂存 → 非空确认 → 换位（仓颉无跨目录 rename、`Directory.create` 又不幂等）；覆盖后重扫清单 + SHA-256 自检，任一环失败自动回滚。
+
+### 修复
+- **同名技能刷新会清掉上游非 md 资产**：`refApplyStaging` 原为"整树删除现网技能目录、再只复制 `.md`"，导致 `cangjie-coding` 的 23 个 `.py` + `knowledge.sqlite3`（8.93 MB）被删掉，而 `verify` 全程通过不报警（清单只覆盖 md）。改为**只对齐 `.md`**：删同名技能目录内的旧 md、保留非 md 资产、来源里没有的技能目录不动，并在输出中加对账行（清理旧 md / 保留非 md 个数）。先写复现该缺陷的测试（红）再修复（绿）。
+
+### 测试
+- `./scripts/test.sh` → **PASSED 441 / SKIPPED 0 / ERROR 0 / FAILED 0，exit 0**（418 → 441：三期 `ref_update_test.cj` 16 例 + `/ref` 面板纯函数 5 例 + 同名技能覆盖语义 2 例）；`cjpm build` 通过；`--mock` 端到端通过（工具调用链完整）；TUI 侧改动另跑 `python3 scripts/tui_pty_test.py` → **67 通过 / 0 失败**（含新增 `[场景16] /ref 面板：联网闸门`，只测闸门、永不触发 `git clone`）。
+
+### 说明
+- **二进制体积硬约束**：技能与语料仍全部作运行时数据（`~/.cjh/`），全仓 `cjpm.toml` 无 `resource` / `embed`；二进制 16,740,216 → 16,834,240 B（纯代码）。
+- **离线承诺**：模型触发路径永不联网；`ref update` 是本项目唯一会联网的动作，只能由人显式触发（TUI 里还需 `--yes`）。
+
 ## [v1.4.0] - 2026-09-12
 
 ### 新增
