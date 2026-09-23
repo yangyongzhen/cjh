@@ -124,15 +124,6 @@ public class TavilyProvider <: SearchProvider {
 
     private func doTavilySearch(key: String, query: String, maxResults: Int64): ?ArrayList<SearchHit> {
         try {
-            var tlsConfig = TlsClientConfig()
-            tlsConfig.verifyMode = CertificateVerifyMode.CustomCA(X509Certificate.systemRootCerts())
-            tlsConfig.domain = Some("api.tavily.com")
-            let client = ClientBuilder()
-                .tlsConfig(tlsConfig)
-                .readTimeout(Duration.second * timeoutSeconds)
-                .writeTimeout(Duration.second * 10)
-                .build()
-
             // 构造请求体 JSON
             var bodyObj = JsonObject()
             bodyObj.put("api_key", JsonString(key))
@@ -142,22 +133,28 @@ public class TavilyProvider <: SearchProvider {
             bodyObj.put("include_answer", JsonBool(false))
             bodyObj.put("include_raw_content", JsonBool(false))
 
-            let req = HttpRequestBuilder()
-                .post()
-                .url("https://api.tavily.com/search")
-                .header("Content-Type", "application/json")
-                .body(bodyObj.toJsonString())
-                .build()
-
-            let resp = client.send(req)
+            // 统一走 cjutil 通用客户端：包装超时 < 客户端 readTimeout，且所有路径 close，
+            // 不遗留 stdx readTimer WARN（会污染 TUI 输入栏，见 §3.17）
+            var hdrs = HashMap<String, String>()
+            hdrs["Content-Type"] = "application/json"
+            hdrs["Accept"] = "application/json"
+            let resp = httpClientFetch(
+                "POST",
+                "https://api.tavily.com/search",
+                timeoutSeconds,
+                1048576,
+                "cjh/1.3.0 (Cangjie Coding Agent)",
+                "en-US,en;q=0.9",
+                Some(bodyObj.toJsonString()),
+                Some(hdrs)
+            )
             // 401/429/5xx → 认证或限流失败，返回 None 触发 key rotation
             if (resp.status == 401 || resp.status == 429 || resp.status >= 500) {
                 return None
             }
             if (resp.status != 200) { return None }
 
-            let respBody = readAll(resp.body, 1048576)  // 1MB 上限
-            let rootJson = JsonValue.fromStr(safeFromUtf8(respBody))
+            let rootJson = JsonValue.fromStr(resp.body)
             let resultsOpt: ?JsonValue = match (rootJson.kind()) {
                 case JsonKind.JsObject => rootJson.asObject().get("results")
                 case _ => None
@@ -742,15 +739,6 @@ public class ExaProvider <: SearchProvider {
 
     private func doExaSearch(key: String, query: String, maxResults: Int64): ?ArrayList<SearchHit> {
         try {
-            var tlsConfig = TlsClientConfig()
-            tlsConfig.verifyMode = CertificateVerifyMode.CustomCA(X509Certificate.systemRootCerts())
-            tlsConfig.domain = Some("api.exa.ai")
-            let client = ClientBuilder()
-                .tlsConfig(tlsConfig)
-                .readTimeout(Duration.second * timeoutSeconds)
-                .writeTimeout(Duration.second * 10)
-                .build()
-
             // 构造请求体 JSON
             var bodyObj = JsonObject()
             bodyObj.put("query", JsonString(query))
@@ -761,22 +749,27 @@ public class ExaProvider <: SearchProvider {
             contentsObj.put("text", JsonBool(true))
             bodyObj.put("contents", contentsObj)
 
-            let req = HttpRequestBuilder()
-                .post()
-                .url("https://api.exa.ai/search")
-                .header("Content-Type", "application/json")
-                .header("Authorization", "Bearer ${key}")
-                .body(bodyObj.toJsonString())
-                .build()
-
-            let resp = client.send(req)
+            // 统一走 cjutil 通用客户端（超时保护 + 连接回收，避免 stdx readTimer WARN）
+            var hdrs = HashMap<String, String>()
+            hdrs["Content-Type"] = "application/json"
+            hdrs["Accept"] = "application/json"
+            hdrs["Authorization"] = "Bearer ${key}"
+            let resp = httpClientFetch(
+                "POST",
+                "https://api.exa.ai/search",
+                timeoutSeconds,
+                1048576,
+                "cjh/1.3.0 (Cangjie Coding Agent)",
+                "en-US,en;q=0.9",
+                Some(bodyObj.toJsonString()),
+                Some(hdrs)
+            )
             if (resp.status == 401 || resp.status == 429 || resp.status >= 500) {
                 return None
             }
             if (resp.status != 200) { return None }
 
-            let respBytes = readAll(resp.body, 1048576)
-            let rootJson = JsonValue.fromStr(safeFromUtf8(respBytes))
+            let rootJson = JsonValue.fromStr(resp.body)
             let resultsOpt: ?JsonValue = match (rootJson.kind()) {
                 case JsonKind.JsObject => rootJson.asObject().get("results")
                 case _ => None
@@ -845,24 +838,22 @@ public class SearXNGProvider <: SearchProvider {
             let encodedQuery = urlEncode(query)
             let url = "${searxngUrl}/search?q=${encodedQuery}&format=json"
 
-            // 构建 client（SearXNG 可能是 http，TLS config 仅对 https 生效）
-            let client = ClientBuilder()
-                .readTimeout(Duration.second * timeoutSeconds)
-                .writeTimeout(Duration.second * 10)
-                .build()
-
-            let req = HttpRequestBuilder()
-                .get()
-                .url(url)
-                .header("User-Agent", "cjh/1.3.0 (Cangjie Coding Agent)")
-                .header("Accept", "application/json")
-                .build()
-
-            let resp = client.send(req)
+            // 统一走 cjutil 通用客户端（超时保护 + 连接回收，避免 stdx readTimer WARN）
+            var hdrs = HashMap<String, String>()
+            hdrs["Accept"] = "application/json"
+            let resp = httpClientFetch(
+                "GET",
+                url,
+                timeoutSeconds,
+                1048576,
+                "cjh/1.3.0 (Cangjie Coding Agent)",
+                "en-US,en;q=0.9",
+                None,
+                Some(hdrs)
+            )
             if (resp.status != 200) { return ArrayList<SearchHit>() }
 
-            let respBytes = readAll(resp.body, 1048576)
-            let rootJson = JsonValue.fromStr(safeFromUtf8(respBytes))
+            let rootJson = JsonValue.fromStr(resp.body)
             let resultsOpt: ?JsonValue = match (rootJson.kind()) {
                 case JsonKind.JsObject => rootJson.asObject().get("results")
                 case _ => None
