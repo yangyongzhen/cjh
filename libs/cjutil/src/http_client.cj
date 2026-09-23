@@ -85,6 +85,24 @@ public class HttpFetchResult {
  * 返回：HttpFetchResult（status=0 表示未拿到响应）
  * 异常：TimeoutException 超时
  */
+/**
+ * 归一化包装超时（秒）：1 ≤ 返回值 ≤ 86400
+ *
+ * 这是 stdx readTimer WARN 规避配方的前提——客户端 readTimeout 恒为"有效超时 + 10s"，
+ * 包装超时必须严格小于它，否则 stdx 自己的 readTimer 先响并打出
+ * `[ConnNode#sendRequestTimeout readTimer] Client1.1 read response timeout`（污染 TUI 输入栏）。
+ *
+ * 为什么必须钳制：
+ *   - ≤0（settings.json 的 timeout_seconds 解析不校验，可被写成 0/负数）会让
+ *     future.get(Duration.second * 0) 退化成无限等待，只能等 readTimer 收场 → WARN 必响；
+ *   - 极大值（手改配置）会让 Duration 乘法溢出，同样变成不可控等待。
+ */
+func normalizeTimeoutSeconds(timeoutSeconds: Int64): Int64 {
+    if (timeoutSeconds < 1) { return 1 }
+    if (timeoutSeconds > 86400) { return 86400 }
+    return timeoutSeconds
+}
+
 public func httpClientFetch(
     method: String,
     url: String,
@@ -103,11 +121,14 @@ public func httpClientFetch(
         tlsConfig.domain = Some(host)
     }
 
+    // 归一化超时：调用方可能传入 0/负值（配置解析不校验）或手改出来的极大值
+    let effectiveTimeout = normalizeTimeoutSeconds(timeoutSeconds)
+
     // 构建客户端
     // readTimeout 留 +10s 余量：必须严格大于包装超时，否则 readTimer 会先响（WARN 泄漏）
     let client = ClientBuilder()
         .tlsConfig(tlsConfig)
-        .readTimeout(Duration.second * (timeoutSeconds + 10))
+        .readTimeout(Duration.second * (effectiveTimeout + 10))
         .writeTimeout(Duration.second * 10)
         .build()
 
@@ -179,7 +200,7 @@ public func httpClientFetch(
 
     // 带超时等待结果；所有出口都 close 客户端（取消 readTimer + 回收连接）
     try {
-        return future.get(Duration.second * timeoutSeconds)
+        return future.get(Duration.second * effectiveTimeout)
     } finally {
         try { client.close() } catch (_: Exception) {}
     }
