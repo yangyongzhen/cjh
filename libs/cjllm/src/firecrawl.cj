@@ -21,9 +21,6 @@ package cjllm
  *   - 失败时返回 None，让 web_fetch 进入"返回错误"兜底
  */
 
-import stdx.net.http.*
-import stdx.net.tls.*
-import stdx.crypto.x509.X509Certificate
 import stdx.encoding.json.*
 import std.collection.*
 import std.io.*
@@ -46,15 +43,6 @@ public class FirecrawlClient {
      */
     public func scrape(url: String): ?String {
         try {
-            var tlsConfig = TlsClientConfig()
-            tlsConfig.verifyMode = CertificateVerifyMode.CustomCA(X509Certificate.systemRootCerts())
-            tlsConfig.domain = Some("api.firecrawl.dev")
-            let client = ClientBuilder()
-                .tlsConfig(tlsConfig)
-                .readTimeout(Duration.second * timeoutSeconds)
-                .writeTimeout(Duration.second * 10)
-                .build()
-
             // 构造请求体 JSON
             var bodyObj = JsonObject()
             bodyObj.put("url", JsonString(url))
@@ -64,27 +52,33 @@ public class FirecrawlClient {
             bodyObj.put("formats", formatsArr)
             bodyObj.put("onlyMainContent", JsonBool(true))
 
-            // 构造请求
-            var reqBuilder = HttpRequestBuilder()
-                .post()
-                .url("${this.baseUrl}/scrape")
-                .header("Content-Type", "application/json")
+            // 统一走 cjutil 通用客户端：包装超时 < 客户端 readTimeout，且所有路径 close 客户端，
+            // 不遗留 stdx readTimer WARN（会污染 TUI 输入栏，见 §3.17）
+            var hdrs = HashMap<String, String>()
+            hdrs["Content-Type"] = "application/json"
+            hdrs["Accept"] = "application/json"
             // Keyless 模式免 key；有 key 则加 Authorization 头
             if (this.apiKey.size > 0) {
-                reqBuilder = reqBuilder.header("Authorization", "Bearer ${this.apiKey}")
+                hdrs["Authorization"] = "Bearer ${this.apiKey}"
             }
-            let req = reqBuilder.body(bodyObj.toJsonString()).build()
 
-            let resp = client.send(req)
+            let resp = httpClientFetch(
+                "POST",
+                "${this.baseUrl}/scrape",
+                timeoutSeconds,
+                2097152,
+                "cjh/1.3.0 (Cangjie Coding Agent)",
+                "en-US,en;q=0.9",
+                Some(bodyObj.toJsonString()),
+                Some(hdrs)
+            )
             // 401/402/429/5xx → 失败（Keyless 额度耗尽或服务异常）
             if (resp.status == 401 || resp.status == 402 || resp.status == 429 || resp.status >= 500) {
                 return None
             }
             if (resp.status != 200) { return None }
 
-            // 读取响应（最多 2MB）
-            let respBytes = readInputStream(resp.body, 2097152)
-            let rootJson = JsonValue.fromStr(safeFromUtf8(respBytes))
+            let rootJson = JsonValue.fromStr(resp.body)
 
             // 检查 success 字段
             let rootObj = match (rootJson.kind()) {

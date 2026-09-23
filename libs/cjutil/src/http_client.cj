@@ -1,7 +1,7 @@
 package cjutil
 
 /**
- * 通用 HTTP GET 客户端：仓颉原生 ClientBuilder + spawn 超时保护
+ * 通用 HTTP 客户端：仓颉原生 ClientBuilder + spawn 超时保护
  *
  * 设计动机：
  *   - 仓颉 ClientBuilder 没有 connectTimeout，目标不可达时卡在 TCP connect，
@@ -23,6 +23,18 @@ package cjutil
  *   - 不用 curl 子进程（每次 fork 进程，开销大，无法复用连接）
  *   - 保留仓颉原生 HTTP client，只加超时保护层
  *   - 通用基础设施放在 cjutil 包，供所有上层包复用
+ *
+ * 【stdx readTimer WARN 规避（必守）】
+ *   stdx.net.http 的客户端为每个连接挂着 readTimer，一旦超时未取消，就会向
+ *   **stdout** 打 `[ConnNode#sendRequestTimeout readTimer] Client1.1 read response
+ *   timeout` WARN；该输出绕不过 setGlobalLogger(NoopLogger())，在 TUI 下直接
+ *   砸进输入栏。1.0.5 实测结论（见 docs/开发文档与踩坑记录.md §3.17）：
+ *     1. 响应体未排空且客户端未 close → readTimeout 后必响（早退非 2xx 的典型泄漏）
+ *     2. close() 或排空响应体 → 不响
+ *     3. 客户端 readTimeout == 包装 get 超时 → 两边同时到点，close 也来不及，必响
+ *   因此两条铁律：
+ *     A. 客户端 readTimeout 必须比包装超时留出余量（本文件 +10s）
+ *     B. 请求结束路径（成功/失败/超时/早退）必须 close 客户端
  */
 
 import std.collection.*
@@ -34,25 +46,46 @@ import stdx.net.tls.*
 import stdx.crypto.x509.X509Certificate
 
 /**
- * 通用 HTTP 请求：spawn 子线程 + future.get(timeout) 超时保护
+ * HTTP 抓取结果：状态码 + 响应体
+ *
+ * status = 0 表示未拿到响应（连接失败 / 读取异常 / 超时中断后降级）
+ */
+public class HttpFetchResult {
+    public let status: Int64
+    public let body: String
+
+    public init(status: Int64, body: String) {
+        this.status = status
+        this.body = body
+    }
+
+    /** 是否 2xx 成功 */
+    public func isOk(): Bool {
+        return this.status >= 200 && this.status < 300
+    }
+}
+
+/**
+ * 通用 HTTP 请求（带状态码）：spawn 子线程 + future.get(timeout) 超时保护
  *
  * 支持 GET/POST/任意 method + body + 自定义 headers。
- * 统一的超时保护：超时后显式 client.close()，readTimer 随 close 被取消，不触发 WARN。
+ * 统一保证：包装超时 < 客户端 readTimeout，且所有路径 close 客户端，
+ * 因此不会遗留 stdx readTimer（否则 WARN 污染 TUI，见文件头说明）。
  *
  * 参数：
  *   - method: HTTP 方法（"GET" / "POST" 等）
  *   - url: 目标 URL（必须 http:// 或 https://，调用方负责 SSRF 校验）
- *   - timeoutSeconds: 整体超时秒数
+ *   - timeoutSeconds: 整体超时秒数（包装超时；客户端 readTimeout 自动 +10s 余量）
  *   - maxDownloadBytes: 响应体最大字节数（防 OOM）
  *   - userAgent: User-Agent 头
  *   - acceptLanguage: Accept-Language 头
  *   - body: 请求体（None 表示无请求体）
  *   - extraHeaders: 额外 headers（如 Content-Type / Accept）
  *
- * 返回：响应体字符串（空字符串表示 HTTP 错误或读响应失败）
+ * 返回：HttpFetchResult（status=0 表示未拿到响应）
  * 异常：TimeoutException 超时
  */
-public func httpClientRequest(
+public func httpClientFetch(
     method: String,
     url: String,
     timeoutSeconds: Int64,
@@ -61,7 +94,7 @@ public func httpClientRequest(
     acceptLanguage: String,
     body: ?String,
     extraHeaders: ?Map<String, String>
-): String {
+): HttpFetchResult {
     // 配置 TLS
     var tlsConfig = TlsClientConfig()
     tlsConfig.verifyMode = CertificateVerifyMode.CustomCA(X509Certificate.systemRootCerts())
@@ -71,9 +104,10 @@ public func httpClientRequest(
     }
 
     // 构建客户端
+    // readTimeout 留 +10s 余量：必须严格大于包装超时，否则 readTimer 会先响（WARN 泄漏）
     let client = ClientBuilder()
         .tlsConfig(tlsConfig)
-        .readTimeout(Duration.second * timeoutSeconds)
+        .readTimeout(Duration.second * (timeoutSeconds + 10))
         .writeTimeout(Duration.second * 10)
         .build()
 
@@ -92,9 +126,23 @@ public func httpClientRequest(
         builder.get()  // 默认 GET
     }
     builder.url(url)
-    builder.header("User-Agent", userAgent)
-    builder.header("Accept", "text/html,application/xhtml+xml,text/plain,*/*")
-    builder.header("Accept-Language", acceptLanguage)
+    // 默认头：extraHeaders 显式给出同名头时不重复设置（如 JSON API 需要 Accept: application/json）
+    var hasUA = false
+    var hasAccept = false
+    var hasLang = false
+    match (extraHeaders) {
+        case Some(hdrs) =>
+            for ((k, _) in hdrs) {
+                let lk = k.toAsciiLower()
+                if (lk == "user-agent") { hasUA = true }
+                if (lk == "accept") { hasAccept = true }
+                if (lk == "accept-language") { hasLang = true }
+            }
+        case None => ()
+    }
+    if (!hasUA) { builder.header("User-Agent", userAgent) }
+    if (!hasAccept) { builder.header("Accept", "text/html,application/xhtml+xml,text/plain,*/*") }
+    if (!hasLang) { builder.header("Accept-Language", acceptLanguage) }
 
     // 添加额外 headers
     match (extraHeaders) {
@@ -114,29 +162,54 @@ public func httpClientRequest(
     let req = builder.build()
 
     // spawn 子线程发送请求
-    let future: Future<?String> = spawn {
+    let future: Future<HttpFetchResult> = spawn {
         try {
             let resp = client.send(req)
-            if (resp.status < 200 || resp.status >= 300) {
-                return None
+            let status = Int64(resp.status)
+            if (status < 200 || status >= 300) {
+                // 非 2xx 不排空响应体；连接由下面的 close 统一回收
+                return HttpFetchResult(status, "")
             }
             let respBody = readResponseBody(resp.body, maxDownloadBytes)
-            return Some(safeFromUtf8(respBody))
+            return HttpFetchResult(status, safeFromUtf8(respBody))
         } catch (_: Exception) {
-            return None
+            return HttpFetchResult(0, "")
         }
     }
 
-    // 带超时等待结果
+    // 带超时等待结果；所有出口都 close 客户端（取消 readTimer + 回收连接）
     try {
-        match (future.get(Duration.second * timeoutSeconds)) {
-            case Some(html) => return html
-            case None => return ""
-        }
-    } catch (e: TimeoutException) {
+        return future.get(Duration.second * timeoutSeconds)
+    } finally {
         try { client.close() } catch (_: Exception) {}
-        throw e
     }
+}
+
+/**
+ * 通用 HTTP 请求：返回响应体字符串（非 2xx / 无响应返回空字符串）
+ */
+public func httpClientRequest(
+    method: String,
+    url: String,
+    timeoutSeconds: Int64,
+    maxDownloadBytes: Int64,
+    userAgent: String,
+    acceptLanguage: String,
+    body: ?String,
+    extraHeaders: ?Map<String, String>
+): String {
+    let result = httpClientFetch(
+        method,
+        url,
+        timeoutSeconds,
+        maxDownloadBytes,
+        userAgent,
+        acceptLanguage,
+        body,
+        extraHeaders
+    )
+    if (!result.isOk()) { return "" }
+    return result.body
 }
 
 /**

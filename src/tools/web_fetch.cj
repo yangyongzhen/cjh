@@ -173,38 +173,20 @@ public class WebFetchTool <: CjhTool {
      */
     private func fetchWithCangjie(url: String): ?String {
         try {
-            var tlsConfig = TlsClientConfig()
-            tlsConfig.verifyMode = CertificateVerifyMode.CustomCA(X509Certificate.systemRootCerts())
-            let host = SsrfGuard.extractHost(url)
-            if (host.size > 0) { tlsConfig.domain = Some(host) }
-
-            let client = ClientBuilder()
-                .tlsConfig(tlsConfig)
-                .readTimeout(Duration.second * timeoutSeconds)
-                .writeTimeout(Duration.second * 10)
-                .build()
-
-            let req = HttpRequestBuilder()
-                .get()
-                .url(url)
-                .header("User-Agent", "cjh/1.3.0 (Cangjie Coding Agent)")
-                .header("Accept", "text/html,application/xhtml+xml,text/plain,*/*")
-                .header("Accept-Language", "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7")
-                .build()
-
-            // spawn 子线程发送请求，主线程 get(timeout) 超时保护
-            // 超时抛 TimeoutException，catch 后返回 None 进入降级链
-            let future: Future<?String> = spawn {
-                let resp = client.send(req)
-                if (resp.status < 200 || resp.status >= 300) {
-                    return None
-                }
-                let body = readBody(resp.body, maxDownloadBytes)
-                return Some(safeFromUtf8(body))
-            }
-
-            // 带超时等待结果；超时抛 TimeoutException
-            return future.get(Duration.second * timeoutSeconds)
+            // 复用 cjutil 通用客户端：包装超时 < 客户端 readTimeout，且所有路径 close，
+            // 不遗留 stdx readTimer（否则 WARN 污染 TUI 输入栏，见 §3.17）
+            let html = httpClientRequest(
+                "GET",
+                url,
+                timeoutSeconds,
+                maxDownloadBytes,
+                "cjh/1.3.0 (Cangjie Coding Agent)",
+                "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7",
+                None,
+                None
+            )
+            if (html.size == 0) { return None }
+            return Some(html)
         } catch (e: Exception) {
             return None
         }
