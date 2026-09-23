@@ -245,4 +245,43 @@ public class HttpClientFetchTest {
         @Assert(got.contains("text/html"), false)
         @Assert(got.contains("content-type: application/json"), true)
     }
+
+    /**
+     * 边界：timeout≤0（配置解析不校验时可出现的宽松值）仍必须在"包装超时"到点收场
+     *
+     * 回归防护对象：`future.get(Duration.second * 0)` 会退化成无限等待 → 只能等客户端
+     * 自己的 readTimeout(0+10s) 收场，届时 stdx 的 readTimer 先响并打出
+     * `[ConnNode#sendRequestTimeout readTimer] Client1.1 read response timeout`（污染 TUI 输入栏）。
+     */
+    @TestCase
+    public func testNonPositiveTimeoutStillTimesOutAtWrapperDeadline(): Unit {
+        let port: UInt16 = 18925
+        let probe = MockProbe()
+        let _ = startFetchMock(port, "stall", "", probe)
+
+        var timedOut = false
+        let t0 = DateTime.now()
+        try {
+            let _ = httpClientFetch("GET", "http://127.0.0.1:${port}/stall", 0, 65536, "cjh-test", "en-US", None, None)
+        } catch (e: TimeoutException) {
+            timedOut = true
+        }
+        let ms = (DateTime.now() - t0).toMilliseconds()
+        // 钳制到 1s → 包装超时生效；若退化则要等到 readTimer(10s) 且不抛异常
+        @Assert(timedOut, true)
+        @Assert(ms < 5000, true)
+        @Assert(probe.headers().contains("GET /stall"), true)
+    }
+
+    /** 纯函数边界：超时归一化（≤0 → 1s 下限；极大值 → 86400s 上限，防 Duration 乘法溢出） */
+    @TestCase
+    public func testNormalizeTimeoutSeconds(): Unit {
+        @Assert(normalizeTimeoutSeconds(0), 1)
+        @Assert(normalizeTimeoutSeconds(-5), 1)
+        @Assert(normalizeTimeoutSeconds(1), 1)
+        @Assert(normalizeTimeoutSeconds(30), 30)
+        @Assert(normalizeTimeoutSeconds(86400), 86400)
+        @Assert(normalizeTimeoutSeconds(86401), 86400)
+        @Assert(normalizeTimeoutSeconds(9223372036854775807), 86400)
+    }
 }
