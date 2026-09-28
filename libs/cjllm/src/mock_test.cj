@@ -66,3 +66,59 @@ public class MockReasoningPadTest {
         }
     }
 }
+
+// 复现台闸门用的环境变量写入（与 mock.cj 的 getenv 同款零依赖做法）
+@C
+foreign func setenv(name: CString, value: CString, overwrite: Int32): Int32
+
+/**
+ * `CJH_MOCK_WEB_URL` 闸门测试（端到端复现台 scripts/e2e_warn_harness.py 的驱动点）。
+ *
+ * 契约：
+ * - 未设/空 → 既有 4 步链不变（第 1 轮 2 个只读工具、第 2 轮 grep）
+ * - 非空 → 第 2 轮单发 `web_fetch`，URL 原样透传给工具（HTTP 层全真实）
+ *
+ * 每个用例开头都重新设置该变量：共享进程内不依赖上一用例的清理动作。
+ */
+@Test
+public class MockWebFetchGateTest {
+
+    private func setGate(value: String): Unit {
+        unsafe {
+            setenv(LibC.mallocCString("CJH_MOCK_WEB_URL"), LibC.mallocCString(value), 1)
+        }
+    }
+
+    private func callOnce(p: MockProvider): ModelResponse {
+        let msgs = ArrayList<ChatMessage>()
+        let tools = ArrayList<ToolSpec>()
+        return p.chatStream(msgs, tools, { _: String => }, { _: String => },
+            { _: Int64 => }, { => false })
+    }
+
+    /** 主路径：闸门打开 → 第 2 轮发 web_fetch，URL 原样进参数 */
+    @TestCase
+    public func testGateEmitsWebFetchOnSecondRound(): Unit {
+        this.setGate("http://127.0.0.1:9/stall")
+        let p = MockProvider("/tmp/cjh_mock_web_gate.txt")
+        let r1 = this.callOnce(p)
+        @Assert(r1.toolCalls.size, 2)  // 第 1 轮仍是并发 2 个只读工具
+        let r2 = this.callOnce(p)
+        @Assert(r2.toolCalls.size, 1)
+        @Assert(r2.toolCalls[0].name, "web_fetch")
+        let urlArg = r2.toolCalls[0].arguments.get("url").getOrThrow()
+        @Assert(urlArg.toString().contains("127.0.0.1:9/stall"), true)
+        this.setGate("")
+    }
+
+    /** 默认关闭：闸门为空时第 2 轮仍是 grep（既有链路不受影响） */
+    @TestCase
+    public func testGateClosedKeepsGrepStep(): Unit {
+        this.setGate("")
+        let p = MockProvider("/tmp/cjh_mock_web_gate_off.txt")
+        let _ = this.callOnce(p)
+        let r2 = this.callOnce(p)
+        @Assert(r2.toolCalls.size, 1)
+        @Assert(r2.toolCalls[0].name, "grep")
+    }
+}

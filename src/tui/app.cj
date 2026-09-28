@@ -320,7 +320,10 @@ public class TuiApp {
         // 残留字符输入（"滚轮触发字母 B"）。保持主屏幕 + clearScreen 全量重绘，
         // 滚轮恢复终端原生滚动行为。
         try {
-            print(Ansi.clearScreen(), flush: true)
+            // 结构性隔离：把 fd 1 让给库噪声（stdx 的 readTimer 线程等），TUI 改用私有终端 fd 渲染。
+            // 不隔离时，任何库直写 fd 1 的字节都会落在输入栏上（见 cjterm/src/tty_out.cj 的注释）。
+            let _ = ttyOutSuppress()
+            ttyOutWrite(Ansi.clearScreen())
             // 保持硬件光标可见：canvas.flush() 每帧末尾 moveTo 到输入框 cursorPos，
             // 用户可见光标位置（对齐 Claude Code/omp）。旧实现 hideCursor 后整会话
             // 无光标，输入编辑位置不可见（v1.3.18 修复）
@@ -396,8 +399,10 @@ public class TuiApp {
     public func restoreTerminal(): Unit {
         this.saveDraft()  // 退出前保存未提交输入（启动时恢复）
         this.term.disableRaw()
-        print(Ansi.showCursor(), flush: true)
-        print(Ansi.clearScreen(), flush: true)
+        // 先把 fd 1 还原回终端，退出路径的常规输出（含调用方后续 print）才看得见
+        ttyOutRestore()
+        ttyOutWrite(Ansi.showCursor())
+        ttyOutWrite(Ansi.clearScreen())
     }
 
     /**
@@ -632,7 +637,8 @@ public class TuiApp {
         } catch (e: Exception) {
             // 恢复失败忽略
         }
-        print(Ansi.showCursor(), flush: true)
+        ttyOutRestore()
+        ttyOutWrite(Ansi.showCursor())
         unsafe {
             _exit(0)
         }
@@ -1675,7 +1681,7 @@ public class TuiApp {
         }
 
         // 差分渲染：只输出变化行 + 光标定位（InputBox / MultiLineEditor 已设置）
-        print(this.canvas.flush(), flush: true)
+        ttyOutWrite(this.canvas.flush())
     }
 
     /**
