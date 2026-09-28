@@ -277,7 +277,7 @@ public class Term {
             // 包裹粘贴，避免多行粘贴的换行被逐键解析成 Enter 自动提交。
             // 此前不启用因 readBracketedPaste 1.5s 超时吞键——已修复
             // （连续无数据判定结束 + 上限后继续消费闭合标记）
-            print(TermEsc.ESC + "[?2004h", flush: true)
+            ttyOutWrite(TermEsc.ESC + "[?2004h")
             return true
         }
         return false
@@ -285,7 +285,7 @@ public class Term {
 
     public func disableRaw(): Unit {
         // 关闭 bracketed paste（ESC[?2004l）
-        print(TermEsc.ESC + "[?2004l", flush: true)
+        ttyOutWrite(TermEsc.ESC + "[?2004l")
         if (!this.rawOn) {
             return
         }
@@ -745,19 +745,19 @@ public class Term {
 
     // ===== 备用缓冲区 / 鼠标模式便捷封装（ANSI 转义，跨平台）=====
     public func enterAltScreen(): Unit {
-        print(Ansi.enterAltScreen(), flush: true)
+        ttyOutWrite(Ansi.enterAltScreen())
     }
 
     public func exitAltScreen(): Unit {
-        print(Ansi.exitAltScreen(), flush: true)
+        ttyOutWrite(Ansi.exitAltScreen())
     }
 
     public func enableMouse(): Unit {
-        print(Ansi.enableMouse(), flush: true)
+        ttyOutWrite(Ansi.enableMouse())
     }
 
     public func disableMouse(): Unit {
-        print(Ansi.disableMouse(), flush: true)
+        ttyOutWrite(Ansi.disableMouse())
     }
 }
 

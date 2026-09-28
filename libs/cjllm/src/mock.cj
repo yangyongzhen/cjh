@@ -76,6 +76,12 @@ public class MockProvider <: LlmProvider {
         // 无泄漏 bash/僵尸。默认 4 步链不变（read_file+grep/grep/list_dir/答复），
         // 不影响 runMockVerify 的"恰好 4 次调用"断言（它不设置该变量）。
         let bashStepEnabled: Bool = (mockGetenv("CJH_MOCK_BASH") ?? "").size > 0
+        // 环境变量门控（additive，默认关闭）：CJH_MOCK_WEB_URL 非空时第 2 轮改发
+        // web_fetch 工具调用（URL 由该变量给出），让 mock 会话真实发起一次 HTTP 抓取——
+        // 供端到端复现台（scripts/e2e_warn_harness.py）在真实 TUI 里跑"抓取被卡住/超时"
+        // 的路径，验证 stdx 打到 fd 1 的噪声不会进输入栏。默认 4 步链不变，
+        // 不影响 runMockVerify 的"恰好 4 次调用"断言（它不设置该变量）。
+        let webFetchUrl: String = mockGetenv("CJH_MOCK_WEB_URL") ?? ""
         match (this.callCount) {
             case 1 =>
                 // 工具调用 1：并发 2 个 read-only 工具（V2d 并发执行引擎验证）
@@ -96,6 +102,14 @@ public class MockProvider <: LlmProvider {
                     var callsB = ArrayList<ToolCall>()
                     callsB.add(ToolCall("call_2", "bash", argsB))
                     return ModelResponse("再用 bash 执行一下。", callsB)
+                }
+                if (webFetchUrl.size > 0) {
+                    // 端到端复现台：真实发一次 web_fetch（HTTP 层全真实）
+                    var argsW = JsonObject()
+                    argsW.put("url", JsonString(webFetchUrl))
+                    var callsW = ArrayList<ToolCall>()
+                    callsW.add(ToolCall("call_2w", "web_fetch", argsW))
+                    return ModelResponse("先抓一下这个页面。", callsW)
                 }
                 // 工具调用 2：grep 搜索
                 var args2 = JsonObject()
