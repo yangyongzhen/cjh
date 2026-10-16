@@ -63,7 +63,9 @@ public class WsHandler <: HttpRequestHandler {
         // 消息接收循环：阻塞读取 WebSocket 帧，解析 JSON 消息，分发到 Gateway
         this.messageLoop(ws, wsId, wsMutex)
 
-        // WS 断开，注销渠道 + 销毁会话
+        // WS 断开：先请求中断在跑的回合（连接没了就不该留孤儿执行继续跑），
+        // 再注销渠道 + 销毁会话
+        this.gateway.interruptSession(wsId, wsId)
         this.gateway.unregisterChannel(wsId)
         this.gateway.destroySession(wsId, wsId)
     }
@@ -114,7 +116,8 @@ public class WsHandler <: HttpRequestHandler {
                         let req = ChatRequest.fromJson(v.asObject())
                         if (req.message.size > 0) {
                             // 交由 Gateway 处理：channelId = wsId（每个 WS 连接一个 channel）
-                            this.gateway.handleUserMessage(wsId, wsId, req.message)
+                            // 可选 model/base_url/api_key：只对本回合生效（不落盘、不粘连）
+                            this.gateway.handleUserMessage(wsId, wsId, req.message, req.modelOverride())
                         }
                     case _ => ()
                 }
@@ -125,9 +128,21 @@ public class WsHandler <: HttpRequestHandler {
             case WsMsgType.ResumeSession =>
                 // 恢复历史会话：加载消息历史，推回前端渲染
                 this.handleResumeSession(wsId, jsonStr)
-            case WsMsgType.Abort =>
-                // 中断当前执行（简化：暂不实现中断）
-                ()
+            case WsMsgType.SwitchModel =>
+                // 切换模型（会话级，不落盘）：网关回 ack 或 error，不静默
+                let v = JsonValue.fromStr(jsonStr)
+                match (v.kind()) {
+                    case JsonKind.JsObject =>
+                        let req = SwitchModelRequest.fromJson(v.asObject())
+                        this.gateway.handleSwitchModel(wsId, wsId, req.model, req.baseUrl, req.apiKey)
+                    case _ => ()
+                }
+            case WsMsgType.Compact =>
+                // 压缩历史：网关回 ack（含压缩前后消息数）
+                this.gateway.handleCompact(wsId, wsId)
+            case WsMsgType.Abort | WsMsgType.Cancel =>
+                // 中断/取消当前执行：网关回 cancelled（was_running 如实反映）
+                this.gateway.handleCancel(wsId, wsId, extractStr(jsonStr, "session_id"))
             case _ =>
                 // 未知消息类型，忽略
                 ()
@@ -142,19 +157,7 @@ public class WsHandler <: HttpRequestHandler {
      */
     private func handleResumeSession(wsId: String, jsonStr: String): Unit {
         // 解析 session_id
-        let sessionId = match (JsonValue.fromStr(jsonStr).kind()) {
-            case JsonKind.JsObject =>
-                let obj = JsonValue.fromStr(jsonStr).asObject()
-                match (obj.get("session_id")) {
-                    case Some(s) =>
-                        match (s.kind()) {
-                            case JsonKind.JsString => s.asString().getValue()
-                            case _ => ""
-                        }
-                    case None => ""
-                }
-            case _ => ""
-        }
+        let sessionId = extractStr(jsonStr, "session_id")
 
         if (sessionId.size == 0) {
             return
@@ -162,6 +165,16 @@ public class WsHandler <: HttpRequestHandler {
 
         // 交由 Gateway 处理：Gateway 加载历史消息，通过 Channel 推回前端
         this.gateway.handleResumeSession(wsId, wsId, sessionId)
+    }
+
+    /**
+     * 从帧 JSON 里取字符串字段（缺失/类型不符 → 空串）
+     */
+    private func extractStr(jsonStr: String, key: String): String {
+        match (JsonValue.fromStr(jsonStr).kind()) {
+            case JsonKind.JsObject => return optStr(JsonValue.fromStr(jsonStr).asObject(), key)
+            case _ => return ""
+        }
     }
 
     /**

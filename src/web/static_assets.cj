@@ -148,6 +148,9 @@ public class StaticAssets {
         </main>
     </div>
 
+    <!-- 轻提示条（控制帧回执 ack / 切换中 / 取消回执） -->
+    <div id="notice-bar" class="notice-bar"></div>
+
     <!-- 配置模态对话框 -->
     <div id="config-modal" class="modal-overlay hidden">
         <div class="modal-dialog config-dialog">
@@ -217,6 +220,9 @@ public class StaticAssets {
 let ws = null;
 let currentSessionId = null;
 let isExecuting = false;
+// 当前生效模型（以服务端 ack 为准）+ 切换中待确认的模型（失败用于回滚选项）
+let currentModelId = null;
+let pendingModelSwitch = null;
 
 // ====== WebSocket 连接管理 ======
 function connectWebSocket() {
@@ -245,7 +251,9 @@ function connectWebSocket() {
 
 /**
  * 加载 /api/models 填充右上角模型下拉，选中当前模型；
- * 切换时 POST /api/settings 更新 model（模型带 baseUrl 时联动更新端点=切厂家）。
+ *
+ * 切换走**会话级** switch_model 帧：立即生效、不写全局配置、不粘下一次会话，
+ * 由服务端 ack 确认（含端点回显）；失败 / 不支持则回滚选项并提示（不静默）。
  */
 function loadModelSelector() {
     fetch('/api/models')
@@ -253,6 +261,7 @@ function loadModelSelector() {
         .then(function(data) {
             let sel = document.getElementById('model-selector');
             sel.innerHTML = '';
+            currentModelId = data.current || null;
             if (!data.models || data.models.length === 0) {
                 sel.innerHTML = '<option value="">无模型配置</option>';
                 return;
@@ -273,25 +282,23 @@ function loadModelSelector() {
                 o.selected = true;
                 sel.insertBefore(o, sel.firstChild);
             }
-            // 切换：POST model（联动 baseUrl）
+            // 切换：发 switch_model 帧（服务端只改本会话，不动全局配置、不落盘）
             sel.onchange = function() {
                 let model = sel.value;
                 let found = null;
                 data.models.forEach(function(m) { if (m.id === model) { found = m; } });
-                let payload = { model: model };
-                if (found && found.baseUrl) { payload.baseUrl = found.baseUrl; }
-                fetch('/api/settings', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                }).then(r => r.json()).then(function(d) {
-                    if (!d.ok) {
-                        showError('模型切换失败: ' + (d.error || ''));
-                        loadModelSelector();  // 还原
-                    }
-                }).catch(function(e) {
-                    showError('模型切换失败: ' + e);
-                });
+                if (!ws || ws.readyState !== WebSocket.OPEN) {
+                    showError('WebSocket 未连接，模型切换未发送');
+                    sel.value = currentModelId || '';
+                    return;
+                }
+                // 端点随模型带上（配置页是"模型与端点成对设置"）；
+                // 密钥不必前端传：服务端按 model 从配置补齐（避免把密钥下发到浏览器）
+                let payload = { type: 'switch_model', model: model };
+                if (found && found.baseUrl) { payload.base_url = found.baseUrl; }
+                pendingModelSwitch = model;
+                ws.send(JSON.stringify(payload));
+                showNotice('正在切换模型：' + model + ' …', 'info');
             };
         })
         .catch(function(e) {
@@ -328,9 +335,37 @@ function appendUserMessage(text) {
     scrollToBottom();
 }
 
+/**
+ * 复位中断按钮的"待回执"态（每次状态切换都复位，避免下次无法中断）
+ */
+function resetAbortButton() {
+    let abortBtn = document.getElementById('abort-btn');
+    if (abortBtn) {
+        abortBtn.disabled = false;
+        abortBtn.title = '中断';
+    }
+}
+
+/**
+ * 请求中断当前回合：发 cancel 帧（服务端必回 cancelled，不静默）
+ *
+ * 回执到达前保持"中断中"态（按钮禁用 + 提示），避免连点重复中断；
+ * 结果由 handleCancelled 消费：was_running=false 时如实告知"当前没有执行中的回合"。
+ */
 function sendAbort() {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    ws.send(JSON.stringify({ type: 'abort' }));
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        showError('WebSocket 未连接，中断未发送');
+        return;
+    }
+    let abortBtn = document.getElementById('abort-btn');
+    if (abortBtn && abortBtn.disabled) { return; }
+    if (abortBtn) {
+        abortBtn.disabled = true;
+        abortBtn.title = '中断中…';
+    }
+    // 带上 session_id：服务端回执会原样回显，便于前端核对是哪一回合
+    ws.send(JSON.stringify({ type: 'cancel', session_id: currentSessionId || '' }));
+    showNotice('已发送中断请求，等待服务端回执…', 'info');
 }
 
 // ====== 会话管理 ======
@@ -910,6 +945,104 @@ function formatTime(ts) {
     return (d.getMonth() + 1) + '/' + d.getDate();
 }
 
+// ====== 轻提示与回执（控制帧 ack / cancelled / error） ======
+let noticeTimer = null;
+
+/**
+ * 顶部轻提示条：kind = 'ok' | 'info' | 'err'
+ *
+ * 控制帧服务端一律给回执，前端就得给用户可见反馈——静默会让人以为帧丢了。
+ */
+function showNotice(text, kind) {
+    let el = document.getElementById('notice-bar');
+    if (!el) { return; }
+    el.textContent = text;
+    el.className = 'notice-bar ' + (kind || 'info') + ' show';
+    if (noticeTimer) { clearTimeout(noticeTimer); }
+    noticeTimer = setTimeout(function() {
+        el.className = 'notice-bar';
+    }, 4000);
+}
+
+/**
+ * 端点缩略显示（只留 host[:port]，避免长 URL 撑破提示条）
+ */
+function shortEndpoint(url) {
+    if (!url) { return ''; }
+    return String(url).replace(/^[a-z]+:\/\//, '').split('/')[0];
+}
+
+/**
+ * 模型切换失败/不可用：把下拉回滚到服务端确认过的模型
+ */
+function rollbackModelSelection() {
+    let sel = document.getElementById('model-selector');
+    if (sel && currentModelId) { sel.value = currentModelId; }
+    pendingModelSwitch = null;
+}
+
+/**
+ * ack 回执：switch_model / compact 的处理结果（服务端已确认，非"我发了"）
+ */
+function handleAck(msg) {
+    let action = msg.action || '';
+    if (action === 'switch_model') {
+        currentModelId = msg.model || null;
+        pendingModelSwitch = null;
+        if (msg.model) {
+            let sel = document.getElementById('model-selector');
+            if (sel) { sel.value = msg.model; }
+        }
+        let hint = msg.base_url ? '（端点 ' + shortEndpoint(msg.base_url) + '）' : '';
+        showNotice('已切换模型：' + (msg.model || '-') + hint, 'ok');
+    } else if (action === 'compact') {
+        if (msg.compacted) {
+            showNotice('已压缩历史：' + msg.messages_before + ' → ' + msg.messages_after + ' 条', 'ok');
+        } else {
+            showNotice('无需压缩：当前 ' + msg.messages_after + ' 条消息', 'info');
+        }
+    } else {
+        showNotice('服务端已确认：' + (action || '未知动作'), 'info');
+    }
+}
+
+/**
+ * 取消回执：was_running 如实反映服务端这一帧到达时是否真有回合在跑
+ */
+function handleCancelled(msg) {
+    // 回执到达即复位按钮：这一帧已确认收到，是否真的打断由随后的 done / error 收尾
+    resetAbortButton();
+    if (msg.was_running) {
+        showNotice('已请求中断，等待当前回合收尾…', 'info');
+    } else {
+        // 没有回合在跑：如实说，不假装"停了什么"，同时把 UI 状态拉回空闲
+        showNotice('当前没有执行中的回合', 'info');
+        setExecuting(false);
+    }
+}
+
+/**
+ * 错误按 code 分支：客户端据此决定「重试 / 换模型 / 新建会话」
+ */
+function handleError(msg) {
+    let code = msg.code || 'internal';
+    let text = msg.message || '';
+    let retryHint = msg.retryable ? '（可重试）' : '';
+    if (code === 'switch_model_failed' || code === 'switch_model_unsupported') {
+        showError('模型切换失败：' + text);
+        rollbackModelSelection();
+    } else if (code === 'model_unavailable') {
+        showError('模型不可用：' + text + '（本次未执行，未降级到其他模型）');
+        rollbackModelSelection();
+    } else if (code === 'compact_failed') {
+        showError('压缩历史失败：' + text);
+    } else if (code === 'run_failed') {
+        showError('执行失败：' + text + retryHint);
+    } else {
+        showError(text + retryHint);
+    }
+}
+
 // ====== 服务器消息处理 ======
 function handleServerMessage(msg) {
     switch (msg.type) {
@@ -928,9 +1061,17 @@ function handleServerMessage(msg) {
             finalizeAssistantMessage();
             handleDone(msg.summary);
             break;
+        case 'ack':
+            // 控制帧回执（switch_model / compact）：服务端确认，必须给用户反馈
+            handleAck(msg);
+            break;
+        case 'cancelled':
+            // 取消回执（cancel / abort）
+            handleCancelled(msg);
+            break;
         case 'error':
             finalizeAssistantMessage();
-            showError(msg.message);
+            handleError(msg);
             setExecuting(false);
             break;
         case 'tasks':
@@ -1190,6 +1331,8 @@ function setExecuting(executing) {
     isExecuting = executing;
     let sendBtn = document.getElementById('send-btn');
     let abortBtn = document.getElementById('abort-btn');
+    // 状态切换即复位中断按钮（清掉上一次"中断中"的禁用态）
+    resetAbortButton();
     if (executing) {
         sendBtn.classList.add('hidden');
         abortBtn.classList.remove('hidden');
@@ -2105,6 +2248,42 @@ body {
     font-size: 14px;
     width: 16px;
     flex-shrink: 0;
+}
+
+/* ====== 轻提示条（控制帧回执 ack / 切换中 / 取消回执） ====== */
+.notice-bar {
+    position: fixed;
+    top: 14px;
+    left: 50%;
+    transform: translateX(-50%) translateY(-10px);
+    max-width: 70vw;
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-size: 13px;
+    line-height: 1.4;
+    color: var(--text-primary);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.18s ease, transform 0.18s ease;
+    z-index: 999;
+}
+
+.notice-bar.show {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+}
+
+.notice-bar.ok {
+    border-color: var(--success);
+    color: var(--success);
+}
+
+.notice-bar.err {
+    border-color: var(--error);
+    color: var(--error);
 }
 
 /* ====== 移动端响应式 ====== */
