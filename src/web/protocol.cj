@@ -17,6 +17,7 @@ package cjh.web
 
 import std.collection.*
 import stdx.encoding.json.*
+import cjh.gateway.*
 
 /**
  * 消息类型枚举（对应 JSON "type" 字段的值）
@@ -24,6 +25,7 @@ import stdx.encoding.json.*
 public enum WsMsgType {
     | Chat            // 浏览器 → 服务器：发送聊天消息
     | Abort           // 浏览器 → 服务器：中断当前执行
+    | Cancel          // 浏览器 → 服务器：取消当前执行（与 Abort 同义，兼容两种命名）
     | SwitchModel     // 浏览器 → 服务器：切换模型
     | NewSession      // 浏览器 → 服务器：新建会话
     | ResumeSession   // 浏览器 → 服务器：恢复历史会话
@@ -52,6 +54,7 @@ public func parseMsgType(jsonStr: String): WsMsgType {
                             match (t.asString().getValue()) {
                                 case "chat" => return WsMsgType.Chat
                                 case "abort" => return WsMsgType.Abort
+                                case "cancel" => return WsMsgType.Cancel
                                 case "switch_model" => return WsMsgType.SwitchModel
                                 case "new_session" => return WsMsgType.NewSession
                                 case "resume_session" => return WsMsgType.ResumeSession
@@ -81,6 +84,17 @@ public func parseMsgType(jsonStr: String): WsMsgType {
 public class ChatRequest {
     public var message: String = ""
 
+    /**
+     * 单次执行的模型覆盖（可选）：本次 run 局部生效，不落盘、不粘连
+     *
+     * 优先级：帧字段 > 会话级 switch_model 覆盖 > 当前配置
+     * JSON 字段：model / base_url（亦接受 baseUrl）/ api_key（亦接受 apiKey）；
+     * 三者全缺 → 行为与旧客户端完全一致（沿用当前配置），未知字段一律忽略。
+     */
+    public var model: String = ""
+    public var baseUrl: String = ""
+    public var apiKey: String = ""
+
     public init() {}
 
     /**
@@ -96,8 +110,52 @@ public class ChatRequest {
                 }
             case None => ()
         }
+        req.model = optStr(obj, "model")
+        req.baseUrl = firstNonEmpty(optStr(obj, "base_url"), optStr(obj, "baseUrl"))
+        req.apiKey = firstNonEmpty(optStr(obj, "api_key"), optStr(obj, "apiKey"))
         return req
     }
+
+    /**
+     * 是否带模型覆盖（三字段全空 = 无覆盖）
+     */
+    public func hasModelOverride(): Bool {
+        return this.model.size > 0 || this.baseUrl.size > 0 || this.apiKey.size > 0
+    }
+
+    /**
+     * 构造模型覆盖（无覆盖时返回 None）
+     */
+    public func modelOverride(): ?ModelOverride {
+        if (!this.hasModelOverride()) {
+            return None
+        }
+        return Some(ModelOverride(this.model, this.baseUrl, this.apiKey))
+    }
+}
+
+/**
+ * 读取 JSON 字符串字段（字段缺失或类型不符 → 空串）
+ */
+func optStr(obj: JsonObject, key: String): String {
+    match (obj.get(key)) {
+        case Some(v) =>
+            match (v.kind()) {
+                case JsonKind.JsString => return v.asString().getValue()
+                case _ => return ""
+            }
+        case None => return ""
+    }
+}
+
+/**
+ * 取第一个非空串（兼容 snake_case / camelCase 两种线上字段名）
+ */
+func firstNonEmpty(a: String, b: String): String {
+    if (a.size > 0) {
+        return a
+    }
+    return b
 }
 
 /**
@@ -109,24 +167,26 @@ public class AbortRequest {
 }
 
 /**
- * 切换模型请求
- * { "type": "switch_model", "model": "deepseek-v4-flash" }
+ * 切换模型请求（会话级：只影响本会话后续执行，不落盘）
+ *
+ * { "type": "switch_model", "model": "deepseek-v4-flash",
+ *   "base_url": "https://api.deepseek.com/v1/chat/completions", "api_key": "..." }
+ *
+ * base_url / api_key 可缺省：缺省时按 model 从配置的模型列表补齐端点与密钥
+ * （对齐配置页「模型与端点成对设置」的语义），仍缺省则沿用当前配置。
  */
 public class SwitchModelRequest {
     public var model: String = ""
+    public var baseUrl: String = ""
+    public var apiKey: String = ""
 
     public init() {}
 
     public static func fromJson(obj: JsonObject): SwitchModelRequest {
         let req = SwitchModelRequest()
-        match (obj.get("model")) {
-            case Some(m) =>
-                match (m.kind()) {
-                    case JsonKind.JsString => req.model = m.asString().getValue()
-                    case _ => ()
-                }
-            case None => ()
-        }
+        req.model = optStr(obj, "model")
+        req.baseUrl = firstNonEmpty(optStr(obj, "base_url"), optStr(obj, "baseUrl"))
+        req.apiKey = firstNonEmpty(optStr(obj, "api_key"), optStr(obj, "apiKey"))
         return req
     }
 }
@@ -285,11 +345,81 @@ public class DoneEvent {
 }
 
 /**
+ * 控制帧回执事件（switch_model / compact 处理后必回）
+ *
+ * { "type": "ack", "action": "switch_model", "session_id": "s1787665309.605",
+ *   "model": "deepseek-v4-flash", "base_url": "https://api.deepseek.com/v1/chat/completions",
+ *   "compacted": false, "messages_before": 0, "messages_after": 0 }
+ *
+ * 字段固定全量输出（不按 action 裁剪），客户端可依赖稳定结构。
+ */
+public class AckEvent {
+    public var action: String = ""
+    public var sessionId: String = ""
+    public var model: String = ""
+    public var baseUrl: String = ""
+    public var compacted: Bool = false
+    public var messagesBefore: Int64 = 0
+    public var messagesAfter: Int64 = 0
+
+    public init() {}
+
+    public init(action: String) {
+        this.action = action
+    }
+
+    public func toJson(): String {
+        var obj = JsonObject()
+        obj.put("type", JsonString("ack"))
+        obj.put("action", JsonString(this.action))
+        obj.put("session_id", JsonString(this.sessionId))
+        obj.put("model", JsonString(this.model))
+        obj.put("base_url", JsonString(this.baseUrl))
+        obj.put("compacted", JsonBool(this.compacted))
+        obj.put("messages_before", JsonInt(this.messagesBefore))
+        obj.put("messages_after", JsonInt(this.messagesAfter))
+        return obj.toJsonString()
+    }
+}
+
+/**
+ * 取消回执事件（cancel / abort 处理后必回）
+ *
+ * { "type": "cancelled", "session_id": "s1787665309.605", "was_running": true }
+ *
+ * was_running=false 表示这一帧到达时没有正在执行的回合（不是错误，是事实）。
+ */
+public class CancelledEvent {
+    public var sessionId: String = ""
+    public var wasRunning: Bool = false
+
+    public init() {}
+
+    public init(sessionId: String, wasRunning: Bool) {
+        this.sessionId = sessionId
+        this.wasRunning = wasRunning
+    }
+
+    public func toJson(): String {
+        var obj = JsonObject()
+        obj.put("type", JsonString("cancelled"))
+        obj.put("session_id", JsonString(this.sessionId))
+        obj.put("was_running", JsonBool(this.wasRunning))
+        return obj.toJsonString()
+    }
+}
+
+/**
  * 错误事件
- * { "type": "error", "message": "Provider 连接失败" }
+ * { "type": "error", "message": "Provider 连接失败", "code": "provider_error", "retryable": true }
+ *
+ * code / retryable 为后加字段：老客户端只读 message 不受影响，
+ * 新客户端据 code 决定「重试 / 换模型 / 新建会话」。code 缺省 "internal"。
  */
 public class ErrorEvent {
     public var message: String = ""
+    public var code: String = ""
+    public var retryable: Bool = false
 
     public init() {}
 
@@ -297,10 +427,18 @@ public class ErrorEvent {
         this.message = message
     }
 
+    public init(message: String, code: String, retryable: Bool) {
+        this.message = message
+        this.code = code
+        this.retryable = retryable
+    }
+
     public func toJson(): String {
         var obj = JsonObject()
         obj.put("type", JsonString("error"))
         obj.put("message", JsonString(this.message))
+        obj.put("code", JsonString(if (this.code.size > 0) { this.code } else { "internal" }))
+        obj.put("retryable", JsonBool(this.retryable))
         return obj.toJsonString()
     }
 }

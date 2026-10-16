@@ -21,9 +21,95 @@ import cjh.tools.*
 import cjllm.*
 import cjh.tui.*
 import cjh.web.*
+import cjh.gateway.*
 import cjterm.*
 import cjcfg.*
 import cjutil.*
+
+/**
+ * ProviderFactory 实现（装配层）
+ *
+ * 为什么由根包实现而不是网关自己建 provider：provider 选择（OpenAI/Anthropic/Ollama/Mock）、
+ * 协议判定、环境变量与配置解析都是**装配知识**，属于根包；网关只经 ProviderFactory 接口
+ * 回调使用，依赖保持单向（cjh.web / cjh.gateway ← 根包装配），网关不必反向依赖根包。
+ */
+public class ModelProviderFactory <: ProviderFactory {
+    private let cfg: CjhConfig
+
+    public init(cfg: CjhConfig) {
+        this.cfg = cfg
+    }
+
+    /**
+     * 解析模型目标：显式 baseUrl/apiKey 优先，缺省按 model 从配置模型列表补齐
+     * （对齐配置页「模型与端点成对设置」的语义），再缺省回落全局配置。
+     */
+    public func resolve(model: String, baseUrl: String, apiKey: String): ModelTarget {
+        let target = ModelTarget()
+        target.model = if (model.size > 0) { model } else { this.cfg.model }
+        var entryBase = ""
+        var entryKey = ""
+        for (i in 0..this.cfg.models.size) {
+            let entry = this.cfg.models[i]
+            if (entry.id == target.model) {
+                entryBase = entry.baseUrl
+                entryKey = entry.apiKey
+                break
+            }
+        }
+        target.baseUrl = if (baseUrl.size > 0) {
+            baseUrl
+        } else if (entryBase.size > 0) {
+            entryBase
+        } else {
+            this.cfg.baseUrl
+        }
+        target.apiKey = if (apiKey.size > 0) {
+            apiKey
+        } else if (entryKey.size > 0) {
+            entryKey
+        } else {
+            this.cfg.apiKey
+        }
+        if (target.model.size == 0) {
+            target.error = "未指定模型，且当前配置没有默认模型"
+        } else if (target.baseUrl.size == 0) {
+            target.error = "模型 ${target.model} 没有可用端点：请求未带 base_url，配置里也没有该模型或全局 base_url"
+        }
+        return target
+    }
+
+    /**
+     * 按解析结果构造 provider（选择逻辑与 makeProvider 一致，只是按 target 参数化）
+     */
+    public func create(target: ModelTarget): LlmProvider {
+        if ((readEnv("CJH_MOCK") ?? "") == "1") {
+            return MockProvider("/tmp/cjh_verify.txt")
+        }
+        let providerName = readEnv("CJH_PROVIDER") ?? ""
+        let protocol = if (providerName.size > 0) { providerName } else { this.cfg.providerProtocol }
+        let isOllama = (providerName == "ollama") || target.baseUrl.contains("localhost") ||
+            target.baseUrl.contains("127.0.0.1")
+        var p: LlmProvider
+        if (isOllama) {
+            p = OllamaProvider(target.baseUrl, target.apiKey, target.model)
+        } else if (protocol == "anthropic") {
+            p = AnthropicProvider(target.baseUrl, target.apiKey, target.model)
+        } else {
+            let oa = OpenAiProvider(target.baseUrl, target.apiKey, target.model)
+            applyFallbackKeys(oa, this.cfg)
+            p = oa
+        }
+        // 采样参数沿用配置（切模型不改采样：采样是配置页的事）
+        match (p) {
+            case oa: OpenAiProvider => oa.setSampling(this.cfg.temperature, this.cfg.maxTokens, this.cfg.reasoningEffort)
+            case ap: AnthropicProvider => ap.setSampling(this.cfg.temperature, this.cfg.maxTokens, this.cfg.reasoningEffort)
+            case op: OllamaProvider => op.setSampling(this.cfg.temperature, this.cfg.maxTokens, this.cfg.reasoningEffort)
+            case _ => ()
+        }
+        return p
+    }
+}
 
 /**
  * cjh web 子命令入口
@@ -95,8 +181,8 @@ func runWeb(args: Array<String>): Int64 {
 
     let provider = makeProvider(cjhCfg)
 
-    // 启动 Web 服务器
-    let server = WebServer(cjhCfg, provider, registry)
+    // 启动 Web 服务器（注入模型工厂：会话级切模型 / 单次模型覆盖可用）
+    let server = WebServer(cjhCfg, provider, registry, Some(ModelProviderFactory(cjhCfg)))
     return server.serve()
 }
 

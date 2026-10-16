@@ -59,6 +59,37 @@ public class WebChannel <: Channel {
         this.sendWs(event.toJson())
     }
 
+    /**
+     * 结构化错误：带 code / retryable（客户端据此决定重试 / 换模型 / 新建会话）
+     */
+    public func sendErrorCode(_: String, message: String, code: String,
+        retryable: Bool): Unit {
+        let event = ErrorEvent(message, code, retryable)
+        this.sendWs(event.toJson())
+    }
+
+    /**
+     * 控制帧回执（switch_model / compact）
+     */
+    public func sendAck(_: String, ack: AckInfo): Unit {
+        let event = AckEvent(ack.action)
+        event.sessionId = ack.sessionId
+        event.model = ack.model
+        event.baseUrl = ack.baseUrl
+        event.compacted = ack.compacted
+        event.messagesBefore = ack.messagesBefore
+        event.messagesAfter = ack.messagesAfter
+        this.sendWs(event.toJson())
+    }
+
+    /**
+     * 取消回执（cancel / abort）
+     */
+    public func sendCancelled(_: String, info: CancelledInfo): Unit {
+        let event = CancelledEvent(info.sessionId, info.wasRunning)
+        this.sendWs(event.toJson())
+    }
+
     public func sendHistory(_: String, sessionId: String, messages: JsonArray): Unit {
         var obj = JsonObject()
         obj.put("type", JsonString("history_messages"))

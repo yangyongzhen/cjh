@@ -28,11 +28,25 @@ public class WebServer {
     private let config: CjhConfig
     private let provider: LlmProvider
     private let registry: ToolRegistry
+    // 模型覆盖工厂（装配层注入）：会话级切模型 / 单次模型覆盖用
+    private let providerFactory: ?ProviderFactory
 
     public init(config: CjhConfig, provider: LlmProvider, registry: ToolRegistry) {
         this.config = config
         this.provider = provider
         this.registry = registry
+        this.providerFactory = None
+    }
+
+    /**
+     * @param providerFactory 模型覆盖用的 provider 工厂（None = 不支持会话级切模型，此时明确回错）
+     */
+    public init(config: CjhConfig, provider: LlmProvider, registry: ToolRegistry,
+        providerFactory: ?ProviderFactory) {
+        this.config = config
+        this.provider = provider
+        this.registry = registry
+        this.providerFactory = providerFactory
     }
 
     /**
@@ -44,7 +58,7 @@ public class WebServer {
         let bindAddr = this.config.webBindAddr
 
         // 构建请求分发器（自定义实现 HttpRequestDistributor 接口）
-        let distributor = WebDistributor(this.config, this.provider, this.registry)
+        let distributor = WebDistributor(this.config, this.provider, this.registry, this.providerFactory)
 
         // 构建并启动服务器
         let server = ServerBuilder()
@@ -90,6 +104,24 @@ public class WebDistributor <: HttpRequestDistributor {
         this.registry = registry
         // ChannelGateway：渠道网关，负责会话路由 + Agent 生命周期 + 事件分发
         this.gateway = ChannelGateway(this.config, this.provider, this.registry)
+        // WsHandler 实例（WebSocket 端点，只负责帧读写 + JSON 解析）
+        this.wsHandler = WsHandler(this.config, this.gateway)
+        // WebHandler 实例（统一 HTTP 处理）
+        this.webHandler = WebHandler(this.config)
+        // RestApi 实例（/api/* 路由）；registry 供工作区切换重置 bash 会话
+        this.restApi = RestApi(this.config, this.registry)
+    }
+
+    /**
+     * @param providerFactory 模型覆盖工厂（装配层注入）：会话级切模型 / 单次模型覆盖用
+     */
+    public init(config: CjhConfig, provider: LlmProvider, registry: ToolRegistry,
+        providerFactory: ?ProviderFactory) {
+        this.config = config
+        this.provider = provider
+        this.registry = registry
+        // ChannelGateway：渠道网关，负责会话路由 + Agent 生命周期 + 事件分发
+        this.gateway = ChannelGateway(this.config, this.provider, this.registry, providerFactory)
         // WsHandler 实例（WebSocket 端点，只负责帧读写 + JSON 解析）
         this.wsHandler = WsHandler(this.config, this.gateway)
         // WebHandler 实例（统一 HTTP 处理）
