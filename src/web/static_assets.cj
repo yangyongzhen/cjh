@@ -1432,6 +1432,11 @@ function buildDiffBlock(diff) {
 
 function handleDone(summary) {
     setExecuting(false);
+    // 截断信号（可选键）：上游 max_tokens 截断了最终回复 → 明说，
+    // 否则用户会把它当成"模型说完了"，拿一份不完整的答案走。
+    if (summary && summary.truncated) {
+        showNotice('⚠ 回复被截断（max_tokens），内容可能不完整。直接发「继续」可接着写。', 'info');
+    }
     if (summary) {
         let summaryDiv = document.getElementById('round-summary');
         let cachedPct = summary.cached > 0 ? Math.round(summary.cached * 100 / summary.tokens) : 0;

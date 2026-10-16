@@ -194,6 +194,8 @@ public class RunSummary {
     public var errorCode: String = ""      // 空 = 本回合没有失败
     public var errorMessage: String = ""   // 人能读的说明（不含密钥）
     public var errorRetryable: Bool = false // 原样重试是否有意义
+    // 最终文本回复是否被上游 max_tokens 截断（对外信号：done 帧可选键 truncated）
+    public var truncated: Bool = false
     // V2d 并发性能基线
     public var parallelBatches: Int64 = 0  // 并发执行的批次数
     public var parallelSavedMs: Int64 = 0  // 并发相比串行节省的毫秒数
@@ -888,6 +890,8 @@ public class Agent {
             let durationMs = (DateTime.now() - startTime).toMilliseconds()
             summary.durationMs = durationMs
             summary.reply = response.text
+            // 只在真的被上游截断时置位：其余终局路径（中断 / 异常 / 硬顶）都不许虚报截断
+            summary.truncated = response.truncated
             // Stop 事件钩子广播（回合正常完成）
             var stopP = JsonObject()
             stopP.put("rounds", JsonInt(iterations))

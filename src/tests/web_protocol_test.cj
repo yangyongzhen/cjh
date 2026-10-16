@@ -36,6 +36,9 @@ public class CaptureChannel <: Channel {
     public var metas: ArrayList<FrameMeta> = ArrayList<FrameMeta>()
     // done 的结束原因（按到达顺序）
     public var doneReasons: ArrayList<String> = ArrayList<String>()
+    // done 帧原始 JSON（按到达顺序）：可选键（如 truncated）的存在性只能靠原文断言，
+    // 因为"缺键"与"值为 false"在取值辅助函数下长得一样
+    public var doneRawJson: ArrayList<String> = ArrayList<String>()
     // 错误事件的帧身份（与 errors 一一对应）
     public var errorMetas: ArrayList<FrameMeta> = ArrayList<FrameMeta>()
     // 审批请求（危险操作前网关推来；测试据此答复或放任超时）
@@ -73,6 +76,8 @@ public class CaptureChannel <: Channel {
         this.dones += 1
         this.metas.add(meta)
         this.doneReasons.add(getStr(summary, "finish_reason"))
+        // 原文一并留存：可选键（truncated）的"缺键 vs 值为 false"只有原文能区分
+        this.doneRawJson.add(summary.toString())
     }
 
     public func sendError(_: String, message: String): Unit {

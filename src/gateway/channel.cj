@@ -977,6 +977,11 @@ public class ChannelGateway {
         obj.put("tokens", JsonInt(summary.totalTokens()))
         obj.put("cached", JsonInt(summary.cachedTokens))
         obj.put("finish_reason", JsonString(finishReason))
+        // 截断信号（可选键）：只在确实被 max_tokens 截断时出现——老客户端忽略未知键即可。
+        // 刻意不新增 finish_reason 取值：三值封闭，加第四个取值是破坏性扩展。
+        if (summary.truncated) {
+            obj.put("truncated", JsonBool(true))
+        }
         channel.sendDone(chatId, meta, obj)
     }
 
