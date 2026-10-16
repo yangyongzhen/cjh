@@ -352,11 +352,11 @@ public class ToolResultEvent {
  *
  * { "type": "done", "summary": {"rounds": 2, "tools": 1, "duration_ms": 4062,
  *   "tokens": 4855, "cached": 4681},
- *   "finish_reason": "stop", "session_id": "...", "turn_id": "...", "message_id": "..." }
+ *   "finish_reason": "stop", "truncated": true, "session_id": "...", "turn_id": "...", "message_id": "..." }
  *
  * finish_reason：stop（正常收尾）/ cancelled（回合被中断）/ error（回合内异常）。
- * 只报真实可得的取值 —— provider 层的 max_tokens 截断（length）需要
- * cjllm → agent 的 finish_reason 透传，尚未做，所以宁可不报，也不给假值。
+ * 三值封闭，**不**为 max_tokens 截断新增第四个取值（那对老客户端是破坏性扩展）；
+ * 截断改由可选布尔 truncated 承载——只在真被截断时出现，缺键即"未截断"。
  */
 public class DoneEvent {
     public var rounds: Int64 = 0
@@ -366,6 +366,8 @@ public class DoneEvent {
     public var cached: Int64 = 0
     public var meta: FrameMeta = FrameMeta()
     public var finishReason: String = "stop"
+    // 最终回复被上游 max_tokens 截断（可选键：仅 true 时序列化）
+    public var truncated: Bool = false
 
     public init() {}
 
@@ -390,6 +392,10 @@ public class DoneEvent {
         obj.put("type", JsonString("done"))
         obj.put("summary", summary)
         obj.put("finish_reason", JsonString(this.finishReason))
+        // 可选键：仅真截断时出现（老客户端忽略未知键即可；缺键 = 未截断）
+        if (this.truncated) {
+            obj.put("truncated", JsonBool(true))
+        }
         putFrameMeta(obj, this.meta)
         return obj.toJsonString()
     }

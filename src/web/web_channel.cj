@@ -61,6 +61,8 @@ public class WebChannel <: Channel {
         event.meta = meta
         let reason = this.getStr(summary, "finish_reason")
         event.finishReason = if (reason.size > 0) { reason } else { "stop" }
+        // 截断信号：网关只在真截断时才放进 summary，缺键 = 未截断（不虚报）
+        event.truncated = this.getBool(summary, "truncated")
         this.sendWs(event.toJson())
     }
 
@@ -158,6 +160,20 @@ public class WebChannel <: Channel {
                     case _ => return ""
                 }
             case None => return ""
+        }
+    }
+
+    /**
+     * 从 JsonObject 提取 Bool 字段（缺失或类型不符 → false）
+     */
+    private func getBool(obj: JsonObject, key: String): Bool {
+        match (obj.get(key)) {
+            case Some(v) =>
+                match (v.kind()) {
+                    case JsonKind.JsBool => return v.asBool().getValue()
+                    case _ => return false
+                }
+            case None => return false
         }
     }
 }
