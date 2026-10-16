@@ -68,7 +68,7 @@ public class TuiCanvas {
         this.rows = rows
         this.cols = cols
         this.lines = ArrayList<String>()
-        for (i in 0..rows) {
+        for (_ in 0..rows) {
             this.lines.add("")
         }
         if (sizeChanged || rows != this.lastRows || cols != this.lastCols) {

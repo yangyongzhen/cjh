@@ -189,7 +189,7 @@ public class FormDialog <: Component {
         return this.selects[index].size > 0
     }
 
-    public override func render(canvas: TuiCanvas, row: Int64, width: Int64, height: Int64): Int64 {
+    public override func render(canvas: TuiCanvas, row: Int64, width: Int64, _: Int64): Int64 {
         if (!this.visible) {
             return 0
         }
@@ -242,9 +242,8 @@ public class FormDialog <: Component {
         let accent = Ansi.fg(Ansi.THEME_ACCENT)
 
         // ── 辅助：生成一条完整内容行（含左右边框，宽度对齐 boxW）──
-        // inner = 标签（右对齐 maxLabelW） + 分隔 + value 区（inputW 列）
-        let inputW = this.boxW - 2 - 1 - maxLabelW - 2 - 1   // 边框+内边距+标签+分隔+右内边距
-        let buildLine = { leftPad: String, mid: String, rightFill: Bool =>
+        // inner = 标签（右对齐 maxLabelW） + 分隔 + value 区
+        let buildLine = { _: String, mid: String, _: Bool =>
             var sb = StringBuilder()
             sb.append(muted + vc + Ansi.reset())
             sb.append(" ")

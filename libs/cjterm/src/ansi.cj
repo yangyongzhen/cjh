@@ -1,7 +1,5 @@
 package cjterm
 
-import std.env.*
-import std.collection.*
 
 /**
  * ANSI 终端控制：颜色、光标、清屏

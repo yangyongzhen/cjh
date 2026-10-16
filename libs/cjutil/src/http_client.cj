@@ -39,8 +39,6 @@ package cjutil
 
 import std.collection.*
 import std.io.*
-import std.sync.*
-import std.time.*
 import stdx.net.http.*
 import stdx.net.tls.*
 import stdx.crypto.x509.X509Certificate

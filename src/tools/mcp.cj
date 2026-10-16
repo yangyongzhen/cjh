@@ -68,10 +68,10 @@ public class McpClient {
         }
 
         try {
-            let sp = SubProcess.start(this.config.command, argv,
-                stdIn: ProcessRedirect.Pipe,
-                stdOut: ProcessRedirect.Pipe,
-                stdErr: ProcessRedirect.Pipe,
+            let sp = launch(this.config.command, argv,
+                stdIn: Pipe,
+                stdOut: Pipe,
+                stdErr: Pipe,
                 environment: env)
             this.subProcess = sp
 

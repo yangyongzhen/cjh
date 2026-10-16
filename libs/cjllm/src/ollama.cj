@@ -2,9 +2,7 @@ package cjllm
 
 import stdx.encoding.json.*
 import std.collection.*
-import std.io.*
 import std.sync.*
-import std.net.*
 import cjutil.*
 
 /**
@@ -45,7 +43,7 @@ public class OllamaProvider <: LlmProvider {
      * 设置采样参数（对齐 OpenAiProvider.setSampling；P1a：reasoningEffort 不适用
      * Ollama 协议，忽略——签名与 OpenAi/Anthropic 保持一致）
      */
-    public func setSampling(temperature: Float64, maxTokens: Int64, reasoningEffort: String): Unit {
+    public func setSampling(temperature: Float64, maxTokens: Int64, _: String): Unit {
         this.temperature = temperature
         this.maxTokens = maxTokens
         // Ollama /chat/completions 无 reasoning_effort 概念，静默忽略
@@ -89,7 +87,7 @@ public class OllamaProvider <: LlmProvider {
     }
 
     public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
-        onDelta: (String) -> Unit, onReasoning: (String) -> Unit,
+        onDelta: (String) -> Unit, _: (String) -> Unit,
         onTokenEstimate: (Int64) -> Unit, isCancelled: () -> Bool): ModelResponse {
         // 构造请求体（与 OpenAiProvider 一致）
         var body = JsonObject()

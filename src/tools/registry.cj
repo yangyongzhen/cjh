@@ -36,13 +36,13 @@ public class ToolResult {
  * 默认 false（保守：新工具除非显式声明，否则视为有副作用）
  */
 public interface CjhTool {
-    public func spec(): ToolSpec
-    public func execute(args: JsonObject): ToolResult
+    func spec(): ToolSpec
+    func execute(args: JsonObject): ToolResult
     /**
      * V2d 并发执行引擎分类：true=纯读无副作用（可并发），false=有写/副作用（串行）
      * 默认 false（保守：新工具除非显式 override，否则视为有副作用）
      */
-    public func isReadOnly(): Bool
+    func isReadOnly(): Bool
 }
 
 /**
@@ -51,7 +51,7 @@ public interface CjhTool {
 public class ToolRegistry {
     private var tools: HashMap<String, CjhTool> = HashMap<String, CjhTool>()
     // 异步 MCP 加载会在后台协程 register，主线程同时 specs/execute → 加锁保护
-    private let lock: ReentrantMutex = ReentrantMutex()
+    private let lock: Mutex = Mutex()
 
     public init() {}
 

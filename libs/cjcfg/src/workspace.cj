@@ -10,7 +10,6 @@ package cjcfg
  */
 
 import std.collection.*
-import std.convert.*
 import std.fs.*
 import std.time.*
 import stdx.encoding.json.*
@@ -216,4 +215,38 @@ public class WorkspaceManager {
             }
         }
     }
+}
+
+/**
+ * 保证工作区目录可用（"新建工作区"的落点，供 cjh.web 的 POST /api/workspaces 调用）
+ *
+ * - 已存在且是目录 → 通过（幂等，不报错）
+ * - 已存在但是文件 → 拒绝
+ * - 不存在且 create=false → 拒绝并给出可读原因（含 create 提示），**不偷偷建目录**
+ * - 不存在且 create=true → 递归创建
+ *
+ * @return (是否可用, 错误原因)；成功时错误为 ""
+ */
+public func ensureWorkspaceDir(path: String, create: Bool): (Bool, String) {
+    if (path.size == 0) {
+        return (false, "path 不能为空")
+    }
+    if (exists(path)) {
+        if (FileInfo(path).isDirectory()) {
+            return (true, "")
+        }
+        return (false, "${path} 不是目录")
+    }
+    if (!create) {
+        return (false, "目录不存在: ${path}（如需新建目录，请在请求体传 \"create\": true）")
+    }
+    try {
+        Directory.create(path, recursive: true)
+    } catch (e: Exception) {
+        return (false, "创建目录失败: ${path}: ${e}")
+    }
+    if (!FileInfo(path).isDirectory()) {
+        return (false, "创建目录失败: ${path}")
+    }
+    return (true, "")
 }

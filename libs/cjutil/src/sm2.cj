@@ -22,7 +22,6 @@ package cjutil
 
 import stdx.crypto.keys.*
 import stdx.crypto.x509.DerBlob
-import std.crypto.digest.*
 
 /**
  * SM2 验签结果

@@ -10,7 +10,6 @@ package cjh
 
 import std.collection.*
 import cjlog.*
-import std.console.*
 import std.env.*
 import std.fs.*
 import std.convert.Parsable
@@ -25,7 +24,6 @@ import cjh.web.*
 import cjterm.*
 import cjcfg.*
 import cjutil.*
-import stdx.log.*
 
 /**
  * cjh web 子命令入口
@@ -40,6 +38,7 @@ import stdx.log.*
 func runWeb(args: Array<String>): Int64 {
     let cjhCfg = CjhConfig()
     cjhCfg.loadSettings()
+    warnCapabilitySilent(cjhCfg)
 
     // 命令行参数覆盖 settings.json
     var i: Int64 = 1
@@ -70,7 +69,7 @@ func runWeb(args: Array<String>): Int64 {
 
     // 安全检查：远程绑定但无鉴权 token
     if (cjhCfg.webBindAddr != "127.0.0.1" && cjhCfg.webBindAddr != "localhost" && cjhCfg.webAuthToken.size == 0) {
-        println("⚠️  安全警告：绑定地址 ${cjhCfg.webBindAddr} 非 127.0.0.1，但未设置鉴权 token")
+        println("⚠  安全警告：绑定地址 ${cjhCfg.webBindAddr} 非 127.0.0.1，但未设置鉴权 token")
         println("   任何人都能访问你的 cjh 实例并执行工具调用")
         println("   建议：cjh web --bind ${cjhCfg.webBindAddr} --token <your-secret>")
         println()
@@ -91,8 +90,8 @@ func runWeb(args: Array<String>): Int64 {
     registerWebTools(cjhCfg, registry)
     registerKnowledgeTools(cjhCfg, registry)
     loadSkillTools(cjhCfg.skillsDir, registry, cjhCfg.enabledSkills)
-    let pluginManager = loadPlugins(cjhCfg.pluginsDir, cjhCfg.configDir, registry, cjhCfg.enabledPlugins, cjhCfg.requireSignature)
-    let mcpManager = loadMcpServers(cjhCfg.mcpServers, registry)
+    let _ = loadPlugins(cjhCfg.pluginsDir, cjhCfg.configDir, registry, cjhCfg.enabledPlugins, cjhCfg.requireSignature)
+    let _ = loadMcpServers(cjhCfg.mcpServers, registry)
 
     let provider = makeProvider(cjhCfg)
 
@@ -113,7 +112,7 @@ class CliSession {
  */
 func readLineFromStdIn(): Option<String> {
     try {
-        let stdin = Console.stdIn
+        let stdin = getStdIn()
         var buf = Array<Byte>(1024, repeat: 0)
         let n = stdin.read(buf)
         if (n <= 0) {
@@ -161,7 +160,7 @@ func runCli(sessionId: String): Int64 {
     // 加载插件（V2b Step 1：plugin.json + shell 工具）
     let pluginManager = loadPlugins(cjhCfg.pluginsDir, cjhCfg.configDir, registry, cjhCfg.enabledPlugins, cjhCfg.requireSignature)
     // 连接 MCP 服务器（V2b 扩展点：stdio 传输 + JSON-RPC）
-    let mcpManager = loadMcpServers(cjhCfg.mcpServers, registry)
+    let _ = loadMcpServers(cjhCfg.mcpServers, registry)
 
     // 预生成会话 ID（工具结果截断落盘需要会话 ID 隔离）
     let effectiveSessionId = if (sessionId.size > 0) { sessionId } else { SessionStore(cjhCfg.sessionsDir).newSessionId() }
@@ -205,7 +204,7 @@ func runCli(sessionId: String): Int64 {
         }
 
         // 事件 → 终端输出
-        agent.onDelta = { d => () }  // 流式增量：TUI 显示，CLI 由 onAssistantText 汇总
+        agent.onDelta = { _ => () }  // 流式增量：TUI 显示，CLI 由 onAssistantText 汇总
         agent.onToolStart = { name, args =>
             println("")
             println("▶ 调用工具: ${name} ${args.toJsonString()}")
@@ -297,6 +296,7 @@ func runJson(prompt: String, sessionId: String): Int64 {
 
     let cjhCfg = CjhConfig()
     cjhCfg.ensureDirs()
+    warnCapabilitySilent(cjhCfg)
     // 应用 TUI 主题（settings.json "theme" 字段；默认 starfrost 星霜青）
     Theme.apply(cjhCfg.theme)
     // 注册 web_search + web_fetch 工具
@@ -307,7 +307,7 @@ func runJson(prompt: String, sessionId: String): Int64 {
     // 加载插件（V2b Step 1：plugin.json + shell 工具）
     let pluginManager = loadPlugins(cjhCfg.pluginsDir, cjhCfg.configDir, registry, cjhCfg.enabledPlugins, cjhCfg.requireSignature)
     // 连接 MCP 服务器（V2b 扩展点：stdio 传输 + JSON-RPC）
-    let mcpManager = loadMcpServers(cjhCfg.mcpServers, registry)
+    let _ = loadMcpServers(cjhCfg.mcpServers, registry)
 
     // 预生成会话 ID（工具结果截断落盘需要会话 ID 隔离）
     let effectiveSessionId = if (sessionId.size > 0) { sessionId } else { SessionStore(cjhCfg.sessionsDir).newSessionId() }
@@ -379,7 +379,7 @@ func runJson(prompt: String, sessionId: String): Int64 {
 
         // 收集工具调用记录（供 JSON 输出）
         JsonState.toolCalls = ArrayList<(String, String, String)>()
-        agent.onDelta = { d => () }
+        agent.onDelta = { _ => () }
         agent.onToolStart = { name, args =>
             JsonState.toolCalls.add((name, args.toJsonString(), ""))
         }
@@ -391,8 +391,8 @@ func runJson(prompt: String, sessionId: String): Int64 {
                 }
             }
         }
-        agent.onApproval = { name, args, reason => false }  // 无头模式默认拒绝危险操作
-        agent.onAssistantText = { text => () }
+        agent.onApproval = { _, _, _ => false }  // 无头模式默认拒绝危险操作
+        agent.onAssistantText = { _ => () }
 
         if (prompt.size == 0) {
             // 无 prompt：输出会话摘要 JSON（--mode json --resume <id> 查历史）
@@ -462,7 +462,7 @@ func runTui(sessionId: String): Int64 {
         Log.warn("按键追踪 ${traceNote}")
     }
     // 在屏蔽 stderr 前先缓存终端尺寸（suppress 后 ioctl(STDERR) 失效）
-    let (initRows, initCols) = TermSize.get()
+    let (_, _) = TermSize.get()
     // TUI 全屏模式：立即屏蔽 stderr（配置生成等提示不污染屏幕）
     Stderr.suppress()
     mark("stderr suppressed")
@@ -482,6 +482,7 @@ func runTui(sessionId: String): Int64 {
     // 配置加载
     let cjhCfg = CjhConfig()
     cjhCfg.ensureDirs()
+    warnCapabilitySilent(cjhCfg)
     mark("CjhConfig loaded")
     // 应用 TUI 主题（settings.json "theme" 字段；默认 starfrost 星霜青）
     Theme.apply(cjhCfg.theme)
@@ -717,7 +718,7 @@ func runTui(sessionId: String): Int64 {
             // 格式：─── ✓ 2 rounds · 3 tools · 42.6s · 1.5k tokens · 99% cached ───
             // 整行统一灰色（THEME_MUTED），居中：左右横线等分
             let stat = "✓ ${s.rounds} ${roundWord} · ${s.toolCalls} ${toolWord} · ${secInt}.${secTenths}s · ${fmtTokenCount(tokTotal)} tokens · ${rate}% cached"
-            let (rows, cols) = TermSize.get()
+            let (_, cols) = TermSize.get()
             let statW = TuiCanvas.displayWidth(stat)
             // 内容总宽 = 左横线 + 1空格 + stat + 1空格 + 右横线
             // 居中：左右横线各 (cols - statW - 2) / 2，余数补到左侧
@@ -867,9 +868,8 @@ func runTui(sessionId: String): Int64 {
     } finally {
         // 兜底：任何退出路径（含异常崩溃）都恢复终端 raw 模式
         // 否则 ECHO 被清，回到 shell 后输入不显示
-        match (tuiOpt) {
-            case Some(t) => t.restoreTerminal()
-            case None => ()
+        if (let Some(t) <- tuiOpt) {
+            t.restoreTerminal()
         }
         // 退出清理：回收子进程 + 断开 MCP + 停止日志 sink 协程。
         // 2026-09-03 事故根因之一：退出路径从不关闭 BashSession/MCP，
@@ -977,8 +977,8 @@ func listSessions(): Int64 {
  * @param subagentType "explore"（只读）或 "worker"（可写）
  * @return TaskSpawnResult 子代理执行结果
  */
-func spawnSubagent(provider: LlmProvider, registry: ToolRegistry, config: AgentConfig,
-    description: String, prompt: String, subagentType: String): TaskSpawnResult {
+func spawnSubagent(provider: LlmProvider, registry: ToolRegistry, _: AgentConfig,
+    _: String, prompt: String, subagentType: String): TaskSpawnResult {
     // 构造子代理 system prompt
     let systemPrompt = buildSubagentPrompt(subagentType)
 
@@ -1048,4 +1048,18 @@ func extractSubagentResult(subAgent: Agent): String {
         i -= 1
     }
     return "(子代理未产生回复文本)"
+}
+
+/**
+ * capability 静默宽松提示：配置了 capability 段、却没开 enabled 时提醒一次。
+ *
+ * 只消音、不改语义——capability 段默认宽松是刻意的（见 libs/cjcfg/src/capability.cj
+ * 的 silentPermissiveHint 注释与 commit 4c56f55：曾默认严格，用户配了 capability 段后
+ * bash 被拒而投诉）。以往这种情况完全无反馈，规则配了却不生效。
+ */
+func warnCapabilitySilent(cfg: CjhConfig): Unit {
+    match (cfg.capability.silentPermissiveHint()) {
+        case Some(msg) => println(msg)
+        case None => ()
+    }
 }

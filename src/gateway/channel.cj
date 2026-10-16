@@ -36,7 +36,6 @@ package cjh.gateway
 import std.collection.*
 import std.sync.*
 import stdx.encoding.json.*
-import stdx.net.http.*
 import cjllm.*
 import cjcfg.*
 import cjh.agent.*
@@ -252,7 +251,7 @@ public class ChannelGateway {
             case Some(channel) =>
                 // 销毁当前会话，恢复历史会话
                 this.destroySession(channelId, chatId)
-                let agent = this.resumeSession(channelId, chatId, sessionId)
+                let _ = this.resumeSession(channelId, chatId, sessionId)
 
                 // 加载历史消息
                 let store = SessionStore(this.config.sessionsDir)
@@ -333,7 +332,7 @@ public class ChannelGateway {
     /**
      * 构建 Agent 实例
      */
-    private func buildAgent(sessionId: String, channelId: String, chatId: String): Agent {
+    private func buildAgent(sessionId: String, _: String, _: String): Agent {
         let agentConfig = AgentConfig(
             this.config.systemPrompt,
             this.config.maxIterations,

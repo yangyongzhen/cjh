@@ -301,6 +301,8 @@ public class RestApi <: HttpRequestHandler {
         obj.put("webSearchMaxResults", JsonInt(this.config.webSearchMaxResults))
         obj.put("webFetchEnabled", JsonBool(this.config.webFetchEnabled))
         obj.put("webFetchMaxChars", JsonInt(this.config.webFetchMaxChars))
+        // MCP 服务器（数组形态；env 值脱敏，避免密钥回显）
+        obj.put("mcpServers", mcpServersToJsonArray(this.config.mcpServers, true))
 
         let body = obj.toJsonString()
         let res = ctx.responseBuilder
@@ -365,13 +367,33 @@ public class RestApi <: HttpRequestHandler {
             res.body(err.toJsonString().toArray())
             return
         }
+        // mcpServers：先整体校验，失败即拒绝（不写任何字段，避免落半截配置）
+        var mcpUpdate: ?ArrayList<McpServerConfig> = None
+        if (let Some(mv) <- updates.get("mcpServers")) {
+            let (parsed, perr) = parseMcpServersJson(mv)
+            if (perr.size > 0) {
+                var errObj = JsonObject()
+                errObj.put("ok", JsonBool(false))
+                errObj.put("error", JsonString(perr))
+                res.body(errObj.toJsonString().toArray())
+                return
+            }
+            mcpUpdate = Some(parsed)
+        }
         // 应用更新到 config
         applySettingsUpdate(updates)
+        match (mcpUpdate) {
+            case Some(l) => this.config.replaceMcpServers(l)
+            case None => ()
+        }
         // 保存到 settings.json
         try {
             this.config.saveAll()
             var ok = JsonObject()
             ok.put("ok", JsonBool(true))
+            if (mcpUpdate.isSome()) {
+                ok.put("note", JsonString("MCP 配置已保存；新增/修改的服务器需重启 cjh 后建立连接"))
+            }
             res.body(ok.toJsonString().toArray())
         } catch (e: Exception) {
             var err = JsonObject()
@@ -464,8 +486,24 @@ public class RestApi <: HttpRequestHandler {
                 if (let Some(v) <- obj.get("name")) {
                     if (isStr(v)) { name = v.asString().getValue() }
                 }
+                var create = false
+                if (let Some(cv) <- obj.get("create")) {
+                    match (cv.kind()) {
+                        case JsonKind.JsBool => create = cv.asBool().getValue()
+                        case _ => ()
+                    }
+                }
                 if (path.size == 0) {
                     res.body("{\"ok\":false,\"error\":\"path required\"}".toArray())
+                    return
+                }
+                // 目录不存在时：create=true 递归新建；create=false 明确拒绝（不登记死路径）
+                let (pathOk, pathErr) = ensureWorkspaceDir(path, create)
+                if (!pathOk) {
+                    var errObj = JsonObject()
+                    errObj.put("ok", JsonBool(false))
+                    errObj.put("error", JsonString(pathErr))
+                    res.body(errObj.toJsonString().toArray())
                     return
                 }
                 mgr.add(path, name)

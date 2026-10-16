@@ -22,6 +22,10 @@ public class CapabilityTest {
     private func buildCapability(): Capability {
         var obj = JsonObject()
         obj.put("identifier", JsonString("test"))
+        // enabled 闸门：配置 capability 段本身不等于启用严格模式（4c56f55）。
+        // 缺省 false = 宽松放行（曾硬编码 true，用户配了 capability 段后 bash 被拒而投诉）；
+        // 本测试类验证拒绝/审批/放行三条路径，故显式打开严格模式。
+        obj.put("enabled", JsonBool(true))
         var cmds = ArrayList<JsonValue>()
         cmds.add(JsonString("ls"))
         cmds.add(JsonString("system:*"))
@@ -88,6 +92,8 @@ public class CapabilityTest {
     public func testCommandWhitelist(): Unit {
         // 不带 approval 的独立配置：验证命令白名单匹配本身（proc 黑名单保留）
         var obj = JsonObject()
+        // 同上：命令白名单要在严格模式下才生效
+        obj.put("enabled", JsonBool(true))
         var cmds = ArrayList<JsonValue>()
         cmds.add(JsonString("ls"))
         cmds.add(JsonString("system*"))
@@ -162,6 +168,34 @@ public class CapabilityTest {
         }
     }
 
+    /**
+     * 静默宽松提示：配置了 capability 段但没开 enabled 时，要让"配了却不生效"可见
+     * （语义仍是宽松，仅为消音；见 §3.45）。
+     */
+    @TestCase
+    public func testSilentPermissiveHint(): Unit {
+        // 配了 capability 段、未开 enabled：有提示
+        var obj = JsonObject()
+        var tools = ArrayList<JsonValue>()
+        tools.add(JsonString("read_file"))
+        obj.put("tools", JsonArray(tools))
+        let cap = Capability.fromJson(Some(obj))
+        match (cap.silentPermissiveHint()) {
+            case Some(msg) => @Assert(msg.contains("enabled"), true)
+            case None => @Assert("configured but not enabled", "no hint")
+        }
+        // 显式启用严格模式：无提示
+        match (this.buildCapability().silentPermissiveHint()) {
+            case Some(_) => @Assert("enabled capability", "unexpected hint")
+            case None => ()
+        }
+        // 未配置 capability 段：无提示（默认宽松是常态，不该打扰）
+        match (Capability.fromJson(None).silentPermissiveHint()) {
+            case Some(_) => @Assert("no capability", "unexpected hint")
+            case None => ()
+        }
+    }
+
     @TestCase
     public func testGlobMatch(): Unit {
         // 基础 glob 语义
@@ -170,5 +204,34 @@ public class CapabilityTest {
         @Assert(Capability.globMatch("/a/*.cj", "/a/main.cj"), true)
         @Assert(Capability.globMatch("/a/?", "/a/b"), true)
         @Assert(Capability.globMatch("/a/**", "/a"), true)
+    }
+
+    /**
+     * enabled 闸门契约（4c56f55 补）：配了 capability 段 ≠ 启用严格模式。
+     * 缺省与显式 false 都宽松放行；只有显式 true 才是「未声明即拒绝」。
+     * 这条是把历史教训钉住——曾硬编码 true，用户加了 capability 段后 bash 被拒。
+     */
+    @TestCase
+    public func testEnabledGate(): Unit {
+        // 缺省（未写 enabled）：宽松放行
+        let capDefault = Capability.fromJson(Some(JsonObject()))
+        match (capDefault.checkTool("list_dir")) {
+            case CapDecision.Allow => ()
+            case _ => @Assert("enabled default", "not permissive")
+        }
+        // 显式 enabled: false：宽松放行
+        var offObj = JsonObject()
+        offObj.put("enabled", JsonBool(false))
+        let capOff = Capability.fromJson(Some(offObj))
+        match (capOff.checkTool("list_dir")) {
+            case CapDecision.Allow => ()
+            case _ => @Assert("enabled false", "not permissive")
+        }
+        // 显式 enabled: true：严格模式（未声明即拒绝）
+        let capOn = this.buildCapability()
+        match (capOn.checkTool("list_dir")) {
+            case CapDecision.Deny(reason) => @Assert(reason.size > 0, true)
+            case _ => @Assert("enabled true", "not strict")
+        }
     }
 }

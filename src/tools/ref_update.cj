@@ -419,7 +419,7 @@ func refGitClone(repo: String, branch: String, dest: String): Int64 {
     a.add(repo)
     a.add(dest)
     try {
-        let (code, outBytes, errBytes) = executeWithOutput("git", a.toArray())
+        let (code, _, _) = executeWithOutput("git", a.toArray())
         return code
     } catch (e: Exception) {
         return -1

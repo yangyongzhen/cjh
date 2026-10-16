@@ -472,11 +472,11 @@ public class Term {
      * 不并入粘贴，也不引入聚合延迟）
      */
     private func isPasteCandidate(k: KeyEvent): Bool {
-        return (k.text.size > 0 && !k.isEsc && !k.isEnter
-            && !k.isBackspace && !k.isArrowUp && !k.isArrowDown
-            && !k.isArrowLeft && !k.isArrowRight && !k.isMouse && !k.isPaste)
-            || (k.isEnter && k.text.size == 1)
-            || (k.isTab && k.text.size == 1)
+        return (k.text.size > 0 && !k.isEsc && !k.isEnter &&
+            !k.isBackspace && !k.isArrowUp && !k.isArrowDown &&
+            !k.isArrowLeft && !k.isArrowRight && !k.isMouse && !k.isPaste) ||
+            (k.isEnter && k.text.size == 1) ||
+            (k.isTab && k.text.size == 1)
     }
 
     /**
@@ -686,8 +686,8 @@ public class Term {
                 // 其他控制键（↑↓←→、ESC、Backspace、Ctrl 组合）= 命令，
                 // 停止合并；已收部分作为粘贴事件先行返回，该命令键入重放队
                 // （不丢事件，下次 readKey 原样还回）。
-                if (k.text.size == 0 || k.isBackspace || k.isEsc
-                    || k.isArrowUp || k.isArrowDown || k.isArrowLeft || k.isArrowRight) {
+                if (k.text.size == 0 || k.isBackspace || k.isEsc ||
+                    k.isArrowUp || k.isArrowDown || k.isArrowLeft || k.isArrowRight) {
                     if (count > 0) {
                         this.replay.add(k)
                         this.markPasteStream()  // 已发出粘贴事件：守护补发 Enter

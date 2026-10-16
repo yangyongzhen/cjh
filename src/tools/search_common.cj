@@ -140,7 +140,7 @@ public func enumerateFilesWithFind(base: String): ?ArrayList<String> {
     fa.add("-printf")
     fa.add("%P\\0")
     try {
-        let (code, out, _err) = executeWithOutput("find", fa.toArray())
+        let (code, out, _) = executeWithOutput("find", fa.toArray())
         if (code != 0) {
             // 退出码非 0（base 不存在 / 部分子目录无权限等）⇒ 不可信任其部分输出，
             // 整体回退原生（原生按文件捕获错误，行为与现状一致）。

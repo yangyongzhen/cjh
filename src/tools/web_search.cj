@@ -2,11 +2,6 @@ package cjh.tools
 
 import std.collection.*
 import std.convert.Parsable
-import std.io.*
-import std.process.*
-import stdx.net.http.*
-import stdx.net.tls.*
-import stdx.crypto.x509.X509Certificate
 import stdx.encoding.json.*
 import cjllm.ToolSpec
 import cjutil.*
@@ -497,117 +492,6 @@ func findBingSnippet(lower: String, html: String, startPos: Int64): String {
     return ""
 }
 
-/**
- * 解析 DDG HTML 搜索结果页
- *
- * DDG HTML 页面结构：
- *   <a class="result__a" href="...">标题</a>
- *   <a class="result__snippet" href="...">摘要</a>
- *
- * 策略：
- *   1. 找 result__a 的 href 和文本
- *   2. 找对应的 result__snippet 文本
- *   3. DDG 的 href 是 /l/?uddg=<encoded_url> 格式，需要解码
- */
-func parseDDgHtml(html: String, encodedQuery: String, maxResults: Int64): ArrayList<SearchHit> {
-    let hits = ArrayList<SearchHit>()
-    let lower = html.toAsciiLower()
-
-    // 找所有 result__a 链接
-    var pos = 0
-    while (hits.size < maxResults) {
-        // 找 result__a
-        let resultOpt = lower.indexOf("result__a", pos)
-        if (let None <- resultOpt) { break }
-        let resultIdx = resultOpt.getOrThrow()
-        pos = resultIdx + 9
-
-        // 从 result__a 往前找最近的 <a
-        let aStartOpt = lower.indexOf("<a", resultIdx)
-        if (let None <- aStartOpt) { break }
-        let aStart = aStartOpt.getOrThrow()
-        if (aStart > resultIdx + 100) { continue }  // 太远，不是同一个标签
-
-        // 找 <a ...> 的 href
-        let hrefOpt = lower.indexOf("href=\"", aStart)
-        if (let None <- hrefOpt) { continue }
-        let hrefStart = hrefOpt.getOrThrow() + 6
-        let hrefEndOpt = lower.indexOf("\"", hrefStart)
-        if (let None <- hrefEndOpt) { continue }
-        let hrefEnd = hrefEndOpt.getOrThrow()
-        let rawHref = html[hrefStart..hrefEnd]
-
-        // 解码 DDG 重定向 URL：/l/?uddg=<encoded_url>
-        let url = decodeDDgRedirect(rawHref, encodedQuery)
-
-        // 找链接文本（<a ...>文本</a>）
-        let gtOpt = lower.indexOf(">", aStart)
-        if (let None <- gtOpt) { continue }
-        let gt = gtOpt.getOrThrow()
-        let aEndOpt = lower.indexOf("</a>", gt)
-        if (let None <- aEndOpt) { continue }
-        let aEnd = aEndOpt.getOrThrow()
-        let titleHtml = html[gt + 1..aEnd]
-        let title = trimStr(stripTags(titleHtml))
-        if (title.size == 0) { continue }
-
-        // 找对应的 snippet（result__snippet）
-        let snippetStartOpt = lower.indexOf("result__snippet", aEnd)
-        if (let None <- snippetStartOpt) {
-            hits.add(SearchHit(title, url, ""))
-            continue
-        }
-        let snippetStart = snippetStartOpt.getOrThrow()
-        // snippet 是 <a class="result__snippet" ...>文本</a>
-        let sGtOpt = lower.indexOf(">", snippetStart)
-        if (let None <- sGtOpt) { continue }
-        let sGt = sGtOpt.getOrThrow()
-        let sEndOpt = lower.indexOf("</a>", sGt)
-        if (let None <- sEndOpt) { continue }
-        let sEnd = sEndOpt.getOrThrow()
-        let snippetHtml = html[sGt + 1..sEnd]
-        var snippet = trimStr(stripTags(snippetHtml))
-        if (snippet.size > 300) { snippet = snippet[0..300] }
-
-        hits.add(SearchHit(title, url, snippet))
-    }
-
-    return hits
-}
-
-/**
- * 解码 DDG 重定向 URL
- * DDG 的搜索结果链接格式：/l/?uddg=<encoded_url>&rut=...
- * 需要 URL 解码 uddg 参数得到真实 URL
- */
-func decodeDDgRedirect(rawHref: String, encodedQuery: String): String {
-    // 检查是否是 DDG 重定向格式
-    let lower = rawHref.toAsciiLower()
-    let uddgOpt = lower.indexOf("uddg=")
-    if (let Some(_) <- uddgOpt) {
-        // 提取 uddg 参数值
-        let uddgStart = rawHref.indexOf("uddg=")
-        if (let Some(us) <- uddgStart) {
-            let valStart = us + 5
-            let valEndOpt = rawHref.indexOf("&", valStart)
-            let valEnd = match (valEndOpt) {
-                case Some(e) => e
-                case None => rawHref.size
-            }
-            let encoded = rawHref[valStart..valEnd]
-            // URL 解码（%XX → 字符）
-            return urlDecode(encoded)
-        }
-    }
-
-    // 不是重定向格式，直接返回（可能是完整 URL）
-    if (rawHref.startsWith("http://") || rawHref.startsWith("https://")) {
-        return rawHref
-    }
-
-    // 兜底：返回 DDG 搜索页
-    return "https://duckduckgo.com/?q=" + encodedQuery
-}
 
 /**
  * 手动 trim：去除首尾空白字符
@@ -1280,30 +1164,6 @@ func urlEncode(s: String): String {
         }
     }
     return result.toString()
-}
-
-/**
- * 读取 InputStream 全部内容到 Array<Byte>，最多 maxBytes
- */
-func readAll(stream: InputStream, maxBytes: Int64): Array<Byte> {
-    var list = ArrayList<Byte>()
-    var buf = Array<Byte>(8192, repeat: UInt8(0))
-    try {
-        while (list.size < maxBytes) {
-            let n = stream.read(buf)
-            if (n <= 0) { break }
-            for (i in 0..n) {
-                list.add(buf[i])
-            }
-        }
-    } catch (e: Exception) {
-        // 读取中断，返回已读部分
-    }
-    var result = Array<Byte>(list.size, repeat: UInt8(0))
-    for (i in 0..list.size) {
-        result[i] = list[i]
-    }
-    return result
 }
 
 /**

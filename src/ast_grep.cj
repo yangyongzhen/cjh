@@ -133,7 +133,7 @@ func tryAstGrepCli(pattern: String, lang: String, path: String, skip: Int64): ?S
         sgArgs.add("--json=stream")
         sgArgs.add(path)
 
-        let (code, stdoutBytes, stderrBytes) = executeWithOutput("sg", sgArgs.toArray())
+        let (code, stdoutBytes, _) = executeWithOutput("sg", sgArgs.toArray())
 
         if (code != 0) {
             // sg 失败, 降级
@@ -278,7 +278,7 @@ func grepFallback(pattern: String, path: String, skip: Int64): ToolResult {
         grepArgs.add(escapedPattern)
         grepArgs.add(path)
 
-        let (code, stdoutBytes, stderrBytes) = executeWithOutput("grep", grepArgs.toArray())
+        let (_, stdoutBytes, _) = executeWithOutput("grep", grepArgs.toArray())
         let stdout = safeFromUtf8(stdoutBytes)
 
         var matches = ArrayList<String>()

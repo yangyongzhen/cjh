@@ -36,8 +36,10 @@ public enum CapDecision {
  * （注：仓颉块注释内不能出现 斜杠+星号 的嵌套注释序列，示例 glob 已拆分书写）
  */
 public class Capability {
-    // 是否启用严格模式（settings.json 配置了 capability 字段才为 true）
+    // 是否启用严格模式（settings.json 配置了 capability 字段**且**显式 enabled: true）
     public var enabled: Bool = false
+    // 是否在 settings.json 里出现过 capability 段（与 enabled 不同：配置了 ≠ 生效）
+    public var configured: Bool = false
     public var identifier: String = "default"
 
     // 三域白名单
@@ -66,6 +68,7 @@ public class Capability {
         match (v.kind()) {
             case JsonKind.JsObject =>
                 let obj = v.asObject()
+                cap.configured = true
                 // enabled 开关：默认 false（宽松模式全部放行）
                 // 用户设 true 才启用严格模式（未声明即拒绝）
                 if (let Some(en) <- obj.get("enabled")) {
@@ -160,6 +163,19 @@ public class Capability {
     }
 
     // ─── 检查接口 ─────────────────────────────────────────────
+
+    /**
+     * 静默宽松提示：配置了 capability 段、但未开启严格模式时返回一行提醒（否则 None）。
+     *
+     * 只让"配了却不生效"从静默变可见，**不改语义**：默认宽松是刻意的
+     * （见 commit 4c56f55：曾默认严格，用户配了 capability 段后 bash 被拒而投诉）。
+     */
+    public func silentPermissiveHint(): Option<String> {
+        if (this.configured && !this.enabled) {
+            return Some("[cjh] capability 段已配置但未启用：当前按宽松模式放行，白名单/审批规则不会生效；如需启用严格模式，请在 capability 段显式设置 enabled 为 true")
+        }
+        return None
+    }
 
     /**
      * 工具域检查：白名单内允许；approval 命中的工具需审批；否则拒绝

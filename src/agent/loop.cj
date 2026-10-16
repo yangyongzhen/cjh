@@ -4,7 +4,6 @@ import std.collection.*
 import cjlog.*
 import stdx.encoding.json.*
 import std.time.*
-import std.fs.*
 import cjllm.*
 import cjh.tools.*
 import cjllm.*
@@ -260,22 +259,22 @@ public class Agent {
     private var pluginManager: ?PluginManager = None
 
     // 事件回调（供 TUI/CLI 展示）
-    public var onDelta: (String) -> Unit = { d => }
-    public var onReasoning: (String) -> Unit = { r => }
-    public var onToolStart: (String, JsonObject) -> Unit = { n, a => }
-    public var onToolResult: (String, ToolResult) -> Unit = { n, r => }
-    public var onAssistantText: (String) -> Unit = { t => }
+    public var onDelta: (String) -> Unit = { _ => }
+    public var onReasoning: (String) -> Unit = { _ => }
+    public var onToolStart: (String, JsonObject) -> Unit = { _, _ => }
+    public var onToolResult: (String, ToolResult) -> Unit = { _, _ => }
+    public var onAssistantText: (String) -> Unit = { _ => }
     // 状态回调（TUI 实时状态行用）
     public var onThinking: () -> Unit = { => }
     public var onTokens: (Int64) -> Unit = { _ => }
     // 流式逐帧 token 估算回调（思考过程中实时更新动态状态栏）
     public var onTokenEstimate: (Int64) -> Unit = { _ => }
     // 审批回调：危险操作需人工确认时调用，返回 true=同意执行（默认拒绝）
-    public var onApproval: (String, JsonObject, String) -> Bool = { n, a, r => false }
+    public var onApproval: (String, JsonObject, String) -> Bool = { _, _, _ => false }
     // 任务变更回调（TUI Tasks 面板实时刷新）
     public var onTodosChanged: () -> Unit = { => }
     // 回合结束回调（渲染回合总结条：轮数/工具数/耗时/token用量/缓存命中率）
-    public var onRunComplete: (RunSummary) -> Unit = { s => }
+    public var onRunComplete: (RunSummary) -> Unit = { _ => }
     // 排队输入拉取回调（atomcode 式"steer"：TUI 忙时提交只入队不打断，
     // 每轮 LLM 请求前由 Agent 拉取——即"上一次工具调用完成后"的边界。
     // None=当前回合无排队输入；非 None 注入为 user 消息让模型感知新指令。
@@ -712,11 +711,11 @@ public class Agent {
             // 仅当完全无内容时才重试（空响应，重试合理）。
             if (response.timedOut && response.text.size == 0 && response.toolCalls.size == 0) {
                 Log.error("SSE 空闲超时且无任何内容，SSE 流被切断")
-                this.onAssistantText("\n\n⚠️ 网络空闲超时（模型长时间无输出），已收到内容为空。\n")
+                this.onAssistantText("\n\n⚠ 网络空闲超时（模型长时间无输出），已收到内容为空。\n")
                 this.messages.add(ChatMessage("user", "[System Notice] The previous SSE stream was cut off due to an idle timeout (no new data). Please continue or retry."))
             } else if (response.timedOut) {
                 Log.warn("SSE 空闲超时（${this.config.maxIterations} 轮内），已收内容保留为回复（不重试）：textLen=${response.text.size} toolCalls=${response.toolCalls.size}")
-                this.onAssistantText("\n\n⚠️ 网络空闲超时，已收到的内容已保留（可能不完整）。\n")
+                this.onAssistantText("\n\n⚠ 网络空闲超时，已收到的内容已保留（可能不完整）。\n")
             }
 
             if (response.hasToolCalls()) {
@@ -762,7 +761,7 @@ public class Agent {
                         let toolMs = (DateTime.now() - toolT0).toMilliseconds()
                         Log.info("  工具 ${tc.name} | 耗时 ${toolMs}ms | 结果 ${result.content.size} chars | isError ${result.isError}")
                         if (response.truncated && (tc.name == "write_file" || tc.name == "edit_file")) {
-                            result = ToolResult(result.content + "\n\n⚠️ 截断警告：本轮 LLM 输出被 max_tokens 强制截断，上面写入的文件内容【不完整】。\n请【立即】按以下步骤修复（不要再用 write_file 重写整个文件，那会再次截断）：\n1. 调用 read_file 读取刚写入的文件，确认截断位置\n2. 调用 edit_file，old_string 填文件末尾最后几个有效字符，new_string 续写剩余部分\n3. 重复 1-2 直到文件完整闭合（HTML 需 </script></body></html>）\n务必分多次小段续写，每段 new_string 控制在 ~1500 字符以内。", true)
+                            result = ToolResult(result.content + "\n\n⚠ 截断警告：本轮 LLM 输出被 max_tokens 强制截断，上面写入的文件内容【不完整】。\n请【立即】按以下步骤修复（不要再用 write_file 重写整个文件，那会再次截断）：\n1. 调用 read_file 读取刚写入的文件，确认截断位置\n2. 调用 edit_file，old_string 填文件末尾最后几个有效字符，new_string 续写剩余部分\n3. 重复 1-2 直到文件完整闭合（HTML 需 </script></body></html>）\n务必分多次小段续写，每段 new_string 控制在 ~1500 字符以内。", true)
                         }
                         results[i] = result
                     } else {
@@ -797,7 +796,7 @@ public class Agent {
                             Log.info("  工具 ${tc.name} (并发) | 耗时 ${dur}ms | 结果 ${result.content.size} chars | isError ${result.isError}")
                             var r = result
                             if (response.truncated && (tc.name == "write_file" || tc.name == "edit_file")) {
-                                r = ToolResult(r.content + "\n\n⚠️ 截断警告：本轮 LLM 输出被 max_tokens 强制截断，上面写入的文件内容【不完整】。\n请【立即】按以下步骤修复（不要再用 write_file 重写整个文件，那会再次截断）：\n1. 调用 read_file 读取刚写入的文件，确认截断位置\n2. 调用 edit_file，old_string 填文件末尾最后几个有效字符，new_string 续写剩余部分\n3. 重复 1-2 直到文件完整闭合（HTML 需 </script></body></html>）\n务必分多次小段续写，每段 new_string 控制在 ~1500 字符以内。", true)
+                                r = ToolResult(r.content + "\n\n⚠ 截断警告：本轮 LLM 输出被 max_tokens 强制截断，上面写入的文件内容【不完整】。\n请【立即】按以下步骤修复（不要再用 write_file 重写整个文件，那会再次截断）：\n1. 调用 read_file 读取刚写入的文件，确认截断位置\n2. 调用 edit_file，old_string 填文件末尾最后几个有效字符，new_string 续写剩余部分\n3. 重复 1-2 直到文件完整闭合（HTML 需 </script></body></html>）\n务必分多次小段续写，每段 new_string 控制在 ~1500 字符以内。", true)
                             }
                             results[idx] = r
                         }
@@ -894,7 +893,7 @@ public class Agent {
         summary.durationMs = durationMsMax
         summary.reply = "[已达最大迭代次数 ${hardCap}]"
         // 给 TUI 上文字提示，而非静默退出
-        this.onAssistantText("\n⚠️ 已达最大迭代次数 ${hardCap}，回合强制结束。如需继续，请重新提问。")
+        this.onAssistantText("\n⚠ 已达最大迭代次数 ${hardCap}，回合强制结束。如需继续，请重新提问。")
         return summary
     }
 
@@ -1262,14 +1261,6 @@ public class Agent {
      * V2d 并发执行引擎：判断一批 tool_calls 是否全部 read-only
      * 全 read-only → 可并发执行；含 state-modifying → 整批串行
      */
-    private func allReadOnly(toolCalls: ArrayList<ToolCall>): Bool {
-        for (tc in toolCalls) {
-            if (!this.tools.isReadOnly(tc.name)) {
-                return false
-            }
-        }
-        return true
-    }
 
     /**
      * V2d DAG 依赖分析：从 ToolCall 提取资源访问 (path, isWrite)

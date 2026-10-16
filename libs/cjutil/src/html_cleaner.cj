@@ -19,7 +19,6 @@ package cjutil
  * 对于复杂页面，建议用 web_fetch 的 curl 降级或 Firecrawl 降级。
  */
 
-import std.collection.*
 
 public class HtmlCleaner {
 

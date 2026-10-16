@@ -269,8 +269,8 @@ public class OutputView <: Component {
         let contentW = thinkingContentWidth(width)
         let cache = this.activeFold
         let headRunes = b.headRunes
-        if (cache.roundGen != this.thinkLog.roundGen || cache.textEpoch != this.thinkLog.textEpoch
-            || cache.width != width || cache.tailStart > runes.size) {
+        if (cache.roundGen != this.thinkLog.roundGen || cache.textEpoch != this.thinkLog.textEpoch ||
+            cache.width != width || cache.tailStart > runes.size) {
             // 截断后的头部（前 headRunes 个 Rune）内容永久稳定：内容与长度都没变就直接复用，
             // 只从"省略标记行"起重折；否则从头折一次并把头部冻住
             var reuseHead = false

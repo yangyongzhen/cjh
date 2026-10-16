@@ -2,7 +2,6 @@ package cjterm
 
 import std.collection.*
 import std.sync.*
-import std.io.*
 
 /**
  * 任务项数据（TUI 层的轻量副本，从 Agent.todos 拷贝）
@@ -171,7 +170,7 @@ public class TasksPanel {
     /**
      * 渲染面板边框 + 任务行
      */
-    private func renderBox(canvas: TuiCanvas, startRow: Int64, startCol: Int64,
+    private func renderBox(canvas: TuiCanvas, startRow: Int64, _: Int64,
         panelW: Int64, panelH: Int64, items: ArrayList<TaskSnapshot>,
         doneCount: Int64, inProgressCount: Int64, openCount: Int64): Unit {
         let muted: String = Ansi.fg(Ansi.THEME_MUTED)

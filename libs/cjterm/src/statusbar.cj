@@ -55,7 +55,7 @@ public class StatusBar <: Component {
         return this.text
     }
 
-    public override func render(canvas: TuiCanvas, row: Int64, width: Int64, height: Int64): Int64 {
+    public override func render(canvas: TuiCanvas, row: Int64, width: Int64, _: Int64): Int64 {
         let border = Ansi.fg(Ansi.THEME_BORDER)   // 边框实线色（244，U+2500 连续实线，P2b）
         let muted = Ansi.fg(Ansi.THEME_MUTED)
         let bx = BoxChars(this.utf8)
@@ -115,7 +115,7 @@ public class StatusBar <: Component {
         return 1
     }
 
-    public override func handleKey(key: KeyEvent): Bool {
+    public override func handleKey(_: KeyEvent): Bool {
         return false
     }
 

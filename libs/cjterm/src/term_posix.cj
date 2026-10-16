@@ -11,7 +11,6 @@ package cjterm
  * tcgetattr 等符号会失败）。
  */
 
-import std.time.*
 import std.collection.*
 import cjutil.*
 
@@ -59,7 +58,6 @@ private let OPOST: UInt32 = 0x1
 private let CS8: UInt32 = 0x30
 
 // tcsetattr actions
-private let TCSANOW: Int32 = 0
 private let TCSAFLUSH: Int32 = 2
 
 // 标准文件描述符

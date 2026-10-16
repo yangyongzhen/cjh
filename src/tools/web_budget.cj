@@ -14,7 +14,6 @@ package cjh.tools
  */
 
 import std.sync.*
-import std.collection.*
 
 public class WebBudget {
     // 预算上限（0 = 不限制）
@@ -27,7 +26,7 @@ public class WebBudget {
     private var searchCount: Int64 = 0
     private var fetchBytes: Int64 = 0
 
-    private let lock: ReentrantMutex = ReentrantMutex()
+    private let lock: Mutex = Mutex()
 
     public init(maxFetches: Int64, maxSearches: Int64, maxFetchBytes: Int64) {
         this.maxFetches = maxFetches

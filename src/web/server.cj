@@ -14,9 +14,6 @@ package cjh.web
  * 架构参考：docs/Web支持实现方案.md
  */
 
-import std.collection.HashMap
-import std.console.*
-import std.fs.*
 import stdx.encoding.json.*
 import stdx.net.http.*
 import cjh.gateway.*
@@ -123,12 +120,12 @@ public class WebDistributor <: HttpRequestDistributor {
     /**
      * 注册请求处理器（接口契约要求，当前实现为空操作）
      */
-    public func register(path: String, handler: HttpRequestHandler): Unit {}
+    public func register(_: String, _: HttpRequestHandler): Unit {}
 
     /**
      * 注册请求处理器（lambda 重载，接口契约要求，当前实现为空操作）
      */
-    public func register(path: String, handler: (HttpContext) -> Unit): Unit {}
+    public func register(_: String, _: (HttpContext) -> Unit): Unit {}
 }
 
 /**

@@ -191,6 +191,12 @@ public class StaticAssets {
                     <label>名称（可选）</label>
                     <input type="text" id="workspace-name-input" placeholder="my-project">
                 </div>
+                <div class="config-row">
+                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+                        <input type="checkbox" id="workspace-create-input">
+                        <span>目录不存在时新建（递归创建）</span>
+                    </label>
+                </div>
                 <button class="config-save-btn" onclick="addWorkspace()">添加</button>
             </div>
         </div>
@@ -586,6 +592,7 @@ function removeWorkspace(path) {
 function openWorkspaceModal() {
     document.getElementById('workspace-path-input').value = '';
     document.getElementById('workspace-name-input').value = '';
+    document.getElementById('workspace-create-input').checked = false;
     document.getElementById('workspace-modal').classList.remove('hidden');
 }
 
@@ -602,11 +609,12 @@ function closeWorkspaceModal() {
 function addWorkspace() {
     let path = document.getElementById('workspace-path-input').value.trim();
     let name = document.getElementById('workspace-name-input').value.trim();
+    let create = document.getElementById('workspace-create-input').checked;
     if (!path) { return; }
     fetch('/api/workspaces', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: path, name: name })
+        body: JSON.stringify({ path: path, name: name, create: create })
     }).then(function(r) { return r.json(); }).then(function(data) {
         if (data.ok) {
             closeWorkspaceModal();

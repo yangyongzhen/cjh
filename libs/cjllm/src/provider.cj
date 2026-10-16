@@ -2,7 +2,6 @@ package cjllm
 
 import stdx.encoding.json.*
 import cjlog.*
-import std.io.*
 import std.collection.*
 import cjutil.*
 
@@ -50,7 +49,7 @@ public interface LlmProvider {
      * @param isCancelled 取消回调（用户中断时返回 true；流式解析每帧检查后提前结束）
      * @return 完整响应（含工具调用）
      */
-    public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
+    func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
         onDelta: (String) -> Unit, onReasoning: (String) -> Unit,
         onTokenEstimate: (Int64) -> Unit, isCancelled: () -> Bool): ModelResponse
 
@@ -58,14 +57,14 @@ public interface LlmProvider {
      * 中止当前流式请求（用户中断时主动关闭连接，打断阻塞的流读取）。
      * 默认空实现；各 provider 保存当前 HttpStreamClient 并 abort。
      */
-    public func abort(): Unit {
+    func abort(): Unit {
     }
 
     /**
      * 连接预热（后台 spawn 调用）：提前完成 TCP+TLS 握手，省首个请求
      * 的握手延迟。默认空实现；OpenAiProvider 等有实际预热逻辑。
      */
-    public func warmup(): Unit {
+    func warmup(): Unit {
     }
 }
 
