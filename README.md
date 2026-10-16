@@ -68,7 +68,7 @@ cjh 的取向是**并行子代理 + 上下文隔离**（类 Linux fork）：子�
 
 **省 token 是分工并行的核心目标，而非副产品。** 一个任务全程交给单个 agent，等同于一个人从头到尾全知——每一步都背负全局上下文，token 随任务规模持续膨胀；而团队协作的常识是：每个人只需知道与自己职责相关的部分，信息的"按需分配"理应让总消耗更低。cjh 的并行子代理正是按任务隔离上下文——子代理只携带任务相关的局部记忆，目标是**同样的任务、更少的 token**。这与 swarm 的 handoff 串行（对话整体接力、历史持续累积）形成本质区别：后者提升的是吞吐，前者同时优化成本。
 
-> 📋 **完整功能清单**（持续更新至 v1.5.0）→ [docs/cjh功能清单.md](docs/cjh功能清单.md) —— Agent 主循环 / 15 内置工具 / 10 主题 / 插件系统与信任链 / MCP / 双平台 / 版本历史的完整盘点，随版本持续更新。
+> 📋 **完整功能清单**（持续更新至 v1.5.1）→ [docs/cjh功能清单.md](docs/cjh功能清单.md) —— Agent 主循环 / 15 内置工具 / 10 主题 / 插件系统与信任链 / MCP / 双平台 / 版本历史的完整盘点，随版本持续更新。
 
 ## 🌟 为什么是 cjh
 
@@ -512,6 +512,7 @@ cjh 内置 MCP 客户端，支持 stdio 传输 + JSON-RPC 2.0。配置 `mcp_serv
 
 | 版本 | 主要功能 |
 |---|---|
+| **v1.5.1** | **Web 通道对外契约补齐 + 失败 / 截断信号**：WS 控制帧不再静默——`switch_model` / `compact` 必回 `ack`、`cancel` / `abort` 必回 `cancelled`（`was_running` 如实反映帧到达时是否有回合在跑），仅未注册的渠道忽略；新增 `capabilities` 能力自述（如实枚举入站 7 种 / 出站 9 种帧面，含 `structured_errors` / `diff_in_tool_result`）、消息身份 `FrameMeta{session_id, turn_id, message_id}` 随帧贯穿、**WS 审批通道**（`approval_request` / `approval_response`）与工具结果**结构化 diff**（`src/tools/textdiff.cj` 纯函数 + `DiffInfo`）；`GET/PUT /api/mcp` 与 `POST /api/workspace`；回合失败回结构化 `error` 帧（4 码 + `retryable`）不再只回空 `done`；done 帧新增**可选布尔** `truncated`（上游 `max_tokens` 截断信号，缺键即未截断，`finish_reason` 三值不变）；TUI 输出与 fd 1 解耦、stdx `readTimer` WARN 污染 TUI 根治 |
 | **v1.5.0** | **仓颉内置知识层（三期）+ TUI `/ref` 面板**：新增 `cjh ref status / verify / rebuild / update` 子命令——`status` / `verify` / `rebuild` 全纯本地（`verify` 按清单逐文件重算 SHA-256，报缺失 / 被改 / 多余），`update` 是**唯一联网入口**且只能人显式触发（`--source` 离线刷新、`--repo` / `--branch` 换源、`--dry-run` 只预演、`--restore` 从覆盖前快照回滚）；覆盖前快照落语料目录之外，覆盖后重扫清单 + 自检，任一环失败自动回滚；**同名技能只对齐 `.md`**（清旧 md、保留上游非 md 资产、来源没有的技能目录不动）；`cjh ref search` 复用二期检索；TUI `/ref` 面板同步（联网动作需 `--yes` 二次确认） |
 | **v1.4.0** | **仓颉内置知识层（一期 + 二期）**：一期把六篇自研技能瘦身为"描述 + 全文绝对路径"短入口（常驻 21,988 → 7,624 B）并支持从 CangjieSkills 分级收录；二期新增只读工具 `cangjie_ref`，对 `~/.cjh/cangjie-ref/` 语料纯离线检索（CJK 2-gram 分词 + 行级打分，命中带 `路径:行号` 供精读），语料不存在则不注册。技能与语料均作运行时数据，不进二进制 |
 | **v1.3.28** | **展开态思考块与回复之间留空行 + 构建配置事故修复**：`Ctrl+T` 展开态下思考段与回复段原先紧贴，现每个段边界留 1 行空行（虚拟行计入滚动总行数，滚动范围不漂移；上一行本身已空则跳过，不叠双空行）；同时修复根 `cjpm.toml` 被动态测试态覆盖（v1.3.27 发布提交把 `--static` 配置换成动态配置、`version` 退回 1.3.4，导致构建产物从"静态单文件"变动态）——恢复静态基线并加固 `scripts/test.sh` 的还原 trap |

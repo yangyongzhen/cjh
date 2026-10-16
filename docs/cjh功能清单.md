@@ -1,7 +1,7 @@
 # cjh 功能清单
 
-> 最后更新：2026-09-30
-> 版本：v1.5.0
+> 最后更新：2026-10-17
+> 版本：v1.5.1
 > 性质：cjh 已具备和支持的功能完整列表
 
 ---
@@ -270,6 +270,7 @@
 | v1.3.14 | V3 信任链 Step 3 信任管理 CLI（`cjh trust/untrust/trust-list` + `~/.cjh/trusted-publishers`，空列表开放/非空严格）+ 第三方风格插件示例（git-status / tool-result-banner）+ libs 生态冷启动发布（cjterm/cjlog/cjconfig/cjutil/cjllm 独立仓库 v0.1.0） |
 | v1.3.15 | 回合统计缓存率统计缺口修复：解析 OpenAI 标准/智谱 GLM 嵌套字段 `prompt_tokens_details.cached_tokens`（此前 GLM/OpenAI 兼容接口恒显示 0% cached） |
 | v1.4.0 | 仓颉内置知识层一 + 二期：技能「入口 / 全文分离」（`~/.cjh/skills/<name>.md` 只留描述 + 指向全文的绝对路径，9 篇常驻 20,086 → 6,588 B），`scripts/install-cangjie-knowledge.sh` 投影安装 + `--with-cangjie-skills` 分级收录；只读工具 `cangjie_ref` 对 `~/.cjh/cangjie-ref/` 语料纯离线检索（CJK 2-gram + ASCII 词分词、行级打分、命中带 `路径:行号`） |
+| v1.5.1 | Web 通道对外契约补齐 + 失败 / 截断信号：WS 控制帧不再静默（`switch_model`/`compact` 回 `ack`、`cancel`/`abort` 回 `cancelled`，`was_running` 如实）+ `capabilities` 能力自述（如实枚举入站/出站帧面）+ `FrameMeta` 消息身份随帧贯穿 + WS 审批通道（`approval_request`/`approval_response`）+ 工具结果结构化 diff（`textdiff.cj`）+ `GET/PUT /api/mcp`、`POST /api/workspace`；回合失败回结构化 `error` 帧（4 码 + `retryable`）不再只回空 `done`；done 帧新增**可选** `truncated` 透传上游 `max_tokens` 截断（`finish_reason` 三值不变） |
 | v1.5.0 | 仓颉内置知识层三期 + TUI `/ref` 面板：`cjh ref status / verify / rebuild / update` 子命令（前三者纯本地；`update` 唯一联网入口、只能人显式触发，`--source` 离线刷新、`--repo`/`--branch` 换源、`--dry-run` 只预演、`--restore` 快照回滚）+ 覆盖前快照与自检失败自动回滚 + **同名技能只对齐 `.md`**（保留上游非 md 资产、来源没有的技能目录不动）+ `cjh ref search` 复用二期检索；TUI `/ref [status\|verify\|rebuild\|search <词>\|update]`（联网动作需 `--yes` 二次确认） |
 
 ## 十七、代码组织原则
