@@ -1056,6 +1056,15 @@ function handleError(msg) {
         rollbackModelSelection();
     } else if (code === 'compact_failed') {
         showError('压缩历史失败：' + text);
+    } else if (code === 'provider_auth_error') {
+        // 密钥/权限问题：重试无用，指向配置，不诱导用户反复点重试
+        showError('服务商鉴权失败：' + text);
+    } else if (code === 'provider_unreachable') {
+        showError('无法连接服务商：' + text);
+    } else if (code === 'provider_rate_limited') {
+        showError('服务商限流：' + text + retryHint);
+    } else if (code === 'provider_error') {
+        showError('服务商返回错误：' + text + retryHint);
     } else if (code === 'run_failed') {
         showError('执行失败：' + text + retryHint);
     } else {

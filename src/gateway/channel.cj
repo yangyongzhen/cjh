@@ -874,8 +874,17 @@ public class ChannelGateway {
         try {
             let summary = agent.run(text)
 
-            // 推送 DoneEvent（finish_reason 如实：cancelled > stop）
-            this.sendDone(channel, chatId, meta, summary, this.finishReasonOf(key, false))
+            // 上游失败不静默：agent 已在 summary 上留下结构化失败信号 → 先推 error 帧，再收尾。
+            // 顺序要紧：先算 finish_reason（它会取走 cancelled 标记）——用户按停止引发的异常
+            // 不是故障，此时 reason=cancelled，不当故障报。
+            let hadError = summary.errorCode.size > 0
+            let reason = this.finishReasonOf(key, hadError)
+            if (reason == "error") {
+                channel.sendErrorCode(chatId, meta, summary.errorMessage, summary.errorCode,
+                    summary.errorRetryable)
+            }
+            // 推送 DoneEvent（三条终局路径形状一致）
+            this.sendDone(channel, chatId, meta, summary, reason)
         } catch (e: Exception) {
             channel.sendErrorCode(chatId, meta, "执行失败：${e}", "run_failed", true)
             // 异常也发 done：三条终局路径（stop/cancelled/error）形状一致
