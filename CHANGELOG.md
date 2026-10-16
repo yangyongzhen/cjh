@@ -6,6 +6,25 @@ cjh 版本变更记录。依据 git tag 史 + 提交史整理；版本号规则�
 
 ## [Unreleased]
 
+## [v1.5.1] - 2026-10-17
+
+### 新增
+- **Web 通道对外契约补齐（面向桌面客户端集成）**：WS 控制帧真正生效并被前端消费——`switch_model` / `compact` 必回 `ack`，`cancel` / `abort` 必回 `cancelled`（`was_running` 如实反映帧到达时是否有回合在跑），**不再静默**（渠道未注册才忽略）；新增 `capabilities` 能力自述（`src/web/capabilities.cj`，如实枚举入站 7 种 / 出站 9 种帧面，含 `structured_errors` / `diff_in_tool_result`）、消息身份 `FrameMeta{session_id, turn_id, message_id}` 随帧贯穿、**WS 审批通道**（`approval_request` / `approval_response`）与工具结果**结构化 diff**（`src/tools/textdiff.cj` 纯函数 + `ToolResult` 携带 `DiffInfo`）。
+- **Web 侧设置与工作区**：`GET/PUT /api/mcp`（MCP 设置读写）、`POST /api/workspace`（工作区创建）。
+- **回合失败信号**：上游失败不再只回一个空 `done`——新增失败分类器 `src/agent/failure.cj`（4 码 + `retryable` 语义），网关先发结构化 `error` 帧再发 `done`（`cancelled` 优先不误报），前端按错误码给文案。
+- **截断信号**：done 帧新增**可选布尔** `truncated`（仅 true 时序列化，缺键即"未截断"）——上游 `max_tokens` 截断时客户端不再把不完整答案当成"说完了"；`finish_reason` 保持封闭三值 `stop/cancelled/error` 不变（加第四个取值对老客户端是破坏性扩展）。
+- **TUI 输出与 fd 1 解耦** + 端到端 WARN 探针（`scripts/e2e_warn_harness.py`）。
+
+### 修复
+- **stdx `readTimer` WARN 污染 TUI 根治**：推翻"连接预热"旧结论，统一 cjutil 单一 HTTP 客户端并落地"包装超时 < `readTimeout` + 全路径 close"配方（`web_fetch` / `web_search`（三引擎）/ firecrawl 全部收敛），`libs/cjutil` 侧再加超时钳制。
+
+### 测试
+- `./scripts/test.sh` → **PASSED 517 / SKIPPED 0 / ERROR 0 / FAILED 0，exit 0**（441 → 517：失败分类 14 例 + 控制帧 / 能力自述 / WS 审批 / 结构化 diff / 截断信号等）；`cjpm build` 零代码告警（仅工具链 `--static` 提示）；`scripts/web_smoke_test.py` → **0 失败**（自起停 mock，含能力自述、审批、截断断言）。
+
+### 说明
+- **二进制体积**：Linux 单文件 **17,080,696 B**；Windows exe **14,095,360 B**（仅依赖系统库 + `libboundscheck` / `libcangjie-runtime` 两个 runtime DLL，openssl 由运行时 `dlopen`，故随包附带）。
+- **不静默降级**：`chat` 帧指定模型但解析失败 → `error(code=model_unavailable, retryable=false)` 并终止本回合（新契约下同时补发终帧 `done`），不做静默降级。
+
 ## [v1.5.0] - 2026-09-13
 
 ### 新增
