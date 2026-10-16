@@ -120,7 +120,8 @@ def main():
         js = http_get(base + "/assets/app.js")
         for token in ("switch_model", "handleAck", "handleCancelled", "notice-bar",
                       "type: 'cancel'", "handleApprovalRequest", "sendApprovalResponse",
-                      "approval_response", "buildDiffBlock"):
+                      "approval_response", "buildDiffBlock", "provider_auth_error",
+                      "provider_unreachable"):
             check("app.js 含 %s" % token, token in js)
         css = http_get(base + "/assets/styles.css")
         check("styles.css 含 .notice-bar", ".notice-bar" in css)

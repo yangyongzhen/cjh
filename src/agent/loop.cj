@@ -190,6 +190,10 @@ public class RunSummary {
     public var completionTokens: Int64 = 0 // 输出 token 累计
     public var cachedTokens: Int64 = 0     // 缓存命中 token 累计
     public var reply: String = ""          // 最终文本答复
+    // 失败信号（失败必须有结构化出口：渠道据此推 error 帧，而不是只发一个空 done）
+    public var errorCode: String = ""      // 空 = 本回合没有失败
+    public var errorMessage: String = ""   // 人能读的说明（不含密钥）
+    public var errorRetryable: Bool = false // 原样重试是否有意义
     // V2d 并发性能基线
     public var parallelBatches: Int64 = 0  // 并发执行的批次数
     public var parallelSavedMs: Int64 = 0  // 并发相比串行节省的毫秒数
@@ -568,6 +572,10 @@ public class Agent {
             Log.error("Agent.run 顶层异常: ${e}", e)
             summary.rounds = this.roundsCompleted
             summary.reply = "[执行异常: ${e}]"
+            // 顶层兜底同样留结构化信号（中断优先由渠道判定 cancelled，不会误报成故障）
+            summary.errorCode = "run_failed"
+            summary.errorMessage = "执行失败：${e}"
+            summary.errorRetryable = true
         } finally {
             // 所有出口（正常/中断/异常）统一清理：状态回 Idle
             this.endRound()
@@ -676,6 +684,11 @@ public class Agent {
                 }
                 Log.error("Agent.run chatStream 异常: ${e}", e)
                 summary.reply = "[LLM 调用异常: ${e}]"
+                // 结构化失败信号：渠道据此推 error 帧（否则客户端只看到一个空 done，无从判断失败）
+                let fail = classifyProviderFailure("${e}")
+                summary.errorCode = fail.code
+                summary.errorMessage = fail.message
+                summary.errorRetryable = fail.retryable
                 return summary
             }
             // 流式中被用户中断（Ctrl+C / 空闲看门狗）：立即结束回合，明确标记已中断
