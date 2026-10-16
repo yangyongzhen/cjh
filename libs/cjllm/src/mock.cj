@@ -1,7 +1,6 @@
 package cjllm
 
 import std.collection.*
-import std.time.*
 import std.convert.Parsable
 import stdx.encoding.json.*
 
@@ -27,9 +26,9 @@ public class MockProvider <: LlmProvider {
         this.scriptedPath = scriptedPath
     }
 
-    public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
+    public func chatStream(_: ArrayList<ChatMessage>, _: ArrayList<ToolSpec>,
         onDelta: (String) -> Unit, onReasoning: (String) -> Unit,
-        onTokenEstimate: (Int64) -> Unit, isCancelled: () -> Bool): ModelResponse {
+        onTokenEstimate: (Int64) -> Unit, _: () -> Bool): ModelResponse {
         // 模拟推理模型的思考流（reasoning_content 增量，分帧回调）
         // 用途：TUI 思考块（pi 风格折叠/展开）验证与离线演示
         let frames = mockBaseReasoning()

@@ -127,7 +127,7 @@ public class TabBar <: Component {
         this.setActive(if (i < 0) { this.tabs.size - 1 } else { i })
     }
 
-    public override func render(canvas: TuiCanvas, row: Int64, width: Int64, height: Int64): Int64 {
+    public override func render(canvas: TuiCanvas, row: Int64, _: Int64, _: Int64): Int64 {
         if (!this.visible) {
             return 0
         }

@@ -11,14 +11,10 @@ package cjh.web
  * 架构参考：docs/Web支持实现方案.md § 三、架构设计
  */
 
-import std.collection.*
 import std.sync.*
 import stdx.encoding.json.*
 import stdx.net.http.*
-import cjh.agent.*
-import cjh.tools.*
 import cjh.gateway.*
-import cjllm.*
 import cjcfg.*
 
 /**
@@ -107,7 +103,7 @@ public class WsHandler <: HttpRequestHandler {
      *
      * 重构后此方法只做消息路由，业务逻辑下沉到 Gateway。
      */
-    private func handleWsMessage(wsId: String, wsMutex: Mutex, jsonStr: String): Unit {
+    private func handleWsMessage(wsId: String, _: Mutex, jsonStr: String): Unit {
         let msgType = parseMsgType(jsonStr)
         match (msgType) {
             case WsMsgType.Chat =>
@@ -181,15 +177,4 @@ public class WsHandler <: HttpRequestHandler {
         return String.fromUtf8(bytes)
     }
 
-    /**
-     * 发送 WebSocket 文本消息
-     */
-    private func sendWsText(ws: WebSocket, text: String): Unit {
-        let data = text.toArray()
-        var byteArr = Array<UInt8>(data.size, repeat: 0)
-        for (i in 0..data.size) {
-            byteArr[i] = UInt8(data[i])
-        }
-        ws.write(WebSocketFrameType.TextWebFrame, byteArr)
-    }
 }

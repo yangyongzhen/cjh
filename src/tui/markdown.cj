@@ -190,7 +190,7 @@ public class MarkdownRender {
                 // 主题色 + 加粗；H1 额外下划线；H3+ 保留 # 前缀（对齐 omp heading）
                 var prefix = ""
                 if (level >= 3) {
-                    for (j in 0..level) {
+                    for (_ in 0..level) {
                         prefix += "#"
                     }
                     prefix += " "
@@ -334,7 +334,7 @@ public class MarkdownRender {
         var sep = bx.tLeft
         for (i in 0..this.tableCols) {
             let w = this.tableWidths[i]
-            for (j in 0..w + 2) {
+            for (_ in 0..w + 2) {
                 sep += bx.hc
             }
             if (i < this.tableCols - 1) {
@@ -369,7 +369,7 @@ public class MarkdownRender {
         var line = left
         for (i in 0..this.tableCols) {
             let w = this.tableWidths[i]
-            for (j in 0..w + 2) {
+            for (_ in 0..w + 2) {
                 line += bx.hc
             }
             if (i < this.tableCols - 1) {
@@ -413,7 +413,7 @@ public class MarkdownRender {
                 cellText = Ansi.fg(Ansi.COLOR_TEXT) + cell + Ansi.reset()
             }
             sb.append(cellText)
-            for (j in 0..pad) {
+            for (_ in 0..pad) {
                 sb.append(" ")
             }
             // 列间 " │ "；最后一列行尾 " │"（去尾空格，与分隔线宽度精确对齐）

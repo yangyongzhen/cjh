@@ -1,7 +1,7 @@
 package cjutil
 
 /**
- * UTF-8 安全解码：遇到非法字节时用替换字符（U+FFFD �）代替，不抛异常
+ * UTF-8 安全解码：遇到非法字节时用替换字符（U+FFFD）代替，不抛异常
  *
  * 背景：String.fromUtf8() 遇到非法 UTF-8 字节序列时抛
  * IllegalArgumentException。LLM 流式响应（SSE）、bash 命令输出、
@@ -48,12 +48,12 @@ public func safeFromUtf8(bytes: Array<UInt8>): String {
                 sb.append(String.fromUtf8(bytes[i..i + len]))
             } catch (e: Exception) {
                 // 理论不可达：已验证合法
-                sb.append("�")
+                sb.append("\u{FFFD}")
             }
             i += len
         } else {
             // 非法字节，用替换字符
-            sb.append("�")
+            sb.append("\u{FFFD}")
             i += 1
         }
     }

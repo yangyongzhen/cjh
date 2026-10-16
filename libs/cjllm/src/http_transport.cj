@@ -122,7 +122,7 @@ public class HttpStreamClient {
     public func connect(): Unit {
         let budgetMs = this.idleTimeout.toMilliseconds()
         var lastErr: ?Exception = None
-        for (i in 0..2) {
+        for (_ in 0..2) {
             try {
                 runWithBudget("建连", budgetMs, 100, { => this.cancelChecker() }, { =>
                     let sock = TcpSocket(this.host, this.port)

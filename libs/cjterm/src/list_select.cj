@@ -285,7 +285,7 @@ public class ListSelect {
     /**
      * 渲染标题行（带下划线）
      */
-    private func styleTitle(width: Int64): String {
+    private func styleTitle(_: Int64): String {
         return Ansi.esc() + "[1;4m ${this.title}" + Ansi.esc() + "[0m"
     }
 }

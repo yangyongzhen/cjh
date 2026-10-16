@@ -90,7 +90,7 @@ public class BashSession {
             if (!done) {
                 // 超时：杀会话（命令可能挂死），读线程随 EOF 结束
                 this.killSession()
-                return (-1, "⚠️ 命令超时（${timeoutSecs}s 未完成，已终止会话）")
+                return (-1, "⚠ 命令超时（${timeoutSecs}s 未完成，已终止会话）")
             }
             // 完成：取输出；EOF 提前（如 exit N，未遇到 marker）→ wait() 拿退出码
             state.lock.lock()

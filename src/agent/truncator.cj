@@ -70,9 +70,9 @@ public class ToolResultTruncator {
             writeSpill(path, content)
             spillHint = "，完整结果已保存：" + path + "，可用 read_file 读取"
         }
-        return headSb.toString()
-            + "\n\n…[已截断 " + skipped.toString() + " 字符" + spillHint + "]…\n\n"
-            + tailSb.toString()
+        return headSb.toString() +
+            "\n\n…[已截断 " + skipped.toString() + " 字符" + spillHint + "]…\n\n" +
+            tailSb.toString()
     }
 
     /**

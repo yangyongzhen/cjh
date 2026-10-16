@@ -13,9 +13,6 @@ import std.fs.*
 import cjlog.*
 import cjcfg.*
 import cjh.tools.*
-import cjh.web.*
-import cjutil.*
-import stdx.log.*
 /**
  * 注册 web_search + web_fetch 工具到 registry
  *

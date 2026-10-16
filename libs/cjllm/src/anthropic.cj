@@ -4,9 +4,7 @@ import stdx.encoding.json.*
 import stdx.net.tls.*
 import stdx.crypto.x509.X509Certificate
 import std.collection.*
-import std.io.*
 import std.sync.*
-import std.net.*
 import cjutil.*
 
 /**
@@ -114,7 +112,7 @@ public class AnthropicProvider <: LlmProvider {
     }
 
     public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
-        onDelta: (String) -> Unit, onReasoning: (String) -> Unit,
+        onDelta: (String) -> Unit, _: (String) -> Unit,
         onTokenEstimate: (Int64) -> Unit, isCancelled: () -> Bool): ModelResponse {
         // 请求体
         var body = JsonObject()

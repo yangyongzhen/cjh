@@ -1,14 +1,8 @@
 package cjh.tools
 
 import std.collection.*
-import std.process.*
-import std.io.*
-import std.fs.*
 import std.env.*
 import std.convert.Parsable
-import stdx.net.http.*
-import stdx.net.tls.*
-import stdx.crypto.x509.X509Certificate
 import stdx.encoding.json.*
 import cjllm.ToolSpec
 import cjllm.FirecrawlClient
@@ -228,31 +222,6 @@ public class WebFetchTool <: CjhTool {
         } catch (e: Exception) {
             return None
         }
-    }
-
-    /**
-     * 读取 InputStream 到 Array<Byte>，最多 maxBytes
-     */
-    private func readBody(body: InputStream, maxBytes: Int64): Array<Byte> {
-        var list = ArrayList<Byte>()
-        let bufSize = if (maxBytes < 8192) { maxBytes } else { 8192 }
-        var buf = Array<Byte>(bufSize, repeat: UInt8(0))
-        try {
-            while (list.size < maxBytes) {
-                let n = body.read(buf)
-                if (n <= 0) { break }
-                for (i in 0..n) {
-                    list.add(buf[i])
-                }
-            }
-        } catch (e: Exception) {
-            // 读取中断，返回已读部分
-        }
-        var result = Array<Byte>(list.size, repeat: UInt8(0))
-        for (i in 0..list.size) {
-            result[i] = list[i]
-        }
-        return result
     }
 
     /**

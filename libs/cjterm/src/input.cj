@@ -153,16 +153,6 @@ public class InputBox <: Component {
         }
     }
 
-    /** 光标移到行首 */
-    private func cursorHome(): Unit {
-        this.cursorPos = 0
-    }
-
-    /** 光标移到行尾 */
-    private func cursorEnd(): Unit {
-        this.cursorPos = this.text_.size
-    }
-
     /** 在光标位置插入文本（UTF-8 字节安全切片） */
     private func insertAtCursor(s: String): Unit {
         let before = if (this.cursorPos > 0) { this.text_[0..this.cursorPos] } else { "" }
@@ -388,7 +378,6 @@ public class InputBox <: Component {
     private func cursorVisualLine(width: Int64): Int64 {
         let (total, pairs) = this.wrappedLines(width)
         var i: Int64 = 0
-        let len = this.text_.size
         while (i < pairs.size) {
             let (s, e) = pairs[i]
             if (this.cursorPos > s && this.cursorPos <= e) {
@@ -521,19 +510,7 @@ public class InputBox <: Component {
         return (count, pairs)
     }
 
-    /** 取前 n 项（行数裁剪辅助） */
-    private func firstN(list: ArrayList<Int64>, n: Int64): ArrayList<Int64> {
-        var out = ArrayList<Int64>()
-        let lim = if (Int64(list.size) < n) { Int64(list.size) } else { n }
-        var k: Int64 = 0
-        while (k < lim) {
-            out.add(list[k])
-            k += 1
-        }
-        return out
-    }
-
-    public override func render(canvas: TuiCanvas, row: Int64, width: Int64, height: Int64): Int64 {
+    public override func render(canvas: TuiCanvas, row: Int64, width: Int64, _: Int64): Int64 {
         let (total, pairs) = this.wrappedLines(width)
         // 视口跟随光标：光标行高于视口顶 → 上滚一行；低于视口底 → 下滚到顶
         let cursorLine = this.cursorVisualLine(width)
@@ -697,8 +674,8 @@ public class InputBox <: Component {
         // 可打印字符（含中文等多字节 UTF-8；排除控制键）
         // isLoneControlText 兜底：KeyEvent 构造已保证控制键 text 为空，
         // 此处于上层/测试构造的裸控制字符再兜一层（v1.4.0）
-        if (key.text.size > 0 && !isLoneControlText(key.text)
-            && !key.isEsc && !key.isEnter && !key.isBackspace) {
+        if (key.text.size > 0 && !isLoneControlText(key.text) &&
+            !key.isEsc && !key.isEnter && !key.isBackspace) {
             // 编辑内容：退出历史浏览（draft 失效）
             this.historyIndex = -1
             if (this.searchMode) {

@@ -212,7 +212,7 @@ public class WelcomeView <: Component {
         return sb.toString()
     }
 
-    public override func handleKey(key: KeyEvent): Bool {
+    public override func handleKey(_: KeyEvent): Bool {
         return false
     }
 }

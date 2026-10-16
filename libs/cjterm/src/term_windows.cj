@@ -30,41 +30,68 @@ package cjterm
  */
 
 // ===== 句柄 =====
+@When[os == "Windows"]
 private let STD_INPUT_HANDLE: Int32 = -10
+@When[os == "Windows"]
 private let STD_OUTPUT_HANDLE: Int32 = -11
+@When[os == "Windows"]
 private let STD_ERROR_HANDLE: Int32 = -12
 // INVALID_HANDLE_VALUE = -1
 
 // ===== 控制台模式标志 =====
+@When[os == "Windows"]
 private let ENABLE_PROCESSED_INPUT: UInt32 = 0x1
+@When[os == "Windows"]
 private let ENABLE_LINE_INPUT: UInt32 = 0x2
+@When[os == "Windows"]
 private let ENABLE_ECHO_INPUT: UInt32 = 0x4
+@When[os == "Windows"]
 private let ENABLE_WINDOW_INPUT: UInt32 = 0x8
 // 输出 VT 模式（Windows 10 1809+）
+@When[os == "Windows"]
 private let ENABLE_VIRTUAL_TERMINAL_PROCESSING: UInt32 = 0x4
 // raw 模式需清除的标志（对齐 POSIX 清 ICANON|ECHO|ISIG|IXON）
+@When[os == "Windows"]
 private let RAW_CLEAR_INPUT: UInt32 = ENABLE_PROCESSED_INPUT | ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT
 
 // ===== 输入事件类型 =====
+@When[os == "Windows"]
 private let KEY_EVENT: UInt16 = 0x1
+@When[os == "Windows"]
 private let MOUSE_EVENT: UInt16 = 0x2
+@When[os == "Windows"]
 private let WINDOW_BUFFER_SIZE_EVENT: UInt16 = 0x4
+@When[os == "Windows"]
 private let MENU_EVENT: UInt16 = 0x8
+@When[os == "Windows"]
 private let FOCUS_EVENT: UInt16 = 0x10
 
 // ===== 虚拟键码 =====
+@When[os == "Windows"]
 private let VK_BACK: UInt16 = 0x08
+@When[os == "Windows"]
 private let VK_TAB: UInt16 = 0x09
+@When[os == "Windows"]
 private let VK_RETURN: UInt16 = 0x0D
+@When[os == "Windows"]
 private let VK_ESCAPE: UInt16 = 0x1B
+@When[os == "Windows"]
 private let VK_PRIOR: UInt16 = 0x21  // PageUp
+@When[os == "Windows"]
 private let VK_NEXT: UInt16 = 0x22   // PageDown
+@When[os == "Windows"]
 private let VK_END: UInt16 = 0x23
+@When[os == "Windows"]
 private let VK_HOME: UInt16 = 0x24
+@When[os == "Windows"]
 private let VK_LEFT: UInt16 = 0x25
+@When[os == "Windows"]
 private let VK_UP: UInt16 = 0x26
+@When[os == "Windows"]
 private let VK_RIGHT: UInt16 = 0x27
+@When[os == "Windows"]
 private let VK_DOWN: UInt16 = 0x28
+@When[os == "Windows"]
 private let VK_DELETE: UInt16 = 0x2E
 
 // ===== dwControlKeyState =====
@@ -73,12 +100,17 @@ private let VK_DELETE: UInt16 = 0x2E
 // 粘贴的大写字母被解码成控制码（M→13=CR、J→10=LF），见 docs §3.29。
 
 // ===== CreateFileW 参数 =====
+@When[os == "Windows"]
 private let GENERIC_WRITE: UInt32 = 0x40000000
+@When[os == "Windows"]
 private let FILE_SHARE_WRITE: UInt32 = 0x2
+@When[os == "Windows"]
 private let OPEN_EXISTING: UInt32 = 3
 
 // ===== WaitForSingleObject =====
+@When[os == "Windows"]
 private let WAIT_OBJECT_0: UInt32 = 0
+@When[os == "Windows"]
 private let WAIT_TIMEOUT: UInt32 = 0x102
 
 // ===== Win32 API（kernel32.dll，Windows 系统自带）=====

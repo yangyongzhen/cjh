@@ -8,7 +8,6 @@ import std.fs.*
 import std.env.*
 import cjutil.*
 import std.regex.*
-import std.io.*
 import std.convert.*
 import std.sync.*
 import cjllm.ToolSpec
@@ -116,7 +115,7 @@ public class BashTool <: CjhTool {
             var out = safeFromUtf8(stdoutBytes)
             var err = safeFromUtf8(stderrBytes)
             if (code == 124 && secs > 0) {
-                var result = "⚠️ 命令超时（${secs}s 未完成，已强制终止）\n"
+                var result = "⚠ 命令超时（${secs}s 未完成，已强制终止）\n"
                 result += "exit code: 124 (timeout)\n"
                 if (out.size > 0) {
                     result += "stdout:\n${out}\n"
@@ -343,8 +342,8 @@ public class ReadTool <: CjhTool {
      *   readEnd     本次已读结束行（1-based，含）
      */
     private func appendHints(result: ToolResult, repeatHint: String,
-        offset: Int64, limit: Int64, totalLines: Int64,
-        readStart: Int64, readEnd: Int64): ToolResult {
+        _: Int64, _: Int64, totalLines: Int64,
+        _: Int64, readEnd: Int64): ToolResult {
         var hints = repeatHint
         // 分段读取提示：已读范围未覆盖全文时，告知剩余行数 + 下一段 offset
         // 注意：这是 LLM 自己传 offset/limit 导致的分段，不是 read_file 截断
@@ -375,7 +374,6 @@ public class ReadTool <: CjhTool {
         var lineBuf = ArrayList<Byte>()
         var lineNum: Int64 = 0
         var result = StringBuilder()
-        var collecting: Bool = false
         // 确定起始/结束行
         let startLine = if (offset > 0) { offset - 1 } else { 0 }  // 0-based
         let endLine = if (limit > 0) { startLine + limit } else { Int64(9223372036854775807) }  // Int64.MAX
@@ -454,34 +452,6 @@ public class ReadTool <: CjhTool {
         var i = start
         while (i < actualEnd) {
             result.append("${i + 1}\t${lines[i]}\n")
-            i += 1
-        }
-        return ToolResult(result.toString(), false)
-    }
-
-    /**
-     * 结构化摘要：提取函数/类/结构体/枚举/接口/属性定义
-     * 格式：`<line>: <type> <name>` 或 `<line>: <comment>`
-     */
-    private func readSummary(lines: Array<String>): ToolResult {
-        var result = StringBuilder()
-        result.append("[结构化摘要：${lines.size} 行，提取符号定义]\n")
-        var i: Int64 = 0
-        while (i < Int64(lines.size)) {
-            let line = lines[i].trimAscii()
-            // 跳过空行
-            if (line.size == 0) {
-                i += 1
-                continue
-            }
-            // 提取符号定义行
-            if (isSymbolDefinition(line)) {
-                result.append("${i + 1}\t${lines[i]}\n")
-            }
-            // 提取重要注释（/// 或 // TODO/FIXME/HACK/NOTE）
-            else if (line.startsWith("///") || isImportantComment(line)) {
-                result.append("${i + 1}\t${lines[i]}\n")
-            }
             i += 1
         }
         return ToolResult(result.toString(), false)
@@ -764,23 +734,6 @@ public class GrepTool <: CjhTool {
     }
 
     /**
-     * gitignore 感知：跳过常见忽略目录（单一来源见 search_common.cj GREP_IGNORED_DIRS）
-     */
-    private let ignoredDirs: Array<String> = GREP_IGNORED_DIRS
-
-    /**
-     * 判断路径是否应被忽略
-     */
-    private func shouldIgnore(name: String): Bool {
-        for (ignored in ignoredDirs) {
-            if (name == ignored) {
-                return true
-            }
-        }
-        return false
-    }
-
-    /**
      * 搜索单个文件
      */
     private func searchFile(filePath: String, regex: Regex, contextLines: Int64, pattern: String): ToolResult {
@@ -931,29 +884,6 @@ public class GrepTool <: CjhTool {
         } catch (e: Exception) {
             // 跳过无法读取的文件
         }
-    }
-
-    /**
-     * 判断是否为文本文件（按扩展名）
-     */
-    private func isTextFile(name: String): Bool {
-        let textExts = [".cj", ".cjo", ".cjh", ".rs", ".go", ".py", ".js", ".ts", ".tsx", ".jsx",
-            ".java", ".c", ".h", ".cpp", ".cc", ".hpp", ".cs", ".rb", ".php", ".swift", ".kt",
-            ".scala", ".clj", ".ex", ".exs", ".erl", ".elm", ".lua", ".pl", ".sh", ".bash",
-            ".zsh", ".fish", ".ps1", ".bat", ".cmd", ".md", ".markdown", ".rst", ".txt",
-            ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".xml", ".html",
-            ".css", ".scss", ".sass", ".less", ".vue", ".svelte", ".gradle", ".sbt",
-            ".makefile", ".cmake", ".dockerfile", ".gitignore", ".gitattributes"]
-        for (ext in textExts) {
-            if (name.endsWith(ext)) {
-                return true
-            }
-        }
-        // 无扩展名的常见文本文件
-        if (name == "Makefile" || name == "Dockerfile" || name == "README" || name == "LICENSE") {
-            return true
-        }
-        return false
     }
 
     /**

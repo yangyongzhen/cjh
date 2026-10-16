@@ -95,7 +95,7 @@ public class MultiLineEditor <: Component {
         return this.lines.size
     }
 
-    public override func render(canvas: TuiCanvas, row: Int64, width: Int64, height: Int64): Int64 {
+    public override func render(canvas: TuiCanvas, row: Int64, _: Int64, height: Int64): Int64 {
         // 行号栏宽度 = 最大行号位数 + 两侧空格
         var digits: Int64 = 1
         var n = this.lines.size
@@ -221,8 +221,8 @@ public class MultiLineEditor <: Component {
         }
         // 可打印字符：在光标处插入（UTF-8 多字节安全）
         // isLoneControlText 兜底：控制键 text 应为空（构造层已保证，此处再兜一层）
-        if (key.text.size > 0 && !isLoneControlText(key.text)
-            && !key.isEsc && !key.isEnter && !key.isBackspace) {
+        if (key.text.size > 0 && !isLoneControlText(key.text) &&
+            !key.isEsc && !key.isEnter && !key.isBackspace) {
             this.lines[this.row] = this.insertAtRunes(this.lines[this.row], this.col, key.text)
             this.col += this.runeCount(key.text)
             this.onChange(this.text())

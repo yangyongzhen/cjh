@@ -207,7 +207,7 @@ public class SsrfGuard {
         } else {
             return false
         }
-        let schemeIdx = schemeIdxOpt.getOrThrow()
+        let _ = schemeIdxOpt.getOrThrow()
 
         // 4. 提取主机名
         let host = extractHost(url)

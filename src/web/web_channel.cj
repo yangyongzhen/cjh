@@ -28,22 +28,22 @@ public class WebChannel <: Channel {
 
     public func channelId(): String { "web" }
 
-    public func sendDelta(chatId: String, text: String): Unit {
+    public func sendDelta(_: String, text: String): Unit {
         let event = DeltaEvent(text)
         this.sendWs(event.toJson())
     }
 
-    public func sendToolStart(chatId: String, name: String, args: JsonObject): Unit {
+    public func sendToolStart(_: String, name: String, args: JsonObject): Unit {
         let event = ToolStartEvent(name, args)
         this.sendWs(event.toJson())
     }
 
-    public func sendToolResult(chatId: String, name: String, result: String, isError: Bool): Unit {
+    public func sendToolResult(_: String, name: String, result: String, isError: Bool): Unit {
         let event = ToolResultEvent(name, result, isError)
         this.sendWs(event.toJson())
     }
 
-    public func sendDone(chatId: String, summary: JsonObject): Unit {
+    public func sendDone(_: String, summary: JsonObject): Unit {
         // 从 summary JsonObject 提取字段构造 DoneEvent
         let rounds = this.getInt(summary, "rounds")
         let tools = this.getInt(summary, "tools")
@@ -54,12 +54,12 @@ public class WebChannel <: Channel {
         this.sendWs(event.toJson())
     }
 
-    public func sendError(chatId: String, message: String): Unit {
+    public func sendError(_: String, message: String): Unit {
         let event = ErrorEvent(message)
         this.sendWs(event.toJson())
     }
 
-    public func sendHistory(chatId: String, sessionId: String, messages: JsonArray): Unit {
+    public func sendHistory(_: String, sessionId: String, messages: JsonArray): Unit {
         var obj = JsonObject()
         obj.put("type", JsonString("history_messages"))
         obj.put("session_id", JsonString(sessionId))
@@ -67,7 +67,7 @@ public class WebChannel <: Channel {
         this.sendWs(obj.toJsonString())
     }
 
-    public func sendTasks(chatId: String, tasks: JsonArray): Unit {
+    public func sendTasks(_: String, tasks: JsonArray): Unit {
         var obj = JsonObject()
         obj.put("type", JsonString("tasks"))
         obj.put("tasks", tasks)

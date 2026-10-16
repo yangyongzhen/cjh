@@ -30,7 +30,7 @@ import std.collection.*
 public class Log {
     private static var initialized: Bool = false
     private static var sink: LogSinkImpl = NoopSink()
-    private static let lock: ReentrantMutex = ReentrantMutex()
+    private static let lock: Mutex = Mutex()
 
     /**
      * 初始化日志系统（线程安全，幂等）
@@ -180,7 +180,7 @@ internal interface LogSinkImpl {
 internal class NoopSink <: LogSinkImpl {
     public func start(): Unit {}
     public func stop(): Unit {}
-    public func enqueue(level: String, msg: String, isError: Bool): Unit {}
+    public func enqueue(_: String, _: String, _: Bool): Unit {}
 }
 
 /**
@@ -197,7 +197,7 @@ internal class NoopSink <: LogSinkImpl {
  */
 internal class LogSink <: LogSinkImpl {
     private let queue: ArrayList<LogEntry> = ArrayList<LogEntry>()
-    private let queueLock: ReentrantMutex = ReentrantMutex()
+    private let queueLock: Mutex = Mutex()
     private var running: Bool = false
 
     // 日志级别过滤（appLogger 用）

@@ -1,6 +1,5 @@
 package cjh.tui
 
-import std.env.*
 import std.convert.Parsable
 import std.fs.*
 import std.sync.*
@@ -367,7 +366,7 @@ public class TuiApp {
                             // （线程卡死），用户下次 Ctrl+C 直接强制退出
                             this.interruptPending = true
                             this.appendOutput(Ansi.fg(Ansi.THEME_WARN) +
-                                "⚠️ 模型 ${idleSecs}s 无响应（可能停滞），已请求中断。有数据恢复则立即停止。" +
+                                "⚠ 模型 ${idleSecs}s 无响应（可能停滞），已请求中断。有数据恢复则立即停止。" +
                                 Ansi.reset())
                             this.safeLog("warn", "看门狗触发中断（idle ${idleSecs}s）")
                             this.onInterrupt()
@@ -843,7 +842,7 @@ public class TuiApp {
      * - API Key **不预填**（各家 key 独立且敏感，预填会误导——切到未配置的
      *   家仍显示当前 key 的星号）；留空保存时 applyProvider 保留原 key
      */
-    public func showProviderDialog(currentBaseUrl: String, currentModel: String, currentApiKey: String,
+    public func showProviderDialog(currentBaseUrl: String, currentModel: String, _: String,
         currentProtocol: String): Unit {
         // 根据当前 base_url 推断 provider（预设匹配；未匹配 = custom 自定义/聚合）
         var provider = "custom"
@@ -1034,7 +1033,7 @@ public class TuiApp {
     public func appendDivider(cols: Int64): Unit {
         let ch = if (this.term.isUtf8()) { "─" } else { "-" }
         var sb = StringBuilder()
-        for (i in 0..cols) {
+        for (_ in 0..cols) {
             sb.append(ch)
         }
         this.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + sb.toString() + Ansi.reset())
@@ -1690,7 +1689,7 @@ public class TuiApp {
      * 计时来源：agentStartTime（由 setAgentRunning(true) 记录）
      * token 来源：agentPromptTokens（由 addAgentTokens 累加）
      */
-    private func renderAgentStatus(canvas: TuiCanvas, row: Int64, cols: Int64): Unit {
+    private func renderAgentStatus(canvas: TuiCanvas, row: Int64, _: Int64): Unit {
         let frame = this.spinner.frame()
         let elapsed = (DateTime.now() - this.agentStartTime).toSeconds()
         this.agentTokenLock.lock()
@@ -1732,7 +1731,7 @@ public class TuiApp {
     /**
      * 帮助视图内容（无边框全宽渲染）
      */
-    private func renderHelp(canvas: TuiCanvas, row: Int64, width: Int64, height: Int64): Unit {
+    private func renderHelp(canvas: TuiCanvas, row: Int64, _: Int64, height: Int64): Unit {
         let lines: ArrayList<String> = ArrayList<String>()
         lines.add(Ansi.fg(Ansi.THEME_ACCENT) + "可用命令：" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  /help          显示本帮助" + Ansi.reset())

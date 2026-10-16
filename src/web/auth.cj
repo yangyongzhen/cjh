@@ -11,7 +11,6 @@ package cjh.web
  * TLS 配置因 ServerBuilder.tlsConfig API 不确定而跳过（#9 可选）。
  */
 
-import std.collection.*
 import stdx.encoding.json.*
 import stdx.net.http.*
 import cjcfg.CjhConfig
@@ -103,7 +102,7 @@ public class SecurityAudit {
         println("│  访问范围:  ${if (isRemote) { "远程（局域网/公网）" } else { "本机（127.0.0.1）" }}")
         println("│  鉴权:     ${if (hasAuth) { "已启用（Bearer token）" } else { "未启用" }}")
         if (isRemote && !hasAuth) {
-            println("│  ⚠️  风险:  远程访问未启用鉴权，任何人可调用工具")
+            println("│  ⚠  风险:  远程访问未启用鉴权，任何人可调用工具")
             println("│           建议: cjh web --bind ${bindAddr} --token <secret>")
         }
         println("│  TLS:      未配置（HTTPS 跳过）")

@@ -63,7 +63,7 @@ public class ConfirmDialog <: Component {
         return this.visible
     }
 
-    public override func render(canvas: TuiCanvas, row: Int64, width: Int64, height: Int64): Int64 {
+    public override func render(canvas: TuiCanvas, row: Int64, width: Int64, _: Int64): Int64 {
         if (!this.visible) {
             return 0
         }

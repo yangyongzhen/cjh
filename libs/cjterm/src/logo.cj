@@ -215,7 +215,7 @@ public class Logo {
     public static func separator(cols: Int64, utf8: Bool): String {
         let ch = if (utf8) { "─" } else { "-" }
         var sb = StringBuilder()
-        for (i in 0..cols) {
+        for (_ in 0..cols) {
             sb.append(ch)
         }
         return Ansi.fg(Ansi.THEME_MUTED) + sb.toString() + Ansi.reset()

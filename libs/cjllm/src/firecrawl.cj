@@ -23,7 +23,6 @@ package cjllm
 
 import stdx.encoding.json.*
 import std.collection.*
-import std.io.*
 import cjutil.*
 
 public class FirecrawlClient {
@@ -119,26 +118,3 @@ public class FirecrawlClient {
     }
 }
 
-/**
- * 读取 InputStream 全部内容到 Array<Byte>，最多 maxBytes
- */
-func readInputStream(stream: InputStream, maxBytes: Int64): Array<Byte> {
-    var list = ArrayList<Byte>()
-    var buf = Array<Byte>(8192, repeat: UInt8(0))
-    try {
-        while (list.size < maxBytes) {
-            let n = stream.read(buf)
-            if (n <= 0) { break }
-            for (i in 0..n) {
-                list.add(buf[i])
-            }
-        }
-    } catch (e: Exception) {
-        // 读取中断，返回已读部分
-    }
-    var result = Array<Byte>(list.size, repeat: UInt8(0))
-    for (i in 0..list.size) {
-        result[i] = list[i]
-    }
-    return result
-}

@@ -385,6 +385,15 @@ public class CjhConfig {
     }
 
     /**
+     * 替换 MCP 服务器列表（Web POST /api/settings 的 mcpServers 字段）
+     *
+     * 仅改内存；落盘由 saveAll() 统一完成（读-改-写 settings.json）。
+     */
+    public func replaceMcpServers(list: ArrayList<McpServerConfig>): Unit {
+        this.mcpServers = list
+    }
+
+    /**
      * 保存全部可编辑字段到 settings.json（读-改-写，保留未知字段）。
      * 供 Web 配置页面 POST /api/settings 调用。
      */
@@ -439,6 +448,8 @@ public class CjhConfig {
         root.put("web_search_max_results", JsonInt(this.webSearchMaxResults))
         root.put("web_fetch_enabled", JsonBool(this.webFetchEnabled))
         root.put("web_fetch_max_chars", JsonInt(this.webFetchMaxChars))
+        // MCP 服务器（对象形态 {name: {...}}，与 loadSettings 的解析形态一致）
+        root.put("mcp_servers", mcpServersToJsonObject(this.mcpServers))
         File.writeTo(this.settingsPath, root.toJsonString().toArray())
     }
 
