@@ -97,16 +97,35 @@ def main():
         health = json.loads(http_get(base + "/api/health"))
         check("/api/health status=ok", health.get("status") == "ok", str(health))
 
+        caps = json.loads(http_get(base + "/api/capabilities"))
+        check("/api/capabilities protocol=4", caps.get("protocol") == 4, str(caps)[:200])
+        check("能力自述含出站 approval_request",
+              "approval_request" in (caps.get("ws_out") or []))
+        check("能力自述含入站 approval_response",
+              "approval_response" in (caps.get("ws_in") or []))
+        check("features.approval_over_ws=true",
+              (caps.get("features") or {}).get("approval_over_ws") is True,
+              str(caps.get("features"))[:200])
+        check("features.diff_in_tool_result=true",
+              (caps.get("features") or {}).get("diff_in_tool_result") is True,
+              str(caps.get("features"))[:200])
+
         html = http_get(base + "/")
         check("页面含轻提示条 #notice-bar", 'id="notice-bar"' in html)
         check("页面含模型下拉 #model-selector", 'id="model-selector"' in html)
+        check("页面含审批弹窗 #approval-modal", 'id="approval-modal"' in html)
+        check("页面含审批同意按钮 #approval-allow-btn", 'id="approval-allow-btn"' in html)
+        check("页面含审批倒计时 #approval-countdown", 'id="approval-countdown"' in html)
 
         js = http_get(base + "/assets/app.js")
         for token in ("switch_model", "handleAck", "handleCancelled", "notice-bar",
-                      "type: 'cancel'"):
+                      "type: 'cancel'", "handleApprovalRequest", "sendApprovalResponse",
+                      "approval_response", "buildDiffBlock"):
             check("app.js 含 %s" % token, token in js)
         css = http_get(base + "/assets/styles.css")
         check("styles.css 含 .notice-bar", ".notice-bar" in css)
+        check("styles.css 含 .approval-dialog", ".approval-dialog" in css)
+        check("styles.css 含 .diff-block", ".diff-block" in css)
 
         if not has_ws:
             skip("WS 控制帧回执", "未安装 websocket-client（pip install websocket-client）")
@@ -150,6 +169,14 @@ def main():
             # 4) abort 别名（旧客户端）同样必回 cancelled
             ws.send(json.dumps({"type": "abort"}))
             check("abort → cancelled", bool(recv_any({"cancelled"})), "无回执（静默！）")
+
+            # 4b) approval_response：未知 request_id 必须回结构化错误（不静默）
+            ws.send(json.dumps({"type": "approval_response",
+                                "request_id": "no-such-request", "approved": True}))
+            appr = recv_any({"error"})
+            check("approval_response 未知 id → error(approval_unknown)",
+                  bool(appr) and appr.get("code") == "approval_unknown",
+                  json.dumps(appr, ensure_ascii=False) if appr else "无回执（静默！）")
 
             # 5) 回合进行中 cancel：帧不许被吞（was_running 取值不作断言，如实打印）
             ws.send(json.dumps({"type": "chat", "message": "冒烟：请回一句 ok"}))

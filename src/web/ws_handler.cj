@@ -140,6 +140,11 @@ public class WsHandler <: HttpRequestHandler {
             case WsMsgType.Compact =>
                 // 压缩历史：网关回 ack（含压缩前后消息数）
                 this.gateway.handleCompact(wsId, wsId)
+            case WsMsgType.ApprovalResponse =>
+                // 审批结果：命中未决请求则唤醒等待中的回合；
+                // 未知/过期的 request_id 由网关回结构化错误，不静默
+                this.gateway.handleApprovalResponse(wsId, wsId,
+                    extractStr(jsonStr, "request_id"), extractBool(jsonStr, "approved"))
             case WsMsgType.Abort | WsMsgType.Cancel =>
                 // 中断/取消当前执行：网关回 cancelled（was_running 如实反映）
                 this.gateway.handleCancel(wsId, wsId, extractStr(jsonStr, "session_id"))
@@ -165,6 +170,16 @@ public class WsHandler <: HttpRequestHandler {
 
         // 交由 Gateway 处理：Gateway 加载历史消息，通过 Channel 推回前端
         this.gateway.handleResumeSession(wsId, wsId, sessionId)
+    }
+
+    /**
+     * 从帧 JSON 里取布尔字段（缺失/类型不符 → false，即"谨慎默认：拒绝"）
+     */
+    private func extractBool(jsonStr: String, key: String): Bool {
+        match (JsonValue.fromStr(jsonStr).kind()) {
+            case JsonKind.JsObject => return optBool(JsonValue.fromStr(jsonStr).asObject(), key)
+            case _ => return false
+        }
     }
 
     /**

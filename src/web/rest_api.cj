@@ -45,6 +45,7 @@ public class RestApi <: HttpRequestHandler {
         let path = ctx.request.url.path
         match (path) {
             case "/api/health" => this.handleHealth(ctx)
+            case "/api/capabilities" => this.handleCapabilities(ctx)
             case "/api/sessions" => this.handleListSessions(ctx)
             case "/api/models" => this.handleListModels(ctx)
             case "/api/tasks" => this.handleListTasks(ctx)
@@ -67,6 +68,20 @@ public class RestApi <: HttpRequestHandler {
         health.put("version", JsonString("1.3.0"))
         health.put("web_port", JsonInt(Int64(this.config.webPort)))
         let body = health.toJsonString()
+        let res = ctx.responseBuilder
+        res.header("Content-Type", "application/json; charset=utf-8")
+        res.body(body.toArray())
+    }
+
+    /**
+     * GET /api/capabilities → 服务端能力自述
+     *
+     * 客户端据 ws_in / ws_out / features 决定怎么说话（哪些帧可以发、哪些事件该处理），
+     * 不必靠 try/catch 试错。清单与推导逻辑见 src/web/capabilities.cj，
+     * 且由单测断言"清单里每一项都真的存在"。
+     */
+    private func handleCapabilities(ctx: HttpContext): Unit {
+        let body = capabilitiesJson().toJsonString()
         let res = ctx.responseBuilder
         res.header("Content-Type", "application/json; charset=utf-8")
         res.body(body.toArray())

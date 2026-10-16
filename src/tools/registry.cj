@@ -13,10 +13,24 @@ import cjutil.*
 public class ToolResult {
     public let content: String
     public let isError: Bool
+    /**
+     * 结构化 diff（仅文件改动类工具成功时携带）
+     *
+     * 文字 content 仍是给人 / 模型看的主体；diff 是给客户端渲染 diff 视图用的
+     * 结构化数据（path / unified_diff / before_sha / after_sha，见 textdiff.cj）。
+     */
+    public let diff: ?DiffInfo
 
     public init(content: String, isError: Bool) {
         this.content = content
         this.isError = isError
+        this.diff = None
+    }
+
+    public init(content: String, isError: Bool, diff: ?DiffInfo) {
+        this.content = content
+        this.isError = isError
+        this.diff = diff
     }
 
     public func toJson(): JsonValue {

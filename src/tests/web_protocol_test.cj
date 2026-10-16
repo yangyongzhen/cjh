@@ -32,30 +32,57 @@ public class CaptureChannel <: Channel {
     public var dones: Int64 = 0
     public var histories: Int64 = 0
     public var tasks: Int64 = 0
+    // 回合级事件携带的帧身份（按到达顺序记录，用于断言"同一回合同一组 id"）
+    public var metas: ArrayList<FrameMeta> = ArrayList<FrameMeta>()
+    // done 的结束原因（按到达顺序）
+    public var doneReasons: ArrayList<String> = ArrayList<String>()
+    // 错误事件的帧身份（与 errors 一一对应）
+    public var errorMetas: ArrayList<FrameMeta> = ArrayList<FrameMeta>()
+    // 审批请求（危险操作前网关推来；测试据此答复或放任超时）
+    public var approvals: ArrayList<ApprovalRequestInfo> = ArrayList<ApprovalRequestInfo>()
+    // 工具结果（按到达顺序；三个列表一一对应）
+    public var toolNames: ArrayList<String> = ArrayList<String>()
+    public var toolResultTexts: ArrayList<String> = ArrayList<String>()
+    public var toolResultErrors: ArrayList<Bool> = ArrayList<Bool>()
+    // 工具结果携带的结构化 diff（与上面三个列表一一对应；非文件工具为 None）
+    public var toolResultDiffs: ArrayList<?DiffInfo> = ArrayList<?DiffInfo>()
 
     public func channelId(): String {
         return "test"
     }
 
-    public func sendDelta(_: String, text: String): Unit {
+    public func sendDelta(_: String, meta: FrameMeta, text: String): Unit {
+        this.metas.add(meta)
         this.deltas += text
     }
 
-    public func sendToolStart(_: String, _: String, _: JsonObject): Unit {}
+    public func sendToolStart(_: String, meta: FrameMeta, _: String, _: JsonObject): Unit {
+        this.metas.add(meta)
+    }
 
-    public func sendToolResult(_: String, _: String, _: String, _: Bool): Unit {}
+    public func sendToolResult(_: String, meta: FrameMeta, name: String, result: String,
+        isError: Bool, diff: ?DiffInfo): Unit {
+        this.metas.add(meta)
+        this.toolNames.add(name)
+        this.toolResultTexts.add(result)
+        this.toolResultErrors.add(isError)
+        this.toolResultDiffs.add(diff)
+    }
 
-    public func sendDone(_: String, _: JsonObject): Unit {
+    public func sendDone(_: String, meta: FrameMeta, summary: JsonObject): Unit {
         this.dones += 1
+        this.metas.add(meta)
+        this.doneReasons.add(getStr(summary, "finish_reason"))
     }
 
     public func sendError(_: String, message: String): Unit {
         this.errors.add(CapturedError(message, "", false))
     }
 
-    public func sendErrorCode(_: String, message: String, code: String,
+    public func sendErrorCode(_: String, meta: FrameMeta, message: String, code: String,
         retryable: Bool): Unit {
         this.errors.add(CapturedError(message, code, retryable))
+        this.errorMetas.add(meta)
     }
 
     public func sendAck(_: String, ack: AckInfo): Unit {
@@ -72,6 +99,10 @@ public class CaptureChannel <: Channel {
 
     public func sendTasks(_: String, _: JsonArray): Unit {
         this.tasks += 1
+    }
+
+    public func sendApprovalRequest(_: String, info: ApprovalRequestInfo): Unit {
+        this.approvals.add(info)
     }
 }
 
@@ -426,7 +457,14 @@ public class GatewayControlFrameTest {
         @Assert(ch.errors.size, 1)
         @Assert(ch.errors[0].code, "model_unavailable")
         @Assert(ch.errors[0].retryable, false)
-        @Assert(ch.dones, 0)
+        // 回合失败也要收尾：done 照发（finish_reason=error），客户端只有一个终局信号
+        @Assert(ch.dones, 1)
+        @Assert(ch.doneReasons[0], "error")
+        // 错误与 done 属于同一回合：身份齐备且一致
+        @Assert(ch.errorMetas[0].turnId.size > 0, true)
+        @Assert(ch.errorMetas[0].messageId.size > 0, true)
+        @Assert(ch.errorMetas[0].sessionId.size > 0, true)
+        @Assert(ch.errorMetas[0].turnId, ch.metas[ch.metas.size - 1].turnId)
     }
 
     @TestCase
@@ -441,6 +479,134 @@ public class GatewayControlFrameTest {
         waitForEvents(ch, 10000)
         @Assert(ch.errors.size, 0)
         @Assert(ch.dones > 0, true)
+    }
+}
+
+/**
+ * 慢 provider 替身：把回合"卡在跑"，直到外部要求中断
+ *
+ * 为什么不用 MockProvider + CJH_MOCK_DELAY_MS：环境变量是进程级全局，
+ * 并发用例会互相污染。这里用一个本地 provider——只有中断到来才返回——
+ * 把"回合正在跑"这个窗口造得确定，cancel → finish_reason=cancelled 才断言得住。
+ */
+public class SlowProvider <: LlmProvider {
+    public var emitted: Int64 = 0
+
+    public init() {}
+
+    public func chatStream(_: ArrayList<ChatMessage>, _: ArrayList<ToolSpec>,
+        onDelta: (String) -> Unit, _: (String) -> Unit, _: (Int64) -> Unit,
+        isCancelled: () -> Bool): ModelResponse {
+        // 每 10ms 吐一帧，最多 500 帧（5s 上限，防用例挂死）；中断到来即返回
+        var i: Int64 = 0
+        while (i < 500 && !isCancelled()) {
+            onDelta("段")
+            this.emitted += 1
+            sleep(Duration.millisecond * 10)
+            i += 1
+        }
+        return ModelResponse("已停止输出。", ArrayList<ToolCall>())
+    }
+}
+
+/**
+ * 回合身份与结束原因（P0-③：让客户端能归并事件、少写 try/catch）
+ */
+@Test
+public class TurnIdentityTest {
+
+    @TestCase
+    public func testTurnFramesCarryConsistentIds(): Unit {
+        // 同一回合的 delta / tool_* / done 必须带同一组 session_id/turn_id/message_id
+        let dir = testTempDir("gw_turn_ids")
+        writeTextFile(dir + "/mock.txt", "line1\nline2\n")
+        let gateway = buildGateway(dir, Some(StubProviderFactory("")))
+        let ch = CaptureChannel()
+        gateway.registerChannel("test", ch)
+        gateway.handleUserMessage("test", "chat1", "你好", None)
+        waitForEvents(ch, 10000)
+
+        @Assert(ch.dones, 1)
+        @Assert(ch.metas.size > 1, true)
+        let first = ch.metas[0]
+        @Assert(first.sessionId.size > 0, true)
+        @Assert(first.turnId.size > 0, true)
+        @Assert(first.messageId.size > 0, true)
+        // turn_id 与 message_id 前缀不同（同序但可区分：一个回合可能产出多条消息）
+        @Assert(first.turnId == first.messageId, false)
+        for (m in ch.metas) {
+            @Assert(m.sessionId, first.sessionId)
+            @Assert(m.turnId, first.turnId)
+            @Assert(m.messageId, first.messageId)
+        }
+        // 正常收尾：finish_reason=stop
+        @Assert(ch.doneReasons[0], "stop")
+    }
+
+    @TestCase
+    public func testFrameIdsJsonShapeIsFixed(): Unit {
+        // 结构固定：有身份就输出三字段；无身份输出空串（老客户端读到空串，不崩）
+        let meta = FrameMeta("s1.2.3", "s1.2.3#t7", "s1.2.3#m7")
+
+        let delta = DeltaEvent("hi")
+        delta.meta = meta
+        let p1 = JsonValue.fromStr(delta.toJson()).asObject()
+        @Assert(getStr(p1, "type"), "delta")
+        @Assert(getStr(p1, "session_id"), "s1.2.3")
+        @Assert(getStr(p1, "turn_id"), "s1.2.3#t7")
+        @Assert(getStr(p1, "message_id"), "s1.2.3#m7")
+
+        let done = DoneEvent(1, 2, 3, 4, 5)
+        done.meta = meta
+        done.finishReason = "cancelled"
+        let p2 = JsonValue.fromStr(done.toJson()).asObject()
+        @Assert(getStr(p2, "type"), "done")
+        @Assert(getStr(p2, "finish_reason"), "cancelled")
+        @Assert(getStr(p2, "turn_id"), "s1.2.3#t7")
+
+        let plain = ErrorEvent("裸错误")
+        let p3 = JsonValue.fromStr(plain.toJson()).asObject()
+        @Assert(getStr(p3, "code"), "internal")
+        @Assert(getStr(p3, "session_id"), "")
+        @Assert(getStr(p3, "turn_id"), "")
+        @Assert(getStr(p3, "message_id"), "")
+    }
+
+    @TestCase
+    public func testCancelDuringTurnReportsFinishReasonCancelled(): Unit {
+        // 回合在跑时收到 cancel：done.finish_reason 必须如实报 cancelled（不是 stop / error）
+        let dir = testTempDir("gw_turn_cancel_reason")
+        let cfg = CjhConfig()
+        cfg.systemPrompt = "回合身份测试"
+        cfg.maxIterations = 2
+        let registry = ToolRegistry()
+        registry.register(ReadTool())
+        let provider = SlowProvider()
+        let gateway = ChannelGateway(cfg, provider, registry,
+            Some(StubProviderFactory("")))
+        let ch = CaptureChannel()
+        gateway.registerChannel("test", ch)
+        gateway.handleUserMessage("test", "chat1", "你好", None)
+
+        // 等到回合真的在跑：以 provider 已开始产字为准（不依赖 delta 转发时序）
+        var waited: Int64 = 0
+        while (provider.emitted == 0 && waited < 5000) {
+            sleep(Duration.millisecond * 10)
+            waited += 10
+        }
+        @Assert(provider.emitted > 0, true)
+
+        gateway.handleCancel("test", "chat1", "")
+        @Assert(ch.cancelleds.size, 1)
+        @Assert(ch.cancelleds[0].wasRunning, true)
+
+        var waited2: Int64 = 0
+        while (ch.dones == 0 && waited2 < 5000) {
+            sleep(Duration.millisecond * 10)
+            waited2 += 10
+        }
+        @Assert(ch.dones, 1)
+        @Assert(ch.doneReasons[0], "cancelled")
     }
 }
 
