@@ -92,7 +92,8 @@ public class HashlineEditTool <: CjhTool {
                         first = false
                     }
                     File.writeTo(path, newContent.toArray())
-                    return ToolResult("Hashline 编辑成功：${summary}", false)
+                    return ToolResult("Hashline 编辑成功：${summary}", false,
+                        buildDiffInfo(path, original, newContent))
                 case ApplyError(reason) =>
                     return ToolResult("Hashline 编辑被拒绝：${reason}", true)
             }

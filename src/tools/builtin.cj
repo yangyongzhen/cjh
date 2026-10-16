@@ -547,19 +547,21 @@ public class WriteTool <: CjhTool {
                 "Write the ACTUAL file content (HTML/JS/text), not its byte values.",
                 true)
         }
+        // 结构化 diff：写前先读旧内容（新文件视作空），客户端据此渲染 diff 视图
+        let diff = diffForRewrite(path, content)
         // 软约束：超长 content 警告但不阻断（让 LLM 自行决定是否拆分）
         let lines = content.split('\n').size
         if (content.size > 4000 || lines > 150) {
             try {
                 File.writeTo(path, content.toArray())
-                return ToolResult("Written ${path} (${content.size} chars).\nWARNING: content exceeds the recommended limit (${lines} lines / ${content.size} chars); risk of max_tokens truncation. If the file turns out incomplete, continue with append_file to finish it.", false)
+                return ToolResult("Written ${path} (${content.size} chars).\nWARNING: content exceeds the recommended limit (${lines} lines / ${content.size} chars); risk of max_tokens truncation. If the file turns out incomplete, continue with append_file to finish it.", false, diff)
             } catch (e: Exception) {
                 return ToolResult("Write failed: ${e}", true)
             }
         }
         try {
             File.writeTo(path, content.toArray())
-            return ToolResult("Written ${path} (${content.size} chars)", false)
+            return ToolResult("Written ${path} (${content.size} chars)", false, diff)
         } catch (e: Exception) {
             return ToolResult("Write failed: ${e}", true)
         }
@@ -612,6 +614,39 @@ private func isAsciiDigitGarbage(content: String): Bool {
     return (digitRatio > 0.80 && letterRatio < 0.01 && newlineCount < 2)
 }
 
+/**
+ * 读文件内容用于算 diff（不存在 → 空串；超过上限 / 读失败 → None）
+ *
+ * 上限 2MB：diff 文本随文件线性增长，超大文件的 diff 对客户端也没意义，
+ * 而读全文是 O(n)——不值得为"看一眼 diff"把大文件读进内存。
+ * 区分"不存在"（新文件，旧内容就是空串，diff 该报全新增）与"读不到"
+ * （放弃出 diff，而不是假装整个文件都是新的——那是虚报）。
+ */
+private func readTextForDiff(path: String): ?String {
+    try {
+        if (!exists(path)) {
+            return Some("")
+        }
+        if (FileInfo(path).size > 2 * 1024 * 1024) {
+            return None
+        }
+        return Some(safeFromUtf8(File.readFrom(path)))
+    } catch (e: Exception) {
+        return None
+    }
+}
+
+/**
+ * 为一次"整文件改写"算结构化 diff（write_file 用）
+ */
+private func diffForRewrite(path: String, after: String): ?DiffInfo {
+    let before = readTextForDiff(path)
+    match (before) {
+        case Some(b) => return buildDiffInfo(path, b, after)
+        case None => return None
+    }
+}
+
 public class AppendFileTool <: CjhTool {
     public init() {}
 
@@ -652,13 +687,19 @@ public class AppendFileTool <: CjhTool {
         if (!exists(path)) {
             return ToolResult("Error: cannot append to ${path} (file does not exist). Create it with write_file first.", true)
         }
+        // 结构化 diff：追加前读旧内容（增量写本身不读全文，这里为出 diff 读一次，受 2MB 上限约束）
+        let before = readTextForDiff(path)
         try {
             // 增量写：OpenMode.Append 只写新增内容，O(1) 每次调用
             // 不再读全文→拼接→写全文（旧实现 O(n)，大文件极慢）
             let f = File(path, OpenMode.Append)
             f.write(stringToBytes(content))
             f.close()
-            return ToolResult("Appended ${content.size} chars to ${path}", false)
+            match (before) {
+                case Some(b) => return ToolResult("Appended ${content.size} chars to ${path}", false,
+                    buildDiffInfo(path, b, b + content))
+                case None => return ToolResult("Appended ${content.size} chars to ${path}", false)
+            }
         } catch (e: Exception) {
             // 打开失败
             return ToolResult("Error: cannot append to ${path} (file may not exist). Create it with write_file first. Detail: ${e}", true)

@@ -1,5 +1,7 @@
 package cjh.web
 
+import cjh.tools.*
+
 /**
  * WebSocket 消息协议定义
  *
@@ -30,12 +32,14 @@ public enum WsMsgType {
     | NewSession      // 浏览器 → 服务器：新建会话
     | ResumeSession   // 浏览器 → 服务器：恢复历史会话
     | Compact         // 浏览器 → 服务器：压缩历史
+    | ApprovalResponse // 浏览器 → 服务器：审批结果（同意/拒绝）
     | Delta           // 服务器 → 浏览器：LLM 增量输出
     | ToolStart       // 服务器 → 浏览器：工具调用开始
     | ToolResult      // 服务器 → 浏览器：工具调用结束
     | Done            // 服务器 → 浏览器：回合结束总结
     | Error           // 服务器 → 浏览器：错误
     | Tasks           // 服务器 → 浏览器：任务列表更新
+    | ApprovalRequest // 服务器 → 浏览器：审批请求（危险操作需人工确认）
     | Unknown         // 未知类型
 }
 
@@ -59,6 +63,7 @@ public func parseMsgType(jsonStr: String): WsMsgType {
                                 case "new_session" => return WsMsgType.NewSession
                                 case "resume_session" => return WsMsgType.ResumeSession
                                 case "compact" => return WsMsgType.Compact
+                                case "approval_response" => return WsMsgType.ApprovalResponse
                                 case "delta" => return WsMsgType.Delta
                                 case "tool_start" => return WsMsgType.ToolStart
                                 case "tool_result" => return WsMsgType.ToolResult
@@ -131,6 +136,22 @@ public class ChatRequest {
             return None
         }
         return Some(ModelOverride(this.model, this.baseUrl, this.apiKey))
+    }
+}
+
+/**
+ * 读取 JSON 布尔字段（字段缺失或类型不符 → false）
+ *
+ * 缺省 false = 「谨慎默认：不批准」：审批响应里丢了字段就按拒绝走，绝不默默放行。
+ */
+func optBool(obj: JsonObject, key: String): Bool {
+    match (obj.get(key)) {
+        case Some(v) =>
+            match (v.kind()) {
+                case JsonKind.JsBool => return v.asBool().getValue()
+                case _ => return false
+            }
+        case None => return false
     }
 }
 
@@ -234,10 +255,15 @@ public class CompactRequest {
 
 /**
  * LLM 增量输出事件
- * { "type": "delta", "text": "已用 echo 工具" }
+ * { "type": "delta", "text": "已用 echo 工具",
+ *   "session_id": "s1787665309.605", "turn_id": "...", "message_id": "..." }
  */
 public class DeltaEvent {
     public var text: String = ""
+    /**
+     * 帧身份（session_id / turn_id / message_id）
+     */
+    public var meta: FrameMeta = FrameMeta()
 
     public init() {}
 
@@ -252,17 +278,20 @@ public class DeltaEvent {
         var obj = JsonObject()
         obj.put("type", JsonString("delta"))
         obj.put("text", JsonString(this.text))
+        putFrameMeta(obj, this.meta)
         return obj.toJsonString()
     }
 }
 
 /**
  * 工具调用开始事件
- * { "type": "tool_start", "name": "echo", "args": {"message": "hello"} }
+ * { "type": "tool_start", "name": "echo", "args": {"message": "hello"},
+ *   "session_id": "...", "turn_id": "...", "message_id": "..." }
  */
 public class ToolStartEvent {
     public var name: String = ""
     public var args: JsonObject = JsonObject()
+    public var meta: FrameMeta = FrameMeta()
 
     public init() {}
 
@@ -276,18 +305,25 @@ public class ToolStartEvent {
         obj.put("type", JsonString("tool_start"))
         obj.put("name", JsonString(this.name))
         obj.put("args", this.args)
+        putFrameMeta(obj, this.meta)
         return obj.toJsonString()
     }
 }
 
 /**
  * 工具调用结束事件
- * { "type": "tool_result", "name": "echo", "content": "[echo plugin] message: hello", "is_error": false }
+ * { "type": "tool_result", "name": "echo", "content": "[echo plugin] message: hello",
+ *   "is_error": false, "session_id": "...", "turn_id": "...", "message_id": "...",
+ *   "diff": {"path": "...", "unified_diff": "...", "before_sha": "...", "after_sha": "..."} }
+ *
+ * diff 仅在文件改动类工具成功时出现（可选字段，老客户端忽略即可）。
  */
 public class ToolResultEvent {
     public var name: String = ""
     public var content: String = ""
     public var isError: Bool = false
+    public var diff: ?DiffInfo = None
+    public var meta: FrameMeta = FrameMeta()
 
     public init() {}
 
@@ -303,13 +339,24 @@ public class ToolResultEvent {
         obj.put("name", JsonString(this.name))
         obj.put("content", JsonString(this.content))
         obj.put("is_error", JsonBool(this.isError))
+        if (let Some(d) <- this.diff) {
+            obj.put("diff", d.toJson())
+        }
+        putFrameMeta(obj, this.meta)
         return obj.toJsonString()
     }
 }
 
 /**
  * 回合结束总结事件
- * { "type": "done", "summary": {"rounds": 2, "tools": 1, "duration_ms": 4062, "tokens": 4855, "cached": 4681} }
+ *
+ * { "type": "done", "summary": {"rounds": 2, "tools": 1, "duration_ms": 4062,
+ *   "tokens": 4855, "cached": 4681},
+ *   "finish_reason": "stop", "session_id": "...", "turn_id": "...", "message_id": "..." }
+ *
+ * finish_reason：stop（正常收尾）/ cancelled（回合被中断）/ error（回合内异常）。
+ * 只报真实可得的取值 —— provider 层的 max_tokens 截断（length）需要
+ * cjllm → agent 的 finish_reason 透传，尚未做，所以宁可不报，也不给假值。
  */
 public class DoneEvent {
     public var rounds: Int64 = 0
@@ -317,6 +364,8 @@ public class DoneEvent {
     public var durationMs: Int64 = 0
     public var tokens: Int64 = 0
     public var cached: Int64 = 0
+    public var meta: FrameMeta = FrameMeta()
+    public var finishReason: String = "stop"
 
     public init() {}
 
@@ -340,8 +389,19 @@ public class DoneEvent {
         var obj = JsonObject()
         obj.put("type", JsonString("done"))
         obj.put("summary", summary)
+        obj.put("finish_reason", JsonString(this.finishReason))
+        putFrameMeta(obj, this.meta)
         return obj.toJsonString()
     }
+}
+
+/**
+ * 写入帧身份三字段（恒定输出，缺失即空串：客户端可依赖固定结构）
+ */
+func putFrameMeta(obj: JsonObject, meta: FrameMeta): Unit {
+    obj.put("session_id", JsonString(meta.sessionId))
+    obj.put("turn_id", JsonString(meta.turnId))
+    obj.put("message_id", JsonString(meta.messageId))
 }
 
 /**
@@ -410,16 +470,63 @@ public class CancelledEvent {
 }
 
 /**
+ * 审批请求事件（服务器 → 浏览器）
+ *
+ * { "type": "approval_request", "request_id": "s1#a3", "tool": "bash",
+ *   "args": {"command": "rm -rf /tmp/x"}, "reason": "命中危险命令规则",
+ *   "expires_in_ms": 300000,
+ *   "session_id": "...", "turn_id": "...", "message_id": "..." }
+ *
+ * 语义：危险操作需人工确认，回合在此阻塞等待 approval_response（request_id 原样回传）。
+ * 超时 / 断连 / 取消一律按「拒绝」收场并让回合继续（工具拿到拒绝结果），不挂死。
+ */
+public class ApprovalRequestEvent {
+    public var requestId: String = ""
+    public var toolName: String = ""
+    public var args: JsonObject = JsonObject()
+    public var reason: String = ""
+    public var expiresInMs: Int64 = 0
+    /**
+     * 帧身份（session_id / turn_id / message_id）
+     */
+    public var meta: FrameMeta = FrameMeta()
+
+    public init() {}
+
+    public init(requestId: String, toolName: String, args: JsonObject, reason: String) {
+        this.requestId = requestId
+        this.toolName = toolName
+        this.args = args
+        this.reason = reason
+    }
+
+    public func toJson(): String {
+        var obj = JsonObject()
+        obj.put("type", JsonString("approval_request"))
+        obj.put("request_id", JsonString(this.requestId))
+        obj.put("tool", JsonString(this.toolName))
+        obj.put("args", this.args)
+        obj.put("reason", JsonString(this.reason))
+        obj.put("expires_in_ms", JsonInt(this.expiresInMs))
+        putFrameMeta(obj, this.meta)
+        return obj.toJsonString()
+    }
+}
+
+/**
  * 错误事件
- * { "type": "error", "message": "Provider 连接失败", "code": "provider_error", "retryable": true }
+ * { "type": "error", "message": "Provider 连接失败", "code": "provider_error",
+ *   "retryable": true, "session_id": "...", "turn_id": "...", "message_id": "..." }
  *
  * code / retryable 为后加字段：老客户端只读 message 不受影响，
  * 新客户端据 code 决定「重试 / 换模型 / 新建会话」。code 缺省 "internal"。
+ * 帧身份三字段对回合内错误有值；与回合无关的错误（帧格式错误等）为空串。
  */
 public class ErrorEvent {
     public var message: String = ""
     public var code: String = ""
     public var retryable: Bool = false
+    public var meta: FrameMeta = FrameMeta()
 
     public init() {}
 
@@ -439,6 +546,7 @@ public class ErrorEvent {
         obj.put("message", JsonString(this.message))
         obj.put("code", JsonString(if (this.code.size > 0) { this.code } else { "internal" }))
         obj.put("retryable", JsonBool(this.retryable))
+        putFrameMeta(obj, this.meta)
         return obj.toJsonString()
     }
 }
@@ -483,4 +591,30 @@ public class TaskItem {
     public var statusStr: String = "pending"  // pending|doing|done
 
     public init() {}
+}
+
+/**
+ * 历史消息帧（恢复/切换会话时推送）
+ * { "type": "history_messages", "session_id": "...", "messages": [...] }
+ *
+ * 单独做成函数而不是散在 Channel 实现里拼 JSON：能力自述（/api/capabilities）
+ * 的 ws_out 清单里列了 history_messages，就得有个能构造它的地方可供断言。
+ */
+public func historyMessagesJson(sessionId: String, messages: JsonArray): String {
+    var obj = JsonObject()
+    obj.put("type", JsonString("history_messages"))
+    obj.put("session_id", JsonString(sessionId))
+    obj.put("messages", messages)
+    return obj.toJsonString()
+}
+
+/**
+ * 任务列表帧
+ * { "type": "tasks", "tasks": [{"id": 1, "content": "...", "status": "doing"}] }
+ */
+public func tasksFrameJson(tasks: JsonArray): String {
+    var obj = JsonObject()
+    obj.put("type", JsonString("tasks"))
+    obj.put("tasks", tasks)
+    return obj.toJsonString()
 }

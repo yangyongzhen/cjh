@@ -151,6 +151,26 @@ public class StaticAssets {
     <!-- 轻提示条（控制帧回执 ack / 切换中 / 取消回执） -->
     <div id="notice-bar" class="notice-bar"></div>
 
+    <!-- 审批对话框（危险操作需人工确认：approval_request → approval_response） -->
+    <div id="approval-modal" class="modal-overlay hidden">
+        <div class="modal-dialog approval-dialog">
+            <div class="modal-header">
+                <span>⚠ 需要人工确认</span>
+                <span id="approval-countdown" class="approval-countdown"></span>
+            </div>
+            <div class="modal-body">
+                <div class="approval-reason" id="approval-reason"></div>
+                <div class="approval-tool">工具：<code id="approval-tool"></code></div>
+                <pre class="approval-args" id="approval-args"></pre>
+                <div class="approval-hint" id="approval-hint">同意后立即执行；拒绝后模型会收到拒绝结果并继续。超时未答复按拒绝处理。</div>
+                <div class="approval-actions">
+                    <button class="config-save-btn" id="approval-allow-btn">同意执行</button>
+                    <button id="approval-deny-btn">拒绝</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- 配置模态对话框 -->
     <div id="config-modal" class="modal-overlay hidden">
         <div class="modal-dialog config-dialog">
@@ -1043,6 +1063,120 @@ function handleError(msg) {
     }
 }
 
+// ====== 审批（approval_request → approval_response） ======
+// 服务端在危险操作前停下回合等人确认：必须给出"同意/拒绝"两条明确出路，
+// 并显示剩余时间——超时由服务端按拒绝处理（回 approval_timeout），前端只如实展示。
+let currentApproval = null;   // { requestId, expiresAt }
+let approvalTimer = null;
+
+function handleApprovalRequest(msg) {
+    let requestId = msg.request_id || '';
+    if (!requestId) {
+        // 没有 request_id 就无从答复：直接说清楚，别让用户对着死弹窗干等
+        showError('服务端审批请求缺少 request_id，无法答复');
+        return;
+    }
+    let ttl = typeof msg.expires_in_ms === 'number' ? msg.expires_in_ms : 300000;
+    currentApproval = { requestId: requestId, expiresAt: Date.now() + ttl };
+
+    let reasonEl = document.getElementById('approval-reason');
+    let toolEl = document.getElementById('approval-tool');
+    let argsEl = document.getElementById('approval-args');
+    let hintEl = document.getElementById('approval-hint');
+    if (reasonEl) { reasonEl.textContent = msg.reason || '此操作需要人工确认'; }
+    if (toolEl) { toolEl.textContent = msg.tool || '(未知工具)'; }
+    if (argsEl) { argsEl.textContent = formatApprovalArgs(msg.args); }
+    if (hintEl) { hintEl.textContent = '同意后立即执行；拒绝后模型会收到拒绝结果并继续。超时未答复按拒绝处理。'; }
+
+    let modal = document.getElementById('approval-modal');
+    if (modal) { modal.classList.remove('hidden'); }
+    setApprovalButtonsEnabled(true);
+    startApprovalCountdown();
+    showNotice('有操作等待确认，请在弹窗中选择同意或拒绝', 'info');
+}
+
+/**
+ * 参数美化：对象转缩进 JSON；过长截断（避免弹窗被超长命令撑爆）
+ */
+function formatApprovalArgs(args) {
+    if (args === undefined || args === null) { return '(无参数)'; }
+    let text;
+    try {
+        text = JSON.stringify(args, null, 2);
+    } catch (e) {
+        text = String(args);
+    }
+    if (text && text.length > 1200) {
+        text = text.substring(0, 1200) + ' … (已截断)';
+    }
+    return text || '(无参数)';
+}
+
+/**
+ * 倒计时：到点禁用按钮并说明"服务端已按拒绝处理"，不给"再点一下就好"的错觉
+ */
+function startApprovalCountdown() {
+    let el = document.getElementById('approval-countdown');
+    if (approvalTimer) { clearInterval(approvalTimer); }
+    approvalTimer = setInterval(function() {
+        if (!currentApproval) { return; }
+        let left = Math.max(0, currentApproval.expiresAt - Date.now());
+        let sec = Math.ceil(left / 1000);
+        if (el) { el.textContent = sec > 0 ? ('剩余 ' + sec + ' 秒') : '已超时'; }
+        if (left <= 0) {
+            clearInterval(approvalTimer);
+            approvalTimer = null;
+            setApprovalButtonsEnabled(false);
+            let hintEl = document.getElementById('approval-hint');
+            if (hintEl) { hintEl.textContent = '已超时：服务端按拒绝处理，可让模型重试或改用别的方式。'; }
+        }
+    }, 250);
+}
+
+function setApprovalButtonsEnabled(enabled) {
+    let allowBtn = document.getElementById('approval-allow-btn');
+    let denyBtn = document.getElementById('approval-deny-btn');
+    if (allowBtn) { allowBtn.disabled = !enabled; }
+    if (denyBtn) { denyBtn.disabled = !enabled; }
+}
+
+/**
+ * 答复审批：approved=true 执行 / false 拒绝；发送即禁用按钮防连点
+ */
+function sendApprovalResponse(approved) {
+    if (!currentApproval) { return; }
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        showError('WebSocket 未连接，审批未发送');
+        return;
+    }
+    let requestId = currentApproval.requestId;
+    setApprovalButtonsEnabled(false);
+    if (approvalTimer) { clearInterval(approvalTimer); approvalTimer = null; }
+    ws.send(JSON.stringify({
+        type: 'approval_response',
+        request_id: requestId,
+        approved: approved
+    }));
+    // 是否生效看后续工具结果/错误帧，这里不预判
+    showNotice(approved ? '已同意执行，等待结果…' : '已拒绝该操作，等待结果…', 'info');
+    closeApprovalModal();
+}
+
+function closeApprovalModal() {
+    currentApproval = null;
+    let modal = document.getElementById('approval-modal');
+    if (modal) { modal.classList.add('hidden'); }
+}
+
+/**
+ * 回合已收尾（done / error）：未答复的审批弹窗一并收掉（服务端已按拒绝/超时处理）
+ */
+function closeApprovalIfOpen() {
+    if (!currentApproval) { return; }
+    if (approvalTimer) { clearInterval(approvalTimer); approvalTimer = null; }
+    closeApprovalModal();
+}
+
 // ====== 服务器消息处理 ======
 function handleServerMessage(msg) {
     switch (msg.type) {
@@ -1055,10 +1189,11 @@ function handleServerMessage(msg) {
             appendToolStart(msg.name, msg.args);
             break;
         case 'tool_result':
-            appendToolResult(msg.name, msg.content, msg.is_error);
+            appendToolResult(msg.name, msg.content, msg.is_error, msg.diff);
             break;
         case 'done':
             finalizeAssistantMessage();
+            closeApprovalIfOpen();
             handleDone(msg.summary);
             break;
         case 'ack':
@@ -1069,8 +1204,13 @@ function handleServerMessage(msg) {
             // 取消回执（cancel / abort）
             handleCancelled(msg);
             break;
+        case 'approval_request':
+            // 危险操作等人工确认：弹窗给"同意/拒绝"两条出路（超时服务端按拒绝处理）
+            handleApprovalRequest(msg);
+            break;
         case 'error':
             finalizeAssistantMessage();
+            closeApprovalIfOpen();
             handleError(msg);
             setExecuting(false);
             break;
@@ -1231,15 +1371,54 @@ function appendToolStart(name, args) {
     scrollToBottom();
 }
 
-function appendToolResult(name, content, isError) {
+function appendToolResult(name, content, isError, diff) {
     let messages = document.getElementById('messages');
     let resultDiv = document.createElement('div');
     resultDiv.className = 'tool-result' + (isError ? ' tool-result-error' : '');
     resultDiv.innerHTML = '<span class=\"tool-icon\">↳</span> ' +
                           '<span class=\"tool-name\">' + escapeHtml(name) + ':</span> ' +
                           '<span class=\"tool-content\">' + escapeHtml(content) + '</span>';
+    // 结构化 diff：工具改了文件时服务端会带上（能力位 diff_in_tool_result）
+    if (diff && diff.unified_diff) {
+        resultDiv.appendChild(buildDiffBlock(diff));
+    }
     messages.appendChild(resultDiv);
     scrollToBottom();
+}
+
+// 渲染结构化 diff（默认折叠，点开看具体改了哪几行）
+function buildDiffBlock(diff) {
+    let details = document.createElement('details');
+    details.className = 'diff-block';
+    let head = document.createElement('summary');
+    let sha = (diff.after_sha || '').slice(0, 12);
+    head.innerHTML = '<span class=\"diff-title\">± diff</span> ' +
+                     '<span class=\"diff-path\">' + escapeHtml(diff.path || '') + '</span>' +
+                     (sha ? ' <span class=\"diff-sha\">' + escapeHtml(sha) + '</span>' : '');
+    details.appendChild(head);
+    let pre = document.createElement('pre');
+    pre.className = 'diff-body';
+    let lines = (diff.unified_diff || '').split('\n');
+    for (let i = 0; i < lines.length; i++) {
+        let line = lines[i];
+        if (line === '' && i === lines.length - 1) { continue; }  // 末尾换行不渲染空行
+        let span = document.createElement('span');
+        if (line.startsWith('+++') || line.startsWith('---')) {
+            span.className = 'diff-filehead';
+        } else if (line.startsWith('@@')) {
+            span.className = 'diff-hunk';
+        } else if (line.startsWith('+')) {
+            span.className = 'diff-add';
+        } else if (line.startsWith('-')) {
+            span.className = 'diff-del';
+        } else {
+            span.className = 'diff-ctx';
+        }
+        span.textContent = line + '\n';
+        pre.appendChild(span);
+    }
+    details.appendChild(pre);
+    return details;
 }
 
 function handleDone(summary) {
@@ -1421,6 +1600,16 @@ document.addEventListener('DOMContentLoaded', function() {
         this.style.height = 'auto';
         this.style.height = Math.min(this.scrollHeight, 200) + 'px';
     });
+
+    // 审批弹窗：同意 / 拒绝
+    let approvalAllowBtn = document.getElementById('approval-allow-btn');
+    if (approvalAllowBtn) {
+        approvalAllowBtn.addEventListener('click', function() { sendApprovalResponse(true); });
+    }
+    let approvalDenyBtn = document.getElementById('approval-deny-btn');
+    if (approvalDenyBtn) {
+        approvalDenyBtn.addEventListener('click', function() { sendApprovalResponse(false); });
+    }
 
     // 新建会话
     document.getElementById('new-session-btn').addEventListener('click', function() {
@@ -2284,6 +2473,134 @@ body {
 .notice-bar.err {
     border-color: var(--error);
     color: var(--error);
+}
+
+/* ====== 审批对话框（危险操作需人工确认） ====== */
+.approval-dialog {
+    max-width: 560px;
+}
+
+.approval-countdown {
+    margin-left: auto;
+    font-size: 12px;
+    color: var(--text-secondary, #888);
+}
+
+.approval-reason {
+    margin-bottom: 10px;
+    color: var(--warning, #e6a23c);
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+.approval-tool {
+    font-size: 13px;
+    color: var(--text-secondary, #888);
+    margin-bottom: 6px;
+}
+
+.approval-args {
+    max-height: 220px;
+    overflow: auto;
+    margin: 0 0 10px 0;
+    padding: 8px 10px;
+    background: rgba(127, 127, 127, 0.12);
+    border-radius: 6px;
+    font-size: 12px;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+.approval-hint {
+    font-size: 12px;
+    color: var(--text-secondary, #888);
+    line-height: 1.5;
+    margin-bottom: 12px;
+}
+
+/* ====== 结构化 diff（工具改动文件时随 tool_result 下发） ====== */
+.diff-block {
+    margin: 6px 0 0 18px;
+    font-size: 12px;
+}
+
+.diff-block > summary {
+    cursor: pointer;
+    color: var(--text-secondary, #888);
+    user-select: none;
+}
+
+.diff-title {
+    font-weight: 600;
+}
+
+.diff-path {
+    font-family: var(--mono, monospace);
+}
+
+.diff-sha {
+    font-family: var(--mono, monospace);
+    opacity: 0.7;
+}
+
+.diff-body {
+    margin: 6px 0 0 0;
+    padding: 8px 10px;
+    max-height: 320px;
+    overflow: auto;
+    background: rgba(127, 127, 127, 0.10);
+    border-radius: 6px;
+    font-family: var(--mono, monospace);
+    line-height: 1.45;
+}
+
+.diff-body span {
+    display: block;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+.diff-filehead {
+    color: var(--text-secondary, #888);
+}
+
+.diff-hunk {
+    color: #6a9fb5;
+}
+
+.diff-add {
+    color: #4caf50;
+    background: rgba(76, 175, 80, 0.10);
+}
+
+.diff-del {
+    color: #e05c5c;
+    background: rgba(224, 92, 92, 0.10);
+}
+
+.diff-ctx {
+    color: var(--text-secondary, #888);
+}
+
+.approval-actions {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+}
+
+#approval-deny-btn {
+    padding: 8px 16px;
+    border: 1px solid var(--error, #f56c6c);
+    background: transparent;
+    color: var(--error, #f56c6c);
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+#approval-deny-btn:disabled,
+#approval-allow-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
 }
 
 /* ====== 移动端响应式 ====== */

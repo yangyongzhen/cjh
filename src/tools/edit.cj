@@ -126,7 +126,7 @@ public class EditTool <: CjhTool {
             summary += "文件: ${path}\n"
             summary += "旧: ${truncateForDisplay(oldString)}\n"
             summary += "新: ${truncateForDisplay(newString)}\n"
-            return ToolResult(summary, false)
+            return ToolResult(summary, false, buildDiffInfo(path, original, newContent))
         } catch (e: Exception) {
             return ToolResult("edit 失败: ${e}", true)
         }
