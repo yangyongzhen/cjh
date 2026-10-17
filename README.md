@@ -1,16 +1,58 @@
 <div align="center">
 
-# cjh · 仓颉语言实现的 Harness
+# cjh · 仓颉语言实现的 Coding Agent Harness
 
-**用华为仓颉语言从零实现的交互式编码代理（coding agent harness）。**
+**用华为仓颉语言从零实现的终端编码代理 —— 单二进制零依赖，一个文件就是一个 agent。**
 
-终端里用自然语言描述任务 → Agent 理解意图、自主规划、调用工具、观察结果、迭代直至完成。全流程在 TUI 中实时呈现，亦可通过 Web 远程驱动。
+[![Website](https://img.shields.io/badge/website-yangyongzhen.github.io%2Fcjh-00868B)](https://yangyongzhen.github.io/cjh/)
+[![Release](https://img.shields.io/badge/release-v1.5.1-00868B)](https://atomgit.com/qq8864/cjh/releases)
+[![Cangjie](https://img.shields.io/badge/language-Cangjie-00868B)](https://cangjie-lang.cn)
+[![Tests](https://img.shields.io/badge/tests-517%20passed-2ea44f)](./scripts/test.sh)
+[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-lightgrey)](https://atomgit.com/qq8864/cjh/releases)
 
-**cjh 是仓颉语言原生实现的 coding agent harness**：单二进制零依赖分发（一个文件 = 一个 agent）、语言级内存安全加持的插件信任链、以「省 token + 高执行效率」为双硬性指标的系统化工程优化。终端 TUI 与 Web 远程双驱动，并面向 **多 agent 并行编排** 演进（借鉴 swarm 等成熟范式，取并行子代理取向）。
+终端里说一句话，Agent 自己规划、调工具、读结果、迭代到完成；全过程在 TUI 里实时可见，也能用内置 Web 界面远程驱动。
 
-[立项初衷](#-立项初衷仓颉原生的差异化价值) · [功能](#-功能一览) · [两大硬性指标](#-两大硬性指标) · [快速开始](#-快速开始) · [架构](#-架构) · [插件生态](#-插件生态与信任链) · [文档](#-文档) · [路线图](#-路线图)
+> 📖 **在线官网**：<https://yangyongzhen.github.io/cjh/> —— 特性、界面截图、一键下载与文档入口。
+
+> 💬 **QQ 技术交流群**：**92381027** —— 使用问题、功能建议、插件与踩坑交流都欢迎。
+
+[30 秒上手](#30-秒上手) · [它是什么给谁用](#它是什么给谁用) · [功能](#-功能一览) · [两大硬性指标](#-两大硬性指标) · [快速开始](#-快速开始) · [架构](#-架构) · [插件生态](#-插件生态与信任链) · [文档](#-文档) · [路线图](#-路线图)
 
 </div>
+
+## 30 秒上手
+
+**先不花钱跑起来**（Mock 模式：不联网、不用 API Key）：
+
+```bash
+curl -LO https://atomgit.com/qq8864/cjh/releases/download/v1.5.1/cjh-v1.5.1-linux-x64
+chmod +x cjh-v1.5.1-linux-x64
+CJH_MOCK=1 ./cjh-v1.5.1-linux-x64
+```
+
+**接真模型**（任选一个 Provider 的 Key）：
+
+```bash
+export DEEPSEEK_API_KEY=sk-xxx     # 或 OPENAI_API_KEY / DASHSCOPE_API_KEY / CJH_API_KEY
+./cjh-v1.5.1-linux-x64             # 默认 TUI；--cli 纯文本，--mode json 无头，web 子命令拉 Web 界面
+```
+
+Windows：下载 [`cjh-v1.5.1-windows-x64-selfcontained.zip`](https://atomgit.com/qq8864/cjh/releases/download/v1.5.1/cjh-v1.5.1-windows-x64-selfcontained.zip) 解压即用（exe 与 4 个 DLL 必须同目录）。从源码构建见[快速开始](#-快速开始)。
+
+![cjh 会话演示（Mock 模式实录）](docs/imgs/cjh-demo.gif)
+
+> ↑ Mock 模式实录：真实 CLI 会话，Agent 依次调用 `read_file` / `grep` / `list_dir` 并给出最终答复（`scripts/gif_record.py` 生成）。
+
+![cjh TUI](docs/imgs/cjh.png)
+
+## 它是什么给谁用
+
+| | |
+|---|---|
+| **是什么** | 仓颉语言从零实现的终端 coding agent harness：Agent 主循环（消息状态机 + 工具调用协议）+ 工具系统 + TUI 差分渲染 + Web 远程驱动 + 插件信任链 |
+| **给谁用** | ① 想在终端里让 AI 直接改代码、又不想先装 Node/Python 工具链的人；② 学仓颉、想找一份能跑能读的 AI 应用参考实现的开发者；③ 信创 / 政企场景要求「无涉外运行时依赖」的团队 |
+| **凭什么** | 一个静态二进制跑起来（Linux 17.1 MB / Windows exe 14.1 MB），无运行时依赖；「省 token + 高执行效率」是两条可实测的硬性指标；插件 SHA256 校验 + SM2 国密签名 |
+| **现在** | v1.5.1，517 单测全绿，Linux / Windows 预编译包已发布；多 agent 并行编排在路线图上（`task` 工具已有 explore / worker 原语） |
 
 ---
 
@@ -33,7 +75,7 @@
 
 | 仓颉特性 | 解决的痛点 | 差异化优势 |
 |---|---|---|
-| **静态编译单二进制**（cjnative） | 运行时包袱、分发成本 | 无 Node/Bun/npm 依赖树，`一个文件 = 一个 agent`，<10MB |
+| **静态编译单二进制**（cjnative） | 运行时包袱、分发成本 | 无 Node/Bun/npm 依赖树，`一个文件 = 一个 agent`，Linux 17.1 MB / Windows exe 14.1 MB |
 | **强安全语言设计**（安全 DNA） | 安全模型 | 插件/技能编译期类型检查，内存安全，恶意代码风险结构性降低 |
 | **多后端编译 + 终端层平台抽象**（cjnative/cjvm + 鸿蒙位） | 平台覆盖 | Linux / macOS / Windows 原生运行，鸿蒙预留；终端层 VT 输出统一 + 平台后端条件编译，一份源码多平台二进制（[方案](docs/跨平台终端层设计方案.md)） |
 | **M:N 轻量线程 + 高性能** | 上下文管理、并发 | 原生并发处理流式/多 agent，低开销 |
