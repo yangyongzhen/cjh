@@ -26,6 +26,7 @@
     <a href="#shots">界面</a>
     <a href="#start">上手</a>
     <a href="#download">下载</a>
+    <a href="#ecosystem">生态</a>
     <a href="#docs">文档</a>
   </nav>
   <div class="nav-cta">
@@ -197,6 +198,45 @@ cjh-v1.5.1-windows-x64.exe</code></pre>
   </div>
 </section>
 
+<section class="section" id="ecosystem">
+  <div class="section-head">
+    <h2>沉到上游的痕迹</h2>
+    <p>不只是「用仓颉写了个 agent」：开发中踩的坑写成了文档，确认的缺陷反馈给了官方 —— 每条都带最小复现，不是「感觉有问题」。</p>
+  </div>
+  <div class="cards">
+    <article class="card">
+      <div class="card-ico">▦</div>
+      <h3>51 条开发踩坑</h3>
+      <p>1000+ 行记录，覆盖 FFI / 条件编译 / 静态链接 / 并发与锁 / TLS / 终端编码 / 产物核对。每条都写了现象、排查铁证与可复用配方。<a href="https://atomgit.com/qq8864/cjh/blob/main/docs/开发文档与踩坑记录.md" target="_blank" rel="noopener">读记录 →</a></p>
+    </article>
+    <article class="card">
+      <div class="card-ico">◫</div>
+      <h3>5 个可独立发布的库</h3>
+      <p><code>cjterm</code> / <code>cjlog</code> / <code>cjconfig</code> / <code>cjutil</code> / <code>cjllm</code>：零依赖或仅官方 stdx，各带独立 README、示例与 MIT 许可，可单独贡献给生态。</p>
+    </article>
+    <article class="card">
+      <div class="card-ico">⚑</div>
+      <h3>12 条上游缺陷报告</h3>
+      <p>提交给 <code>Cangjie/UsersForum</code> 的 #3473–#3484（缺陷 + 提案），全部已被官方分派并回复。<a href="https://atomgit.com/Cangjie/UsersForum/issues/3473" target="_blank" rel="noopener">看 issue →</a></p>
+    </article>
+    <article class="card">
+      <div class="card-ico">⚖</div>
+      <h3>静态链接下 cjpm test 崩溃</h3>
+      <p>编译能过，跑测试包时 SIGSEGV / double free 退出；同一工程切动态链接 <strong>441/441 全绿</strong>，定位到静态链接 + 测试宏的组合。<a href="https://atomgit.com/Cangjie/UsersForum/issues/3473" target="_blank" rel="noopener">#3473 →</a></p>
+    </article>
+    <article class="card">
+      <div class="card-ico">◱</div>
+      <h3>Windows 出不了纯 exe</h3>
+      <p>同样的 <code>--static*</code>：Linux 能出零依赖单文件，Windows 上既不报错也不生效（产物大小与 PE 导入表同动态版一致），SDK 也没提供静态 runtime。<a href="https://atomgit.com/Cangjie/UsersForum/issues/3484" target="_blank" rel="noopener">#3484 →</a></p>
+    </article>
+    <article class="card">
+      <div class="card-ico">⟲</div>
+      <h3>连自己的结论也推翻</h3>
+      <p>复核社区反馈时纠正了自身 3 条旧判断：<code>connect(timeout:)</code> 其实生效、<code>spawn</code> 默认栈其实完整、<code>Directory.removeIfExists</code> 其实是顶级函数。实测优先于印象。</p>
+    </article>
+  </div>
+</section>
+
 <section class="section" id="docs">
   <div class="section-head">
     <h2>文档</h2>
@@ -205,7 +245,7 @@ cjh-v1.5.1-windows-x64.exe</code></pre>
   <div class="docs-grid">
     <a class="doc" href="https://atomgit.com/qq8864/cjh/blob/main/docs/cjh功能清单.md" target="_blank" rel="noopener"><span class="doc-t">功能清单</span><span class="doc-d">Agent 主循环 / 工具 / 主题 / 插件 / MCP / 平台</span></a>
     <a class="doc" href="https://atomgit.com/qq8864/cjh/blob/main/CHANGELOG.md" target="_blank" rel="noopener"><span class="doc-t">更新日志</span><span class="doc-d">按版本记录新增、修复与测试</span></a>
-    <a class="doc" href="https://atomgit.com/qq8864/cjh/blob/main/docs/开发文档与踩坑记录.md" target="_blank" rel="noopener"><span class="doc-t">开发文档与踩坑记录</span><span class="doc-d">30+ 条真实踩坑与定位手法</span></a>
+    <a class="doc" href="https://atomgit.com/qq8864/cjh/blob/main/docs/开发文档与踩坑记录.md" target="_blank" rel="noopener"><span class="doc-t">开发文档与踩坑记录</span><span class="doc-d">51 条真实踩坑与定位手法</span></a>
     <a class="doc" href="https://atomgit.com/qq8864/cjh/blob/main/docs/跨平台终端层设计方案.md" target="_blank" rel="noopener"><span class="doc-t">跨平台终端层方案</span><span class="doc-d">POSIX / Win32 条件编译与 VT 统一</span></a>
     <a class="doc" href="https://atomgit.com/qq8864/cjh/blob/main/docs/进度记录.md" target="_blank" rel="noopener"><span class="doc-t">进度记录</span><span class="doc-d">阶段目标与实测数据</span></a>
     <a class="doc" href="https://atomgit.com/qq8864/cjh/blob/main/README.en.md" target="_blank" rel="noopener"><span class="doc-t">README (English)</span><span class="doc-d">英文版项目说明</span></a>
