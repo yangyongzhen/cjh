@@ -654,7 +654,24 @@ cjh 对仓颉生态的其他贡献：
 | **MCP 协议实现** | 仓颉语言首个 MCP 客户端实现（stdio 传输 + 工具注册），为仓颉生态接入 MCP 工具网络铺路 |
 | **插件信任链** | 仓颉 `stdx.crypto` 国密 SM2 在插件安全场景的实践范例（SHA256 校验 + SM2 签名） |
 | **跨平台终端层** | `TerminalBackend` 抽象 + 条件编译（termios / Win32），仓颉 TUI 跨平台的标准范式（[方案](docs/跨平台终端层设计方案.md)） |
-| **工程踩坑经验** | 完整记录仓颉开发中的 FFI / 条件编译 / 静态链接 / 并发 / TLS 等坑点（[开发文档与踩坑记录](docs/开发文档与踩坑记录.md)），降低后来者门槛 |
+| **工程踩坑经验** | `docs/开发文档与踩坑记录.md` 沉淀 **51 条 / 1000+ 行**仓颉开发实操坑：FFI / 条件编译 / 静态链接 / 并发与锁 / TLS / 终端编码 / 构建产物核对——每条都写了现象、排查铁证与可复用配方，降低后来者门槛 |
+| **上游缺陷反馈** | 开发中确认的工具链与标准库问题如实反馈官方：[Cangjie/UsersForum](https://atomgit.com/Cangjie/UsersForum/issues/3473) **#3473–#3484 共 12 条**（缺陷 + 提案），每条都带 1.0.5 上的最小复现与 A/B 实测对照，已被官方分派并回复 |
+
+### 向上游反馈的问题
+
+先实测、后提交：每条都在仓颉 1.0.5 上用最小工程复现，附对照数据（而非"感觉有问题"）：
+
+| 问题 | 现象与诉求 |
+|---|---|
+| [#3473 静态链接下 `cjpm test` 崩溃](https://atomgit.com/Cangjie/UsersForum/issues/3473) | 编译通过，跑测试包时 SIGSEGV / double free 退出；同工程切动态链接 **441/441 全绿**，说明是静态链接 + 测试宏的组合问题 |
+| [#3484 Windows 目标 `--static*` 静默无效](https://atomgit.com/Cangjie/UsersForum/issues/3484) | 同样选项 Linux 能出零依赖单文件，Windows 上 `cjc` 既不报错也不生效（产物大小、PE 导入表与动态版完全一致）；SDK 1.0.5 只有 runtime import lib、无 `libcangjie-runtime.a`，故无法交付纯 exe 单文件——诉求是给明确 warning 或在文档写明推荐分发形态 |
+| `Mutex` 缺 `withLock`、`tryLock` 无超时重载 | 锁泄漏后协程静默 park 且无任何诊断输出，只能靠 gdb 定性 |
+| 块级条件编译不支持 | `@When[os]` 只能用于声明；实测确认「局部函数 + `@When`」可用，此结论写进了公开回复 |
+| 块注释内含 `**/*` 提前闭合 | 注释里写 glob 通配就报 `expected declaration` |
+| `DateTime.toUnixTimestamp` 不存在 | 时间戳换算缺少标准库入口 |
+| spawn 内未捕获异常时退出码仍为 0 | 栈帧其实完整，但进程以 0 退出，注册 `Thread.handleUncaughtExceptionBy` 也不改变退出码 |
+
+> 复核社区反馈时也**推翻了自己此前的 3 条结论**（`TcpSocket.connect(timeout:)` 实际生效、`spawn` 内异常默认栈其实完整、`Directory.removeIfExists` 是顶级函数故存在）——"实测优先于印象，包括自己的印象"，修正全部留在公开回复里。
 
 ## 🔨 开发
 
