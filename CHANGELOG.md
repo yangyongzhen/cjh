@@ -8,6 +8,7 @@ cjh 版本变更记录。依据 git tag 史 + 提交史整理；版本号规则�
 
 ### 变更
 - **开源许可证明确为 MIT**：新增 [LICENSE](./LICENSE)（Copyright (c) 2026 yangyongzhen）、`cjpm.toml` 补 `license = "MIT"` 字段、双语 README 徽章与 License 段落指向该文件。
+- **README 补齐生态价值的两条实证**：①「工程踩坑经验」由一句话概括改为量化描述（**51 条 / 1000+ 行**，每条含现象 + 排查铁证 + 可复用配方）；② 新增「向上游反馈的问题」小节，列出提交给 `Cangjie/UsersForum` 的 **12 条（#3473–#3484）**缺陷与提案，其中静态链接下 `cjpm test` 崩溃、Windows 目标 `--static*` 静默无效两条带 issue 直链与 A/B 实测对照，并记录复核中推翻自身 3 条旧结论的经过（中英双语同步）。
 
 ## [v1.5.1] - 2026-10-17
 

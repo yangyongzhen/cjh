@@ -654,7 +654,24 @@ Further contributions from cjh:
 | **MCP Protocol Implementation** | The first MCP client implementation in Cangjie (stdio transport + tool registration), paving the way for the Cangjie ecosystem to access the MCP tool network |
 | **Plugin Trust Chain** | A practical example of Cangjie `stdx.crypto` national cryptography SM2 in plugin security (SHA256 checksum + SM2 signature) |
 | **Cross-platform terminal layer** | `TerminalBackend` abstraction + conditional compilation (termios / Win32), a standard pattern for cross-platform Cangjie TUIs ([design](docs/跨平台终端层设计方案.md)) |
-| **Engineering Pitfall Records** | Complete records of FFI / conditional compilation / static linking / concurrency / TLS pitfalls in Cangjie development ([dev docs](docs/开发文档与踩坑记录.md)), lowering the barrier for newcomers |
+| **Engineering Pitfall Records** | `docs/开发文档与踩坑记录.md` holds **51 entries / 1000+ lines** of hands-on Cangjie pitfalls — FFI / conditional compilation / static linking / concurrency and locks / TLS / terminal encoding / build-artifact verification. Each entry gives the symptom, the hard evidence, and a reusable recipe, lowering the barrier for newcomers |
+| **Upstream defect reports** | Toolchain and stdlib problems confirmed during development were reported back to the official forum: **[Cangjie/UsersForum #3473–#3484](https://atomgit.com/Cangjie/UsersForum/issues/3473) — 12 issues** (defects and proposals), each carrying a minimal repro and A/B measurements on 1.0.5, all triaged and answered by the official team |
+
+### Issues reported upstream
+
+Reproduce first, report second — every item was reproduced with a minimal project on Cangjie 1.0.5 and filed with control data rather than an impression:
+
+| Issue | Symptom and request |
+|---|---|
+| [#3473 `cjpm test` crashes under static linking](https://atomgit.com/Cangjie/UsersForum/issues/3473) | Compiles fine, then the test binary dies with SIGSEGV / double free; switching the same project to dynamic linking gives **441/441 green** — so it is the static-link + test-macro combination |
+| [#3484 Windows targets silently ignore `--static*`](https://atomgit.com/Cangjie/UsersForum/issues/3484) | The same flags yield a zero-dependency single file on Linux; on Windows `cjc` neither errors nor applies them (artifact size and PE import table identical to the dynamic build), and SDK 1.0.5 ships only the runtime import lib without `libcangjie-runtime.a` — so a pure single-file `.exe` is unreachable. The request: a clear warning, or documented guidance on the supported distribution form |
+| `Mutex` lacks `withLock`; `tryLock` has no timeout overload | After a lock leak the coroutine parks silently with zero diagnostics — only gdb can tell what happened |
+| No block-level conditional compilation | `@When[os]` works only on declarations; we verified that a local function plus `@When` does work and put that finding in the public reply |
+| A block comment containing `**/*` closes early | Writing a glob wildcard in a comment fails with `expected declaration` |
+| `DateTime.toUnixTimestamp` does not exist | No stdlib entry point for timestamp conversion |
+| Uncaught exceptions inside `spawn` still exit with code 0 | The stack frames are actually complete, yet the process exits 0, and registering `Thread.handleUncaughtExceptionBy` does not change the code |
+
+> While reviewing community threads we also **overturned three of our own earlier conclusions** (`TcpSocket.connect(timeout:)` does take effect; the default stack for uncaught `spawn` exceptions is complete; `Directory.removeIfExists` exists as a top-level function) — measurement beats impression, including your own — and all corrections were left in the public replies.
 
 ## 🔨 Development
 
