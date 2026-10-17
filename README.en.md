@@ -9,6 +9,7 @@
 [![Cangjie](https://img.shields.io/badge/language-Cangjie-00868B)](https://cangjie-lang.cn)
 [![Tests](https://img.shields.io/badge/tests-517%20passed-2ea44f)](./scripts/test.sh)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-lightgrey)](https://atomgit.com/qq8864/cjh/releases)
+[![License](https://img.shields.io/badge/license-MIT-2ea44f)](./LICENSE)
 
 Say one sentence in the terminal: the agent plans, calls tools, reads results, and iterates until the task is done — rendered live in the TUI, or driven remotely from the built-in web UI.
 
@@ -709,4 +710,4 @@ cjh/
 
 ## 📄 License
 
-MIT
+MIT — full text in [LICENSE](./LICENSE). Commercial use, modification and redistribution are welcome; just keep the copyright notice.

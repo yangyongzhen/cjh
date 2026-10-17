@@ -9,6 +9,7 @@
 [![Cangjie](https://img.shields.io/badge/language-Cangjie-00868B)](https://cangjie-lang.cn)
 [![Tests](https://img.shields.io/badge/tests-517%20passed-2ea44f)](./scripts/test.sh)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-lightgrey)](https://atomgit.com/qq8864/cjh/releases)
+[![License](https://img.shields.io/badge/license-MIT-2ea44f)](./LICENSE)
 
 终端里说一句话，Agent 自己规划、调工具、读结果、迭代到完成；全过程在 TUI 里实时可见，也能用内置 Web 界面远程驱动。
 
@@ -714,4 +715,4 @@ cjh/
 
 ## 📄 License
 
-MIT
+MIT —— 全文见 [LICENSE](./LICENSE)。可自由商用、修改、再分发，保留版权声明即可。

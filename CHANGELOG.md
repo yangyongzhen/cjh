@@ -6,6 +6,9 @@ cjh 版本变更记录。依据 git tag 史 + 提交史整理；版本号规则�
 
 ## [Unreleased]
 
+### 变更
+- **开源许可证明确为 MIT**：新增 [LICENSE](./LICENSE)（Copyright (c) 2026 yangyongzhen）、`cjpm.toml` 补 `license = "MIT"` 字段、双语 README 徽章与 License 段落指向该文件。
+
 ## [v1.5.1] - 2026-10-17
 
 ### 新增
