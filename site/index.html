@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cjh · 仓颉语言实现的 Coding Agent Harness</title>
+<meta name="description" content="cjh —— 用华为仓颉语言从零实现的终端 coding agent：单二进制零依赖、TUI 差分渲染 + Web 远程驱动、插件信任链。Linux / Windows 预编译包即下即用。">
+<meta name="theme-color" content="#0a0f1c">
+<meta property="og:type" content="website">
+<meta property="og:title" content="cjh · 仓颉语言实现的 Coding Agent Harness">
+<meta property="og:description" content="单二进制零依赖的终端 coding agent，仓颉原生实现。一个文件就是一个 agent。">
+<meta property="og:image" content="assets/cjh.png">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2300868B'/%3E%3Ctext x='16' y='23' font-size='20' font-family='monospace' fill='%23fff' text-anchor='middle'%3Ec%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<header class="nav" id="nav">
+  <a class="brand" href="#top">
+    <span class="brand-mark">c</span>
+    <span class="brand-name">cjh</span>
+    <span class="brand-tag">仓颉 · Coding Agent</span>
+  </a>
+  <nav class="nav-links" aria-label="页面导航">
+    <a href="#features">特性</a>
+    <a href="#shots">界面</a>
+    <a href="#start">上手</a>
+    <a href="#download">下载</a>
+    <a href="#docs">文档</a>
+  </nav>
+  <div class="nav-cta">
+    <a class="btn btn-ghost" href="https://github.com/yangyongzhen/cjh" target="_blank" rel="noopener">GitHub</a>
+    <a class="btn btn-primary" href="https://atomgit.com/qq8864/cjh/releases" target="_blank" rel="noopener">下载 v1.5.1</a>
+  </div>
+</header>
+
+<main>
+
+<section class="hero" id="top">
+  <div class="hero-glow" aria-hidden="true"></div>
+  <div class="hero-grid" aria-hidden="true"></div>
+  <div class="hero-inner">
+    <div class="hero-copy">
+      <p class="eyebrow"><span class="pulse"></span>Cangjie · Coding Agent Harness</p>
+      <h1>用仓颉语言<br><span class="grad">从零实现的终端编码代理</span></h1>
+      <p class="lede">说一句话，Agent 自己规划、调工具、读结果、迭代到完成；全过程在 TUI 里实时可见，也能用内置 Web 界面远程驱动。<strong>单二进制零依赖</strong> —— 一个文件就是一个 agent。</p>
+      <div class="hero-actions">
+        <a class="btn btn-primary btn-lg" href="#download">下载 v1.5.1</a>
+        <a class="btn btn-ghost btn-lg" href="#start">30 秒上手</a>
+        <a class="btn btn-link" href="https://atomgit.com/qq8864/cjh" target="_blank" rel="noopener">AtomGit 仓库 →</a>
+      </div>
+      <ul class="hero-facts">
+        <li><strong>17.1 MB</strong><span>静态单文件</span></li>
+        <li><strong>517</strong><span>单测全绿</span></li>
+        <li><strong>0</strong><span>运行时依赖</span></li>
+        <li><strong>2</strong><span>平台预编译包</span></li>
+      </ul>
+    </div>
+    <div class="hero-term">
+      <div class="term-bar">
+        <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+        <span class="term-title">bash — 30 秒上手</span>
+      </div>
+      <pre class="term-body"><code><span class="c-dim"># 无需 API Key：Mock 模式跑通全链路</span>
+<span class="c-prompt">$</span> curl -LO https://atomgit.com/qq8864/cjh/releases/download/v1.5.1/cjh-v1.5.1-linux-x64
+<span class="c-prompt">$</span> chmod +x cjh-v1.5.1-linux-x64
+<span class="c-prompt">$</span> CJH_MOCK=1 ./cjh-v1.5.1-linux-x64
+
+<span class="c-dim"># 接真模型（任选一个 Provider 的 Key）</span>
+<span class="c-prompt">$</span> export DEEPSEEK_API_KEY=sk-xxx
+<span class="c-prompt">$</span> ./cjh-v1.5.1-linux-x64</code></pre>
+    </div>
+  </div>
+</section>
+
+<section class="strip">
+  <div class="strip-inner">
+    <div class="strip-item"><span class="k">语言</span><span class="v">Cangjie 仓颉</span></div>
+    <div class="strip-item"><span class="k">形态</span><span class="v">TUI + Web + 无头 JSON</span></div>
+    <div class="strip-item"><span class="k">Provider</span><span class="v">OpenAI / DeepSeek / GLM / Anthropic / Ollama</span></div>
+    <div class="strip-item"><span class="k">渠道</span><span class="v">AtomGit · GitHub</span></div>
+  </div>
+</section>
+
+<section class="section" id="features">
+  <div class="section-head">
+    <h2>为什么用它</h2>
+    <p>不堆功能。只盯两条硬指标 —— <strong>省 token</strong>、<strong>跑得快</strong> —— 再把它装进一个不用安装的二进制里。</p>
+  </div>
+  <div class="cards">
+    <article class="card">
+      <div class="card-ico">▣</div>
+      <h3>一个文件 = 一个 agent</h3>
+      <p>仓颉 <code>cjnative</code> 静态编译：Linux 17.1 MB、Windows exe 14.1 MB，没有 Node / Python 运行时依赖。下载、<code>chmod</code>、运行，三步到位。</p>
+    </article>
+    <article class="card">
+      <div class="card-ico">✂</div>
+      <h3>省 token：截断 + 落盘回溯</h3>
+      <p>超阈值工具结果保留头尾、中间完整落盘 <code>~/.cjh/spill/</code>，省略标记带路径，模型需要时用 <code>read_file</code> 读回 —— 既省 token 又不丢信息。</p>
+    </article>
+    <article class="card">
+      <div class="card-ico">⚡</div>
+      <h3>高执行效率：DAG 并发</h3>
+      <p>从工具调用提取资源访问 <code>(path, isWrite)</code> 构建依赖图，拓扑分组，同组 <code>spawn</code> 并发、组间串行；<code>parallelSavedMs</code> 实时量化省下的时间。</p>
+    </article>
+    <article class="card">
+      <div class="card-ico">▤</div>
+      <h3>TUI 差分渲染</h3>
+      <p>自实现 termios + ANSI 差分刷新（纯 libc FFI，不依赖第三方库）：Markdown 渲染、<code>/</code> 命令补全、10 套主题、危险操作审批弹窗。</p>
+    </article>
+    <article class="card">
+      <div class="card-ico">◍</div>
+      <h3>Web 远程驱动</h3>
+      <p>内置 HTTP Server + WebSocket 流式对话 + REST API + 前端 SPA，浏览器里远程驱动同一个 Agent，token 鉴权与启动安全审计默认开启。</p>
+    </article>
+    <article class="card">
+      <div class="card-ico">⊕</div>
+      <h3>插件信任链</h3>
+      <p>技能即 Markdown，插件可携带工具；SHA256 校验和 + SM2 国密签名（仓颉 <code>stdx.crypto</code> 原生），从语言层到供应链层双保险。</p>
+    </article>
+  </div>
+</section>
+
+<section class="section shots" id="shots">
+  <div class="section-head">
+    <h2>界面</h2>
+    <p>终端里的全屏 TUI，和浏览器里的实时流。</p>
+  </div>
+  <div class="shots-grid">
+    <figure class="shot">
+      <img src="assets/cjh.png" alt="cjh TUI 界面" loading="lazy">
+      <figcaption><strong>TUI</strong>：彩色 logo + 对话 / 帮助视图 + 可滚动输出区（Markdown、流式增量、工具调用提示）+ 状态栏 + 输入框</figcaption>
+    </figure>
+    <figure class="shot">
+      <img src="assets/web.png" alt="cjh Web 界面" loading="lazy">
+      <figcaption><strong>Web</strong>：内置 HTTP Server + WebSocket 流式对话，浏览器远程驱动同一个 Agent</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section class="section" id="start">
+  <div class="section-head">
+    <h2>30 秒上手</h2>
+    <p>先不花钱跑起来：Mock 模式不联网、不用 API Key，全链路照样走一遍。</p>
+  </div>
+  <div class="start-grid">
+    <div class="panel">
+      <div class="panel-head"><span>① 零 Key 试跑（Mock）</span><button class="copy" data-copy="#cmd-mock" type="button">复制</button></div>
+      <pre id="cmd-mock"><code>curl -LO https://atomgit.com/qq8864/cjh/releases/download/v1.5.1/cjh-v1.5.1-linux-x64
+chmod +x cjh-v1.5.1-linux-x64
+CJH_MOCK=1 ./cjh-v1.5.1-linux-x64</code></pre>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><span>② 接真模型</span><button class="copy" data-copy="#cmd-real" type="button">复制</button></div>
+      <pre id="cmd-real"><code>export DEEPSEEK_API_KEY=sk-xxx   # 或 OPENAI_API_KEY / DASHSCOPE_API_KEY / CJH_API_KEY
+./cjh-v1.5.1-linux-x64           # 默认 TUI；--cli 纯文本；--mode json 无头
+./cjh-v1.5.1-linux-x64 web --port 8765 --token my-secret   # Web 远程界面</code></pre>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><span>③ Windows</span><button class="copy" data-copy="#cmd-win" type="button">复制</button></div>
+      <pre id="cmd-win"><code># 下载 cjh-v1.5.1-windows-x64-selfcontained.zip 后解压
+# exe 与 4 个 DLL 必须放在同一目录
+cjh-v1.5.1-windows-x64.exe</code></pre>
+    </div>
+  </div>
+  <p class="start-note">想从源码构建？<a href="https://atomgit.com/qq8864/cjh#-快速开始" target="_blank" rel="noopener">README 快速开始</a>：仓颉 SDK 1.0.5+，<code>cjpm build</code> 静态单文件，<code>./scripts/test.sh</code> 跑全量单测。</p>
+</section>
+
+<section class="section" id="download">
+  <div class="section-head">
+    <h2>下载 v1.5.1</h2>
+    <p>Linux 与 Windows 预编译包，直接取用。<a href="https://atomgit.com/qq8864/cjh/releases" target="_blank" rel="noopener">全部发布记录 →</a></p>
+  </div>
+  <div class="dl-grid">
+    <a class="dl" href="https://atomgit.com/qq8864/cjh/releases/download/v1.5.1/cjh-v1.5.1-linux-x64">
+      <div class="dl-top"><span class="dl-os">Linux x64</span><span class="dl-size">17.1 MB</span></div>
+      <div class="dl-name">cjh-v1.5.1-linux-x64</div>
+      <div class="dl-desc">静态单文件，<code>chmod +x</code> 即可运行</div>
+      <div class="dl-sha">sha256 56ebf47cbdf5e873…</div>
+    </a>
+    <a class="dl" href="https://atomgit.com/qq8864/cjh/releases/download/v1.5.1/cjh-v1.5.1-windows-x64-selfcontained.zip">
+      <div class="dl-top"><span class="dl-os">Windows x64 · 推荐</span><span class="dl-size">7.9 MB</span></div>
+      <div class="dl-name">cjh-v1.5.1-windows-x64-selfcontained.zip</div>
+      <div class="dl-desc">exe + 4 个运行时 DLL，解压即用</div>
+      <div class="dl-sha">sha256 9ff0418fdc32f624…</div>
+    </a>
+    <a class="dl" href="https://atomgit.com/qq8864/cjh/releases/download/v1.5.1/cjh-v1.5.1-windows-x64.zip">
+      <div class="dl-top"><span class="dl-os">Windows x64 · 仅 exe</span><span class="dl-size">4.8 MB</span></div>
+      <div class="dl-name">cjh-v1.5.1-windows-x64.zip</div>
+      <div class="dl-desc">只要可执行文件，运行时 DLL 自备</div>
+      <div class="dl-sha">sha256 c71284efcbe5a650…</div>
+    </a>
+  </div>
+</section>
+
+<section class="section" id="docs">
+  <div class="section-head">
+    <h2>文档</h2>
+    <p>源码与文档同仓，关键设计都写清了「为什么」。</p>
+  </div>
+  <div class="docs-grid">
+    <a class="doc" href="https://atomgit.com/qq8864/cjh/blob/main/docs/cjh功能清单.md" target="_blank" rel="noopener"><span class="doc-t">功能清单</span><span class="doc-d">Agent 主循环 / 工具 / 主题 / 插件 / MCP / 平台</span></a>
+    <a class="doc" href="https://atomgit.com/qq8864/cjh/blob/main/CHANGELOG.md" target="_blank" rel="noopener"><span class="doc-t">更新日志</span><span class="doc-d">按版本记录新增、修复与测试</span></a>
+    <a class="doc" href="https://atomgit.com/qq8864/cjh/blob/main/docs/开发文档与踩坑记录.md" target="_blank" rel="noopener"><span class="doc-t">开发文档与踩坑记录</span><span class="doc-d">30+ 条真实踩坑与定位手法</span></a>
+    <a class="doc" href="https://atomgit.com/qq8864/cjh/blob/main/docs/跨平台终端层设计方案.md" target="_blank" rel="noopener"><span class="doc-t">跨平台终端层方案</span><span class="doc-d">POSIX / Win32 条件编译与 VT 统一</span></a>
+    <a class="doc" href="https://atomgit.com/qq8864/cjh/blob/main/docs/进度记录.md" target="_blank" rel="noopener"><span class="doc-t">进度记录</span><span class="doc-d">阶段目标与实测数据</span></a>
+    <a class="doc" href="https://atomgit.com/qq8864/cjh/blob/main/README.en.md" target="_blank" rel="noopener"><span class="doc-t">README (English)</span><span class="doc-d">英文版项目说明</span></a>
+  </div>
+</section>
+
+<section class="cta">
+  <div class="cta-inner">
+    <h2>一个文件就是一个 agent</h2>
+    <p>下载 17 MB，跳过所有运行时安装。有问题、有想法，直接开 issue。</p>
+    <div class="hero-actions center">
+      <a class="btn btn-primary btn-lg" href="https://atomgit.com/qq8864/cjh/releases" target="_blank" rel="noopener">下载 v1.5.1</a>
+      <a class="btn btn-ghost btn-lg" href="https://atomgit.com/qq8864/cjh/issues" target="_blank" rel="noopener">开 issue</a>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="footer">
+  <div class="footer-inner">
+    <div class="footer-brand">
+      <span class="brand-mark">c</span>
+      <div>
+        <strong>cjh</strong>
+        <span>仓颉语言实现的 Coding Agent Harness</span>
+      </div>
+    </div>
+    <nav class="footer-links">
+      <a href="https://atomgit.com/qq8864/cjh" target="_blank" rel="noopener">AtomGit</a>
+      <a href="https://github.com/yangyongzhen/cjh" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://atomgit.com/qq8864/cjh/releases" target="_blank" rel="noopener">Releases</a>
+      <a href="https://atomgit.com/qq8864/cjh/issues" target="_blank" rel="noopener">Issues</a>
+    </nav>
+  </div>
+  <p class="footer-note">v1.5.1 · 本站为纯静态页面（无外部依赖），源码见仓库 <code>site/</code></p>
+</footer>
+
+<script src="assets/main.js"></script>
+</body>
+</html>
