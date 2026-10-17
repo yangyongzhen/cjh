@@ -3,6 +3,7 @@
   name = "cjh"
   description = "nothing here"
   version = "1.5.1"
+  license = "MIT"
   target-dir = ""
   output-type = "executable"
   bin-name = "cjh"
