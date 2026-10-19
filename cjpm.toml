@@ -9,7 +9,7 @@
   bin-name = "cjh"
   compile-option = "--static --static-std"
   override-compile-option = ""
-  link-option = "--disable-new-dtags -rpath /root/.cangjie/stdx/cangjie-stdx-linux-x64-1.0.5.1/static/stdx -rpath /opt/cangjie/cangjie/runtime/lib/linux_x86_64_cjnative -rpath /opt/cangjie/cangjie/third_party/llvm/lib -rpath /opt/cangjie/cangjie/lib/linux_x86_64_cjnative"
+  link-option = "--disable-new-dtags -rpath /root/.cangjie/stdx/cangjie-stdx-linux-x64-1.0.5.1/static/stdx -rpath /opt/cangjie/cangjie-1.0.5/runtime/lib/linux_x86_64_cjnative -rpath /opt/cangjie/cangjie-1.0.5/third_party/llvm/lib -rpath /opt/cangjie/cangjie-1.0.5/lib/linux_x86_64_cjnative"
   package-configuration = {}
 
 [dependencies]

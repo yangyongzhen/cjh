@@ -143,7 +143,7 @@ cjh 的核心设计目标是两大硬性指标：**省 token** + **高执行效�
 
 ### 指标一：省 token
 
-LLM API 按 token 计费，coding agent 多轮工具调用累积 token 消耗惊人。cjh 参考 [Pi agent 的省 token 工程化](docs/pi%20agent的核心卖点.md) 的经验，从四个维度系统优化：
+LLM API 按 token 计费，coding agent 多轮工具调用累积 token 消耗惊人。cjh 参考 [Pi agent 的省 token 工程化](docs/对标pi核心卖点.md) 的经验，从四个维度系统优化：
 
 | 优化手段 | 实现方式 | 效果 |
 |---|---|---|
@@ -628,8 +628,8 @@ cjh 内置 MCP 客户端，支持 stdio 传输 + JSON-RPC 2.0。配置 `mcp_serv
 - [Web搜索与抓取工具设计](docs/Web搜索与抓取工具设计.md) — 搜索降级链与 key rotation
 - [进度记录](docs/进度记录.md) — 开发进度与状态追踪
 - [开发文档与踩坑记录](docs/开发文档与踩坑记录.md) — 仓颉工程踩坑经验
-- [Pi agent 的核心卖点](docs/pi agent的核心卖点.md) — 省 token 设计借鉴
-- [OMP agent 的核心卖点](docs/omp agent的核心卖点.md) — hashline 改写借鉴
+- [Pi agent 的核心卖点](docs/对标pi核心卖点.md) — 省 token 设计借鉴
+- [OMP agent 的核心卖点](docs/对标omp核心卖点.md) — hashline 改写借鉴
 - [工具结果截断与回溯方案](docs/工具结果截断与回溯方案.md) — 省 token 核心设计
 - [工具执行效率差距分析](docs/工具执行效率差距分析.md) — 执行效率优化
 

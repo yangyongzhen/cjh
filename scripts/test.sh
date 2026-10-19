@@ -6,6 +6,8 @@
 # 组合 bug，发布二进制正常）。本脚本临时切动态配置跑测试，结束后恢复静态。
 #
 # 用法：./scripts/test.sh [--filter "*Xxx*"]
+# 仓库卫生：动态配置由本脚本从静态基线自动派生为 cjpm.toml.dynamic.bak
+# （已 gitignore，不入库），版本库只保留 cjpm.toml 静态基线。
 set -e
 cd "$(dirname "$0")/.."
 
@@ -13,10 +15,13 @@ STATIC_CFG="cjpm.toml"
 DYNAMIC_CFG="cjpm.toml.dynamic.bak"
 BACKUP="/tmp/cjpm.static.last.toml"
 
+# 动态配置不再作为 .bak 文件入库（仓库卫生：版本库只留 cjpm.toml 静态基线），
+# 由本脚本从静态基线自动派生：stdx 路径 static→dynamic + 清空 compile-option。
 if [ ! -f "$DYNAMIC_CFG" ]; then
-    echo "[test.sh] 缺少动态配置备份 $DYNAMIC_CFG，先导出："
-    echo "  从 cjpm.toml 手动改：stdx 路径 dynamic/ + compile-option 清空，另存为 $DYNAMIC_CFG"
-    exit 1
+    sed -e 's|/static/stdx|/dynamic/stdx|g' \
+        -e 's|^  compile-option = .*|  compile-option = ""|' \
+        "$STATIC_CFG" > "$DYNAMIC_CFG"
+    echo "[test.sh] 已从 cjpm.toml 自动生成动态配置 $DYNAMIC_CFG（不入库）"
 fi
 
 # 兜底自检：若进来时已是动态配置（上次运行被强杀未还原），提醒先恢复基线再跑
