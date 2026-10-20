@@ -80,9 +80,12 @@ if [ ! -f "$BIN" ]; then
 fi
 need="$(max_glibc "$BIN")"
 echo "→ 产物最高 glibc 需求：GLIBC_${need}"
-if objdump -T "$BIN" | grep -q 'GLIBC_2\.3[89]\|GLIBC_2\.4'; then
-    echo "✗ 仍残留高版本符号："
-    objdump -T "$BIN" | grep 'GLIBC_2\.3[89]\|GLIBC_2\.4' | head
-    exit 1
-fi
+# 判据用「最高版本需求」而不是逐符号 grep：老符号 GLIBC_2.4（__stack_chk_fail）
+# 会被 `GLIBC_2\.4` 这类正则误判成 2.4x，导致本来合格的产物被判红。
+case "$need" in
+    2.38|2.39|2.4[0-9]|2.5*)
+        echo "✗ 仍残留高版本符号："
+        objdump -T "$BIN" | grep 'GLIBC_2\.\(3[89]\|4[0-9]\|5[0-9]\)' | head
+        exit 1 ;;
+esac
 echo "✓ 已消除 GLIBC_2.38 依赖，产物兼容 glibc ≤2.35（Ubuntu 22.04 / Debian 12）"
