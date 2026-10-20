@@ -7,8 +7,8 @@
 
 **任何代码变更（新功能、bug 修复、重构、优化）交付前，必须满足：**
 
-1. `./scripts/test.sh` 全绿（451+ 用例，`FAILED: 0`、`ERROR: 0`）——**唯一交付凭证**，禁止以"改动小/时间紧/测试环境问题"为由跳过。脚本自动切动态链接配置跑测试（cjpm.toml 默认静态链接，静态下测试框架 double free 崩溃，见 docs/开发文档与踩坑记录.md §3.10），结束后恢复静态。
-   - **库包测试另跑：`./scripts/test_libs.sh`**（`scripts/test.sh` 不覆盖 `libs/`）。该脚本遍历 `libs/*/cjpm.toml` 逐个 `cd libs/<lib> && cjpm test` 并在末尾汇总，当前 6 库 **164 例**全绿（cjcfg 7 / cjconfig 7 / cjllm 40 / cjlog 1 / cjterm 96 / cjutil 13）；可只跑一个：`./scripts/test_libs.sh cjcfg`。**改动涉及 libs/ 下任何库必须跑**——历史上 cjcfg 的 `capability_test` 红了数周无人发现，根因就是只跑根包。
+1. `./scripts/test.sh` 全绿（528 用例，`FAILED: 0`、`ERROR: 0`）——**唯一交付凭证**，禁止以"改动小/时间紧/测试环境问题"为由跳过。脚本自动切动态链接配置跑测试（cjpm.toml 默认静态链接，静态下测试框架 double free 崩溃，见 docs/开发文档与踩坑记录.md §3.10），结束后恢复静态。
+   - **库包测试另跑：`./scripts/test_libs.sh`**（`scripts/test.sh` 不覆盖 `libs/`）。该脚本遍历 `libs/*/cjpm.toml` 逐个 `cd libs/<lib> && cjpm test` 并在末尾汇总，当前 6 库 **172 例**全绿（cjcfg 8 / cjconfig 7 / cjllm 47 / cjlog 1 / cjterm 96 / cjutil 13）；可只跑一个：`./scripts/test_libs.sh cjcfg`。**改动涉及 libs/ 下任何库必须跑**——历史上 cjcfg 的 `capability_test` 红了数周无人发现，根因就是只跑根包。
    - TUI 改动另加：`python3 scripts/tui_pty_test.py` 全过（61 场景，伪终端驱动真实 TUI：启动/输入/补全/帮助/审批同意与拒绝/思考展开与回看）。
 2. **新增行为必须有对应测试**：
    - 新工具/新纯函数 → 至少覆盖主路径 + 错误路径 + 一个边界
@@ -59,7 +59,7 @@
 ## 交付检查清单
 
 - [ ] `./scripts/test.sh` 全绿（含新增测试）——跑前先 `source /opt/cangjie/cangjie/envsetup.sh`（`cjpm` 不在默认 PATH，否则脚本直接 exit 127）
-- [ ] `./scripts/test_libs.sh` 全绿（6 库 164 例；**改动涉及 libs/ 时必跑**）
+- [ ] `./scripts/test_libs.sh` 全绿（6 库 172 例；**改动涉及 libs/ 时必跑**）
 - [ ] `cjpm build` 通过且**零代码告警**（唯一例外：`--static` 驱动提示 ×5，见门禁第 4 条；核对 `cjpm build 2>&1 | sed -e 's/\x1b\[[0-9;]*m//g' | grep -c 'warning:'` == 5）
 - [ ] `--mock` 端到端通过
 - [ ] 行为变更同步更新 docs/（进度记录、踩坑记录）

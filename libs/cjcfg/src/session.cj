@@ -48,6 +48,17 @@ public class SessionStore {
             match (json.kind()) {
                 case JsonKind.JsObject =>
                     let obj = json.asObject()
+                    // 重命名过的会话：title 字段优先于首条 user 消息
+                    if (let Some(t) <- obj.get("title")) {
+                        match (t.kind()) {
+                            case JsonKind.JsString =>
+                                let name = t.asString().getValue()
+                                if (name.size > 0) {
+                                    return name
+                                }
+                            case _ => ()
+                        }
+                    }
                     if (let Some(msgs) <- obj.get("messages")) {
                         match (msgs.kind()) {
                             case JsonKind.JsArray =>
@@ -252,6 +263,76 @@ public class SessionStore {
     // 会话 ID 进程内计数器：时间戳秒.毫秒在同毫秒内会碰撞
     // （实测 save 与 saveFork 连续调用生成相同 ID，后者覆盖前者）
     private static var idCounter: Int64 = 0
+
+    /**
+     * 会话标题（重命名过用 title 字段，否则首条 user 消息摘要）；不存在返回 ""
+     */
+    public func titleOf(id: String): String {
+        let path = this.dir + "/" + id + ".json"
+        if (!exists(path)) {
+            return ""
+        }
+        return this.summary(id + ".json")
+    }
+
+    /**
+     * 重命名会话（写入会话文件根的 title 字段），成功返回 true
+     *
+     * 原消息历史原样保留——重命名只动展示名，不碰 messages。
+     */
+    public func rename(id: String, title: String): Bool {
+        let path = this.dir + "/" + id + ".json"
+        if (!exists(path)) {
+            return false
+        }
+        let name = title.trimAscii()
+        if (name.size == 0) {
+            return false
+        }
+        try {
+            let json = JsonValue.fromStr(String.fromUtf8(File.readFrom(path)))
+            match (json.kind()) {
+                case JsonKind.JsObject =>
+                    let obj = json.asObject()
+                    obj.put("title", JsonString(name))
+                    File.writeTo(path, obj.toJsonString().toArray())
+                    return true
+                case _ => return false
+            }
+        } catch (e: Exception) {
+            eprintln("[cjh] 会话 ${id} 重命名失败: ${e}")
+            return false
+        }
+    }
+
+    /**
+     * 删除会话文件，成功返回 true（不存在返回 false）
+     *
+     * 只删本会话自己；分支子会话保持原样（parent 指向已删 ID 时按根会话展示）。
+     */
+    public func removeSession(id: String): Bool {
+        let path = this.dir + "/" + id + ".json"
+        if (!exists(path)) {
+            return false
+        }
+        try {
+            remove(path)
+            return true
+        } catch (e: Exception) {
+            eprintln("[cjh] 会话 ${id} 删除失败: ${e}")
+            return false
+        }
+    }
+
+    /**
+     * 会话历史残缺度（0 = 健康；>0 表示需要修复的处数）
+     *
+     * 残缺来源：回合被打断留下孤儿 tool 消息 / 悬空 tool_calls。这类会话
+     * 发消息必然被上游判 400，客户端可据此提示用户。
+     */
+    public func defectCount(id: String): Int64 {
+        return historyDefectCount(this.load(id))
+    }
 
     /**
      * 生成新会话 ID（时间戳格式 s<秒>.<毫秒>.<计数器>）

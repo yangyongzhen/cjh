@@ -653,6 +653,14 @@ public class Agent {
 
             // 顶层兜底：LLM 响应解析可能抛 IllegalArgumentException（非法 UTF-8 字节）
             // 不让它崩 TUI，转成错误消息返回
+            // 历史修复（发上游前）：回合被打断会留下孤儿 tool 消息 / 悬空 tool_calls，
+            // 上游对配对要求严格，会把整段脏历史判成 400，导致该会话永久不可用。
+            // repairHistory 幂等，合法历史零开销。
+            let repaired = repairHistory(this.messages)
+            if (repaired.fixes > 0) {
+                Log.warn("会话历史残缺已修复 ${repaired.fixes} 处（孤儿 tool 消息 / 悬空 tool_calls / 重复结果）")
+                this.messages = repaired.messages
+            }
             let response: ModelResponse
             let roundStart = DateTime.now()
             let msgCount = Int64(this.messages.size)
@@ -1573,6 +1581,8 @@ public class Agent {
      * 注入历史消息（恢复会话；跳过 system 由构造器管理）
      */
     public func loadHistory(history: ArrayList<ChatMessage>): Unit {
+        // 注意：这里**不做**历史修复——加载侧保留原始历史（TUI 回看、摘要、compaction
+        // 都按真实内容工作）；配对整形只在发上游前做（见 run 循环的 repairHistory）。
         for (m in history) {
             if (m.role != "system") {
                 this.messages.add(m)

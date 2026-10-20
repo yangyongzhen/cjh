@@ -121,4 +121,47 @@ public class McpConfigTest {
             removeTree(dir)
         }
     }
+
+    @TestCase
+    public func testMaskedEnvWriteBackKeepsSecret(): Unit {
+        // 磁盘上已有的真实配置
+        let existingRaw = "[{\"name\":\"fs\",\"command\":\"npx\",\"env\":{\"TOKEN\":\"sk-real\",\"HOME\":\"/root\"}}]"
+        let (existing, e1) = parseMcpServersJson(JsonValue.fromStr(existingRaw))
+        @Assert(e1, "")
+        // 客户端做的是 GET→改→回写：env 值全是脱敏占位
+        let incomingRaw = "[{\"name\":\"fs\",\"command\":\"npx\",\"env\":{\"TOKEN\":\"***\",\"HOME\":\"***\"}}]"
+        let (incoming, e2) = parseMcpServersJson(JsonValue.fromStr(incomingRaw))
+        @Assert(e2, "")
+        let merged = reconcileMaskedEnv(incoming, existing)
+        @Assert(merged.size, 1)
+        @Assert(merged[0].env.get("TOKEN").getOrThrow(), "sk-real")
+        @Assert(merged[0].env.get("HOME").getOrThrow(), "/root")
+        // 落盘后仍然是真值
+        var probe = JsonObject()
+        probe.put("servers", mcpServersToJsonObject(merged))
+        let text = probe.toJsonString()
+        @Assert(text.contains("sk-real"), true)
+        @Assert(text.contains("***"), false)
+    }
+
+    @TestCase
+    public func testMaskedEnvWithoutOriginalDropped(): Unit {
+        // 全新服务器带 ***：没有原值可恢复 → 丢弃该键，绝不把 *** 当密钥落盘
+        let (existing, _) = parseMcpServersJson(JsonValue.fromStr("[]"))
+        let incomingRaw = "[{\"name\":\"fresh\",\"command\":\"x\",\"env\":{\"TOKEN\":\"***\",\"PLAIN\":\"v\"}}]"
+        let (incoming, e) = parseMcpServersJson(JsonValue.fromStr(incomingRaw))
+        @Assert(e, "")
+        let merged = reconcileMaskedEnv(incoming, existing)
+        @Assert(merged.size, 1)
+        @Assert(merged[0].env.get("TOKEN").isNone(), true)
+        @Assert(merged[0].env.get("PLAIN").getOrThrow(), "v")
+        // 混合场景：同名服务器但新增了一个 *** 键（原配置里没有）同样丢弃
+        let (old, _) = parseMcpServersJson(JsonValue.fromStr(
+            "[{\"name\":\"fs\",\"command\":\"npx\",\"env\":{\"A\":\"1\"}}]"))
+        let (mixed, _) = parseMcpServersJson(JsonValue.fromStr(
+            "[{\"name\":\"fs\",\"command\":\"npx\",\"env\":{\"A\":\"***\",\"B\":\"***\"}}]"))
+        let m2 = reconcileMaskedEnv(mixed, old)
+        @Assert(m2[0].env.get("A").getOrThrow(), "1")
+        @Assert(m2[0].env.get("B").isNone(), true)
+    }
 }

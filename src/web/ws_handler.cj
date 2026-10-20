@@ -43,6 +43,11 @@ public class WsHandler <: HttpRequestHandler {
      * 业务逻辑（Agent 执行 + 事件分发）全部下沉到 ChannelGateway。
      */
     public func handle(ctx: HttpContext): Unit {
+        // 鉴权：配置了 token 时 WS 也必须携带（Authorization: Bearer 或 ?token=）。
+        // 校验必须发生在 upgradeFromServer 之前，否则已经 101 升级再回 401 是非法响应。
+        if (!Auth.check(ctx, this.config)) {
+            return
+        }
         // WebSocket 握手
         let ws = WebSocket.upgradeFromServer(ctx)
 
