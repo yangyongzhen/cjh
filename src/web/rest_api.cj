@@ -76,7 +76,7 @@ public class RestApi <: HttpRequestHandler {
     private func handleHealth(ctx: HttpContext): Unit {
         var health = JsonObject()
         health.put("status", JsonString("ok"))
-        health.put("version", JsonString("1.3.0"))
+        health.put("version", JsonString(CJH_WEB_VERSION))
         health.put("web_port", JsonInt(Int64(this.config.webPort)))
         let body = health.toJsonString()
         let res = ctx.responseBuilder

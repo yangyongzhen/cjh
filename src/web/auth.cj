@@ -41,14 +41,25 @@ public class Auth {
         }
 
         // 鉴权失败：写 401 响应
+        Auth.writeUnauthorized(ctx)
+        return false
+    }
+
+    /**
+     * 写 401 未授权响应
+     *
+     * 状态码必须是 401：只往 body 里塞 error 字段而不设状态码时，HTTP 行仍是 200，
+     * 前端 `res.ok` 为真、探活脚本也判成功，鉴权失败会被当成一次正常响应。
+     */
+    public static func writeUnauthorized(ctx: HttpContext): Unit {
         let res = ctx.responseBuilder
+        res.status(401)
         res.header("Content-Type", "application/json; charset=utf-8")
         res.header("WWW-Authenticate", "Bearer")
         var err = JsonObject()
         err.put("error", JsonString("unauthorized"))
         err.put("message", JsonString("Missing or invalid auth token"))
         res.body(err.toJsonString().toArray())
-        return false
     }
 
     /**
@@ -60,27 +71,56 @@ public class Auth {
      */
     private static func extractBearerToken(ctx: HttpContext): String {
         // 尝试从 Authorization 头提取
-        let headers = ctx.request.headers
-        match (headers.getFirst("Authorization")) {
+        match (ctx.request.headers.getFirst("Authorization")) {
             case Some(authHeader) =>
-                // Authorization 值格式："Bearer <token>"
-                let s = authHeader.toString()
-                if (s.size > 7 && s.startsWith("Bearer ")) {
-                    return s[7..].toString()
+                let fromHeader = tokenFromAuthHeader(authHeader.toString())
+                if (fromHeader.size > 0) {
+                    return fromHeader
                 }
             case None => ()
         }
-        // WebSocket 降级：从 URL 查询参数 ?token=... 提取
-        let url = ctx.request.url
-        match (url.query) {
-            case Some(query) =>
-                if (query.size > 6 && query.startsWith("token=")) {
-                    return query[6..]
-                }
+        // WebSocket / 浏览器降级：从 URL 查询参数 ?token=... 提取
+        match (ctx.request.url.query) {
+            case Some(query) => return tokenFromQuery(query)
             case None => ()
         }
         return ""
     }
+}
+
+/**
+ * 从 Authorization 头值提取 Bearer token（非 Bearer 格式返回空串）
+ */
+public func tokenFromAuthHeader(header: String): String {
+    if (header.size > 7 && header.startsWith("Bearer ")) {
+        return header[7..].toString()
+    }
+    return ""
+}
+
+/**
+ * 从查询串提取 token 参数（多参数并存时按键名匹配）
+ *
+ * 允许多个参数并存（?token=x&foo=1），因此按 & 切分后按键名匹配，
+ * 而不是把整个 query 直接当值（那样带第二个参数就永远对不上）。
+ */
+public func tokenFromQuery(query: String): String {
+    for (pair in query.split("&")) {
+        if (pair.startsWith("token=")) {
+            return pair[6..].toString()
+        }
+    }
+    return ""
+}
+
+/**
+ * 该路径是否要求鉴权
+ *
+ * 只有数据面（api 前缀路由）与长连接（ws）要求；静态页面与资源放行——
+ * 浏览器顶层导航带不了 Authorization 头，静态页若拦就等于把 UI 锁死。
+ */
+public func requiresAuthPath(path: String): Bool {
+    return path.startsWith("/api/") || path == "/ws"
 }
 
 /**
@@ -145,5 +185,7 @@ public func webBindRejection(bindAddr: String, token: String): String {
     return "拒绝启动：绑定地址 ${bindAddr} 对外可达，但未设置鉴权 token——" +
         "任何人都能通过它读写工作区、执行 shell。\n" +
         "  · 仅本机使用：去掉 --bind（默认 127.0.0.1）\n" +
-        "  · 需要局域网访问：cjh web --bind ${bindAddr} --token <your-secret>"
+        "  · 需要局域网访问：cjh web --bind ${bindAddr} --token <your-secret>\n" +
+        "  · 绑定地址也可能来自 settings.json 的 web_bind_addr（命令行未传 --bind 时生效），" +
+        "改回 127.0.0.1 或同时配 web_auth_token"
 }

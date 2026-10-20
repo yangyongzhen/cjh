@@ -244,10 +244,59 @@ let isExecuting = false;
 let currentModelId = null;
 let pendingModelSwitch = null;
 
+// ====== 鉴权 token ======
+// 服务端配了 --token 时页面本身匿名可取（浏览器顶层导航带不了 Authorization 头），
+// 但 /api/* 与 /ws 必须带 token。token 来源优先级：URL ?token= > localStorage。
+function authToken() {
+    try { return localStorage.getItem('cjh-auth-token') || ''; } catch (e) { return ''; }
+}
+
+// 首次用 ?token=xxx 打开链接时记住 token，并从地址栏抹掉（避免留在历史记录里）
+function takeTokenFromUrl() {
+    try {
+        const params = new URLSearchParams(window.location.search);
+        const t = params.get('token');
+        if (!t) { return; }
+        localStorage.setItem('cjh-auth-token', t);
+        params.delete('token');
+        const q = params.toString();
+        window.history.replaceState({}, '',
+            window.location.pathname + (q ? '?' + q : '') + window.location.hash);
+    } catch (e) { /* 浏览器不支持 URLSearchParams：退化为手动输入 token */ }
+}
+
+// 401 时引导用户填 token（只弹一次，避免多个并发请求弹多个框）
+let tokenPromptShown = false;
+function requireToken() {
+    if (tokenPromptShown) { return; }
+    tokenPromptShown = true;
+    const t = window.prompt('服务端已启用鉴权，请输入访问 token：', '');
+    if (t && t.trim()) {
+        try { localStorage.setItem('cjh-auth-token', t.trim()); } catch (e) {}
+        window.location.reload();
+    }
+}
+
+// 统一的 API 请求入口：自动带 Bearer token，401 时引导填 token
+function apiFetch(url, opts) {
+    opts = opts || {};
+    const headers = new Headers(opts.headers || {});
+    const token = authToken();
+    if (token) { headers.set('Authorization', 'Bearer ' + token); }
+    opts.headers = headers;
+    return fetch(url, opts).then(function(res) {
+        if (res.status === 401) { requireToken(); }
+        return res;
+    });
+}
+
 // ====== WebSocket 连接管理 ======
 function connectWebSocket() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = protocol + '//' + window.location.host + '/ws';
+    // WS 无法自定义请求头，token 走查询参数（服务端 Auth 同时支持 Bearer 与 ?token=）
+    const token = authToken();
+    const wsUrl = protocol + '//' + window.location.host + '/ws' +
+        (token ? '?token=' + encodeURIComponent(token) : '');
 
     ws = new WebSocket(wsUrl);
     ws.onopen = function() {
@@ -276,7 +325,7 @@ function connectWebSocket() {
  * 由服务端 ack 确认（含端点回显）；失败 / 不支持则回滚选项并提示（不静默）。
  */
 function loadModelSelector() {
-    fetch('/api/models')
+    apiFetch('/api/models')
         .then(r => r.json())
         .then(function(data) {
             let sel = document.getElementById('model-selector');
@@ -394,7 +443,7 @@ function sendAbort() {
  * 从 /api/sessions 加载会话列表，渲染到侧边栏
  */
 function loadSessions() {
-    fetch('/api/sessions')
+    apiFetch('/api/sessions')
         .then(r => r.json())
         .then(data => {
             let list = document.getElementById('session-list');
@@ -428,7 +477,7 @@ function loadSessions() {
  * 从 /api/skills 加载技能列表，渲染到侧边栏技能分区
  */
 function loadSkills() {
-    fetch('/api/skills')
+    apiFetch('/api/skills')
         .then(r => r.json())
         .then(data => {
             let list = document.getElementById('skill-list');
@@ -458,7 +507,7 @@ function loadSkills() {
  * 从 /api/mcp 加载 MCP 服务器列表，渲染到侧边栏 MCP 分区
  */
 function loadMcp() {
-    fetch('/api/mcp')
+    apiFetch('/api/mcp')
         .then(r => r.json())
         .then(data => {
             let list = document.getElementById('mcp-list');
@@ -487,7 +536,7 @@ function loadMcp() {
  * 从 /api/workspaces 加载工作区列表，渲染到侧边栏工作区分区
  */
 function loadWorkspaces() {
-    fetch('/api/workspaces')
+    apiFetch('/api/workspaces')
         .then(r => r.json())
         .then(data => {
             let list = document.getElementById('workspace-list');
@@ -516,7 +565,7 @@ function loadWorkspaces() {
                 list.appendChild(item);
             });
             // 高亮当前工作区（对比 cwd）
-            fetch('/api/fs/list').then(r => r.json()).then(function(fs) {
+            apiFetch('/api/fs/list').then(r => r.json()).then(function(fs) {
                 if (!fs.error) {
                     document.querySelectorAll('.workspace-item').forEach(function(el) {
                         el.classList.toggle('active', el.dataset.path === fs.path);
@@ -535,7 +584,7 @@ function loadWorkspaces() {
  * 后续相对路径工具（bash/read_file 等）立即在新工作区工作。
  */
 function switchWorkspace(path, name) {
-    fetch('/api/workspaces/switch', {
+    apiFetch('/api/workspaces/switch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: path })
@@ -583,7 +632,7 @@ function openDirBrowser() {
  */
 function loadDirList() {
     document.getElementById('dir-browser-path').textContent = '当前: ' + browsePath;
-    fetch('/api/fs/list?path=' + encodeURIComponent(browsePath))
+    apiFetch('/api/fs/list?path=' + encodeURIComponent(browsePath))
         .then(r => r.json())
         .then(function(data) {
             let list = document.getElementById('dir-browser-list');
@@ -632,7 +681,7 @@ function useCurrentDir() {
  * 删除工作区：DELETE /api/workspaces
  */
 function removeWorkspace(path) {
-    fetch('/api/workspaces', {
+    apiFetch('/api/workspaces', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: path })
@@ -666,7 +715,7 @@ function addWorkspace() {
     let name = document.getElementById('workspace-name-input').value.trim();
     let create = document.getElementById('workspace-create-input').checked;
     if (!path) { return; }
-    fetch('/api/workspaces', {
+    apiFetch('/api/workspaces', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: path, name: name, create: create })
@@ -704,8 +753,8 @@ function closeConfigModal() {
 function loadConfig() {
     // 并行拉取 settings 和 models
     Promise.all([
-        fetch('/api/settings').then(r => r.json()),
-        fetch('/api/models').then(r => r.json()).catch(() => ({ models: [], current: '' }))
+        apiFetch('/api/settings').then(r => r.json()),
+        apiFetch('/api/models').then(r => r.json()).catch(() => ({ models: [], current: '' }))
     ]).then(function(results) {
         let data = results[0];
         let modelsData = results[1];
@@ -866,7 +915,7 @@ function saveConfig() {
             payload[key] = val;
         }
     });
-    fetch('/api/settings', {
+    apiFetch('/api/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -1570,6 +1619,7 @@ function toggleTaskPanel() {
 
 // ====== 事件绑定 ======
 document.addEventListener('DOMContentLoaded', function() {
+    takeTokenFromUrl();
     connectWebSocket();
     loadModelSelector();
 

@@ -171,11 +171,15 @@ public class WebHandler <: HttpRequestHandler {
     }
 
     public func handle(ctx: HttpContext): Unit {
-        // Step 5：auth_token 鉴权中间件
-        if (!Auth.check(ctx, this.config)) {
-            return
-        }
         let path = ctx.request.url.path
+        // 静态页面/资源不要求鉴权：浏览器顶层导航带不了 Authorization 头，
+        // 若这里也拦，配了 token 就等于把整个 UI 锁死（页面本身没有敏感数据）。
+        // 真正的数据面 /api/* 与长连接 /ws 各自校验。
+        if (path.startsWith("/api/")) {
+            if (!Auth.check(ctx, this.config)) {
+                return
+            }
+        }
         match (path) {
             case "/" => this.handleIndex(ctx)
             case "/assets/app.js" => this.handleStaticJs(ctx)
@@ -240,7 +244,7 @@ public class WebHandler <: HttpRequestHandler {
     private func handleHealth(ctx: HttpContext): Unit {
         var health = JsonObject()
         health.put("status", JsonString("ok"))
-        health.put("version", JsonString("1.3.0"))
+        health.put("version", JsonString(CJH_WEB_VERSION))
         health.put("web_port", JsonInt(Int64(this.config.webPort)))
         let body = health.toJsonString()
         let res = ctx.responseBuilder
