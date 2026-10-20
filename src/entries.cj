@@ -153,12 +153,11 @@ func runWeb(args: Array<String>): Int64 {
     // 强制启用 Web 模式
     cjhCfg.webEnabled = true
 
-    // 安全检查：远程绑定但无鉴权 token
-    if (cjhCfg.webBindAddr != "127.0.0.1" && cjhCfg.webBindAddr != "localhost" && cjhCfg.webAuthToken.size == 0) {
-        println("⚠  安全警告：绑定地址 ${cjhCfg.webBindAddr} 非 127.0.0.1，但未设置鉴权 token")
-        println("   任何人都能访问你的 cjh 实例并执行工具调用")
-        println("   建议：cjh web --bind ${cjhCfg.webBindAddr} --token <your-secret>")
-        println()
+    // 安全检查：远程绑定但无鉴权 token → 拒绝启动（不再只警告）
+    let bindReject = webBindRejection(cjhCfg.webBindAddr, cjhCfg.webAuthToken)
+    if (bindReject.size > 0) {
+        println("✗ ${bindReject}")
+        return 1
     }
 
     // 构造 provider + registry（复用 runCli 的构造方式）

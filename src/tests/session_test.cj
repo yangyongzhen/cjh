@@ -98,4 +98,64 @@ public class SessionStoreTest {
         @Assert(loaded[1].toolCallId, "call_123")
         @Assert(loaded[1].name, "bash")
     }
+
+    @TestCase
+    public func testRenamePersistsTitle(): Unit {
+        removeTree(this.dir)
+        Directory.create(this.dir, recursive: true)
+        let store = this.buildStore()
+        var msgs = ArrayList<ChatMessage>()
+        msgs.add(ChatMessage("user", "原始首条消息"))
+        msgs.add(ChatMessage("assistant", "ok"))
+        let id = store.save(msgs)
+        // 重命名前：标题来自首条 user 消息
+        @Assert(store.titleOf(id), "原始首条消息")
+        @Assert(store.rename(id, "  重构登录模块  "), true)
+        // 重命名后：title 优先，且首尾空白被裁掉
+        @Assert(store.titleOf(id), "重构登录模块")
+        let list = store.list()
+        @Assert(list.size, 1)
+        @Assert(list[0][1], "重构登录模块")
+        // 消息历史不受影响
+        @Assert(store.load(id).size, 2)
+        // 空白标题拒绝
+        @Assert(store.rename(id, "   "), false)
+        // 不存在的会话
+        @Assert(store.rename("s999.999.9", "x"), false)
+    }
+
+    @TestCase
+    public func testRemoveSession(): Unit {
+        removeTree(this.dir)
+        Directory.create(this.dir, recursive: true)
+        let store = this.buildStore()
+        var msgs = ArrayList<ChatMessage>()
+        msgs.add(ChatMessage("user", "待删除"))
+        let id = store.save(msgs)
+        @Assert(store.list().size, 1)
+        @Assert(store.removeSession(id), true)
+        @Assert(store.list().size, 0)
+        @Assert(store.load(id).size, 0)
+        // 重复删除返回 false
+        @Assert(store.removeSession(id), false)
+    }
+
+    @TestCase
+    public func testDefectCountFlagsOrphanToolMessage(): Unit {
+        removeTree(this.dir)
+        Directory.create(this.dir, recursive: true)
+        let store = this.buildStore()
+        // 健康会话：user + assistant
+        var healthy = ArrayList<ChatMessage>()
+        healthy.add(ChatMessage("user", "q"))
+        healthy.add(ChatMessage("assistant", "a"))
+        let hid = store.save(healthy)
+        @Assert(store.defectCount(hid), 0)
+        // 残缺会话：只有孤儿 tool 消息（回合被打断）
+        var broken = ArrayList<ChatMessage>()
+        broken.add(ChatMessage("user", "q"))
+        broken.add(ChatMessage("tool", "半截结果", "call_missing", "bash"))
+        let bid = store.save(broken)
+        @Assert(store.defectCount(bid), 1)
+    }
 }

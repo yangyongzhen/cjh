@@ -182,3 +182,59 @@ public func mcpServersToJsonObject(list: ArrayList<McpServerConfig>): JsonObject
     }
     return root
 }
+
+/**
+ * 脱敏占位符（GET /api/settings 里 env/apiKey 的回显值）
+ */
+public const MASK_PLACEHOLDER: String = "***"
+
+/**
+ * 合并客户端回写的 MCP 配置：env 值为脱敏占位 `***` 的项保留磁盘上的原值。
+ *
+ * 背景（AtomGit issue #5 第 5 条）：GET /api/settings 把 env 值脱敏成 `***`，
+ * 客户端"读出来改个字段再整体 PUT 回去"是最常见的用法。若原样落盘，真实密钥
+ * 就被 `***` 覆盖——用户什么都没改，密钥却没了，且发现时通常已经很久。
+ *
+ * 规则：
+ *   - 同名服务器的同名 env 键 = `***` → 沿用 existing 里的原值
+ *   - 找不到原值（新增服务器 / 新增键）= `***` → 丢弃该键（宁可缺，不可写坏）
+ *   - 其余值（含用户真正想设成 `***` 的情况极罕见）按客户端给的值落盘
+ */
+public func reconcileMaskedEnv(incoming: ArrayList<McpServerConfig>,
+                               existing: ArrayList<McpServerConfig>): ArrayList<McpServerConfig> {
+    let out = ArrayList<McpServerConfig>()
+    for (i in 0..incoming.size) {
+        let src = incoming[i]
+        let dst = McpServerConfig(src.name)
+        dst.transport = src.transport
+        dst.command = src.command
+        for (a in src.args) {
+            dst.args.add(a)
+        }
+        dst.url = src.url
+        for ((k, v) in src.env) {
+            if (v == MASK_PLACEHOLDER) {
+                let orig = findEnv(existing, src.name, k)
+                match (orig) {
+                    case Some(real) => dst.env.add(k, real)
+                    case None => ()  // 无原值可恢复：丢弃，绝不把 *** 当密钥落盘
+                }
+            } else {
+                dst.env.add(k, v)
+            }
+        }
+        out.add(dst)
+    }
+    return out
+}
+
+private func findEnv(list: ArrayList<McpServerConfig>, server: String, key: String): ?String {
+    for (i in 0..list.size) {
+        if (list[i].name == server) {
+            if (let Some(v) <- list[i].env.get(key)) {
+                return v
+            }
+        }
+    }
+    return None
+}

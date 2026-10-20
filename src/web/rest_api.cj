@@ -20,6 +20,7 @@ import std.fs.*
 import stdx.encoding.json.*
 import stdx.net.http.*
 import cjcfg.*
+import cjllm.*
 import cjutil.*
 import cjh.tools.*
 
@@ -42,7 +43,17 @@ public class RestApi <: HttpRequestHandler {
     }
 
     public func handle(ctx: HttpContext): Unit {
+        // 鉴权中间件：配置了 token 时 /api/* 也必须携带（原实现只给 WebHandler 挂了鉴权，
+        // REST 侧裸奔——设了 token 也等于没设）
+        if (!Auth.check(ctx, this.config)) {
+            return
+        }
         let path = ctx.request.url.path
+        // 会话项路由：/api/sessions/{id}（重命名 / 删除 / 健康详情）
+        if (path.startsWith("/api/sessions/")) {
+            this.handleSessionItem(ctx, path[14..])
+            return
+        }
         match (path) {
             case "/api/health" => this.handleHealth(ctx)
             case "/api/capabilities" => this.handleCapabilities(ctx)
@@ -111,6 +122,11 @@ public class RestApi <: HttpRequestHandler {
                 } catch (e: Exception) {}
             }
             sessionObj.put("created_at", JsonInt(timestamp))
+            // 会话健康：被打断的回合会留下孤儿 tool 消息，历史残缺的会话发消息必 400。
+            // 提前标记，客户端可在恢复前提示「建议修复/删除」而不是撞上 400 才知道。
+            let defects = store.defectCount(id)
+            sessionObj.put("corrupted", JsonBool(defects > 0))
+            sessionObj.put("defects", JsonInt(defects))
             sessionsArr.add(sessionObj)
         }
 
@@ -120,6 +136,77 @@ public class RestApi <: HttpRequestHandler {
         let res = ctx.responseBuilder
         res.header("Content-Type", "application/json; charset=utf-8")
         res.body(body.toArray())
+    }
+
+    /**
+     * /api/sessions/{id} → 单个会话
+     *
+     *   GET    → {id, title, created_at, messages, corrupted, defects}
+     *   PATCH  → 重命名（body: {"title": "新标题"}）
+     *   DELETE → 删除该会话文件
+     *
+     * 会话 ID 只允许 字母/数字/._-（见 isValidSessionId），杜绝 ../ 之类的路径穿越。
+     */
+    private func handleSessionItem(ctx: HttpContext, id: String): Unit {
+        let res = ctx.responseBuilder
+        res.header("Content-Type", "application/json; charset=utf-8")
+        let method = ctx.request.method
+        if (!isValidSessionId(id)) {
+            res.body(apiError("invalid session id: 只允许字母/数字/./_/-").toArray())
+            return
+        }
+        let store = SessionStore(this.config.sessionsDir)
+        match (method) {
+            case "GET" =>
+                let msgs = store.load(id)
+                var obj = JsonObject()
+                obj.put("id", JsonString(id))
+                obj.put("title", JsonString(store.titleOf(id)))
+                obj.put("messages", JsonInt(Int64(msgs.size)))
+                let defects = historyDefectCount(msgs)
+                obj.put("corrupted", JsonBool(defects > 0))
+                obj.put("defects", JsonInt(defects))
+                res.body(obj.toJsonString().toArray())
+            case "PATCH" =>
+                let bodyStr = readBody(ctx)
+                var title = ""
+                try {
+                    let parsed = JsonValue.fromStr(bodyStr)
+                    if (isObj(parsed)) {
+                        if (let Some(v) <- parsed.asObject().get("title")) {
+                            if (isStr(v)) {
+                                title = v.asString().getValue().trimAscii()
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    res.body(apiError("JSON 解析失败: ${e}").toArray())
+                    return
+                }
+                if (title.size == 0) {
+                    res.body(apiError("缺少 title 或 title 为空").toArray())
+                    return
+                }
+                if (!store.rename(id, title)) {
+                    res.body(apiError("会话不存在: ${id}").toArray())
+                    return
+                }
+                var ok = JsonObject()
+                ok.put("ok", JsonBool(true))
+                ok.put("id", JsonString(id))
+                ok.put("title", JsonString(title))
+                res.body(ok.toJsonString().toArray())
+            case "DELETE" =>
+                if (!store.removeSession(id)) {
+                    res.body(apiError("会话不存在: ${id}").toArray())
+                    return
+                }
+                var ok = JsonObject()
+                ok.put("ok", JsonBool(true))
+                ok.put("id", JsonString(id))
+                res.body(ok.toJsonString().toArray())
+            case _ => this.handleNotFound(ctx)
+        }
     }
 
     /**
@@ -393,7 +480,8 @@ public class RestApi <: HttpRequestHandler {
                 res.body(errObj.toJsonString().toArray())
                 return
             }
-            mcpUpdate = Some(parsed)
+            // 脱敏占位合并：env 值为 *** 的项沿用磁盘原值，避免"读出来再存回去"抹掉密钥
+            mcpUpdate = Some(reconcileMaskedEnv(parsed, this.config.mcpServers))
         }
         // 应用更新到 config
         applySettingsUpdate(updates)
@@ -708,6 +796,37 @@ public class RestApi <: HttpRequestHandler {
 /**
  * API 辅助函数
  */
+
+/**
+ * 会话 ID 合法性：仅字母/数字/./_/-，长度 1..128
+ *
+ * 会话 ID 会直接拼进文件路径（sessions/<id>.json），必须挡掉 "/" 与 ".."
+ * 之类的字符，否则 PATCH/DELETE 就变成任意文件改写/删除。
+ */
+public func isValidSessionId(id: String): Bool {
+    if (id.size == 0 || id.size > 128) {
+        return false
+    }
+    for (i in 0..id.size) {
+        let c = id[i]
+        let isDigit = (c >= 48u8 && c <= 57u8)
+        let isLower = (c >= 97u8 && c <= 122u8)
+        let isUpper = (c >= 65u8 && c <= 90u8)
+        if (!(isDigit || isLower || isUpper || c == 46u8 || c == 95u8 || c == 45u8)) {
+            return false
+        }
+    }
+    return true
+}
+
+/**
+ * API 错误响应体（{"error": "..."}）
+ */
+public func apiError(msg: String): String {
+    var err = JsonObject()
+    err.put("error", JsonString(msg))
+    return err.toJsonString()
+}
 
 /**
  * JsonKind 判断辅助（仓颉 enum 不能直接 ==）

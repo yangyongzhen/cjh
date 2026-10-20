@@ -162,7 +162,9 @@ public class CapabilitiesTest {
         var bad = ""
         for (i in 0..endpoints.size) {
             let e = endpoints[i]
-            if (!e.startsWith("GET ") && !e.startsWith("POST ")) {
+            let hasMethod = e.startsWith("GET ") || e.startsWith("POST ") ||
+                e.startsWith("PATCH ") || e.startsWith("DELETE ")
+            if (!hasMethod) {
                 bad += e + ";"
             }
         }

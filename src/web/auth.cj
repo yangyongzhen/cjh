@@ -110,3 +110,40 @@ public class SecurityAudit {
         println()
     }
 }
+
+/**
+ * 绑定地址是否属于回环（仅本机可达）
+ *
+ * 覆盖 127.0.0.0/8、localhost、IPv6 ::1；其余（含 0.0.0.0、局域网 IP、域名）视为对外。
+ */
+public func isLoopbackBind(addr: String): Bool {
+    let a = addr.trimAscii()
+    if (a == "localhost" || a == "::1" || a == "[::1]") {
+        return true
+    }
+    if (a == "127.0.0.1") {
+        return true
+    }
+    // 127.0.0.0/8 整段都是回环
+    if (a.startsWith("127.")) {
+        return true
+    }
+    return false
+}
+
+/**
+ * 启动安全策略：非回环绑定 + 无鉴权 token → 返回拒绝原因（空串 = 允许启动）
+ *
+ * 为什么拒绝而不是只警告：`cjh web` 的接口能读写工作区、跑 shell、动用 LLM 额度，
+ * 裸绑 0.0.0.0 等于把整套能力摆在局域网上。警告在实际使用中很容易被日志刷掉，
+ * 所以改成硬拒绝，把「对外 + 无鉴权」这个组合变成不可能配置。
+ */
+public func webBindRejection(bindAddr: String, token: String): String {
+    if (isLoopbackBind(bindAddr) || token.size > 0) {
+        return ""
+    }
+    return "拒绝启动：绑定地址 ${bindAddr} 对外可达，但未设置鉴权 token——" +
+        "任何人都能通过它读写工作区、执行 shell。\n" +
+        "  · 仅本机使用：去掉 --bind（默认 127.0.0.1）\n" +
+        "  · 需要局域网访问：cjh web --bind ${bindAddr} --token <your-secret>"
+}
