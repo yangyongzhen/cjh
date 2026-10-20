@@ -5,7 +5,7 @@
 **用华为仓颉语言从零实现的终端编码代理 —— 单二进制零依赖，一个文件就是一个 agent。**
 
 [![Website](https://img.shields.io/badge/website-yangyongzhen.github.io%2Fcjh-00868B)](https://yangyongzhen.github.io/cjh/)
-[![Release](https://img.shields.io/badge/release-v1.5.2-00868B)](https://atomgit.com/qq8864/cjh/releases)
+[![Release](https://img.shields.io/badge/release-v1.5.3-00868B)](https://atomgit.com/qq8864/cjh/releases)
 [![Cangjie](https://img.shields.io/badge/language-Cangjie-00868B)](https://cangjie-lang.cn)
 [![Tests](https://img.shields.io/badge/tests-536%20passed-2ea44f)](./scripts/test.sh)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-lightgrey)](https://atomgit.com/qq8864/cjh/releases)
@@ -26,19 +26,19 @@
 **先不花钱跑起来**（Mock 模式：不联网、不用 API Key）：
 
 ```bash
-curl -LO https://atomgit.com/qq8864/cjh/releases/download/v1.5.2/cjh-v1.5.2-linux-x64
-chmod +x cjh-v1.5.2-linux-x64
-CJH_MOCK=1 ./cjh-v1.5.2-linux-x64
+curl -LO https://atomgit.com/qq8864/cjh/releases/download/v1.5.3/cjh-v1.5.3-linux-x64
+chmod +x cjh-v1.5.3-linux-x64
+CJH_MOCK=1 ./cjh-v1.5.3-linux-x64
 ```
 
 **接真模型**（任选一个 Provider 的 Key）：
 
 ```bash
 export DEEPSEEK_API_KEY=sk-xxx     # 或 OPENAI_API_KEY / DASHSCOPE_API_KEY / CJH_API_KEY
-./cjh-v1.5.2-linux-x64             # 默认 TUI；--cli 纯文本，--mode json 无头，web 子命令拉 Web 界面
+./cjh-v1.5.3-linux-x64             # 默认 TUI；--cli 纯文本，--mode json 无头，web 子命令拉 Web 界面
 ```
 
-Windows：下载 [`cjh-v1.5.2-windows-x64-selfcontained.zip`](https://atomgit.com/qq8864/cjh/releases/download/v1.5.2/cjh-v1.5.2-windows-x64-selfcontained.zip) 解压即用（exe 与 4 个 DLL 必须同目录）。从源码构建见[快速开始](#-快速开始)。
+Windows：下载 [`cjh-v1.5.3-windows-x64-selfcontained.zip`](https://atomgit.com/qq8864/cjh/releases/download/v1.5.3/cjh-v1.5.3-windows-x64-selfcontained.zip) 解压即用（exe 与 4 个 DLL 必须同目录）。从源码构建见[快速开始](#-快速开始)。
 
 ![cjh 会话演示（Mock 模式实录）](docs/imgs/cjh-demo.gif)
 
@@ -53,7 +53,7 @@ Windows：下载 [`cjh-v1.5.2-windows-x64-selfcontained.zip`](https://atomgit.co
 | **是什么** | 仓颉语言从零实现的终端 coding agent harness：Agent 主循环（消息状态机 + 工具调用协议）+ 工具系统 + TUI 差分渲染 + Web 远程驱动 + 插件信任链 |
 | **给谁用** | ① 想在终端里让 AI 直接改代码、又不想先装 Node/Python 工具链的人；② 学仓颉、想找一份能跑能读的 AI 应用参考实现的开发者；③ 信创 / 政企场景要求「无涉外运行时依赖」的团队 |
 | **凭什么** | 一个静态二进制跑起来（Linux 17.1 MB / Windows exe 14.1 MB），无运行时依赖；「省 token + 高执行效率」是两条可实测的硬性指标；插件 SHA256 校验 + SM2 国密签名 |
-| **现在** | v1.5.2，536 单测全绿，Linux / Windows 预编译包已发布；多 agent 并行编排在路线图上（`task` 工具已有 explore / worker 原语） |
+| **现在** | v1.5.3，536 单测全绿，Linux / Windows 预编译包已发布；多 agent 并行编排在路线图上（`task` 工具已有 explore / worker 原语） |
 
 ---
 
@@ -111,7 +111,7 @@ cjh 的取向是**并行子代理 + 上下文隔离**（类 Linux fork）：子�
 
 **省 token 是分工并行的核心目标，而非副产品。** 一个任务全程交给单个 agent，等同于一个人从头到尾全知——每一步都背负全局上下文，token 随任务规模持续膨胀；而团队协作的常识是：每个人只需知道与自己职责相关的部分，信息的"按需分配"理应让总消耗更低。cjh 的并行子代理正是按任务隔离上下文——子代理只携带任务相关的局部记忆，目标是**同样的任务、更少的 token**。这与 swarm 的 handoff 串行（对话整体接力、历史持续累积）形成本质区别：后者提升的是吞吐，前者同时优化成本。
 
-> 📋 **完整功能清单**（持续更新至 v1.5.2）→ [docs/cjh功能清单.md](docs/cjh功能清单.md) —— Agent 主循环 / 15 内置工具 / 10 主题 / 插件系统与信任链 / MCP / 双平台 / 版本历史的完整盘点，随版本持续更新。
+> 📋 **完整功能清单**（持续更新至 v1.5.3）→ [docs/cjh功能清单.md](docs/cjh功能清单.md) —— Agent 主循环 / 15 内置工具 / 10 主题 / 插件系统与信任链 / MCP / 双平台 / 版本历史的完整盘点，随版本持续更新。
 
 ## 🌟 为什么是 cjh
 
@@ -561,6 +561,7 @@ cjh 内置 MCP 客户端，支持 stdio 传输 + JSON-RPC 2.0。配置 `mcp_serv
 
 | 版本 | 主要功能 |
 |---|---|
+| **v1.5.3** | **issue #6 修复：`POST /api/settings` 的 `apiKey` 落盘**。此前该接口只把 Key 写进内存（`saveAll()` 从不写 `api_key`，加载侧 `loadAuth()` 只读 `auth.json`），改完 `baseUrl` / `model` 立即生效、Key 却重启即丢，而响应同样回 `{"ok":true}`；`/provider` 改 Key 走 `saveApiKey()` 写 `auth.json` 是持久的，两条路行为不一致且调用方无从分辨。修复沿用「凭据只进 `auth.json`」分工：新增 `setApiKeyPendingPersist()` 打脏标记，`saveAll()` 写完 `settings.json` 后按标记落 `auth.json`（**不无条件写**——Key 也可能来自 `OPENAI_API_KEY` 等环境变量，无条件落盘等于把 env 凭据泄漏到磁盘）；响应补 `note`「API Key 已写入 auth.json，重启后仍生效」，判定条件与写入条件严格一致。新增 `ApiKeyPersistTest` 3 例（落盘 / 重启读回 / 非脏 Key 不落盘），并给 `CjhConfig` 加 `init(dir:)` 重载以便测试隔离配置目录 |
 | **v1.5.2** | **Web 鉴权收紧后的回归修复 + 版本自述纠正**：401 走真状态码（此前只往 body 写错误体、HTTP 行仍是 `200 OK`，前端 `res.ok` 为真 → 探活假成功），响应头带 `WWW-Authenticate: Bearer`；鉴权**按路径分级**——只拦 `api` 前缀路由与 `ws`，`/` 与 `/assets/*` 放行（浏览器顶层导航带不了 `Authorization`，否则配了 token 反而把 UI 锁死）；前端补 token 能力（`?token=` 首访写入 `localStorage` 并从地址栏抹除，全部 API 走 `apiFetch()`，WS 带 `?token=`，401 弹一次输入框）；token 提取支持 `Authorization: Bearer` 与 `?token=` 且按 `&` 切分匹配键名（`?token=x&other=1` 不再永不匹配）；`/api/health` 的版本号收成 `CJH_WEB_VERSION` 单一常量（原先写死 `1.3.0`，一路发到 1.5.x 仍在报 1.3.0），并加与 `Logo.VERSION` 的一致性守卫；`scripts/glibc_compat.sh` 守卫改按最高 glibc 需求判断（旧正则把上古 `GLIBC_2.4` 当 2.4x 误判红）；README 新增 cj-tauri 桌面客户端展示 |
 | **v1.5.1** | **Web 通道对外契约补齐 + 失败 / 截断信号**：WS 控制帧不再静默——`switch_model` / `compact` 必回 `ack`、`cancel` / `abort` 必回 `cancelled`（`was_running` 如实反映帧到达时是否有回合在跑），仅未注册的渠道忽略；新增 `capabilities` 能力自述（如实枚举入站 7 种 / 出站 9 种帧面，含 `structured_errors` / `diff_in_tool_result`）、消息身份 `FrameMeta{session_id, turn_id, message_id}` 随帧贯穿、**WS 审批通道**（`approval_request` / `approval_response`）与工具结果**结构化 diff**（`src/tools/textdiff.cj` 纯函数 + `DiffInfo`）；`GET/PUT /api/mcp` 与 `POST /api/workspace`；回合失败回结构化 `error` 帧（4 码 + `retryable`）不再只回空 `done`；done 帧新增**可选布尔** `truncated`（上游 `max_tokens` 截断信号，缺键即未截断，`finish_reason` 三值不变）；TUI 输出与 fd 1 解耦、stdx `readTimer` WARN 污染 TUI 根治 |
 | **v1.5.0** | **仓颉内置知识层（三期）+ TUI `/ref` 面板**：新增 `cjh ref status / verify / rebuild / update` 子命令——`status` / `verify` / `rebuild` 全纯本地（`verify` 按清单逐文件重算 SHA-256，报缺失 / 被改 / 多余），`update` 是**唯一联网入口**且只能人显式触发（`--source` 离线刷新、`--repo` / `--branch` 换源、`--dry-run` 只预演、`--restore` 从覆盖前快照回滚）；覆盖前快照落语料目录之外，覆盖后重扫清单 + 自检，任一环失败自动回滚；**同名技能只对齐 `.md`**（清旧 md、保留上游非 md 资产、来源没有的技能目录不动）；`cjh ref search` 复用二期检索；TUI `/ref` 面板同步（联网动作需 `--yes` 二次确认） |
