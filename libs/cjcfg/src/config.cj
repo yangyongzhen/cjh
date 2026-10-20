@@ -71,6 +71,9 @@ public class CjhConfig {
     public var baseUrl: String = "https://api.openai.com/v1/chat/completions"
     public var model: String = "gpt-4o-mini"
     public var apiKey: String = ""
+    // apiKey 是否由 Web 配置页显式设置（决定 saveAll 是否写进 auth.json）。
+    // 直接赋值（加载 auth.json / 环境变量注入）不置位——避免把 env 里的 Key 顺手落盘。
+    private var apiKeyPersistPending: Bool = false
     public var maxIterations: Int64 = 100
     public var systemPrompt: String = ""
     // 采样参数（对齐 pi：/settings 可调）
@@ -153,7 +156,6 @@ public class CjhConfig {
     public var webFetchTimeoutSeconds: Int64 = 30
 
     public init() {
-        // 配置目录：环境变量覆盖，默认用户主目录（跨平台：Windows USERPROFILE / POSIX HOME）
         let home = EnvFfi.homeDir()
         let s = CjhConfig.sep()
         this.configDir = readEnv("CJH_CONFIG_DIR") ?? (home + s + ".cjh")
@@ -165,6 +167,27 @@ public class CjhConfig {
         this.spillDir = this.configDir + s + "spill"
         this.pluginsDir = this.configDir + s + "plugins"
         this.memoryDir = this.configDir + s + "project-memory"
+        this.load()
+    }
+
+    /**
+     * 指定配置目录的构造（测试隔离用；路径显式给出，不读 CJH_CONFIG_DIR，也不写模板）
+     *
+     * 存在的理由：环境变量只能在构造时读到，测试没法在进程内改 env（EnvFfi 无 setenv），
+     * 没有这个重载就只能拿真实 ~/.cjh 做落盘测试，会污染用户配置。
+     * 注意：`let` 成员只能在构造函数内赋值，故路径初始化在此重复一遍（无法抽公共函数）。
+     */
+    public init(dir: String) {
+        let s = CjhConfig.sep()
+        this.configDir = dir
+        this.settingsPath = dir + s + "settings.json"
+        this.authPath = dir + s + "auth.json"
+        this.sessionsDir = dir + s + "sessions"
+        this.skillsDir = dir + s + "skills"
+        this.cangjieRefDir = dir + s + "cangjie-ref"
+        this.spillDir = dir + s + "spill"
+        this.pluginsDir = dir + s + "plugins"
+        this.memoryDir = dir + s + "project-memory"
         this.load()
     }
 
@@ -385,6 +408,18 @@ public class CjhConfig {
     }
 
     /**
+     * 由 Web 配置页设置 API Key（issue #6）：只改内存并打脏标记，
+     * 落盘由 saveAll() 统一写入 auth.json——凭据仍只进 auth.json。
+     *
+     * 为什么不直接复用 saveApiKey()：applySettingsUpdate 之后还有 mcpServers 校验等
+     * 可能失败的步骤，先写盘会在失败时留下半截配置。
+     */
+    public func setApiKeyPendingPersist(key: String): Unit {
+        this.apiKey = key
+        this.apiKeyPersistPending = true
+    }
+
+    /**
      * 替换 MCP 服务器列表（Web POST /api/settings 的 mcpServers 字段）
      *
      * 仅改内存；落盘由 saveAll() 统一完成（读-改-写 settings.json）。
@@ -451,6 +486,14 @@ public class CjhConfig {
         // MCP 服务器（对象形态 {name: {...}}，与 loadSettings 的解析形态一致）
         root.put("mcp_servers", mcpServersToJsonObject(this.mcpServers))
         File.writeTo(this.settingsPath, root.toJsonString().toArray())
+        // 凭据只进 auth.json：settings.json 不含 api_key（与 /provider 的 saveApiKey 同一出口）。
+        // 以前这里漏写 Key，导致 POST /api/settings 设的 Key 重启即丢（issue #6）。
+        if (this.apiKeyPersistPending) {
+            if (this.apiKey.size > 0) {
+                this.saveApiKey(this.apiKey)
+            }
+            this.apiKeyPersistPending = false
+        }
     }
 
     /**

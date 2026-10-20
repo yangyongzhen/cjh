@@ -489,13 +489,22 @@ public class RestApi <: HttpRequestHandler {
             case Some(l) => this.config.replaceMcpServers(l)
             case None => ()
         }
-        // 保存到 settings.json
+        // 保存到 settings.json（apiKey 走 auth.json：凭据不进 settings）
         try {
             this.config.saveAll()
             var ok = JsonObject()
             ok.put("ok", JsonBool(true))
+            var note = ""
             if (mcpUpdate.isSome()) {
-                ok.put("note", JsonString("MCP 配置已保存；新增/修改的服务器需重启 cjh 后建立连接"))
+                note = "MCP 配置已保存；新增/修改的服务器需重启 cjh 后建立连接"
+            }
+            // apiKey 是否真的落盘（此前只进内存却回 ok，调用方误判为已保存，issue #6）
+            if (settingsUpdateCarriesApiKey(updates)) {
+                if (note.size > 0) { note = note + "；" }
+                note = note + "API Key 已写入 auth.json，重启后仍生效"
+            }
+            if (note.size > 0) {
+                ok.put("note", JsonString(note))
             }
             res.body(ok.toJsonString().toArray())
         } catch (e: Exception) {
@@ -504,6 +513,24 @@ public class RestApi <: HttpRequestHandler {
             err.put("error", JsonString("保存失败: ${e}"))
             res.body(err.toJsonString().toArray())
         }
+    }
+
+    /**
+     * 请求体是否携带「真实」的 apiKey（非空且非脱敏占位符）。
+     *
+     * 判定条件必须与 applySettingsUpdate 的写入条件一致，否则响应里的
+     * 「已写入 auth.json」会对不上实际行为。
+     */
+    private func settingsUpdateCarriesApiKey(updates: JsonObject): Bool {
+        if (let Some(v) <- updates.get("apiKey")) {
+            if (isStr(v)) {
+                let val = v.asString().getValue()
+                if (val.size > 0 && !val.contains("***")) {
+                    return true
+                }
+            }
+        }
+        return false
     }
 
     /**
@@ -518,7 +545,7 @@ public class RestApi <: HttpRequestHandler {
                 case "apiKey" => if (isStr(v)) {
                     let val = v.asString().getValue()
                     // 空字符串或脱敏占位符 → 不更新
-                    if (val.size > 0 && !val.contains("***")) { this.config.apiKey = val }
+                    if (val.size > 0 && !val.contains("***")) { this.config.setApiKeyPendingPersist(val) }
                 }
                 case "maxIterations" => if (isInt(v)) { this.config.maxIterations = v.asInt().getValue() }
                 case "systemPrompt" => if (isStr(v)) { this.config.systemPrompt = v.asString().getValue() }
