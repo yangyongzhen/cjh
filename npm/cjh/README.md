@@ -35,6 +35,8 @@ The launcher resolves the binary for your platform at startup. Platform packages
 ## Usage
 
 ```bash
+cjh --version                    # print the version, e.g. "cjh v1.5.3"
+cjh --help                       # full flag list
 cjh                              # start the TUI in the current directory
 cjh --cli                        # plain-text CLI instead of the TUI
 cjh --mode json "explain src/"   # headless JSON run, script-friendly
