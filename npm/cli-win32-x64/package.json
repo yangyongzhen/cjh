@@ -1,0 +1,26 @@
+{
+  "name": "@cjh/cli-win32-x64",
+  "version": "1.5.3",
+  "description": "cjh prebuilt binary for win32-x64",
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin/cjh.exe"
+  ],
+  "preferUnplugged": true,
+  "engines": {
+    "node": ">=16"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yangyongzhen/cjh.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yangyongzhen/cjh/issues"
+  }
+}

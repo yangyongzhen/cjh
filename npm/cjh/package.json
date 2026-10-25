@@ -1,0 +1,38 @@
+{
+  "name": "cjh",
+  "version": "1.5.3",
+  "description": "Terminal coding agent harness written in Cangjie — one static binary, zero runtime dependencies",
+  "bin": {
+    "cjh": "bin/cjh.js"
+  },
+  "files": [
+    "bin/cjh.js",
+    "README.md"
+  ],
+  "optionalDependencies": {
+    "@cjh/cli-linux-x64": "1.5.3",
+    "@cjh/cli-win32-x64": "1.5.3"
+  },
+  "engines": {
+    "node": ">=16"
+  },
+  "keywords": [
+    "cangjie",
+    "coding-agent",
+    "agent",
+    "cli",
+    "tui",
+    "terminal",
+    "mcp",
+    "ai"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yangyongzhen/cjh.git"
+  },
+  "homepage": "https://github.com/yangyongzhen/cjh#readme",
+  "bugs": {
+    "url": "https://github.com/yangyongzhen/cjh/issues"
+  }
+}
