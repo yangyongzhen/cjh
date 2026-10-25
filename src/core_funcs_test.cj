@@ -11,6 +11,7 @@ import cjllm.*
 import cjcfg.*
 import cjutil.*
 import cjh.tools.*
+import cjterm.*
 import stdx.crypto.keys.*
 
 /**
@@ -572,4 +573,47 @@ public func testRefPanelConfirmTextShowsPlanAndGate(): Unit {
     let t2 = refPanelConfirmText(["/ref", "update", "--repo", "https://x/y", "--branch", "b9"], "/d")
     @Assert(t2.contains("https://x/y"), true)
     @Assert(t2.contains("b9"), true)
+}
+
+@Test
+public func testCliVersionTextMatchesLogoVersion(): Unit {
+    // 防漂移：--version 输出与 cjterm 的 Logo.VERSION 同源。
+    // 发版只改 cjpm.toml 而漏改 Logo.VERSION（或反之）时这两处会打架，
+    // 与 WebVersionSyncTest 一样靠测试兜住。
+    let text = cliVersionText()
+    @Assert(text, "cjh " + Logo.VERSION)
+    // Logo.VERSION 带 v 前缀（titlebar 展示用），--version 沿用同一形态
+    @Assert(text.startsWith("cjh v"), true)
+    @Assert(text.size > 6, true)
+}
+
+@Test
+public func testCliVersionTextIsSingleLine(): Unit {
+    // --version 必须是单行、无多余空白，脚本可直接解析比较
+    let text = cliVersionText()
+    @Assert(text.contains("\n"), false)
+    @Assert(text.contains("  "), false)
+    @Assert(text.endsWith(" "), false)
+}
+
+@Test
+public func testCliHelpTextCoversDispatchFlags(): Unit {
+    // 帮助文本要与 main() 的参数分派一一对应：新增入口漏写帮助会被这条挡住
+    let help = cliHelpText()
+    let flags = [
+        "--version", "--help", "--resume", "--list", "--cli",
+        "--mode", "--mock", "web", "ref", "trust", "untrust", "trust-list"
+    ]
+    for (f in flags) {
+        @Assert(help.contains(f), true)
+    }
+}
+
+@Test
+public func testCliHelpTextMentionsConfigAndCredentialPaths(): Unit {
+    // 凭据只写 auth.json 是项目硬约束，帮助里必须点明这两个路径
+    let help = cliHelpText()
+    @Assert(help.contains("~/.cjh/config.json"), true)
+    @Assert(help.contains("~/.cjh/auth.json"), true)
+    @Assert(help.contains("https://github.com/yangyongzhen/cjh"), true)
 }

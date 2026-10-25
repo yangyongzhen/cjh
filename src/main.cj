@@ -6,6 +6,7 @@ import cjh.tools.*
 import cjllm.*
 import cjh.tui.*
 import cjcfg.*
+import cjterm.*
 import stdx.log.*
 
 
@@ -74,11 +75,65 @@ func makeProvider(cfg: CjhConfig): LlmProvider {
     return p
 }
 
+/**
+ * cjh 的版本文本（`cjh --version` 的输出）。
+ * 版本号与 cjterm 的 Logo.VERSION 同源，发版只需改 Logo.VERSION 与 cjpm.toml，
+ * 不再多一处硬编码。
+ */
+func cliVersionText(): String {
+    return "cjh " + Logo.VERSION
+}
+
+/**
+ * `cjh --help` 的用法文本。
+ * 与 main() 的参数分派一一对应；新增入口时同步补在这里，
+ * testCliHelpTextCoversDispatchFlags 会检查关键词有没有漏。
+ */
+func cliHelpText(): String {
+    // 仓颉多行字符串必须以换行开头，该换行是语法标记、不计入内容，故正文直接从下一行起写
+    let body = """
+cjh —— 用仓颉写的终端编码智能体（Harness made by Cangjie）
+
+用法:
+  cjh                                        启动 TUI（默认；当前目录为工作区）
+  cjh --resume <session-id>                  恢复指定会话
+  cjh --list                                 列出已保存会话
+  cjh --cli [--resume <id>]                  纯文本 CLI 模式，不进 TUI
+  cjh --mode json [--resume <id>] <prompt>   无头模式，输出 JSON（脚本可解析）
+  cjh web [--port <n>] [--bind <addr>] [--token <t>]
+                                             启动内置 Web UI
+  cjh --mock                                 离线端到端自检，无需 API Key
+  cjh ref <子命令>                           仓颉知识层语料维护
+                                             （status / verify / update / search / rebuild）
+  cjh trust <publisher>                      信任插件发布者（非空即严格模式）
+  cjh untrust <publisher>                    取消信任
+  cjh trust-list                             列出已信任条目
+  cjh --version, -v                          显示版本
+  cjh --help, -h                             显示本帮助
+
+配置文件: ~/.cjh/config.json（provider / model / 能力闸门）
+凭据文件: ~/.cjh/auth.json（只写这里，其它位置不落凭据）
+项目主页: https://github.com/yangyongzhen/cjh
+"""
+    return body
+}
+
 main(args: Array<String>): Int64 {
     // 禁掉 stdx 库内部日志（如 stdx.net.http 的 read response timeout WARN）
     // 这些日志走 stdx.log 全局 logger 直接到 stderr，污染 TUI 输入框
     // 必须在任何 stdx 库调用之前设置，否则早期日志仍会漏出
     setGlobalLogger(NoopLogger())
+    // --version / -v：打印版本后立即退出。npm 用户装完第一件事就是敲这条，
+    // 此前没有该分支，会直接起 TUI 让人误以为参数被吞了。
+    if (args.size > 0 && (args[0] == "--version" || args[0] == "-v")) {
+        println(cliVersionText())
+        return 0
+    }
+    // --help / -h：打印用法后退出（此前会直接起 TUI，参数像被吞了）
+    if (args.size > 0 && (args[0] == "--help" || args[0] == "-h")) {
+        print(cliHelpText())
+        return 0
+    }
     // cjh ref：知识层语料维护（status / verify 纯本地；update 是唯一联网入口，必须人显式触发）
     if (args.size > 0 && args[0] == "ref") {
         let refCfg = CjhConfig()

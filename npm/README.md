@@ -47,4 +47,4 @@ npm login --registry https://registry.npmjs.org
 ## 已知限制
 
 - 只发布 `linux-x64` 与 `win32-x64`。其它平台（`darwin-*`、`linux-arm64`）目前没有预编译产物，启动器会明确报「no prebuilt binary」并给出 Release 链接，而不是抛一个看不懂的 ENOENT。
-- `cjh` 目前没有 `--version` / `--help` 参数，`cjh --version` 会直接进 TUI。npm 用户第一件事往往是敲 `--version`，这个体验缺口值得后续补一个极小的参数分支。
+- `--version` / `-v` 与 `--help` / `-h` 都已支持：版本输出形如 `cjh v1.5.3`，与 cjterm 的 `Logo.VERSION` 同源（`testCliVersionTextMatchesLogoVersion` 兜住发版漏改）；帮助是纯文本用法清单，不进 TUI、不读配置。
