@@ -30,11 +30,12 @@ npm login --registry https://registry.npmjs.org
 
 发布顺序不能颠倒：主包里写的是精确版本号，平台包没先上架的话，用户装主包时 `optionalDependencies` 解析不到东西。
 
-## 三个必须注意的坑
+## 四个必须注意的坑
 
 1. **registry 必须显式指定**。本机 `~/.npmrc` 的 `registry` 指向 `registry.npmmirror.com`，直接 `npm publish` 会推到镜像站然后失败。脚本里已经写死 `--registry https://registry.npmjs.org`，手敲命令时别漏。
 2. **scoped 包必须加 `--access public`**。`@cjh/cli-*` 不加会按私有包处理并被拒。脚本已带。
-3. **二进制不入版本库**。`npm/cli-*/bin/cjh*` 已在 `.gitignore` 里，由脚本从 `dist/` 拷入。别为了"省事"把 17 MB 的二进制提交进去。
+3. **开了 2FA 的账号要 OTP**。`npm publish` 需要一次性密码：交互终端里 npm 会提示输入，但脚本在非 TTY（CI / agent）下没有提示、只会 `EOTP` 直接失败。用 `NPM_OTP=123456 ./scripts/npm_publish.sh --publish` 显式传入；长期自动化建议建一个 **Automation** 类型的 granular token 写进 `~/.npmrc`，可完全绕过 OTP。
+4. **二进制不入版本库**。`npm/cli-*/bin/cjh*` 已在 `.gitignore` 里，由脚本从 `dist/` 拷入。别为了"省事"把 17 MB 的二进制提交进去。
 
 ## 发版检查清单
 
