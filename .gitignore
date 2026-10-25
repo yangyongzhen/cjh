@@ -30,3 +30,7 @@ __pycache__/
 dist/windows-*/
 dist/linux/
 dist/cjh-v*-x64*.zip
+
+# npm 平台包里的二进制由 scripts/npm_publish.sh 从 dist/ 拷入，不入版本库
+npm/cli-linux-x64/bin/cjh
+npm/cli-win32-x64/bin/cjh.exe
