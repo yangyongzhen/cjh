@@ -9,6 +9,13 @@
 set -euo pipefail
 
 REGISTRY=https://registry.npmjs.org
+# 开了 2FA 的账号发布必须带一次性密码：交互终端里 npm 会提示输入，
+# 但脚本常在非 TTY 环境（CI / agent）下跑，那里没有提示、只会 EOTP 直接失败，
+# 故支持显式传入：NPM_OTP=123456 ./scripts/npm_publish.sh --publish
+OTP_FLAG=""
+if [ -n "${NPM_OTP:-}" ]; then
+  OTP_FLAG="--otp=$NPM_OTP"
+fi
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT"
 
@@ -80,7 +87,7 @@ publish_pkg() {
   echo "==> $name@$VERSION"
   if [ "$MODE" = "publish" ]; then
     # scoped 包必须 public，否则默认按私有发布并被拒
-    (cd "$dir" && npm publish --registry "$REGISTRY" --access public)
+    (cd "$dir" && npm publish --registry "$REGISTRY" --access public $OTP_FLAG)
   else
     (cd "$dir" && npm pack --dry-run --registry "$REGISTRY")
   fi
