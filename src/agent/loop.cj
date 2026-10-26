@@ -1379,6 +1379,9 @@ public class Agent {
      */
     private func extractResourceAccess(tc: ToolCall): (String, Bool) {
         let accesses = this.extractResourceAccesses(tc)
+        if (accesses.size == 0) {
+            return ("", false)  // explore task：无边无资源
+        }
         return accesses[0]
     }
 
@@ -1389,6 +1392,16 @@ public class Agent {
     internal func extractResourceAccesses(tc: ToolCall): ArrayList<(String, Bool)> {
         let out = ArrayList<(String, Bool)>()
         if (tc.name == "task") {
+            // explore 只读：不产生写冲突，不建边（否则两路 explore 会被写哨兵串行化，
+            // 并发审批/并发调查全部失效——pty 4b 回归根因）
+            var isWorker = true
+            match (tc.arguments.get("subagent_type")) {
+                case Some(t) => isWorker = t.asString().getValue() == "worker"
+                case None => ()
+            }
+            if (!isWorker) {
+                return out
+            }
             match (tc.arguments.get("scope")) {
                 case Some(s) =>
                     let scopeStr = s.asString().getValue()
