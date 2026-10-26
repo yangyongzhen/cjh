@@ -27,10 +27,12 @@ import stdx.encoding.json.*
  * v3：新增 approval_request / approval_response（危险操作经 WS 人工确认）
  * v4：tool_result 增可选 diff 字段（文件改动的结构化 diff：path / unified_diff /
  *     before_sha / after_sha，客户端据此渲染 diff 视图）
+ * v5：tool_start / tool_result 增可选 agent_id / agent_label（子代理身份；
+ *     缺省不序列化 = 父回合，字段不虚报）
  *     （每次帧形状或帧集合变化都递增，客户端按版本决定要不要读新字段）
  */
 public func capabilityProtocolVersion(): Int64 {
-    return 4
+    return 5
 }
 
 /**
