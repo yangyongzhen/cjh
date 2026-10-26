@@ -307,6 +307,12 @@ public class Agent {
     public var onApproval: (String, JsonObject, String) -> Bool = { _, _, _ => false }
     // 任务变更回调（TUI Tasks 面板实时刷新）
     public var onTodosChanged: () -> Unit = { => }
+    // 子代理调度器（S3：TUI Agents 面板数据源；S4 并发/预算闸门载体）——
+    // 由装配层（entries）创建后注入；None = 无调度（测试直连场景）
+    public var subagentScheduler: Option<SubagentScheduler> = None
+    // 子代理行事件回调（S3d 焦点转发用）：(agentId, kind: tool_start|tool_result, text)
+    // 硬规则：子代理 onDelta 绝不转发（OutputView 单流会撕行），只转发整行事件
+    public var onSubagentEvent: (Int64, String, String) -> Unit = { _, _, _ => }
     // 回合结束回调（渲染回合总结条：轮数/工具数/耗时/token用量/缓存命中率）
     public var onRunComplete: (RunSummary) -> Unit = { _ => }
     // 排队输入拉取回调（atomcode 式"steer"：TUI 忙时提交只入队不打断，
@@ -408,6 +414,11 @@ public class Agent {
             this.roundsCompleted = 0
         } finally {
             this.interruptLock.unlock()
+        }
+        // S4：回合级 token 归账清零（预算闸门按回合计）
+        match (this.subagentScheduler) {
+            case Some(s) => s.resetTurn()
+            case None => ()
         }
     }
 

@@ -99,4 +99,57 @@ public class SubagentSupportTest {
         parent.interrupt()
         @Assert(child.isInterrupted(), false)
     }
+
+    @TestCase
+    public func testSchedulerRegisterFinishSnapshot(): Unit {
+        // S3：节点登记 → 终态回写 → 快照深拷贝（面板只读，不共享可变态）
+        let sched = SubagentScheduler(4)
+        let node = AgentNode(101, 1, "调查任务", "explore")
+        sched.register(node)
+        sched.markTool(101, "read_file")
+        @Assert(sched.nodeCount(), 1)
+        // 终态回写：iterations/tokens/state 落齐，currentTool 清空
+        sched.finish(101, AgentNodeState.Ok, 2, 1200, 300)
+        let snap = sched.snapshot()
+        @Assert(snap.size, 1)
+        @Assert(snap[0].state.name(), "Ok")
+        @Assert(snap[0].iterations, 2)
+        @Assert(snap[0].promptTokens, 1200)
+        @Assert(snap[0].completionTokens, 300)
+        @Assert(snap[0].currentTool, "")
+        // 快照深拷贝：改快照不影响原节点
+        snap[0].state = AgentNodeState.Failed
+        @Assert(sched.snapshot()[0].state.name(), "Ok")
+    }
+
+    @TestCase
+    public func testSchedulerOnChangedFires(): Unit {
+        let sched = SubagentScheduler(4)
+        let fires = ArrayList<String>()
+        sched.onChanged({ => fires.add("x") })
+        sched.register(AgentNode(201, 1, "任务A", "worker"))
+        sched.markTool(201, "grep")
+        sched.finish(201, AgentNodeState.Ok, 1, 10, 5)
+        @Assert(fires.size, 3)  // register / markTool / finish 各触发一次
+    }
+
+    @TestCase
+    public func testSchedulerAcquireQueueAndInterruptCancel(): Unit {
+        // 信号量：占满后排队阻塞；排队期间父中断 → 返回 false（cancelled 出口）
+        let sched = SubagentScheduler(1)
+        let parent = this.buildAgent(SubNoopProvider())
+        @Assert(sched.acquire({ => false }), true)   // 占住唯一名额
+        let holder = ArrayList<Bool>()
+        holder.add(false)
+        let t = spawn {
+            // 排队中：父中断后 acquire 返回 false（不丢任务、不永久阻塞）
+            holder[0] = sched.acquire({ => parent.isInterrupted() })
+        }
+        parent.interrupt()
+        let _ = t.get()
+        @Assert(holder[0], false)
+        sched.release()
+        @Assert(sched.acquire({ => false }), true)   // 释放后可再获取
+        sched.release()
+    }
 }
