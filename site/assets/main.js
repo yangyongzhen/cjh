@@ -26,7 +26,10 @@
         document.body.removeChild(ta);
       }
       const label = btn.textContent;
-      btn.textContent = ok ? '已复制' : '复制失败';
+      // 跟随当前语言（i18n.js 暴露 t(en, zh)）；万一它没加载就退回英文
+      const i18n = window.cjhI18n;
+      const pick = (en, zh) => (i18n ? i18n.t(en, zh) : en);
+      btn.textContent = ok ? pick('Copied', '已复制') : pick('Copy failed', '复制失败');
       btn.classList.toggle('done', ok);
       setTimeout(() => {
         btn.textContent = label;
@@ -50,7 +53,9 @@
           }
         });
       },
-      { rootMargin: '0px 0px -8% 0px', threshold: 0.08 }
+      // 底部留白用固定像素而非百分比：整页长视口（截图 / 打印 / 超大屏）下 -8%
+      // 会把贴页面底部的 CTA 排除在可见区之外，它的上线动画就永远不触发
+      { rootMargin: '0px 0px -40px 0px', threshold: 0.08 }
     );
     items.forEach((el) => io.observe(el));
   }
