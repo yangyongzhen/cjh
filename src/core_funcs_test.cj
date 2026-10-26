@@ -11,6 +11,7 @@ import cjllm.*
 import cjcfg.*
 import cjutil.*
 import cjh.tools.*
+import cjh.agent.*
 import cjterm.*
 import stdx.crypto.keys.*
 
@@ -212,9 +213,9 @@ public class CoreTaskToolTest {
         args.put("subagent_type", JsonString("worker"))
         let result = tool.execute(args)
         @Assert(result.isError, false)
-        @Assert(result.content.contains("子代理结果"), true)
-        @Assert(result.content.contains("迭代 3"), true)
-        @Assert(result.content.contains("=== 子代理结果结束 ==="), true)
+        @Assert(result.content.contains("├─ [worker] 测试任务 · ok · 迭代 3"), true)
+        @Assert(result.content.contains("↑100 ↓50"), true)
+        @Assert(result.content.contains("└─ (task 结束)"), true)
     }
 
     @TestCase
@@ -616,4 +617,192 @@ public func testCliHelpTextMentionsConfigAndCredentialPaths(): Unit {
     @Assert(help.contains("~/.cjh/config.json"), true)
     @Assert(help.contains("~/.cjh/auth.json"), true)
     @Assert(help.contains("https://github.com/yangyongzhen/cjh"), true)
+}
+
+// ==================== 并行子代理 + 上下文隔离（方案 §5-§7） ====================
+
+/**
+ * 子代理脚本 provider：
+ * call 1（父）→ 派 task 工具调用；call 2（子）→ 按 childBehavior 行动；call 3（父）→ 最终答复。
+ * call 2 时捕获子代理收到的最后一条 user 消息（= D1 简报），供简报断言。
+ * childBehavior：0=正常文本答复；1=调 read_file（配 capability 触发审批）；2=抛异常。
+ */
+class SubagentScriptProvider <: LlmProvider {
+    public var childBehavior: Int64 = 0
+    public var callCount: Int64 = 0
+    public var lastChildUser: String = ""
+
+    public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
+        onDelta: (String) -> Unit, onReasoning: (String) -> Unit,
+        onTokenEstimate: (Int64) -> Unit, isCancelled: () -> Bool): ModelResponse {
+        callCount += 1
+        if (callCount == 1) {
+            var calls = ArrayList<ToolCall>()
+            var a = JsonObject()
+            a.put("description", JsonString("调查任务"))
+            a.put("prompt", JsonString("查一下"))
+            a.put("subagent_type", JsonString("explore"))
+            calls.add(ToolCall("t1", "task", a))
+            return ModelResponse("派发子代理", calls)
+        }
+        if (callCount == 2) {
+            var i = messages.size - 1
+            while (i >= 0) {
+                if (messages[i].role == "user") {
+                    this.lastChildUser = messages[i].content
+                    break
+                }
+                i -= 1
+            }
+            match (this.childBehavior) {
+                case 1 =>
+                    var calls = ArrayList<ToolCall>()
+                    var a = JsonObject()
+                    a.put("path", JsonString("/tmp/cjh_ut_sub/x.cj"))
+                    calls.add(ToolCall("s1", "read_file", a))
+                    return ModelResponse("读一下", calls)
+                case 2 =>
+                    throw LlmException("子代理模拟异常")
+                case _ =>
+                    return ModelResponse("child done", ArrayList<ToolCall>())
+            }
+        }
+        return ModelResponse("parent done", ArrayList<ToolCall>())
+    }
+}
+
+@Test
+public class SubagentIsolationTest {
+
+    // 组装父 agent + 全量 registry（含 task / todo_write），TaskTool 已接线 spawnSubagent
+    private func buildParent(provider: LlmProvider, cap: Capability):
+        (Agent, ToolRegistry, AgentConfig) {
+        let registry = ToolRegistry()
+        registry.register(ReadTool())
+        registry.register(GrepTool())
+        registry.register(WriteTool())
+        registry.register(BashTool())
+        registry.register(TodoWriteTool(
+            { _ => 1 }, { _ => () }, { _ => () }, { _, _ => () }, { => () }, { => "Tasks:" }))
+        let config = AgentConfig("parent system", 5, cap, 0, 0, 6, 6000,
+            "/tmp/cjh_ut_sub_spill", "sess-sub")
+        let agent = Agent(provider, registry, config)
+        registry.register(TaskTool({ d, p, t =>
+            spawnSubagent(provider, registry, agent, config, d, p, t)
+        }))
+        return (agent, registry, config)
+    }
+
+    private func lastToolResult(msgs: ArrayList<ChatMessage>, name: String): String {
+        var found = ""
+        for (m in msgs) {
+            if (m.role == "tool" && m.name == name) {
+                found = m.content
+            }
+        }
+        return found
+    }
+
+    @TestCase
+    public func testSubagentRegistryView(): Unit {
+        // G2/G3/G4：explore 只读视图物理不可达写工具；worker 全量但剥离 task/todo_write
+        let (_, registry, _) = this.buildParent(SubagentScriptProvider(), Capability())
+        let explore = buildSubagentRegistry(registry, "explore")
+        @Assert(explore.has("read_file"), true)
+        @Assert(explore.has("grep"), true)
+        @Assert(explore.has("write_file"), false)
+        @Assert(explore.has("bash"), false)
+        @Assert(explore.has("task"), false)
+        @Assert(explore.has("todo_write"), false)
+        let worker = buildSubagentRegistry(registry, "worker")
+        @Assert(worker.has("read_file"), true)
+        @Assert(worker.has("write_file"), true)
+        @Assert(worker.has("bash"), true)
+        @Assert(worker.has("task"), false)
+        @Assert(worker.has("todo_write"), false)
+    }
+
+    @TestCase
+    public func testSubagentConfigInheritsCapabilityAndIsolatesSpill(): Unit {
+        // G1 capability 继承（子 ⊆ 父）+ G6 spill 落盘按 /sub-<type> 隔离
+        let cap = Capability()
+        cap.enabled = true
+        cap.tools.add("read_file")
+        let (_, _, config) = this.buildParent(SubagentScriptProvider(), cap)
+        let sub = buildSubagentConfig(config, "explore")
+        @Assert(sub.capability.enabled == true, true)
+        @Assert(sub.capability.tools.size == 1, true)
+        @Assert(sub.capability.tools[0] == "read_file", true)
+        // 短生命周期：maxIterations=5，compaction 关闭
+        @Assert(sub.maxIterations == 5, true)
+        @Assert(sub.compactThreshold == 0, true)
+        @Assert(sub.compactTokenThreshold == 0, true)
+        @Assert(sub.sessionId == "sess-sub/sub-explore", true)
+        @Assert(sub.spillDir == "/tmp/cjh_ut_sub_spill", true)
+        @Assert(sub.toolResultMaxChars == config.toolResultMaxChars, true)
+    }
+
+    @TestCase
+    public func testSpawnSubagentOkStatusAndBrief(): Unit {
+        let provider = SubagentScriptProvider()
+        let (agent, _, _) = this.buildParent(provider, Capability())
+        // 预置父历史（assistant toolCalls 与 tool 结果配对，否则 repairHistory 会剥孤儿
+        // tool 消息）→ 简报摘要应携带该路径（D1 上下文块）
+        var history = ArrayList<ChatMessage>()
+        history.add(ChatMessage("user", "主任务"))
+        var hc = ArrayList<ToolCall>()
+        var ha = JsonObject()
+        ha.put("path", JsonString("/tmp/cjh_ut_sub/main.cj"))
+        hc.add(ToolCall("h1", "read_file", ha))
+        history.add(ChatMessage("assistant", "读主文件", hc))
+        history.add(ChatMessage("tool", "已读取 /tmp/cjh_ut_sub/main.cj 的内容", "h1", "read_file"))
+        agent.loadHistory(history)
+
+        let summary = agent.run("派个子任务")
+        @Assert(summary.reply.contains("parent done"), true)
+        // 简报：子任务 prompt + 父会话上下文块（摘要里的涉及文件）
+        @Assert(provider.lastChildUser.contains("查一下"), true)
+        @Assert(provider.lastChildUser.contains("--- 父会话上下文"), true)
+        @Assert(provider.lastChildUser.contains("/tmp/cjh_ut_sub/main.cj"), true)
+        // 树状结果：ok 状态 + 树形头尾（#8）
+        let taskResult = this.lastToolResult(agent.getMessages(), "task")
+        @Assert(taskResult.contains("├─ [explore] 调查任务 · ok · 迭代 1"), true)
+        @Assert(taskResult.contains("└─ (task 结束)"), true)
+    }
+
+    @TestCase
+    public func testSpawnSubagentFailedStatus(): Unit {
+        // 子代理 LLM 调用抛异常 → 结构化 failed 回传，父回合不受影响继续完成
+        let provider = SubagentScriptProvider()
+        provider.childBehavior = 2
+        let (agent, _, _) = this.buildParent(provider, Capability())
+        let summary = agent.run("派失败子任务")
+        @Assert(summary.reply.contains("parent done"), true)
+        let taskResult = this.lastToolResult(agent.getMessages(), "task")
+        @Assert(taskResult.contains("· failed"), true)
+        @Assert(taskResult.contains("└─ (task 结束)"), true)
+    }
+
+    @TestCase
+    public func testSpawnSubagentApprovalPropagation(): Unit {
+        // G5：子代理审批经父通道，reason 带 [task:label] 前缀（TUI/WS 展示 reason，协议零变更）
+        let cap = Capability()
+        cap.enabled = true
+        cap.tools.add("task")
+        cap.tools.add("read_file")
+        cap.approval.add("read_file")
+        let provider = SubagentScriptProvider()
+        provider.childBehavior = 1
+        let (agent, _, _) = this.buildParent(provider, cap)
+        let seen = ArrayList<String>()
+        agent.onApproval = { _, _, reason =>
+            seen.add(reason)
+            false
+        }
+        let summary = agent.run("派审批子任务")
+        @Assert(summary.reply.contains("parent done"), true)
+        @Assert(seen.size > 0, true)
+        @Assert(seen[0].contains("[task:调查任务]"), true)
+        @Assert(seen[0].contains("read_file"), true)
+    }
 }
