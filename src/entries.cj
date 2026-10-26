@@ -447,8 +447,9 @@ func runJson(prompt: String, sessionId: String): Int64 {
         ))
 
         // TaskTool：派发子代理执行独立任务（spawnFn 回调注入；父 agent 用于简报上下文块）
+        // S2：子代理 provider 每次派生新建实例，避免共享单槽 transport 的 abort 串台（P0-2）
         registry.register(TaskTool({ description, prompt, subagentType =>
-            spawnSubagent(provider, registry, agent, config, description, prompt, subagentType)
+            spawnSubagent(makeSubagentProvider(cjhCfg), registry, agent, config, description, prompt, subagentType)
         }))
 
         // 恢复会话（--resume <id>）
@@ -643,8 +644,9 @@ func runTui(sessionId: String): Int64 {
             }
         ))
         // TaskTool：派发子代理执行独立任务（spawnFn 回调注入；父 agent 用于简报上下文块）
+        // S2：子代理 provider 每次派生新建实例，避免共享单槽 transport 的 abort 串台（P0-2）
         registry.register(TaskTool({ description, prompt, subagentType =>
-            spawnSubagent(provider, registry, agent, config, description, prompt, subagentType)
+            spawnSubagent(makeSubagentProvider(cjhCfg), registry, agent, config, description, prompt, subagentType)
         }))
 
         // 线程安全的输出队列（agent 在调用线程运行，输出经队列到 TUI）
@@ -1089,6 +1091,19 @@ func buildSubagentConfig(parent: AgentConfig, subagentType: String): AgentConfig
     let subSession = parent.sessionId + "/sub-" + subagentType
     return AgentConfig(buildSubagentPrompt(subagentType), 5, parent.capability,
         0, 0, 6, parent.toolResultMaxChars, parent.spillDir, subSession)
+}
+
+/**
+ * S2：子代理 provider 工厂——每次派生新建实例。
+ * OpenAiProvider.currentTransport 是单槽，父/子共享同一实例时，
+ * 任一 agent 的 abort() 会关到"最后注册"的那条连接（评审 P0-2）。
+ * mock 模式沿用同一构造路径（MockProvider 无连接，无串台问题）。
+ */
+func makeSubagentProvider(cjhCfg: CjhConfig): LlmProvider {
+    if ((readEnv("CJH_MOCK") ?? "") == "1") {
+        return MockProvider("/tmp/cjh_verify.txt")
+    }
+    return makeProvider(cjhCfg)
 }
 
 /**

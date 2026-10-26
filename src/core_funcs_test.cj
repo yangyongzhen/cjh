@@ -622,21 +622,19 @@ public func testCliHelpTextMentionsConfigAndCredentialPaths(): Unit {
 // ==================== 并行子代理 + 上下文隔离（方案 §5-§7） ====================
 
 /**
- * 子代理脚本 provider：
- * call 1（父）→ 派 task 工具调用；call 2（子）→ 按 childBehavior 行动；call 3（父）→ 最终答复。
- * call 2 时捕获子代理收到的最后一条 user 消息（= D1 简报），供简报断言。
- * childBehavior：0=正常文本答复；1=调 read_file（配 capability 触发审批）；2=抛异常。
+ * 父代理脚本 provider（S2 后父与子不再共享实例）：
+ * call 1 → 派 task 工具调用；call 2+ → 最终答复。
+ * spawnTwice=true 时 call 2 再派一个 task（供"每子代理独立 provider"用例）。
  */
 class SubagentScriptProvider <: LlmProvider {
-    public var childBehavior: Int64 = 0
+    public var spawnTwice: Bool = false
     public var callCount: Int64 = 0
-    public var lastChildUser: String = ""
 
     public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
         onDelta: (String) -> Unit, onReasoning: (String) -> Unit,
         onTokenEstimate: (Int64) -> Unit, isCancelled: () -> Bool): ModelResponse {
         callCount += 1
-        if (callCount == 1) {
+        if (callCount == 1 || (this.spawnTwice && callCount == 2)) {
             var calls = ArrayList<ToolCall>()
             var a = JsonObject()
             a.put("description", JsonString("调查任务"))
@@ -645,29 +643,62 @@ class SubagentScriptProvider <: LlmProvider {
             calls.add(ToolCall("t1", "task", a))
             return ModelResponse("派发子代理", calls)
         }
-        if (callCount == 2) {
-            var i = messages.size - 1
-            while (i >= 0) {
-                if (messages[i].role == "user") {
-                    this.lastChildUser = messages[i].content
-                    break
-                }
-                i -= 1
-            }
-            match (this.childBehavior) {
-                case 1 =>
-                    var calls = ArrayList<ToolCall>()
-                    var a = JsonObject()
-                    a.put("path", JsonString("/tmp/cjh_ut_sub/x.cj"))
-                    calls.add(ToolCall("s1", "read_file", a))
-                    return ModelResponse("读一下", calls)
-                case 2 =>
-                    throw LlmException("子代理模拟异常")
-                case _ =>
-                    return ModelResponse("child done", ArrayList<ToolCall>())
-            }
-        }
         return ModelResponse("parent done", ArrayList<ToolCall>())
+    }
+}
+
+/**
+ * 子代理脚本 provider（S2：由工厂每次派生新建实例，模拟真实接线）：
+ * 首次调用捕获简报（最后一条 user 消息），按 childBehavior 行动：
+ * 0=正常文本答复；1=调 read_file（配 capability 触发审批）；2=抛异常。
+ */
+class SubChildProvider <: LlmProvider {
+    public var childBehavior: Int64 = 0
+    public var callCount: Int64 = 0
+    public var lastChildUser: String = ""
+    public var aborted: Bool = false
+
+    public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
+        onDelta: (String) -> Unit, onReasoning: (String) -> Unit,
+        onTokenEstimate: (Int64) -> Unit, isCancelled: () -> Bool): ModelResponse {
+        callCount += 1
+        var i = messages.size - 1
+        while (i >= 0) {
+            if (messages[i].role == "user") {
+                this.lastChildUser = messages[i].content
+                break
+            }
+            i -= 1
+        }
+        match (this.childBehavior) {
+            case 1 =>
+                var calls = ArrayList<ToolCall>()
+                var a = JsonObject()
+                a.put("path", JsonString("/tmp/cjh_ut_sub/x.cj"))
+                calls.add(ToolCall("s1", "read_file", a))
+                return ModelResponse("读一下", calls)
+            case 2 =>
+                throw LlmException("子代理模拟异常")
+            case _ =>
+                return ModelResponse("child done", ArrayList<ToolCall>())
+        }
+    }
+
+    public override func abort(): Unit {
+        this.aborted = true
+    }
+}
+
+/** 子代理 provider 工厂（S2 测试用）：每次派生新建实例并记录，供实例隔离断言 */
+class SubChildFactory {
+    public var childBehavior: Int64 = 0
+    public let created = ArrayList<SubChildProvider>()
+
+    public func make(): LlmProvider {
+        let p = SubChildProvider()
+        p.childBehavior = this.childBehavior
+        this.created.add(p)
+        return p
     }
 }
 
@@ -676,6 +707,12 @@ public class SubagentIsolationTest {
 
     // 组装父 agent + 全量 registry（含 task / todo_write），TaskTool 已接线 spawnSubagent
     private func buildParent(provider: LlmProvider, cap: Capability):
+        (Agent, ToolRegistry, AgentConfig) {
+        return this.buildParent(provider, cap, SubChildFactory())
+    }
+
+    // S2 重载：子代理 provider 由工厂每次派生新建（模拟真实接线），created 供隔离断言
+    private func buildParent(provider: LlmProvider, cap: Capability, factory: SubChildFactory):
         (Agent, ToolRegistry, AgentConfig) {
         let registry = ToolRegistry()
         registry.register(ReadTool())
@@ -688,7 +725,7 @@ public class SubagentIsolationTest {
             "/tmp/cjh_ut_sub_spill", "sess-sub")
         let agent = Agent(provider, registry, config)
         registry.register(TaskTool({ d, p, t =>
-            spawnSubagent(provider, registry, agent, config, d, p, t)
+            spawnSubagent(factory.make(), registry, agent, config, d, p, t)
         }))
         return (agent, registry, config)
     }
@@ -745,7 +782,8 @@ public class SubagentIsolationTest {
     @TestCase
     public func testSpawnSubagentOkStatusAndBrief(): Unit {
         let provider = SubagentScriptProvider()
-        let (agent, _, _) = this.buildParent(provider, Capability())
+        let factory = SubChildFactory()
+        let (agent, _, _) = this.buildParent(provider, Capability(), factory)
         // 预置父历史（assistant toolCalls 与 tool 结果配对，否则 repairHistory 会剥孤儿
         // tool 消息）→ 简报摘要应携带该路径（D1 上下文块）
         var history = ArrayList<ChatMessage>()
@@ -761,9 +799,10 @@ public class SubagentIsolationTest {
         let summary = agent.run("派个子任务")
         @Assert(summary.reply.contains("parent done"), true)
         // 简报：子任务 prompt + 父会话上下文块（摘要里的涉及文件）
-        @Assert(provider.lastChildUser.contains("查一下"), true)
-        @Assert(provider.lastChildUser.contains("--- 父会话上下文"), true)
-        @Assert(provider.lastChildUser.contains("/tmp/cjh_ut_sub/main.cj"), true)
+        @Assert(factory.created.size, 1)
+        @Assert(factory.created[0].lastChildUser.contains("查一下"), true)
+        @Assert(factory.created[0].lastChildUser.contains("--- 父会话上下文"), true)
+        @Assert(factory.created[0].lastChildUser.contains("/tmp/cjh_ut_sub/main.cj"), true)
         // 树状结果：ok 状态 + 树形头尾（#8）
         let taskResult = this.lastToolResult(agent.getMessages(), "task")
         @Assert(taskResult.contains("├─ [explore] 调查任务 · ok · 迭代 1"), true)
@@ -774,8 +813,9 @@ public class SubagentIsolationTest {
     public func testSpawnSubagentFailedStatus(): Unit {
         // 子代理 LLM 调用抛异常 → 结构化 failed 回传，父回合不受影响继续完成
         let provider = SubagentScriptProvider()
-        provider.childBehavior = 2
-        let (agent, _, _) = this.buildParent(provider, Capability())
+        let factory = SubChildFactory()
+        factory.childBehavior = 2
+        let (agent, _, _) = this.buildParent(provider, Capability(), factory)
         let summary = agent.run("派失败子任务")
         @Assert(summary.reply.contains("parent done"), true)
         let taskResult = this.lastToolResult(agent.getMessages(), "task")
@@ -792,8 +832,9 @@ public class SubagentIsolationTest {
         cap.tools.add("read_file")
         cap.approval.add("read_file")
         let provider = SubagentScriptProvider()
-        provider.childBehavior = 1
-        let (agent, _, _) = this.buildParent(provider, cap)
+        let factory = SubChildFactory()
+        factory.childBehavior = 1
+        let (agent, _, _) = this.buildParent(provider, cap, factory)
         let seen = ArrayList<String>()
         agent.onApproval = { _, _, reason =>
             seen.add(reason)
@@ -804,5 +845,22 @@ public class SubagentIsolationTest {
         @Assert(seen.size > 0, true)
         @Assert(seen[0].contains("[task:调查任务]"), true)
         @Assert(seen[0].contains("read_file"), true)
+    }
+
+    @TestCase
+    public func testSpawnSubagentProvidersNotShared(): Unit {
+        // S2（评审 P0-2）：每次派生新建 provider 实例——OpenAiProvider.currentTransport
+        // 是单槽，共享实例时并发子代理的 abort() 会关到别人的连接
+        let provider = SubagentScriptProvider()
+        provider.spawnTwice = true
+        let factory = SubChildFactory()
+        let (agent, _, _) = this.buildParent(provider, Capability(), factory)
+        let summary = agent.run("连派两个子任务")
+        @Assert(summary.reply.contains("parent done"), true)
+        // 两次派生 → 工厂创建 2 个实例（互不共享），父 provider 不被子代理调用
+        @Assert(factory.created.size, 2)
+        @Assert(factory.created[0].callCount, 1)
+        @Assert(factory.created[1].callCount, 1)
+        @Assert(provider.callCount, 3)  // 父：task → task → final
     }
 }

@@ -63,6 +63,11 @@ public class ConfirmDialog <: Component {
         return this.visible
     }
 
+    /** 当前标题（测试观测用） */
+    public func currentTitle(): String {
+        return this.title
+    }
+
     public override func render(canvas: TuiCanvas, row: Int64, width: Int64, _: Int64): Int64 {
         if (!this.visible) {
             return 0
