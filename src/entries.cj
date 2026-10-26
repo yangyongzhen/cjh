@@ -460,8 +460,8 @@ func runJson(prompt: String, sessionId: String): Int64 {
 
         // TaskTool：派发子代理执行独立任务（spawnFn 回调注入；父 agent 用于简报上下文块）
         // S2：子代理 provider 每次派生新建实例，避免共享单槽 transport 的 abort 串台（P0-2）
-        registry.register(TaskTool({ description, prompt, subagentType =>
-            spawnSubagent(makeSubagentProvider(cjhCfg), registry, agent, config, description, prompt, subagentType)
+        registry.register(TaskTool({ description, prompt, subagentType, scope =>
+            spawnSubagent(makeSubagentProvider(cjhCfg), registry, agent, config, description, prompt, subagentType, scope)
         }))
 
         // 恢复会话（--resume <id>）
@@ -663,8 +663,8 @@ func runTui(sessionId: String): Int64 {
         ))
         // TaskTool：派发子代理执行独立任务（spawnFn 回调注入；父 agent 用于简报上下文块）
         // S2：子代理 provider 每次派生新建实例，避免共享单槽 transport 的 abort 串台（P0-2）
-        registry.register(TaskTool({ description, prompt, subagentType =>
-            spawnSubagent(makeSubagentProvider(cjhCfg), registry, agent, config, description, prompt, subagentType)
+        registry.register(TaskTool({ description, prompt, subagentType, scope =>
+            spawnSubagent(makeSubagentProvider(cjhCfg), registry, agent, config, description, prompt, subagentType, scope)
         }))
 
         // 线程安全的输出队列（agent 在调用线程运行，输出经队列到 TUI）
@@ -1166,7 +1166,8 @@ func makeSubagentProvider(cjhCfg: CjhConfig): LlmProvider {
  * @param subagentType "explore"（只读）或 "worker"（可写）
  */
 func spawnSubagent(provider: LlmProvider, parentRegistry: ToolRegistry, parent: Agent,
-    parentConfig: AgentConfig, description: String, prompt: String, subagentType: String): TaskSpawnResult {
+    parentConfig: AgentConfig, description: String, prompt: String, subagentType: String,
+    scope: ArrayList<String>): TaskSpawnResult {
     // S4 边界闸门：配额满 → 结构化 budget_exceeded（文案告诉模型改策略）；
     // 并发名额满则排队（排队中父中断 → cancelled，不丢任务不挂死）
     var slotAcquired = false
@@ -1189,6 +1190,8 @@ func spawnSubagent(provider: LlmProvider, parentRegistry: ToolRegistry, parent: 
 
     let subRegistry = buildSubagentRegistry(parentRegistry, subagentType)
     let subConfig = buildSubagentConfig(parentConfig, subagentType)
+    // S6：task scope → 子代理写域（AND 收窄；explore 只读不受影响）
+    subConfig.writeScope = scope
     let subAgent = Agent(provider, subRegistry, subConfig)
 
     // G5 审批传播：子审批经父通道，reason 加前缀（工具名/参数原样透传，客户端无需改版）

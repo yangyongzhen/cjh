@@ -204,7 +204,7 @@ public class CoreTaskToolTest {
 
     @TestCase
     public func testTaskToolSpawn(): Unit {
-        let tool = TaskTool({ description, prompt, subagentType =>
+        let tool = TaskTool({ description, prompt, subagentType, _ =>
             TaskSpawnResult("子代理结果: ${prompt}", 3, 100, 50)
         })
         var args = JsonObject()
@@ -220,7 +220,7 @@ public class CoreTaskToolTest {
 
     @TestCase
     public func testTaskToolMissingParams(): Unit {
-        let tool = TaskTool({ _, _, _ => TaskSpawnResult("", 0, 0, 0) })
+        let tool = TaskTool({ _, _, _, _ => TaskSpawnResult("", 0, 0, 0) })
         var args = JsonObject()
         args.put("description", JsonString("只有描述"))
         let result = tool.execute(args)
@@ -229,7 +229,7 @@ public class CoreTaskToolTest {
 
     @TestCase
     public func testTaskToolInvalidSubagentType(): Unit {
-        let tool = TaskTool({ _, _, _ => TaskSpawnResult("", 0, 0, 0) })
+        let tool = TaskTool({ _, _, _, _ => TaskSpawnResult("", 0, 0, 0) })
         var args = JsonObject()
         args.put("description", JsonString("d"))
         args.put("prompt", JsonString("p"))
@@ -241,7 +241,7 @@ public class CoreTaskToolTest {
 
     @TestCase
     public func testTaskToolEmptyPrompt(): Unit {
-        let tool = TaskTool({ _, _, _ => TaskSpawnResult("", 0, 0, 0) })
+        let tool = TaskTool({ _, _, _, _ => TaskSpawnResult("", 0, 0, 0) })
         var args = JsonObject()
         args.put("description", JsonString("d"))
         args.put("prompt", JsonString(""))
@@ -657,18 +657,28 @@ class SubChildProvider <: LlmProvider {
     public var callCount: Int64 = 0
     public var lastChildUser: String = ""
     public var aborted: Bool = false
+    public var lastToolObserved: String = ""  // S6：子代理看到的最后一条 tool 结果（越界写拒绝断言）
 
     public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
         onDelta: (String) -> Unit, onReasoning: (String) -> Unit,
         onTokenEstimate: (Int64) -> Unit, isCancelled: () -> Bool): ModelResponse {
         callCount += 1
+        // S6：捕获子代理看到的最后一条 tool 结果（供"越界写被拒"断言）
         var i = messages.size - 1
         while (i >= 0) {
-            if (messages[i].role == "user") {
-                this.lastChildUser = messages[i].content
+            if (messages[i].role == "tool") {
+                this.lastToolObserved = messages[i].content
                 break
             }
             i -= 1
+        }
+        var j = messages.size - 1
+        while (j >= 0) {
+            if (messages[j].role == "user") {
+                this.lastChildUser = messages[j].content
+                break
+            }
+            j -= 1
         }
         match (this.childBehavior) {
             case 1 =>
@@ -683,6 +693,17 @@ class SubChildProvider <: LlmProvider {
                 // S4 超时用例：每轮 300ms（> 测试超时上限 100ms）
                 sleep(Duration.millisecond * 300)
                 return ModelResponse("child done slow", ArrayList<ToolCall>())
+            case 4 =>
+                // S6 越界写用例：call1 写域外文件；call2（收到拒绝结果后）收场
+                if (callCount == 1) {
+                    var calls = ArrayList<ToolCall>()
+                    var w = JsonObject()
+                    w.put("path", JsonString("/tmp/cjh_ut_scope/outside/x.cj"))
+                    w.put("content", JsonString("boom"))
+                    calls.add(ToolCall("w1", "write_file", w))
+                    return ModelResponse("写一下", calls)
+                }
+                return ModelResponse("child saw denial", ArrayList<ToolCall>())
             case _ =>
                 return ModelResponse("child done", ArrayList<ToolCall>())
         }
@@ -728,8 +749,8 @@ public class SubagentIsolationTest {
         let config = AgentConfig("parent system", 5, cap, 0, 0, 6, 6000,
             "/tmp/cjh_ut_sub_spill", "sess-sub")
         let agent = Agent(provider, registry, config)
-        registry.register(TaskTool({ d, p, t =>
-            spawnSubagent(factory.make(), registry, agent, config, d, p, t)
+        registry.register(TaskTool({ d, p, t, s =>
+            spawnSubagent(factory.make(), registry, agent, config, d, p, t, s)
         }))
         return (agent, registry, config)
     }
@@ -824,7 +845,7 @@ public class SubagentIsolationTest {
         // 仓颉 lambda 不能捕获可变局部变量：ArrayList 包装哨兵
         let spawned = ArrayList<Bool>()
         spawned.add(false)
-        let tool = TaskTool({ _, _, _ =>
+        let tool = TaskTool({ _, _, _, _ =>
             spawned[0] = true
             TaskSpawnResult("不应到达", 0, 0, 0, "ok")
         })
@@ -925,5 +946,30 @@ public class SubagentIsolationTest {
         let taskResult = this.lastToolResult(agent.getMessages(), "task")
         @Assert(taskResult.contains("· timeout"), true)
         @Assert(taskResult.contains("已中断并回收引用"), true)
+    }
+
+    @TestCase
+    public func testSpawnSubagentWriteScopeDenied(): Unit {
+        // S6：task scope 限定写域 → 域外写被拒（AND 收窄，只收窄绝不放宽；
+        // 红线核对：Capability 默认宽松语义未动——本用例未配置 capability）
+        let provider = SubagentScriptProvider()
+        let factory = SubChildFactory()
+        factory.childBehavior = 4
+        let (agent, _, config) = this.buildParent(provider, Capability(), factory)
+        // 父 config 不设 writeScope（父不受限）；scope 仅经 task 参数传给子代理
+        @Assert(config.writeScope.size, 0)
+        var a = JsonObject()
+        a.put("description", JsonString("越界写"))
+        a.put("prompt", JsonString("写文件"))
+        a.put("subagent_type", JsonString("worker"))
+        a.put("scope", JsonString("/tmp/cjh_ut_scope/allowed/*"))
+        let tool = TaskTool({ d, p, t, s =>
+            spawnSubagent(factory.make(), ToolRegistry(), agent, config, d, p, t, s)
+        })
+        let r = tool.execute(a)
+        @Assert(r.isError, false)
+        // 子代理第二轮应观察到 write_file 被写域拒绝
+        @Assert(factory.created[0].lastToolObserved.contains("超出本子代理写域"), true)
+        @Assert(factory.created[0].lastToolObserved.contains("/tmp/cjh_ut_scope/outside/x.cj"), true)
     }
 }

@@ -282,6 +282,17 @@ public class SubagentScheduler {   // 每个父 Agent 一个实例
 > S5(c) 事后纠偏：1 轮完成且结论 <200 字符的派生在结果尾部挂 `[路由提示]`（真实成本反馈，比说教有效）；
 > S5(d) `/parallel on|off|auto`（slash + SLASH_COMMANDS 补全）+ settings `subagent_mode`（启动默认；off=task 派发物理关闭）。
 > 测试：路由提示断言 + off 拒绝用例（spawnFn 不执行）+ subagent_mode 解析/默认 2 例。S6-S8 待做。
+>
+> ✅ 落地（2026-10-27）：**S6 已完成**（红线核对：Capability 默认宽松语义零改动，capability_test 未动）。
+> R3(1) task 增可选 `scope`（逗号分隔 glob 字符串；spawnFn 扩 4 参）；
+> R3(2) `extractResourceAccesses`（多资源版）：task 每项 scope 一条写边；**无 scope worker 哨兵 ("**",true)
+> 与所有带资源调用串行**（实现偏差：判定为"哨兵写 vs 任意资源即冲突"而非字符串相等——相等判定会让
+> 哨兵只与同为哨兵的任务串行，漏掉与 scoped writer 的冲突）；DAG 依赖判定改多资源交集；
+> R3(3) `AgentConfig.writeScope`（var+默认空=不限，构造签名零变动），executeGuarded 在 capability 之后
+> AND 收窄（Capability.globMatch），越界写返回"超出本子代理写域"；
+> R3(4) 工具描述写明"无 scope 的 worker 与所有 writer 串行——给 scope 才能并行写"。
+> 测试：scope 提取/哨兵 1 例 + DAG 重叠串行 1 例（agent 包内直测 internal）+ 越界写 e2e 1 例
+>（子代理观察到最后一条 tool 结果为"超出本子代理写域"；未配置 capability 证默认宽松未动）。S7-S8 待做。
 
 ### 7.1 S1/S2a 复核（2026-10-26，读码复核结论）
 

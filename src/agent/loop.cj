@@ -75,6 +75,9 @@ public class AgentConfig {
     public let maxIterations: Int64
     // 三域 capability 安全模型（未配置=宽松模式，全部允许）
     public let capability: Capability
+    // S6 写域收窄（task scope 传入；空=不限）：executeGuarded 在 capability 之后
+    // 追加 AND 判定——只收窄、绝不放宽；红线：不触碰 Capability 默认宽松语义
+    public var writeScope: ArrayList<String> = ArrayList<String>()
     // Compaction 阈值：消息条数超过该值触发历史摘要压缩（0=禁用，对齐 pi）
     public let compactThreshold: Int64
     // Compaction token 阈值：估算 prompt token 超过该值也触发压缩（0=禁用）
@@ -1375,25 +1378,55 @@ public class Agent {
      * @return (resourcePath, isWrite)；path 为空表示无文件资源
      */
     private func extractResourceAccess(tc: ToolCall): (String, Bool) {
+        let accesses = this.extractResourceAccesses(tc)
+        return accesses[0]
+    }
+
+    /**
+     * S6：多资源版资源提取。task 工具的 scope（逗号分隔 glob）每项一条写边；
+     * 无 scope 的 worker 返回哨兵 ("**", true)——与所有 writer 串行（保守，防静默覆盖）。
+     */
+    internal func extractResourceAccesses(tc: ToolCall): ArrayList<(String, Bool)> {
+        let out = ArrayList<(String, Bool)>()
+        if (tc.name == "task") {
+            match (tc.arguments.get("scope")) {
+                case Some(s) =>
+                    let scopeStr = s.asString().getValue()
+                    var hasScope = false
+                    for (raw in scopeStr.split(",", -1)) {
+                        let g = raw.trimAscii()
+                        if (g.size > 0) {
+                            out.add((g, true))
+                            hasScope = true
+                        }
+                    }
+                    if (!hasScope) {
+                        out.add(("**", true))
+                    }
+                case None => out.add(("**", true))
+            }
+            return out
+        }
         match (tc.name) {
             case "read_file" | "grep" | "list_dir" | "glob" =>
                 match (tc.arguments.get("path")) {
-                    case Some(p) => return (p.asString().getValue(), false)
-                    case None => return ("", false)
+                    case Some(p) => out.add((p.asString().getValue(), false))
+                    case None => out.add(("", false))
                 }
             case "write_file" | "append_file" | "edit_file" | "hashline_edit" =>
                 match (tc.arguments.get("path")) {
-                    case Some(p) => return (p.asString().getValue(), true)
-                    case None => return ("", true)
+                    case Some(p) => out.add((p.asString().getValue(), true))
+                    case None => out.add(("", true))
                 }
             case "bash" =>
                 match (tc.arguments.get("command")) {
-                    case Some(c) => return (c.asString().getValue(), true)
-                    case None => return ("", true)
+                    case Some(c) => out.add((c.asString().getValue(), true))
+                    case None => out.add(("", true))
                 }
             case _ =>
-                return ("", true)
+                out.add(("", true))
         }
+        return out
     }
 
     /**
@@ -1406,7 +1439,7 @@ public class Agent {
      *
      * @return deps[i] = 依赖 i 的工具调用索引列表（i 必须在 deps[i] 之后执行）
      */
-    private func buildDependencyGraph(toolCalls: ArrayList<ToolCall>): ArrayList<ArrayList<Int64>> {
+    internal func buildDependencyGraph(toolCalls: ArrayList<ToolCall>): ArrayList<ArrayList<Int64>> {
         let n = toolCalls.size
         // deps[i] = i 依赖的工具调用索引列表（这些必须先完成，i 才能开始）
         var deps = ArrayList<ArrayList<Int64>>()
@@ -1414,35 +1447,54 @@ public class Agent {
             deps.add(ArrayList<Int64>())
         }
 
-        // 提取每个工具调用的资源访问
-        var accesses = ArrayList<(String, Bool)>()
+        // 提取每个工具调用的资源访问（S6：多资源——task 的 scope 每项一条）
+        var accesses = ArrayList<ArrayList<(String, Bool)>>()
         for (_ in 0..n) {
-            accesses.add(("", false))
+            accesses.add(ArrayList<(String, Bool)>())
         }
         for (i in 0..n) {
-            accesses[i] = this.extractResourceAccess(toolCalls[i])
+            accesses[i] = this.extractResourceAccesses(toolCalls[i])
         }
 
-        // 构建依赖边：同 path 且至少一个 write → 串行依赖
+        // 构建依赖边：i/j 存在共同资源键且至少一方是写 → 串行依赖。
+        // task 无 scope 的哨兵 "**" 使无写域 worker 与所有 writer 串行（保守防静默覆盖）
         for (i in 0..n) {
-            let (pathI, writeI) = accesses[i]
-            if (pathI.size == 0) {
-                continue  // 无资源路径，不建依赖
+            if (accesses[i].size == 0) {
+                continue
             }
             for (j in 0..n) {
                 if (i == j) {
                     continue
                 }
-                let (pathJ, writeJ) = accesses[j]
-                if (pathJ.size == 0) {
+                if (accesses[j].size == 0) {
                     continue
                 }
-                // 同一路径 + 至少一个写 → 串行依赖
-                if (pathI == pathJ && (writeI || writeJ)) {
-                    // 保留 LLM 原始顺序：j < i 时 i 依赖 j
-                    if (j < i) {
-                        deps[i].add(Int64(j))
+                var conflict = false
+                for ((pathI, writeI) in accesses[i]) {
+                    if (pathI.size == 0) {
+                        continue
                     }
+                    for ((pathJ, writeJ) in accesses[j]) {
+                        if (pathJ.size == 0) {
+                            continue
+                        }
+                        // 哨兵 "**"：无 scope 的写任务与任何带资源的调用串行（保守防静默覆盖）
+                        if ((pathI == "**" && writeI) || (pathJ == "**" && writeJ)) {
+                            conflict = true
+                            break
+                        }
+                        if (pathI == pathJ && (writeI || writeJ)) {
+                            conflict = true
+                            break
+                        }
+                    }
+                    if (conflict) {
+                        break
+                    }
+                }
+                if (conflict && j < i) {
+                    // 保留 LLM 原始顺序：j < i 时 i 依赖 j
+                    deps[i].add(Int64(j))
                 }
             }
         }
@@ -1554,6 +1606,30 @@ public class Agent {
                     if (!this.onApproval(name, args, reason)) {
                         return ToolResult("操作被用户拒绝（${reason}）", true)
                     }
+            }
+            // S6：writeScope 收窄（AND 语义：capability 放行后仍须落在写域内；空=不限）。
+            // 只收窄、绝不放宽——红线：不触碰 Capability 默认宽松语义
+            if (isWrite) {
+                let ws = this.config.writeScope
+                if (ws.size > 0) {
+                    var inScope = false
+                    for (g in ws) {
+                        if (Capability.globMatch(g, p)) {
+                            inScope = true
+                            break
+                        }
+                    }
+                    if (!inScope) {
+                        var scopeStr = StringBuilder()
+                        for (g in ws) {
+                            scopeStr.append(g)
+                            scopeStr.append(" ")
+                        }
+                        return ToolResult(
+                            "超出本子代理写域 (scope: ${scopeStr.toString()}): ${p}。请只在给定写域内修改。",
+                            true)
+                    }
+                }
             }
         }
         // 全部通过：正常执行（兜底异常，避免单工具崩溃带垮整个 Agent 循环）
