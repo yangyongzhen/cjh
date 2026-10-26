@@ -60,9 +60,9 @@ public class SubagentRouting {
 }
 
 public class TaskTool <: CjhTool {
-    private let spawnFn: (String, String, String) -> TaskSpawnResult
+    private let spawnFn: (String, String, String, ArrayList<String>) -> TaskSpawnResult
 
-    public init(spawnFn: (String, String, String) -> TaskSpawnResult) {
+    public init(spawnFn: (String, String, String, ArrayList<String>) -> TaskSpawnResult) {
         this.spawnFn = spawnFn
     }
 
@@ -75,6 +75,7 @@ public class TaskTool <: CjhTool {
         props.add("description", JsonSchema.str("3-5 word task label"))
         props.add("prompt", JsonSchema.str("Full task instruction for the subagent"))
         props.add("subagent_type", JsonSchema.str("Agent type: explore (read-only, fast) or worker (can write, capable)"))
+        props.add("scope", JsonSchema.str("Optional comma-separated glob list limiting where this worker may write, e.g. 'src/agent/*.cj, src/web/*.cj'. Workers without scope are serialized with all writers — give scope to enable parallel writes."))
         let schema = JsonSchema.object(props, ArrayList<String>(["description", "prompt", "subagent_type"]))
         return ToolSpec("task",
             "Delegate a task to a specialized subagent (own message history, structured result). " +
@@ -125,8 +126,23 @@ public class TaskTool <: CjhTool {
             return ToolResult("description 不能为空. 请提供 3-5 词的任务标签.", true)
         }
 
+        // S6：scope（可选，逗号分隔 glob）——限定 worker 写域并参与 DAG 冲突消解
+        let scope = ArrayList<String>()
+        if (let Some(sv) <- args.get("scope")) {
+            match (sv.kind()) {
+                case JsonKind.JsString =>
+                    for (raw in sv.asString().getValue().split(",", -1)) {
+                        let g = raw.trimAscii()
+                        if (g.size > 0) {
+                            scope.add(g)
+                        }
+                    }
+                case _ => ()
+            }
+        }
+
         try {
-            let result = this.spawnFn(description, prompt, subagentType)
+            let result = this.spawnFn(description, prompt, subagentType, scope)
             // 树状格式（方案 §8）：子代理作为父消息流里的一个节点呈现
             var sb = StringBuilder()
             sb.append("├─ [${subagentType}] ${description} · ${result.status} · 迭代 ${result.iterations}")

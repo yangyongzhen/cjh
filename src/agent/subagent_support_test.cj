@@ -169,4 +169,47 @@ public class SubagentSupportTest {
         sched.addTokens(100)                 // 预算 100 已用尽
         @Assert(sched.allowSpawn(), false)   // token 预算触顶
     }
+
+    // ── S6：task scope → DAG 冲突消解（internal 方法，包内直测） ──
+
+    private func taskCall(scope: String): ToolCall {
+        var a = JsonObject()
+        a.put("description", JsonString("任务"))
+        a.put("prompt", JsonString("做"))
+        a.put("subagent_type", JsonString("worker"))
+        if (scope.size > 0) {
+            a.put("scope", JsonString(scope))
+        }
+        return ToolCall("t", "task", a)
+    }
+
+    @TestCase
+    public func testExtractTaskScopeResources(): Unit {
+        let agent = this.buildAgent(SubNoopProvider())
+        // 有 scope：每项一条写边
+        let withScope = agent.extractResourceAccesses(this.taskCall("src/a/*.cj, src/b/*.cj"))
+        @Assert(withScope.size, 2)
+        @Assert(withScope[0][0], "src/a/*.cj")
+        @Assert(withScope[0][1], true)
+        // 无 scope：哨兵 "**"（与所有 writer 串行，保守防静默覆盖）
+        let noScope = agent.extractResourceAccesses(this.taskCall(""))
+        @Assert(noScope.size, 1)
+        @Assert(noScope[0][0], "**")
+        @Assert(noScope[0][1], true)
+    }
+
+    @TestCase
+    public func testDagScopeOverlapSerializes(): Unit {
+        let agent = this.buildAgent(SubNoopProvider())
+        var calls = ArrayList<ToolCall>()
+        calls.add(this.taskCall("src/a/*.cj"))
+        calls.add(this.taskCall("src/b/*.cj"))   // 不同 scope → 可并行
+        calls.add(this.taskCall("src/a/*.cj"))   // 与 #0 重叠 → 串行
+        calls.add(this.taskCall(""))             // 无 scope 哨兵 → 与所有 writer 串行
+        let deps = agent.buildDependencyGraph(calls)
+        @Assert(deps[1].size, 0)                 // b 与 a 无交集
+        @Assert(deps[2].size, 1)                 // a 重叠 → 依赖 #0
+        @Assert(deps[2][0], 0)
+        @Assert(deps[3].size, 3)                 // 哨兵与全部 writer 串行
+    }
 }
