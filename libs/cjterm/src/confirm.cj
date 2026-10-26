@@ -68,6 +68,15 @@ public class ConfirmDialog <: Component {
         return this.title
     }
 
+    /**
+     * 仅刷新标题（不动 message/hint/visible）：审批队列入队时把队首弹窗的
+     * 标题推进为 审批(n/m)。与 show 的区别：不改写弹窗内容，y/n 仍作用于
+     * 真正的队首——避免非队首调用方在窗口期把已答复项的文案写回弹窗。
+     */
+    public func updateTitle(t: String): Unit {
+        this.title = t
+    }
+
     public override func render(canvas: TuiCanvas, row: Int64, width: Int64, _: Int64): Int64 {
         if (!this.visible) {
             return 0

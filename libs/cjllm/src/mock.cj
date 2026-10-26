@@ -26,7 +26,7 @@ public class MockProvider <: LlmProvider {
         this.scriptedPath = scriptedPath
     }
 
-    public func chatStream(_: ArrayList<ChatMessage>, _: ArrayList<ToolSpec>,
+    public func chatStream(_: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
         onDelta: (String) -> Unit, onReasoning: (String) -> Unit,
         onTokenEstimate: (Int64) -> Unit, _: () -> Bool): ModelResponse {
         // 模拟推理模型的思考流（reasoning_content 增量，分帧回调）
@@ -81,6 +81,35 @@ public class MockProvider <: LlmProvider {
         // 的路径，验证 stdx 打到 fd 1 的噪声不会进输入栏。默认 4 步链不变，
         // 不影响 runMockVerify 的"恰好 4 次调用"断言（它不设置该变量）。
         let webFetchUrl: String = mockGetenv("CJH_MOCK_WEB_URL") ?? ""
+        // 环境变量门控（additive，默认关闭）：CJH_MOCK_TASKS=1 时父代理第 1 轮改发
+        // 两个 task 调用（V2d 同批并发）。父判别：tools 里含 task（子 explore 的
+        // registry 已剥离 task，即使环境变量继承到子代理也不会再派）——否则父自己
+        // 不发 read_file 会让审批被父抢先，且子代理第 1 轮的 read_file 撞
+        // capability approval → 两路并发审批进 TUI 队列，供 pty 验证审批队列化
+        //（y 只批队首、标题 审批(n/m)）。
+        if ((mockGetenv("CJH_MOCK_TASKS") ?? "").size > 0) {
+            var parentHasTask = false
+            for (t in tools) {
+                if (t.name == "task") {
+                    parentHasTask = true
+                    break
+                }
+            }
+            if (parentHasTask) {
+                var argsT1 = JsonObject()
+                argsT1.put("description", JsonString("并发审批一号"))
+                argsT1.put("prompt", JsonString("查一下"))
+                argsT1.put("subagent_type", JsonString("explore"))
+                var argsT2 = JsonObject()
+                argsT2.put("description", JsonString("并发审批二号"))
+                argsT2.put("prompt", JsonString("查一下"))
+                argsT2.put("subagent_type", JsonString("explore"))
+                var callsT = ArrayList<ToolCall>()
+                callsT.add(ToolCall("call_1t1", "task", argsT1))
+                callsT.add(ToolCall("call_1t2", "task", argsT2))
+                return ModelResponse("并发派两个子代理。", callsT)
+            }
+        }
         match (this.callCount) {
             case 1 =>
                 // 工具调用 1：并发 2 个 read-only 工具（V2d 并发执行引擎验证）
@@ -102,6 +131,7 @@ public class MockProvider <: LlmProvider {
                     callsB.add(ToolCall("call_2", "bash", argsB))
                     return ModelResponse("再用 bash 执行一下。", callsB)
                 }
+                // CJH_MOCK_TASKS 的 task 派发在 match 之前统一处理（父判别见上）。
                 if (webFetchUrl.size > 0) {
                     // 端到端复现台：真实发一次 web_fetch（HTTP 层全真实）
                     var argsW = JsonObject()

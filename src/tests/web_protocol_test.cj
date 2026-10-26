@@ -41,6 +41,8 @@ public class CaptureChannel <: Channel {
     public var doneRawJson: ArrayList<String> = ArrayList<String>()
     // 错误事件的帧身份（与 errors 一一对应）
     public var errorMetas: ArrayList<FrameMeta> = ArrayList<FrameMeta>()
+    // 审批类错误的 request_id（与 errors 按 sendApprovalError 到达顺序追加）
+    public var approvalErrorIds: ArrayList<String> = ArrayList<String>()
     // 审批请求（危险操作前网关推来；测试据此答复或放任超时）
     public var approvals: ArrayList<ApprovalRequestInfo> = ArrayList<ApprovalRequestInfo>()
     // 工具结果（按到达顺序；三个列表一一对应）
@@ -88,6 +90,12 @@ public class CaptureChannel <: Channel {
         retryable: Bool): Unit {
         this.errors.add(CapturedError(message, code, retryable))
         this.errorMetas.add(meta)
+    }
+
+    public func sendApprovalError(_: String, requestId: String, message: String,
+        code: String): Unit {
+        this.errors.add(CapturedError(message, code, false))
+        this.approvalErrorIds.add(requestId)
     }
 
     public func sendAck(_: String, ack: AckInfo): Unit {

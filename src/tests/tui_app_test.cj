@@ -100,6 +100,8 @@ public class TuiAppKeyTest {
         app.handleKey(KeyEvent(3))  // Ctrl+C：整体拒绝
         let _ = t1.get()
         let _ = t2.get()
+        @Assert(results[0], false)  // 复核 D：两路都必须拿到 false（解除阻塞且未越权放行）
+        @Assert(results[1], false)
         @Assert(app.testRunning(), true)          // 不退出
         @Assert(app.testApprovalQueueSize(), 0)   // 队列清空
         @Assert(app.testApprovalVisible(), false)

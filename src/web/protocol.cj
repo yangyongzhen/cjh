@@ -527,12 +527,15 @@ public class ApprovalRequestEvent {
  * code / retryable 为后加字段：老客户端只读 message 不受影响，
  * 新客户端据 code 决定「重试 / 换模型 / 新建会话」。code 缺省 "internal"。
  * 帧身份三字段对回合内错误有值；与回合无关的错误（帧格式错误等）为空串。
+ * request_id 为后加可选字段：审批类错误（approval_timeout/approval_unknown）带值，
+ * 客户端按 id 精确关掉对应审批项（队列里其余项不受牵连）；老客户端忽略。
  */
 public class ErrorEvent {
     public var message: String = ""
     public var code: String = ""
     public var retryable: Bool = false
     public var meta: FrameMeta = FrameMeta()
+    public var requestId: String = ""
 
     public init() {}
 
@@ -552,6 +555,9 @@ public class ErrorEvent {
         obj.put("message", JsonString(this.message))
         obj.put("code", JsonString(if (this.code.size > 0) { this.code } else { "internal" }))
         obj.put("retryable", JsonBool(this.retryable))
+        if (this.requestId.size > 0) {
+            obj.put("request_id", JsonString(this.requestId))
+        }
         putFrameMeta(obj, this.meta)
         return obj.toJsonString()
     }
