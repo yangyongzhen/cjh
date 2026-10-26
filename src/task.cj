@@ -1,6 +1,7 @@
 package cjh
 
 import std.collection.*
+import std.sync.*
 import stdx.encoding.json.*
 import cjllm.*
 import cjh.tools.*
@@ -28,6 +29,36 @@ import cjh.tools.*
  * - 只读调查 (explore): 不修改文件, 只汇报发现
  * - 隔离执行: 子代理的 todo/工具调用不污染主会话
  */
+/**
+ * 子代理路由模式（S5，方案C R1(d)：与 capability 同一哲学——用户开关物理可达）：
+ * - "auto"（默认）：模型按判定表自主决定
+ * - "on"：同 auto（显式开启）
+ * - "off"：task 派发被拒（execute 直接返回提示），子代理物理不可达
+ * 启动默认来自 settings subagent_mode；运行时 /parallel on|off|auto 切换。
+ */
+public class SubagentRouting {
+    private static var mode: String = "auto"
+    private static let modeLock: Mutex = Mutex()
+
+    public static func set(m: String): Unit {
+        modeLock.lock()
+        mode = m
+        modeLock.unlock()
+    }
+
+    public static func current(): String {
+        modeLock.lock()
+        let m = mode
+        modeLock.unlock()
+        return m
+    }
+
+    /** off = 派发关闭 */
+    public static func enabled(): Bool {
+        return current() != "off"
+    }
+}
+
 public class TaskTool <: CjhTool {
     private let spawnFn: (String, String, String) -> TaskSpawnResult
 
@@ -46,15 +77,23 @@ public class TaskTool <: CjhTool {
         props.add("subagent_type", JsonSchema.str("Agent type: explore (read-only, fast) or worker (can write, capable)"))
         let schema = JsonSchema.object(props, ArrayList<String>(["description", "prompt", "subagent_type"]))
         return ToolSpec("task",
-            "Delegate a task to a specialized subagent. " +
-            "The subagent runs independently with its own message history and returns a result. " +
-            "Use for parallel independent subtasks or isolated investigation. " +
-            "PARALLEL: for several independent subtasks, issue MULTIPLE task calls in ONE turn — they run concurrently and are much faster than one at a time. " +
-            "subagent_type: explore (read-only investigation, fast) or worker (can modify files).",
+            "Delegate a task to a specialized subagent (own message history, structured result). " +
+            "When to spawn — decide by this table, do NOT spawn for looks:\n" +
+            "- Single-file change / clear answer / <=3 tool calls expected: do it YOURSELF (default).\n" +
+            "- Repo-wide scan or >=5-file investigation whose answer fits one sentence: spawn 1 explore.\n" +
+            "- >=2 independent changes touching DIFFERENT files, each >=3 tool rounds: spawn N workers in ONE turn (they run concurrently).\n" +
+            "- Forbidden: spawning just to 'double-check', one worker for one small file, splitting one task into think+write agents.\n" +
+            "Limits: <=3 concurrent spawns per turn, <=6 per turn (excess is rejected with budget_exceeded). " +
+            "Each spawn costs ~3-5k tokens of fixed overhead (system prompt + tool schemas). " +
+            "subagent_type: explore (read-only) or worker (can write).",
             schema)
     }
 
     public func execute(args: JsonObject): ToolResult {
+        // S5：/parallel off → 派发关闭（物理不可达语义；提示模型直接处理）
+        if (!SubagentRouting.enabled()) {
+            return ToolResult("并行子代理已关闭（/parallel on 重新开启）。请直接处理本任务。", false)
+        }
         if (!args.containsKey("description") || !args.containsKey("prompt")) {
             return ToolResult("缺少参数: description/prompt", true)
         }

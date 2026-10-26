@@ -274,6 +274,14 @@ public class SubagentScheduler {   // 每个父 Agent 一个实例
 > **G-A**：TUI 审批超时与服务端同源（subagent_timeout_ms），到点=拒绝 + 自愈摘队（队首则推进/收起弹窗）。
 > 测试：cjcfg 解析 2 例 + scheduler 闸门 1 例 + spawn 集成 2 例（budget_exceeded/timeout）+ TUI 超时 1 例。
 > S5-S8 待做。
+>
+> ✅ 落地（2026-10-27）：**S5 已完成**（D5=不做额外 LLM 路由调用，全静态）。
+> S5a 判定表：默认 system prompt 新增 `## Subagent routing (task tool)` 段（config.cj）+ task 工具描述整段重写
+>（何时派生判定表 / Forbidden 反向约束 / 成本边界 ~3-5k / 上限数字与 S4 硬闸门一致）；
+> S5(b) 硬闸门 = S4 已做的 allowSpawn/budget_exceeded；
+> S5(c) 事后纠偏：1 轮完成且结论 <200 字符的派生在结果尾部挂 `[路由提示]`（真实成本反馈，比说教有效）；
+> S5(d) `/parallel on|off|auto`（slash + SLASH_COMMANDS 补全）+ settings `subagent_mode`（启动默认；off=task 派发物理关闭）。
+> 测试：路由提示断言 + off 拒绝用例（spawnFn 不执行）+ subagent_mode 解析/默认 2 例。S6-S8 待做。
 
 ### 7.1 S1/S2a 复核（2026-10-26，读码复核结论）
 
