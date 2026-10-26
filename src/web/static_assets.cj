@@ -1210,6 +1210,8 @@ function startApprovalCountdown() {
             setApprovalButtonsEnabled(false);
             let hintEl = document.getElementById('approval-hint');
             if (hintEl) { hintEl.textContent = '已超时：服务端按拒绝处理，可让模型重试或改用别的方式。'; }
+            // 复核 C：本地归零不直接弹出队首——服务端随后回 approval_timeout（带 request_id），
+            // 按 id 精确推进，避免时钟偏差时错杀下一项
         }
     }, 250);
 }
@@ -1294,6 +1296,21 @@ function handleServerMessage(msg) {
             handleApprovalRequest(msg);
             break;
         case 'error':
+            // 复核 C：审批类错误（approval_timeout/approval_unknown，带 request_id）只关掉
+            // 对应项并推进队列——其余仍在 TTL 内的审批继续可答复；回合仍在继续，
+            // 不误置 executing、不清空整个队列
+            if ((msg.code === 'approval_timeout' || msg.code === 'approval_unknown') && msg.request_id) {
+                let idx = approvalQueue.findIndex(function(it) { return it.requestId === msg.request_id; });
+                if (idx >= 0) {
+                    approvalQueue.splice(idx, 1);
+                    if (!currentApproval) { showNextApproval(); } else { updateApprovalTitle(); }
+                } else if (currentApproval && currentApproval.requestId === msg.request_id) {
+                    closeApprovalModal();
+                    showNextApproval();
+                }
+                showNotice('一项审批未获确认：' + (msg.message || '已按拒绝处理'), 'info');
+                break;
+            }
             finalizeAssistantMessage();
             closeApprovalIfOpen();
             handleError(msg);

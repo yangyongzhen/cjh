@@ -13,6 +13,8 @@
 
 结论：**并行调度现在不能开闸**——不是体验问题，是 3 个 P0（越权批准、abort 串台、无边界资源）会真出错。
 
+> 进度更新（2026-10-26，commit `9d0f88b`）：P0-1（审批单槽）与 P0-2（abort 串台）**主路径已修**（§7 的 S1/S2a），但复核出 1 处 P0 残留 + 1 处 Web 回归，见 **§7.1**。P0-3（并发/预算/超时边界）仍未动，**开闸条件依然不满足**。
+
 ---
 
 ## 2. 文档 vs 实现的偏差表（带代码坐标）
@@ -165,6 +167,7 @@ public class SubagentScheduler {   // 每个父 Agent 一个实例
 - 子代理 provider 各自实例（§3.2 方案 A）；`explore` 用 `summaryProvider`（快模型）→ 顺手把 D1 做完，并在 `AgentNode` 上标 `model=fast`。
 - `transcriptPath`：子代理完整 messages 落 `spillDir/<sid>/sub-<label>-<agentId>/transcript.txt`（复用 `writeSpill`），路径进 `TaskSpawnResult`。
 - `filesTouched`：子代理自己 `recordTouchedPaths`（已有机制）在结束时导出。
+- **接线收敛（S2a 后新增的注意点）**：`TaskTool` 现在在 `entries.cj` 的 `runJson` / `runTui` 两处各自注册、各自捕获 `cjhCfg` 造 provider 与 agent。S3/S4 要给派生加 scheduler/事件/预算，别再复制第三份——先抽一个 `registerTaskTool(registry, agent, config, deps)`（`deps` 装 scheduler + provider 工厂 + 审批回调），两处入口都调它。
 
 ### R3 冲突消解：scope（层 1）
 
@@ -238,7 +241,9 @@ public class SubagentScheduler {   // 每个父 Agent 一个实例
 | 步 | 内容 | 改动文件 | 测试 |
 |---|---|---|---|
 | **S1** | 审批队列化 + 前端单 modal 排队 | `src/tui/app.cj`、`libs/cjterm/src/confirm.cj`、`src/web/static_assets.cj` | `tui_app_test` 并发审批 2 例；pty 1 场景 |
-| **S2** | provider per-instance + explore 快模型 | `src/entries.cj`、`libs/cjllm/src/provider.cj`(若加 clone 工厂) | 子代理 provider 不共享断言；`llm_test` |
+| **S2a** | provider per-instance（abort 隔离） | `src/entries.cj` | 子代理 provider 不共享断言；`llm_test` |
+| **S2b** | provider 生命周期收尾（`abort()` 关闭池化连接）+ 派生不触发 warmup | `src/entries.cj`、`src/main.cj`（`makeProvider(cfg, warmup)`） | 泄漏用例（伪造 provider 断言 abort 被调）；warmup 计数断言 |
+| **S2c** | explore→快模型路由（`makeSummaryProvider`）+ 可选 provider 池 | `src/entries.cj`、`src/main.cj` | 子代理 kind→model 断言 |
 | **S3** | 子代理事件转发 + `AgentNode`/`scheduler` + AgentsPanel + `Ctrl+T` 焦点 | `src/agent/scheduler.cj`(新)、`libs/cjterm/src/agentspanel.cj`(新)、`src/tui/app.cj`、`src/entries.cj` | scheduler 单测（信号量/预算/超时）；面板渲染单测；pty 4 场景 + `Tab` 回归 |
 | **S4** | 边界：并发/每回合上限/token 预算/墙钟超时 + `status=timeout/budget_exceeded` | `src/agent/scheduler.cj`、`src/task.cj`、`libs/cjcfg`(settings 项) | 并发基准（`dag_bench` 扩展）；超时用例（假 provider 挂 5s） |
 | **S5** | 路由策略：system prompt 判定表 + task 描述改写 + 事后纠偏 + `/parallel` 开关 | `libs/cjcfg/src/config.cj`、`src/task.cj`、`src/skills.cj`、`src/slash_command.cj` | 纯函数策略判定；mock 端到端「简单任务不派生」 |
@@ -248,9 +253,29 @@ public class SubagentScheduler {   // 每个父 Agent 一个实例
 
 顺序理由：**先修安全（S1/S2）→ 再有眼睛（S3）→ 才有边界（S4）→ 才敢开路由（S5）**。S1/S2 不改变任何功能语义，可以立刻合入。
 
-> ✅ 落地（2026-10-26）：**S1、S2 已完成**（审批队列化 TUI+Web、provider 每子代理独立实例；
-> 门禁：test.sh 552 / test_libs.sh 175 / pty 67 / build 零代码告警 / --mock 全过）。
-> 落地明细见 `并行子代理与上下文隔离-方案.md` §11.3。S3-S8 待阶段 C。
+> ✅ 落地（2026-10-26，commit `9d0f88b`）：**S1 与 S2a 已完成**（审批队列化 TUI+Web、provider 每子代理独立实例；
+> 门禁：test.sh 552 / test_libs.sh 175（cjterm 加 `ConfirmDialog.currentTitle()`）/ pty 67 / build 零代码告警 / --mock 全过）。
+> 落地明细见 `并行子代理与上下文隔离-方案.md` §11.3；**复核发现的残留见 §7.1**（S2b/S2c 未做，另 4 处需收口）。
+
+### 7.1 S1/S2a 复核（2026-10-26，读码复核结论）
+
+**结论：两个 P0 的主路径确实修好了**（越权批准、abort 串台都不再成立），但有 4 处需要收口，其中 1 处是本轮**新引入的回归**。
+
+> ✅ 收口（2026-10-26）：**A–F 已全部修复**。落地方式：A/B `show()` 进锁 + 仅队首 show（非队首经 `ConfirmDialog.updateTitle()` 只刷标题）；C `ErrorEvent.requestId` + `sendApprovalError` 前端按 id 对账（倒计时归零不本地弹队，服务端 id 权威推进）；D 等待方读后即删 + Ctrl+C 测试补断言；E `spawnSubagent` finally `provider.abort()` + `makeProvider(cfg, warmup)` 子代理路径关预热；F pty 新增场景 4b（`CJH_MOCK_TASKS` 门控：父并发派两个 explore → 两路 read_file 审批进队列 → y 只批队首 → (1/2)→(2/2)）。pty 67 → **71 场景全过**；test.sh / test_libs.sh 见当轮交付记录。
+
+| # | 问题 | 位置 | 定性 | 修法 |
+|---|---|---|---|---|
+| **A** | **非队首请求方也调用 `confirmDialog.show()`**：`title/headPrompt` 在锁内算、`show()` 在锁外调。若该线程在 unlock 与 show 之间被抢占，而队首恰在此时被答复，则弹窗会被**回写成已答复项的内容**（用户看着 A 的文案，按下的却是 B 的决定） | `src/tui/app.cj` `requestApproval` | **P0 残留（越权窗口虽窄仍在）** | 把 `show()` 移进 `approvalLock` 内，且**只有"入队后成为队首"的调用方才 show**；非队首只入队 |
+| **B** | `denyAllApprovals()`（Ctrl+C 整体拒绝）之后，若某调用方正处于"已入队、未 show"，它仍会 `show()` → 弹出一个**已被拒绝、按键无响应**的死弹窗（`approvalQueue` 已空，按键走输入框但弹窗盖住输出区） | 同上 | P1 观感/可理解性 | 同 A 的修法：show 前持锁校验"我仍是队首（id 仍在 approvalIds 里）" |
+| **C** | Web：`approval_timeout` 以 `{"type":"error","code":"approval_timeout"}` 到达 → `closeApprovalIfOpen()` **清空整个队列**（其他仍在 TTL 内、本可答复的审批被一并丢弃），且 `setExecuting(false)`（服务端注释明确"回合继续"） | `src/web/static_assets.cj` `handleServerMessage` | **P1 回归（本轮新增）** | `case 'error'` 里先判 code：`approval_timeout`/`approval_unknown` → 只 `closeApprovalModal() + showNextApproval()`，不改 executing；前端倒计时归零时同样要推进队列 |
+| **D** | `approvalAnswers` 只写不删（每个审批留一条直到进程结束）；`testApprovalQueueCtrlCDeniesAll` 没有断言两路结果都是 false | `src/tui/app.cj`、`src/tests/tui_app_test.cj` | P2 | 等待方读到结果后 `remove(id)`；补齐结果断言 |
+| **E** | S2a 把 provider 变成"每次派生新建"，但 `spawnSubagent` 的 `finally` 只 `unregisterChild`，**不关闭该 provider 的池化 keep-alive 连接** → 每次派生泄漏 1 个 fd 直到 GC；且 `makeProvider()` 内部 `spawn { pp.warmup() }` → **每次派生多打一条 GET**（warmup 连接用完即 close，不复用，纯开销） | `src/entries.cj`、`src/main.cj:72` | P2 资源/浪费 | `finally { provider.abort() }`（abort 同时关 current+pooled）；`makeProvider(cfg, warmup=false)` 供子代理路径使用 |
+| **F** | 无 pty 覆盖：S1 的门禁只加了 2 例单测（`handleKey` 直驱），弹窗"应答后立刻弹下一项"的渲染时序没有真实终端用例（原计划 §7 写的是 pty 1 场景） | `scripts/tui_pty_test.py` | P3 | 补 1 场景：两路审批 → `y` → 断言标题变 `(2/2)` 且第二项文案可见 |
+
+**新发现的缺口（原方案遗漏，不是 S1 的锅）**：
+- **G-A TUI 审批没有超时**。`requestApproval` 是 `while(true) + sleep(5ms)` 永久阻塞；Web 侧服务端有 300s 超时并按拒绝处理，TUI 没有 → 用户离开终端后，4 路 worker 全部永久阻塞、父回合卡死（Ctrl+C 是唯一出路）。并发越高越危险。建议 S4 一并做：TUI 侧加可配超时（默认 300s），超时=拒绝并提示。
+- **G-B 并发审批缺乏"谁在等"的信息**。队列里只有 prompt 字符串，弹窗看不到 `[task:label]` 之外的身份；S3 的 `AgentNode` 落地后应把 `agentId/label` 带进审批项（TUI 弹窗 + Web 帧字段一次做完）。
+
 
 ### 实施前提（重要）
 
@@ -265,10 +290,10 @@ public class SubagentScheduler {   // 每个父 Agent 一个实例
 |---|---|---|
 | 1 权限单调 | ✅ A 期已成立 | **新增**：`writeScope` 只收窄（越界写用例必红/绿可证）；`explore` 依然物理无写工具 |
 | 2 上下文单向流 | ✅ 已成立 | 简报 + 结论不变；`transcriptPath` 只落盘不回灌 |
-| 3 可观测 | ❌（B1） | 面板可见每节点状态/轮次/token/当前工具；`Ctrl+T` 可看任一子代理细粒度流；审批按队员排队 |
+| 3 可观测 | ⚠ B1 仍在（运行期黑盒）；**审批多路已落地**（S1 队列 + 标题 `审批(n/m)`，残留见 §7.1 A/B/C） | 面板可见每节点状态/轮次/token/当前工具；`Ctrl+T` 可看任一子代理细粒度流；审批按队员排队且超时可控 |
 | 4 有界资源 | ❌（C1/C2/C5） | 并发≤4、派生≤6/回合、子代理 token 预算、300s 超时，超限均结构化失败且**不挂死**（用例证） |
 
-门禁：`./scripts/test.sh` 全绿（预计 549 → ~575）、`./scripts/test_libs.sh` 175 全绿（若动 `cjterm` 必须单独跑）、`python3 scripts/tui_pty_test.py`（67 → ~74）、`cjpm build` 告警仅那 5 条 `--static`、`--mock` 端到端通过。
+门禁：`./scripts/test.sh` 全绿（552 → ~575）、`./scripts/test_libs.sh` 175 全绿（若动 `cjterm` 必须单独跑）、`python3 scripts/tui_pty_test.py`（67 → ~74）、`cjpm build` 告警仅那 5 条 `--static`、`--mock` 端到端通过。
 
 ---
 
@@ -277,7 +302,8 @@ public class SubagentScheduler {   // 每个父 Agent 一个实例
 | # | 决策点 | 建议 |
 |---|---|---|
 | D5 | 是否做"额外 LLM 路由调用" | **不做**（用判定表 + 硬闸门 + 成本反馈） |
-| D6 | provider 隔离方式 | **A：子代理各自实例**（顺带 explore 走快模型） |
+| D6 | provider 隔离方式 | ✅ 已按 **A（子代理各自实例）** 落地（S2a）；**S2b/S2c 收口建议**：`finally { provider.abort() }` 防连接泄漏 + 派生路径不触发 warmup（见 §7.1 E） |
+| D11 | 是否上 provider 池（容量=并发上限，独占借用） | **先不做**。池化能省握手，但要处理借用/归还/异常泄漏；等 S4 的并发上限落地、实测握手占比后再定（当前"每次新建 + abort 收尾"已正确） |
 | D7 | 冲突消解强度 | `scope` 可选 + 无 scope 的 worker 与所有 writer 串行（保守优先） |
 | D8 | TUI 呈现方案 | ✅ **已确认**：三件套（主流里程碑 + Agents 面板 + 焦点切换），不做多窗格；焦点键用 `Ctrl+T`（`Tab` 已被视图切换占用） |
 | D9 | 默认值 | 并发 4 / 每回合 6 / 子代理 200k token / 300s；`/parallel` 默认 `auto` |

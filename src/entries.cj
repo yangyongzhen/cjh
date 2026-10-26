@@ -1103,7 +1103,8 @@ func makeSubagentProvider(cjhCfg: CjhConfig): LlmProvider {
     if ((readEnv("CJH_MOCK") ?? "") == "1") {
         return MockProvider("/tmp/cjh_verify.txt")
     }
-    return makeProvider(cjhCfg)
+    // 复核 E：warmup=false——实例用完即弃（finally abort()），预热连接纯开销
+    return makeProvider(cjhCfg, false)
 }
 
 /**
@@ -1161,6 +1162,9 @@ func spawnSubagent(provider: LlmProvider, parentRegistry: ToolRegistry, parent: 
         // 子代理线程必须 try/catch 全包，失败转结构化 failed 而非静默
         return TaskSpawnResult("子代理执行异常: ${e}", 0, 0, 0, "failed")
     } finally {
+        // 复核 E：子代理 provider 是每次派生新建的实例，收尾必须 abort() 关掉
+        // 池化 keep-alive 连接（同时关 current+pooled），否则每次派生泄漏 1 个 fd
+        provider.abort()
         parent.unregisterChild(subAgent)
     }
 }

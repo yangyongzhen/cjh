@@ -98,6 +98,12 @@ public interface Channel {
         retryable: Bool): Unit
 
     /**
+     * 审批类错误：带 request_id，客户端按 id 精确关掉对应审批项
+     * （approval_timeout / approval_unknown；队列里其余可答复项不受牵连）
+     */
+    func sendApprovalError(chatId: String, requestId: String, message: String, code: String): Unit
+
+    /**
      * 控制帧回执（switch_model / compact 被处理后必须回执）
      *
      * 静默是最贵的形状：客户端发了控制帧必须能确认「服务端收下了且做了什么」。
@@ -626,9 +632,9 @@ public class ChannelGateway {
                     return
                 }
                 if (!this.decideApproval(requestId, approved)) {
-                    ch.sendErrorCode(chatId, FrameMeta(),
+                    ch.sendApprovalError(chatId, requestId,
                         "审批请求不存在或已结束：${requestId}（可能已超时 / 已答复 / 回合已中断）",
-                        "approval_unknown", false)
+                        "approval_unknown")
                 }
             case None => ()
         }
@@ -764,10 +770,11 @@ public class ChannelGateway {
         let timedOut = !decided
         this.removeApproval(requestId)
         if (timedOut) {
-            // 超时不静默：告诉客户端"这次没人批"，随后工具返回拒绝结果，回合继续
-            channel.sendErrorCode(chatId, meta,
+            // 超时不静默：告诉客户端"这次没人批"，随后工具返回拒绝结果，回合继续。
+            // 带 request_id：并发审批队列下客户端按 id 关掉对应项，不错杀其余可答复项
+            channel.sendApprovalError(chatId, requestId,
                 "操作审批超时（${this.approvalTimeoutMs}ms 未确认），已按拒绝处理",
-                "approval_timeout", false)
+                "approval_timeout")
         }
         return approved
     }

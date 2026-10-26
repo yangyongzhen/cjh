@@ -18,6 +18,11 @@ import stdx.log.*
  *   - 默认 → OpenAiProvider（OpenAI/DeepSeek/通义 等兼容协议）
  */
 func makeProvider(cfg: CjhConfig): LlmProvider {
+    // 复核 E：子代理每次派生新建实例，warmup 连接用完即 close、纯开销——走 warmup=false
+    return makeProvider(cfg, true)
+}
+
+func makeProvider(cfg: CjhConfig, warmup: Bool): LlmProvider {
     // provider 选择：显式 CJH_PROVIDER=anthropic 才用 Anthropic
     // （auth.json 的 key 优先；env 变量可覆盖。绝不自动劫持到 Anthropic）
     let providerName = readEnv("CJH_PROVIDER") ?? ""
@@ -68,9 +73,13 @@ func makeProvider(cfg: CjhConfig): LlmProvider {
     // （~200-500ms）。此前因 stdx.net.http 的 readTimer 后台线程 WARN 污染
     // TUI 而移除；现用 std.net 直连（HttpStreamClient），无 readTimer 问题，
     // 安全恢复。warmup 内部失败静默（如代理拒绝 GET），不影响正常请求。
-    let pp = p
-    spawn {
-        pp.warmup()
+    // 复核 E：子代理路径传 warmup=false——每次派生新建实例，预热连接用完即
+    // close、不复用，纯属浪费一条 GET。
+    if (warmup) {
+        let pp = p
+        spawn {
+            pp.warmup()
+        }
     }
     return p
 }

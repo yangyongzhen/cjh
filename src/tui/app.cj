@@ -546,6 +546,7 @@ public class TuiApp {
         let id = "apr-" + this.approvalSeq.fetchAdd(1).toString()
         var title = "审批"
         var headPrompt = prompt  // 弹窗始终显示队首（后来者入队只刷新标题）
+        var isHead = false
         this.approvalLock.lock()
         try {
             let showIt = this.approvalQueue.size == 0
@@ -559,16 +560,30 @@ public class TuiApp {
             this.approvalQueue.add(prompt)
             this.approvalIds.add(id)
             title = this.approvalTitle()
+            // 复核 A/B：show 必须在锁内、且只有"此刻仍是队首"的调用方才弹——
+            // 否则 unlock 与 show 之间若队首被答复/Ctrl+C 清队，弹窗会被回写成
+            // 已答复项的文案（看着 A 的提示按下的却是 B 的决定）或弹出死弹窗。
+            // 非队首只刷新标题（审批(n/m) 计数），不写弹窗内容：标题不改变 y 作用于谁
+            isHead = this.approvalIds.size > 0 && this.approvalIds[0] == id
+            if (isHead) {
+                this.confirmDialog.show(title, headPrompt, "[y]=同意 [n]/[Esc]=拒绝")
+            } else if (this.confirmDialog.isVisible()) {
+                this.confirmDialog.updateTitle(title)
+            }
         } finally {
             this.approvalLock.unlock()
         }
-        // 弹出/刷新确认对话框（模态，渲染与按键由 ConfirmDialog 组件负责）
-        this.confirmDialog.show(title, headPrompt, "[y]=同意 [n]/[Esc]=拒绝")
-        this.markDirty()
+        if (isHead) {
+            this.markDirty()
+        }
         // 等待主循环读键写回自己这份结果
         while (true) {
             this.approvalLock.lock()
             let answer = this.approvalAnswers.get(id)
+            if (answer.isSome()) {
+                // 复核 D：读后即删，防长会话下 answers 表只增不减
+                this.approvalAnswers.remove(id)
+            }
             this.approvalLock.unlock()
             if (let Some(r) <- answer) {
                 return r

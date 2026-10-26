@@ -82,6 +82,16 @@ public class WebChannel <: Channel {
     }
 
     /**
+     * 审批类错误：带 request_id，客户端按 id 精确关掉对应审批项（复核 C）
+     */
+    public func sendApprovalError(_: String, requestId: String, message: String,
+        code: String): Unit {
+        let event = ErrorEvent(message, code, false)
+        event.requestId = requestId
+        this.sendWs(event.toJson())
+    }
+
+    /**
      * 控制帧回执（switch_model / compact）
      */
     public func sendAck(_: String, ack: AckInfo): Unit {
