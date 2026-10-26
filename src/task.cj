@@ -149,7 +149,28 @@ public class TaskTool <: CjhTool {
             if (result.promptTokens > 0 || result.completionTokens > 0) {
                 sb.append(" · ↑${result.promptTokens} ↓${result.completionTokens}")
             }
-            sb.append("\n${result.text}\n└─ (task 结束)\n")
+            sb.append("\n${result.text}\n")
+            // S7：触碰文件（≤5 个）与转录路径——回父上下文的是结论，过程在盘上可回看
+            if (result.filesTouched.size > 0) {
+                var fsb = StringBuilder()
+                var n: Int64 = 0
+                for (f in result.filesTouched) {
+                    if (n >= 5) {
+                        fsb.append(" …(+${result.filesTouched.size - n})")
+                        break
+                    }
+                    if (n > 0) {
+                        fsb.append(", ")
+                    }
+                    fsb.append(f)
+                    n += 1
+                }
+                sb.append("触碰文件: ${fsb.toString()}\n")
+            }
+            if (result.transcriptPath.size > 0) {
+                sb.append("转录: ${result.transcriptPath}\n")
+            }
+            sb.append("└─ (task 结束)\n")
             return ToolResult(sb.toString(), false)
         } catch (e: Exception) {
             return ToolResult(
@@ -161,10 +182,12 @@ public class TaskTool <: CjhTool {
 /**
  * 子代理派发结果
  *
- * status 语义（方案 §7）：
- * - ok        正常完成
- * - failed    子代理异常退出 / LLM 调用失败（summary.errorCode 非空）
- * - cancelled 父代理中断传播，子代理提前退出（阶段 B 中断传播落地后出现）
+ * status 语义（方案 §7 失败矩阵）：
+ * - ok                正常完成
+ * - failed            子代理异常退出 / LLM 调用失败（summary.errorCode 非空）
+ * - cancelled         父代理中断传播，子代理提前退出（阶段 B 中断传播落地后出现）
+ * - timeout           S4 墙钟超时（已中断并回收引用）
+ * - budget_exceeded   S4/S5 配额闸门拒绝（派生上限 / token 预算）
  */
 public class TaskSpawnResult {
     public let text: String
@@ -172,6 +195,9 @@ public class TaskSpawnResult {
     public let promptTokens: Int64
     public let completionTokens: Int64
     public var status: String
+    // S7 归账与转录：完整过程落盘路径（spillDir 为空时为 ""）+ 子代理触碰文件
+    public var transcriptPath: String = ""
+    public var filesTouched: ArrayList<String> = ArrayList<String>()
 
     public init(text: String, iterations: Int64, promptTokens: Int64, completionTokens: Int64) {
         this.text = text

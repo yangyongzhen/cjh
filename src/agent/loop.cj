@@ -544,6 +544,19 @@ public class Agent {
     }
 
     /**
+     * 触碰文件快照（S7 归账：子代理结束时经 filesTouched 导出给父）
+     */
+    public func getTouchedFiles(): ArrayList<String> {
+        this.touchedLock.lock()
+        let out = ArrayList<String>()
+        for (f in this.touchedFiles) {
+            out.add(f)
+        }
+        this.touchedLock.unlock()
+        return out
+    }
+
+    /**
      * 注入插件管理器（V2b Step 2：事件钩子）
      * Agent 在工具结果回填前触发 on_tool_result 钩子，允许插件拦截/改写结果。
      */

@@ -841,8 +841,28 @@ func runTui(sessionId: String): Int64 {
             // tokens 走 cjterm.fmtTokenCount（与实时状态行/思考折叠行同格式：1.2k）
             let tokTotal = s.totalTokens()
             // 格式：─── ✓ 2 rounds · 3 tools · 42.6s · 1.5k tokens · 99% cached ───
+            // S7：有子代理时追加全树归账 N agents (x✓ y✗)，低效派生 ⚠N（>0 才显示）
+            var stat = "✓ ${s.rounds} ${roundWord} · ${s.toolCalls} ${toolWord} · ${secInt}.${secTenths}s · ${fmtTokenCount(tokTotal)} tokens · ${rate}% cached"
+            var okCount: Int64 = 0
+            var failCount: Int64 = 0
+            for (node in scheduler.snapshot()) {
+                match (node.state) {
+                    case AgentNodeState.Ok => okCount += 1
+                    case AgentNodeState.Failed => failCount += 1
+                    case AgentNodeState.Timeout => failCount += 1
+                    case AgentNodeState.Cancelled => failCount += 1
+                    case AgentNodeState.BudgetExceeded => failCount += 1
+                    case _ => ()
+                }
+            }
+            if (okCount + failCount > 0) {
+                stat = stat + " · ${okCount + failCount} agents (${okCount}✓ ${failCount}✗)"
+                let wasted = scheduler.wastedCount()
+                if (wasted > 0) {
+                    stat = stat + " · ⚠${wasted} 低效派生"
+                }
+            }
             // 整行统一灰色（THEME_MUTED），居中：左右横线等分
-            let stat = "✓ ${s.rounds} ${roundWord} · ${s.toolCalls} ${toolWord} · ${secInt}.${secTenths}s · ${fmtTokenCount(tokTotal)} tokens · ${rate}% cached"
             let (_, cols) = TermSize.get()
             let statW = TuiCanvas.displayWidth(stat)
             // 内容总宽 = 左横线 + 1空格 + stat + 1空格 + 右横线
@@ -1262,9 +1282,19 @@ func spawnSubagent(provider: LlmProvider, parentRegistry: ToolRegistry, parent: 
             resultText = resultText +
                 "\n[路由提示] 该子任务 ${summary.rounds} 轮完成、结论 ${resultText.toRuneArray().size} 字符；" +
                 "此类任务下次请直接处理（单次派生固定开销约 3–5k token：子代理 system prompt + 全量工具 schema）"
+            // S7：低效派生归账（总结条 ⚠N）
+            match (parent.subagentScheduler) {
+                case Some(sched) => sched.addWasted()
+                case None => ()
+            }
         }
-        return TaskSpawnResult(resultText, summary.rounds,
+        let result = TaskSpawnResult(resultText, summary.rounds,
             summary.promptTokens, summary.completionTokens, status)
+        // S7：触碰文件导出（子代理自己 recordTouchedPaths 的结果）
+        result.filesTouched = subAgent.getTouchedFiles()
+        // S7：完整过程转录落盘（回父上下文的是结论，过程在盘上可回看）
+        result.transcriptPath = writeSubagentTranscript(subConfig, subAgent, description, status)
+        return result
     } catch (e: SubagentTimeoutException) {
         // S4：墙钟超时 → 结构化 timeout（父按失败矩阵"中断并回收引用"处理）
         finState = AgentNodeState.Timeout
@@ -1292,6 +1322,36 @@ func spawnSubagent(provider: LlmProvider, parentRegistry: ToolRegistry, parent: 
         // 池化 keep-alive 连接（同时关 current+pooled），否则每次派生泄漏 1 个 fd
         provider.abort()
         parent.unregisterChild(subAgent)
+    }
+}
+
+/**
+ * S7：子代理完整过程转录落盘（markdown）。
+ * 路径 = spillDir/<subSessionId>/transcript-<agentId>.md；spillDir 为空（测试/未配置）跳过。
+ * 转录失败不影响主流程（返回 ""）。
+ */
+func writeSubagentTranscript(subConfig: AgentConfig, subAgent: Agent,
+    description: String, status: String): String {
+    if (subConfig.spillDir.size == 0) {
+        return ""
+    }
+    let dir = subConfig.spillDir + "/" + subConfig.sessionId
+    let path = dir + "/transcript-" + subAgent.agentId.toString() + ".md"
+    try {
+        if (!exists(dir)) {
+            Directory.create(dir, recursive: true)
+        }
+        var sb = StringBuilder()
+        sb.append("# task ${description} (${subConfig.sessionId})\n\n")
+        sb.append("- status: ${status}\n\n")
+        for (m in subAgent.getMessages()) {
+            sb.append("## ${m.role}\n\n${m.content}\n\n")
+        }
+        File.writeTo(path, sb.toString().toArray())
+        return path
+    } catch (e: Exception) {
+        Log.warn("子代理转录落盘失败（不影响主流程）: ${e}")
+        return ""
     }
 }
 
