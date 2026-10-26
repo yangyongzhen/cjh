@@ -446,9 +446,9 @@ func runJson(prompt: String, sessionId: String): Int64 {
             }
         ))
 
-        // TaskTool：派发子代理执行独立任务（spawnFn 回调注入）
+        // TaskTool：派发子代理执行独立任务（spawnFn 回调注入；父 agent 用于简报上下文块）
         registry.register(TaskTool({ description, prompt, subagentType =>
-            spawnSubagent(provider, registry, config, description, prompt, subagentType)
+            spawnSubagent(provider, registry, agent, config, description, prompt, subagentType)
         }))
 
         // 恢复会话（--resume <id>）
@@ -642,9 +642,9 @@ func runTui(sessionId: String): Int64 {
                 return result
             }
         ))
-        // TaskTool：派发子代理执行独立任务（spawnFn 回调注入）
+        // TaskTool：派发子代理执行独立任务（spawnFn 回调注入；父 agent 用于简报上下文块）
         registry.register(TaskTool({ description, prompt, subagentType =>
-            spawnSubagent(provider, registry, config, description, prompt, subagentType)
+            spawnSubagent(provider, registry, agent, config, description, prompt, subagentType)
         }))
 
         // 线程安全的输出队列（agent 在调用线程运行，输出经队列到 TUI）
@@ -1048,38 +1048,106 @@ func listSessions(): Int64 {
 }
 
 /**
- * 派发子代理执行独立任务
+ * 构造子代理 registry 视图（方案 §6 / 决策 D2）
  *
- * 创建一个临时 Agent，用相同 provider 和 tools，跑一轮独立对话，返回结果。
- * 子代理有独立的 messages 历史，不影响主对话。
- * 子代理 max_iterations 限制为 5（避免失控）。
+ * - G3 深度 1：剥离 task（子代理不得再派子代理，防 fork bomb）
+ * - G4 todo 隔离：剥离 todo_write（其回调绑定父 agent，子代理调用会写主会话任务面板）
+ * - G2 explore 结构化只读：仅保留 isReadOnly()==true 的工具，写工具物理不可达，
+ *   不依赖 system prompt 自觉（bash 本身 isReadOnly()==false，自动被排除）
+ * - worker：全量工具（仍受继承的 capability 三域闸门约束）
+ *
+ * 工具实例与父共享（工具层每调用独立状态，无静态踩踏，见 GlobCallState 等）。
+ */
+func buildSubagentRegistry(parent: ToolRegistry, subagentType: String): ToolRegistry {
+    let reg = ToolRegistry()
+    for (spec in parent.specs()) {
+        if (spec.name == "task" || spec.name == "todo_write") {
+            continue
+        }
+        if (subagentType == "explore" && !parent.isReadOnly(spec.name)) {
+            continue
+        }
+        match (parent.getTool(spec.name)) {
+            case Some(t) => reg.register(t)
+            case None => ()
+        }
+    }
+    return reg
+}
+
+/**
+ * 构造子代理 AgentConfig（方案 §6）
+ *
+ * - G1 capability 继承：直接复用父 Capability 实例——三域白名单/审批链与父一致，
+ *   保证"子权限 ⊆ 父权限"（此前两参构造默认宽松，父开严格审批子代理却畅通无阻）
+ * - 子代理短生命周期（maxIterations=5）：关闭 compaction（条数/token 阈值均 0），
+ *   避免后台摘要线程与 5 轮快跑竞争
+ * - G6 落盘隔离：spillDir 继承，sessionId 追加 /sub-<type> 段——落盘路径
+ *   spillDir/<sid>/sub-<type>/<toolCallId>.txt（writeSpill 递归建目录，天然生效）
+ */
+func buildSubagentConfig(parent: AgentConfig, subagentType: String): AgentConfig {
+    let subSession = parent.sessionId + "/sub-" + subagentType
+    return AgentConfig(buildSubagentPrompt(subagentType), 5, parent.capability,
+        0, 0, 6, parent.toolResultMaxChars, parent.spillDir, subSession)
+}
+
+/**
+ * 派发子代理执行独立任务（方案定稿 §5-§7）
+ *
+ * 创建一个临时 Agent，跑一轮独立对话，返回结构化结果：
+ * - 上下文隔离：子代理有独立 messages 历史，父历史一个字节不给（比 fork-COW 更彻底）；
+ *   上下文经"简报 ↓"显式传递 = 子任务 prompt + 父会话上下文块（触碰文件表 + 摘要，决策 D1）
+ * - 权限单调：capability 继承父实例 + registry 视图收窄（explore 只读 / 深度 1 / 剥离 todo_write）
+ * - 审批传播（G5）：子代理触发审批经父通道，reason 打 [task:description] 前缀，
+ *   TUI 弹窗 / WS approval_request 的 reason 字段都会展示，协议零变更
+ * - 中断传播：登记到父 → 跑 → finally 注销；父 interrupt() 时子代理同置中断（cancelled 出口）
+ * - 结构化出口：status = ok / failed（errorCode 非空或执行异常）/ cancelled（父中断传播）
  *
  * @param provider 父 Agent 的 provider（复用连接）
- * @param registry 父 Agent 的工具注册表（复用工具）
- * @param config 父 Agent 的配置（复用 system prompt）
- * @param description 3-5 词任务标签
- * @param prompt 完整任务指令
+ * @param parentRegistry 父 Agent 的工具注册表（构造子视图的来源）
+ * @param parent 父 Agent 实例（taskBriefContext 简报来源 + 审批/中断传播目标）
+ * @param parentConfig 父 Agent 的配置（capability/spillDir/sessionId 继承）
+ * @param description 任务标签（审批 reason 前缀 [task:description] 用）
+ * @param prompt 子任务指令
  * @param subagentType "explore"（只读）或 "worker"（可写）
- * @return TaskSpawnResult 子代理执行结果
  */
-func spawnSubagent(provider: LlmProvider, registry: ToolRegistry, _: AgentConfig,
-    _: String, prompt: String, subagentType: String): TaskSpawnResult {
-    // 构造子代理 system prompt
-    let systemPrompt = buildSubagentPrompt(subagentType)
+func spawnSubagent(provider: LlmProvider, parentRegistry: ToolRegistry, parent: Agent,
+    parentConfig: AgentConfig, description: String, prompt: String, subagentType: String): TaskSpawnResult {
+    // D1 简报：子任务指令 + 父会话上下文块（taskBriefContext 内部限长 ~1500 字符）
+    let brief = prompt + "\n\n" + parent.taskBriefContext()
 
-    // 创建子 Agent：复用父 Agent 的 provider 和 tools，max_iterations 限制为 5
-    let subConfig = AgentConfig(systemPrompt, 5)
-    let subAgent = Agent(provider, registry, subConfig)
+    let subRegistry = buildSubagentRegistry(parentRegistry, subagentType)
+    let subConfig = buildSubagentConfig(parentConfig, subagentType)
+    let subAgent = Agent(provider, subRegistry, subConfig)
 
-    // 子代理不需要 TUI 回调，默认空回调即可
-    // 运行子代理
-    let summary = subAgent.run(prompt)
+    // G5 审批传播：子审批经父通道，reason 加前缀（工具名/参数原样透传，客户端无需改版）
+    let parentApproval = parent.onApproval
+    subAgent.onApproval = { toolName, args, reason =>
+        parentApproval(toolName, args, "[task:${description}] ${reason}")
+    }
 
-    // 提取子代理的最终回复文本
-    let resultText = extractSubagentResult(subAgent)
-
-    return TaskSpawnResult(resultText, summary.rounds,
-        summary.promptTokens, summary.completionTokens)
+    // 中断传播：登记 → 跑 → finally 注销（异常路径也注销，防登记表泄漏）
+    parent.registerChild(subAgent)
+    try {
+        let summary = subAgent.run(brief)
+        var status = "ok"
+        if (summary.errorCode.size > 0) {
+            status = "failed"
+        }
+        // 中断出口：runLoop 中断分支固定以 "[已中断" 开头返回（含请求期/流式中断）
+        if (summary.reply.contains("[已中断")) {
+            status = "cancelled"
+        }
+        let resultText = extractSubagentResult(subAgent)
+        return TaskSpawnResult(resultText, summary.rounds,
+            summary.promptTokens, summary.completionTokens, status)
+    } catch (e: Exception) {
+        // 仓颉 spawn 内未捕获异常退出码为 0 的已知坑（方案 §10 风险4）：
+        // 子代理线程必须 try/catch 全包，失败转结构化 failed 而非静默
+        return TaskSpawnResult("子代理执行异常: ${e}", 0, 0, 0, "failed")
+    } finally {
+        parent.unregisterChild(subAgent)
+    }
 }
 
 /**
@@ -1095,23 +1163,23 @@ func buildSubagentPrompt(subagentType: String): String {
         case "explore" =>
             sb.append("你的职责是只读调查. 你可以:\n")
             sb.append("- 读取文件 (read_file, glob, grep, list_dir)\n")
-            sb.append("- 执行只读命令 (bash 里只读操作)\n")
-            sb.append("- 搜索代码结构\n\n")
+            sb.append("- 搜索代码与知识库 (ast_grep, cangjie_ref 等只读工具)\n\n")
             sb.append("你不能:\n")
-            sb.append("- 修改任何文件 (write_file, edit, append_file, hashline_edit 禁用)\n")
-            sb.append("- 执行有副作用的命令 (git commit, rm, etc.)\n\n")
+            sb.append("- 修改任何文件 (写文件工具不在你的工具列表里)\n")
+            sb.append("- 执行命令 (bash 不在你的工具列表里)\n\n")
             sb.append("完成后汇报你的发现, 不要做任何修改.\n")
         case "worker" =>
             sb.append("你的职责是完成指定任务. 你可以:\n")
             sb.append("- 读取和修改文件\n")
             sb.append("- 执行命令\n")
-            sb.append("- 使用所有可用工具\n\n")
+            sb.append("- 使用提供的全部工具 (不含 task 派发与任务列表管理)\n\n")
             sb.append("完成任务后汇报你做了什么.\n")
         case _ =>
             sb.append("完成指定任务并汇报结果.\n")
     }
     sb.append("\n注意:\n")
     sb.append("- 你有独立的对话历史, 看不到主会话的上下文\n")
+    sb.append("- 任务简报末尾附有父会话上下文块 (触碰文件表+摘要), 优先利用它精准定位, 避免重复大面积探索\n")
     sb.append("- 最多 5 次迭代, 高效完成任务\n")
     sb.append("- 不要请求用户确认, 自主决策\n")
     return sb.toString()

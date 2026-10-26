@@ -88,34 +88,50 @@ public class TaskTool <: CjhTool {
 
         try {
             let result = this.spawnFn(description, prompt, subagentType)
+            // 树状格式（方案 §8）：子代理作为父消息流里的一个节点呈现
             var sb = StringBuilder()
-            sb.append("=== 子代理结果: ${description} ===\n")
-            sb.append("类型: ${subagentType} · 迭代 ${result.iterations}")
+            sb.append("├─ [${subagentType}] ${description} · ${result.status} · 迭代 ${result.iterations}")
             if (result.promptTokens > 0 || result.completionTokens > 0) {
                 sb.append(" · ↑${result.promptTokens} ↓${result.completionTokens}")
             }
-            sb.append("\n${result.text}\n")
-            sb.append("=== 子代理结果结束 ===\n")
+            sb.append("\n${result.text}\n└─ (task 结束)\n")
             return ToolResult(sb.toString(), false)
         } catch (e: Exception) {
-            return ToolResult("子代理任务失败: ${e}", true)
+            return ToolResult(
+                "├─ [${subagentType}] ${description} · failed\n子代理任务失败: ${e}\n└─ (task 结束)\n", true)
         }
     }
 }
 
 /**
  * 子代理派发结果
+ *
+ * status 语义（方案 §7）：
+ * - ok        正常完成
+ * - failed    子代理异常退出 / LLM 调用失败（summary.errorCode 非空）
+ * - cancelled 父代理中断传播，子代理提前退出（阶段 B 中断传播落地后出现）
  */
 public class TaskSpawnResult {
     public let text: String
     public let iterations: Int64
     public let promptTokens: Int64
     public let completionTokens: Int64
+    public var status: String
 
     public init(text: String, iterations: Int64, promptTokens: Int64, completionTokens: Int64) {
         this.text = text
         this.iterations = iterations
         this.promptTokens = promptTokens
         this.completionTokens = completionTokens
+        this.status = "ok"
+    }
+
+    public init(text: String, iterations: Int64, promptTokens: Int64, completionTokens: Int64,
+        status: String) {
+        this.text = text
+        this.iterations = iterations
+        this.promptTokens = promptTokens
+        this.completionTokens = completionTokens
+        this.status = status
     }
 }

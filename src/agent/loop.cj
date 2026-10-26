@@ -230,10 +230,30 @@ public class RunSummary {
  * 3. 若响应为纯文本：作为最终答复返回
  */
 public class Agent {
+    // 实例 ID（fork 树语义）：注销子代理按 ID 匹配（仓颉无 === 引用相等），
+    // 后续 Web 协议树状呈现（agent_id）也用它
+    private static var agentIdCounter: Int64 = 0
+    private static let agentIdLock: Mutex = Mutex()
+    public let agentId: Int64
     private var provider: LlmProvider
     private let tools: ToolRegistry
     private let config: AgentConfig
     private var messages: ArrayList<ChatMessage>
+
+    public init(provider: LlmProvider, tools: ToolRegistry, config: AgentConfig) {
+        Agent.agentIdLock.lock()
+        try {
+            Agent.agentIdCounter += 1
+            this.agentId = Agent.agentIdCounter
+        } finally {
+            Agent.agentIdLock.unlock()
+        }
+        this.provider = provider
+        this.tools = tools
+        this.config = config
+        this.messages = ArrayList<ChatMessage>()
+        this.messages.add(ChatMessage("system", config.systemPrompt))
+    }
     // 上一轮 LLM 响应的真实 prompt token（usage.promptTokens）。
     // 压缩触发用它而非字符估算——估算对中文/JSON 开销严重低估（实测 6.5x 偏差），
     // 真实用量是 provider 已返回的精确值。0=尚未有测量（首轮前）。
@@ -263,6 +283,14 @@ public class Agent {
     private var nextTodoId: Int64 = 1
     // 插件管理器（V2b Step 2：事件钩子；None 时跳过钩子调用）
     private var pluginManager: ?PluginManager = None
+    // 任务简报上下文（方案 §5）：本会话触碰过的文件路径（工具调用时提取），
+    // 供 task 子代理简报使用；touchedLock 保护（并发子代理线程读取）
+    private var touchedFiles: HashSet<String> = HashSet<String>()
+    private var touchedLock: Mutex = Mutex()
+    // 子代理登记（中断传播，方案 §7）：父 interrupt() 下传所有登记中的子代理，
+    // spawnSubagent fork 时登记、finally 注销；childLock 保护（并发 task 线程读写）
+    private var childAgents: ArrayList<Agent> = ArrayList<Agent>()
+    private var childLock: Mutex = Mutex()
 
     // 事件回调（供 TUI/CLI 展示）
     public var onDelta: (String) -> Unit = { _ => }
@@ -328,14 +356,6 @@ public class Agent {
         }
     }
 
-    public init(provider: LlmProvider, tools: ToolRegistry, config: AgentConfig) {
-        this.provider = provider
-        this.tools = tools
-        this.config = config
-        this.messages = ArrayList<ChatMessage>()
-        this.messages.add(ChatMessage("system", config.systemPrompt))
-    }
-
     /**
      * 请求中断当前任务（P0-2）：设置中断标志，agent 在轮次间/工具执行后
      * 检查并停止循环，保留已完成的工作。线程安全。
@@ -361,6 +381,20 @@ public class Agent {
         }
         // 诊断：确认中断请求到达 agent 层（排查"中断发出但回合不结束"）
         Log.warn("Agent.interrupt 已请求：interruptFlag=true + abort() 已调用")
+        // 中断传播（方案 §7）：Ctrl+C / Web cancel 杀整棵树——
+        // 登记中的子代理同置中断标志并 abort（异常隔离：单个子代理失败不影响其余）
+        this.childLock.lock()
+        try {
+            for (c in this.childAgents) {
+                try {
+                    c.interrupt()
+                } catch (e: Exception) {
+                    Log.warn("子代理中断传播异常: ${e}")
+                }
+            }
+        } finally {
+            this.childLock.unlock()
+        }
     }
 
     /**
@@ -416,6 +450,36 @@ public class Agent {
             return this.interruptFlag
         } finally {
             this.interruptLock.unlock()
+        }
+    }
+
+    /**
+     * 登记在跑子代理（中断传播用；spawnSubagent fork 时登记，finally 注销）
+     */
+    public func registerChild(child: Agent): Unit {
+        this.childLock.lock()
+        try {
+            this.childAgents.add(child)
+        } finally {
+            this.childLock.unlock()
+        }
+    }
+
+    /**
+     * 注销子代理（按 agentId 匹配；重建列表避免依赖 ArrayList.remove 的重载差异）
+     */
+    public func unregisterChild(child: Agent): Unit {
+        this.childLock.lock()
+        try {
+            var kept = ArrayList<Agent>()
+            for (c in this.childAgents) {
+                if (c.agentId != child.agentId) {
+                    kept.add(c)
+                }
+            }
+            this.childAgents = kept
+        } finally {
+            this.childLock.unlock()
         }
     }
 
@@ -758,6 +822,7 @@ public class Agent {
                 // - 无依赖关系的 read-only → 全并发
                 // 组内 spawn 并发，组间串行；结果按 LLM 原始顺序回填
                 let toolCalls = response.toolCalls
+                this.recordTouchedPaths(toolCalls)
                 let n = Int64(toolCalls.size)
                 let deps = this.buildDependencyGraph(toolCalls)
                 let groups = this.topologicalGroups(deps, n)
@@ -1494,11 +1559,80 @@ public class Agent {
      * 无 LLM 调用（快），供跨会话注入。
      */
     public func summarizeForMemory(): String {
+        return this.summarizeFrom(this.messages)
+    }
+
+    /**
+     * 任务简报上下文块（方案 §5 / 决策 D1）：触碰文件表 + 会话摘要。
+     * spawnSubagent fork 子代理时调用——子代理不共享父历史，靠此块显式传递上下文。
+     */
+    public func taskBriefContext(): String {
+        // 后台摘要任务可能正在换装 messages（compactLock 保护）：锁内重取引用，
+        // 保证拿到的是换装前/后完整列表之一（旧列表换装后冻结不再追加）
+        var msgs = this.messages
+        this.compactLock.lock()
+        try {
+            msgs = this.messages
+        } finally {
+            this.compactLock.unlock()
+        }
+        var sb = StringBuilder()
+        sb.append("--- 父会话上下文（父代理自动附带）---\n")
+        this.touchedLock.lock()
+        try {
+            if (this.touchedFiles.size > 0) {
+                sb.append("- 本会话已触碰文件:")
+                var first = true
+                var n: Int64 = 0
+                for (f in this.touchedFiles) {
+                    if (n >= 8) {
+                        break
+                    }
+                    if (!first) {
+                        sb.append(",")
+                    }
+                    sb.append(" ${f}")
+                    first = false
+                    n += 1
+                }
+                sb.append("\n")
+            }
+        } finally {
+            this.touchedLock.unlock()
+        }
+        sb.append("- 会话摘要:\n")
+        let mem = this.summarizeFrom(msgs)
+        // 简报整体上限 ~1500 字符：防止上下文块本身成为新的 token 爆点（方案 §5）
+        sb.append(if (mem.size > 1500) { truncateUtf8(mem, 1500) + "…" } else { mem })
+        return sb.toString()
+    }
+
+    /**
+     * 记录本会话触碰的文件路径（复用 V2d DAG 资源提取；供子代理简报）
+     */
+    private func recordTouchedPaths(toolCalls: ArrayList<ToolCall>): Unit {
+        this.touchedLock.lock()
+        try {
+            for (tc in toolCalls) {
+                let (path, _) = this.extractResourceAccess(tc)
+                if (path.size > 0) {
+                    this.touchedFiles.add(path)
+                }
+            }
+        } finally {
+            this.touchedLock.unlock()
+        }
+    }
+
+    /**
+     * 摘要主体（对传入快照提取；summarizeForMemory 与子代理简报共用）
+     */
+    private func summarizeFrom(msgs: ArrayList<ChatMessage>): String {
         var task = ""
         var files = HashSet<String>()
         var toolCount: Int64 = 0
         var lastReply = ""
-        for (m in this.messages) {
+        for (m in msgs) {
             if (m.role == "user" && task.size == 0) {
                 task = m.content
             }
