@@ -98,7 +98,7 @@ def main():
         check("/api/health status=ok", health.get("status") == "ok", str(health))
 
         caps = json.loads(http_get(base + "/api/capabilities"))
-        check("/api/capabilities protocol=4", caps.get("protocol") == 4, str(caps)[:200])
+        check("/api/capabilities protocol=5", caps.get("protocol") == 5, str(caps)[:200])
         check("能力自述含出站 approval_request",
               "approval_request" in (caps.get("ws_out") or []))
         check("能力自述含入站 approval_response",
