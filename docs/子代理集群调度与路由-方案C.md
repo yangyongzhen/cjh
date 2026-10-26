@@ -293,6 +293,18 @@ public class SubagentScheduler {   // 每个父 Agent 一个实例
 > R3(4) 工具描述写明"无 scope 的 worker 与所有 writer 串行——给 scope 才能并行写"。
 > 测试：scope 提取/哨兵 1 例 + DAG 重叠串行 1 例（agent 包内直测 internal）+ 越界写 e2e 1 例
 >（子代理观察到最后一条 tool 结果为"超出本子代理写域"；未配置 capability 证默认宽松未动）。S7-S8 待做。
+>
+> ✅ 落地（2026-10-27）：**S7 已完成**（归账与转录，不变量 4 的收口）。
+> `TaskSpawnResult` 扩 `transcriptPath`/`filesTouched`（var+默认，构造签名零变动；status 语义文档补
+> timeout/budget_exceeded）；`writeSubagentTranscript` 落 `spillDir/<sid>/sub-<type>/transcript-<agentId>.md`
+>（markdown：system/user/assistant/tool 全过程；spillDir 为空跳过，失败静默不碍主流程）；
+> 子代理 `getTouchedFiles()` 快照导出；树状渲染树尾补 `触碰文件`（≤5 个）与 `转录:` 行——回父上下文的
+> 是结论（窄门不变），过程在盘上可回看；
+> 总结条全树归账：`N agents (x✓ y✗)`（scheduler.snapshot 统计）+ `⚠N 低效派生`（[路由提示] 触发时
+> scheduler.addWasted，beginRound 清零）。
+> 测试：转录文件真实存在且含子代理过程 + 触碰文件导出 1 例（SubChildProvider 加 case 5：
+> 第 1 轮 read_file 制造触碰、第 2 轮收场；踩坑复录：case 1 每轮都发 read_file 永不收场、
+> Directory.create 不幂等需先 removeIfExists）。S8 待做。
 
 ### 7.1 S1/S2a 复核（2026-10-26，读码复核结论）
 

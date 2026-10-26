@@ -82,6 +82,8 @@ public class SubagentScheduler {
     // 本回合归账：token 累计 + 派生次数（闸门数据源）
     private var tokensThisTurn: Int64 = 0
     private var spawnedThisTurn: Int64 = 0
+    // S7：低效派生计数（事后纠偏 [路由提示] 触发时 +1；总结条 ⚠N）
+    private var wastedThisTurn: Int64 = 0
 
     public init(maxConcurrent: Int64) {
         this.maxConcurrent = maxConcurrent
@@ -116,6 +118,20 @@ public class SubagentScheduler {
         this.lock.lock()
         this.spawnedThisTurn += 1
         this.lock.unlock()
+    }
+
+    /** S7：低效派生 +1（spawnSubagent 事后纠偏触发时调用） */
+    public func addWasted(): Unit {
+        this.lock.lock()
+        this.wastedThisTurn += 1
+        this.lock.unlock()
+    }
+
+    public func wastedCount(): Int64 {
+        this.lock.lock()
+        let w = this.wastedThisTurn
+        this.lock.unlock()
+        return w
     }
 
     /** 状态变更回调（TUI markDirty 用；锁外触发） */
@@ -219,11 +235,12 @@ public class SubagentScheduler {
         return t
     }
 
-    /** 回合重置（父 Agent.beginRound 调用）：token 归账与派生计数一并清零 */
+    /** 回合重置（父 Agent.beginRound 调用）：归账三项一并清零 */
     public func resetTurn(): Unit {
         this.lock.lock()
         this.tokensThisTurn = 0
         this.spawnedThisTurn = 0
+        this.wastedThisTurn = 0
         this.lock.unlock()
     }
 }

@@ -704,6 +704,16 @@ class SubChildProvider <: LlmProvider {
                     return ModelResponse("写一下", calls)
                 }
                 return ModelResponse("child saw denial", ArrayList<ToolCall>())
+            case 5 =>
+                // S7 转录用例：第 1 轮 read_file（制造触碰文件），第 2 轮起正常收场
+                if (callCount == 1) {
+                    var calls = ArrayList<ToolCall>()
+                    var a = JsonObject()
+                    a.put("path", JsonString("/tmp/cjh_ut_sub/x.cj"))
+                    calls.add(ToolCall("s5", "read_file", a))
+                    return ModelResponse("读一下", calls)
+                }
+                return ModelResponse("child done", ArrayList<ToolCall>())
             case _ =>
                 return ModelResponse("child done", ArrayList<ToolCall>())
         }
@@ -971,5 +981,43 @@ public class SubagentIsolationTest {
         // 子代理第二轮应观察到 write_file 被写域拒绝
         @Assert(factory.created[0].lastToolObserved.contains("超出本子代理写域"), true)
         @Assert(factory.created[0].lastToolObserved.contains("/tmp/cjh_ut_scope/outside/x.cj"), true)
+    }
+
+    @TestCase
+    public func testSpawnSubagentTranscriptAndFilesTouched(): Unit {
+        // S7：转录落盘（spillDir/<sid>/sub-<type>/transcript-<agentId>.md，
+        // 含子代理完整过程）+ 触碰文件导出（子代理 read_file → filesTouched）
+        let spillDir = "/tmp/cjh_ut_s7_transcript"
+        try { removeIfExists(spillDir, recursive: true) } catch (e: Exception) { () }
+        let provider = SubagentScriptProvider()
+        let factory = SubChildFactory()
+        factory.childBehavior = 5  // 第 1 轮 read_file（触碰文件），第 2 轮收场
+        let (agent, _, _) = this.buildParent(provider, Capability(), factory)
+        // buildParent 的 spillDir = /tmp/cjh_ut_sub_spill（sess-sub）；清理后断言
+        try { removeIfExists("/tmp/cjh_ut_sub_spill", recursive: true) } catch (e: Exception) { () }
+        // 子代理要读的目标文件必须存在——否则它 5 轮耗尽在重试读上，产不出最终结论
+        // （Directory.create 不幂等：已存在目录会抛 FSException，先清再建）
+        try { removeIfExists("/tmp/cjh_ut_sub", recursive: true) } catch (e: Exception) { () }
+        Directory.create("/tmp/cjh_ut_sub", recursive: true)
+        File.writeTo("/tmp/cjh_ut_sub/x.cj", "hello sub".toArray())
+        let summary = agent.run("派转录子任务")
+        @Assert(summary.reply.contains("parent done"), true)
+        let taskResult = this.lastToolResult(agent.getMessages(), "task")
+        // 转录路径在树尾，文件真实存在且含子代理过程
+        @Assert(taskResult.contains("转录: /tmp/cjh_ut_sub_spill/sess-sub/sub-explore/transcript-"), true)
+        @Assert(taskResult.contains("触碰文件: /tmp/cjh_ut_sub/x.cj"), true)
+        let line = taskResult.split("\n", -1)
+        var transcriptPath = ""
+        for (l in line) {
+            if (l.contains("转录: ")) {
+                transcriptPath = l.replace("转录: ", "")
+            }
+        }
+        @Assert(transcriptPath.size > 0, true)
+        @Assert(exists(transcriptPath), true)
+        let content = String.fromUtf8(File.readFrom(transcriptPath))
+        @Assert(content.contains("## user"), true)
+        @Assert(content.contains("child done"), true)
+        try { removeIfExists("/tmp/cjh_ut_sub_spill", recursive: true) } catch (e: Exception) { () }
     }
 }
