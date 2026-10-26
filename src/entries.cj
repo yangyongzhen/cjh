@@ -274,6 +274,9 @@ func runCli(sessionId: String): Int64 {
             case Some(sp) => agent.setSummaryProvider(sp)
             case None => ()
         }
+        // S3：子代理调度器（Agents 面板数据源；S4 并发/预算闸门载体）。默认并发 4
+        let scheduler = SubagentScheduler(4)
+        agent.subagentScheduler = Some(scheduler)
         agent.setPluginManager(pluginManager)
         let store = SessionStore(cjhCfg.sessionsDir)
         CliSession.id = ""
@@ -420,6 +423,9 @@ func runJson(prompt: String, sessionId: String): Int64 {
             case Some(sp) => agent.setSummaryProvider(sp)
             case None => ()
         }
+        // S3：子代理调度器（Agents 面板数据源；S4 并发/预算闸门载体）。默认并发 4
+        let scheduler = SubagentScheduler(4)
+        agent.subagentScheduler = Some(scheduler)
         agent.setPluginManager(pluginManager)
         let store = SessionStore(cjhCfg.sessionsDir)
 
@@ -619,6 +625,9 @@ func runTui(sessionId: String): Int64 {
             case Some(sp) => agent.setSummaryProvider(sp)
             case None => ()
         }
+        // S3：子代理调度器（Agents 面板数据源；S4 并发/预算闸门载体）。默认并发 4
+        let scheduler = SubagentScheduler(4)
+        agent.subagentScheduler = Some(scheduler)
         agent.setPluginManager(pluginManager)
 
         // TodoWriteTool：LLM 通过工具调用管理任务列表（回调绑定到 agent）
@@ -653,6 +662,14 @@ func runTui(sessionId: String): Int64 {
         let tui = TuiApp()
         tuiOpt = Some(tui)
         tui.setModel(cjhCfg.model)
+
+        // S3d：Agents 面板数据源（scheduler 变更 → 深拷贝快照 → TUI）+ 焦点行事件转发
+        scheduler.onChanged({ =>
+            tui.refreshAgents(scheduler.snapshot())
+        })
+        agent.onSubagentEvent = { id, _, text =>
+            tui.appendSubagentEvent(id, text)
+        }
 
         // 会话：恢复历史 / 新会话
         let store = SessionStore(cjhCfg.sessionsDir)
@@ -757,7 +774,16 @@ func runTui(sessionId: String): Int64 {
         agent.onApproval = { name, args, reason =>
             TuiBridge.ensureNewline()
             TuiBridge.output(Ansi.fg(Ansi.THEME_WARN) + "⚠ 需人工确认: ${name} " + Ansi.reset() + Ansi.fg(Ansi.THEME_MUTED) + formatToolArgs(name, args) + Ansi.reset())
-            TuiBridge.requestApproval(reason)
+            // G-B：审批项带 agent 身份——子代理审批的 reason 以 "[task:label] " 开头，
+            // 提取 label 存入审批队列（父自身审批无前缀，label 为空）
+            var label = ""
+            if (reason.startsWith("[task:")) {
+                let segs = reason.split("]", -1)
+                if (segs.size > 1) {
+                    label = segs[0].replace("[task:", "")
+                }
+            }
+            TuiBridge.requestApproval(reason, label)
         }
         agent.onAssistantText = { text =>
             // 回复内容左侧缩进 1 个空格：不贴左边缘，视觉更舒适
@@ -1137,23 +1163,61 @@ func spawnSubagent(provider: LlmProvider, parentRegistry: ToolRegistry, parent: 
     let subAgent = Agent(provider, subRegistry, subConfig)
 
     // G5 审批传播：子审批经父通道，reason 加前缀（工具名/参数原样透传，客户端无需改版）
+    // G-B：审批等待期间面板"当前工具"列显示 等待审批（审批返回后恢复工具名）
     let parentApproval = parent.onApproval
     subAgent.onApproval = { toolName, args, reason =>
-        parentApproval(toolName, args, "[task:${description}] ${reason}")
+        match (parent.subagentScheduler) {
+            case Some(s) => s.markTool(subAgent.agentId, "等待审批")
+            case None => ()
+        }
+        let approved = parentApproval(toolName, args, "[task:${description}] ${reason}")
+        match (parent.subagentScheduler) {
+            case Some(s) => s.markTool(subAgent.agentId, toolName)
+            case None => ()
+        }
+        approved
     }
+
+    // S3b 调度器接线：节点登记 + 当前工具转发 + 行事件上抛（焦点转发由 UI 决定去留）
+    match (parent.subagentScheduler) {
+        case Some(sched) =>
+            let node = AgentNode(subAgent.agentId, parent.agentId, description, subagentType)
+            node.state = AgentNodeState.Running
+            sched.register(node)
+            subAgent.onToolStart = { name, _ =>
+                sched.markTool(subAgent.agentId, name)
+                parent.onSubagentEvent(subAgent.agentId, "tool_start", "▶ ${name}")
+            }
+            subAgent.onToolResult = { name, _ =>
+                parent.onSubagentEvent(subAgent.agentId, "tool_result", "↳ ${name}")
+            }
+        case None => ()
+    }
+
+    // 终态回写所需（finally 统一落齐；异常路径 Failed + 零归账）
+    var finState = AgentNodeState.Failed
+    var finIterations: Int64 = 0
+    var finPrompt: Int64 = 0
+    var finCompletion: Int64 = 0
 
     // 中断传播：登记 → 跑 → finally 注销（异常路径也注销，防登记表泄漏）
     parent.registerChild(subAgent)
     try {
         let summary = subAgent.run(brief)
         var status = "ok"
+        finState = AgentNodeState.Ok
         if (summary.errorCode.size > 0) {
             status = "failed"
+            finState = AgentNodeState.Failed
         }
         // 中断出口：runLoop 中断分支固定以 "[已中断" 开头返回（含请求期/流式中断）
         if (summary.reply.contains("[已中断")) {
             status = "cancelled"
+            finState = AgentNodeState.Cancelled
         }
+        finIterations = summary.rounds
+        finPrompt = summary.promptTokens
+        finCompletion = summary.completionTokens
         let resultText = extractSubagentResult(subAgent)
         return TaskSpawnResult(resultText, summary.rounds,
             summary.promptTokens, summary.completionTokens, status)
@@ -1162,6 +1226,13 @@ func spawnSubagent(provider: LlmProvider, parentRegistry: ToolRegistry, parent: 
         // 子代理线程必须 try/catch 全包，失败转结构化 failed 而非静默
         return TaskSpawnResult("子代理执行异常: ${e}", 0, 0, 0, "failed")
     } finally {
+        // S3b：终态回写面板 + token 归账（异常路径 Failed/0）
+        match (parent.subagentScheduler) {
+            case Some(sched) =>
+                sched.finish(subAgent.agentId, finState, finIterations, finPrompt, finCompletion)
+                sched.addTokens(finPrompt + finCompletion)
+            case None => ()
+        }
         // 复核 E：子代理 provider 是每次派生新建的实例，收尾必须 abort() 关掉
         // 池化 keep-alive 连接（同时关 current+pooled），否则每次派生泄漏 1 个 fd
         provider.abort()

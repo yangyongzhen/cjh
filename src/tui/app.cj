@@ -91,6 +91,12 @@ public class TuiApp {
     private let idleTimeoutSecs: Int64
     // 审批/确认弹窗（替代旧的状态行内联审批 UI）
     private var confirmDialog: ConfirmDialog = ConfirmDialog()
+    // Agents 面板（S3：子代理树状态，渲染在 Tasks 面板之上）
+    private var agentsPanel: AgentsPanel = AgentsPanel()
+    // 焦点（Ctrl+G 循环）：0=父，否则子 agentId；聚焦子代理时其行事件进主流（│ 前缀）
+    private var focusAgentId: Int64 = 0
+    private var focusLock: Mutex = Mutex()
+    private var focusCandidates: ArrayList<Int64> = ArrayList<Int64>()  // 可聚焦子代理 id（最近快照）
     // provider 配置表单弹窗（/provider 无参数时弹出）
     private var providerDialog: FormDialog = FormDialog()
     // 视图切换标签栏（对话 / 帮助）
@@ -119,6 +125,7 @@ public class TuiApp {
     private var approvalLock: Mutex = Mutex()
     private var approvalQueue: ArrayList<String> = ArrayList<String>()   // 排队中的审批 prompt（队首=当前弹窗）
     private var approvalIds: ArrayList<String> = ArrayList<String>()     // 与 approvalQueue 平行的请求 id
+    private var approvalLabels: ArrayList<String> = ArrayList<String>()  // 与 approvalQueue 平行的 agent 身份（G-B；父自身审批为空串）
     private var approvalAnswers: HashMap<String, Bool> = HashMap<String, Bool>()  // 请求 id → 结果（等待方各自读取）
     private var approvalSeq: AtomicInt64 = AtomicInt64(0)                // 请求 id 发生器（单调，不复用）
     private var approvalTotal: Int64 = 0                                 // 本批审批总数（队列空→非空时重置）
@@ -193,6 +200,7 @@ public class TuiApp {
                 if (this.approvalQueue.size > 0) {
                     let id = this.approvalIds.remove(at: 0)
                     this.approvalQueue.remove(at: 0)
+                    this.approvalLabels.remove(at: 0)
                     this.approvalAnswers.add(id, ok)
                     this.approvalAnswered += 1
                     if (this.approvalQueue.size > 0) {
@@ -542,6 +550,11 @@ public class TuiApp {
      * 返回 true=同意执行，false=拒绝。
      */
     public func requestApproval(prompt: String): Bool {
+        // 父自身审批：无 agent 身份（G-B label 为空）
+        return this.requestApproval(prompt, "")
+    }
+
+    public func requestApproval(prompt: String, label: String): Bool {
         // S1 队列化：并发审批排队，队首负责弹窗；后来者只排队等待自己的结果
         let id = "apr-" + this.approvalSeq.fetchAdd(1).toString()
         var title = "审批"
@@ -559,6 +572,7 @@ public class TuiApp {
             }
             this.approvalQueue.add(prompt)
             this.approvalIds.add(id)
+            this.approvalLabels.add(label)
             title = this.approvalTitle()
             // 复核 A/B：show 必须在锁内、且只有"此刻仍是队首"的调用方才弹——
             // 否则 unlock 与 show 之间若队首被答复/Ctrl+C 清队，弹窗会被回写成
@@ -615,6 +629,7 @@ public class TuiApp {
             }
             this.approvalIds.clear()
             this.approvalQueue.clear()
+            this.approvalLabels.clear()
         } finally {
             this.approvalLock.unlock()
         }
@@ -627,6 +642,81 @@ public class TuiApp {
     public func quit(): Unit {
         this.running = false
         this.markDirty()
+    }
+
+    /**
+     * 刷新 Agents 面板（S3）：装配层 scheduler.onChanged → snapshot 深拷贝 → 此处转换推送
+     */
+    public func refreshAgents(nodes: ArrayList<AgentNode>): Unit {
+        let rows = ArrayList<AgentRow>()
+        let ids = ArrayList<Int64>()
+        this.focusLock.lock()
+        for (n in nodes) {
+            rows.add(AgentRow(n.agentId, n.label, n.kind, this.mapRowState(n.state),
+                n.iterations, n.promptTokens, n.completionTokens, n.currentTool, false))
+            ids.add(n.agentId)
+        }
+        this.focusCandidates = ids
+        let focus = this.focusAgentId
+        this.focusLock.unlock()
+        this.agentsPanel.updateRows(rows)
+        this.agentsPanel.setFocus(focus)
+        this.markDirty()
+    }
+
+    private func mapRowState(s: AgentNodeState): AgentRowState {
+        match (s) {
+            case AgentNodeState.Pending => AgentRowState.RowPending
+            case AgentNodeState.Running => AgentRowState.RowRunning
+            case AgentNodeState.Ok => AgentRowState.RowOk
+            case AgentNodeState.Failed => AgentRowState.RowFailed
+            case AgentNodeState.Timeout => AgentRowState.RowTimeout
+            case AgentNodeState.Cancelled => AgentRowState.RowCancelled
+            case AgentNodeState.BudgetExceeded => AgentRowState.RowBudgetExceeded
+        }
+    }
+
+    /** Ctrl+G 焦点循环：父 → 子1 → 子2 → … → 父（0=父） */
+    public func cycleFocus(): Unit {
+        this.focusLock.lock()
+        let candidates = ArrayList<Int64>()
+        candidates.add(0)
+        for (id in this.focusCandidates) {
+            candidates.add(id)
+        }
+        var idx: Int64 = 0
+        var i: Int64 = 0
+        for (c in candidates) {
+            if (c == this.focusAgentId) {
+                idx = i
+            }
+            i += 1
+        }
+        let next = candidates[(idx + 1) % candidates.size]
+        this.focusAgentId = next
+        this.focusLock.unlock()
+        this.agentsPanel.setFocus(next)
+        this.markDirty()
+    }
+
+    public func currentFocusAgentId(): Int64 {
+        this.focusLock.lock()
+        let f = this.focusAgentId
+        this.focusLock.unlock()
+        return f
+    }
+
+    /**
+     * 子代理行事件（S3d 焦点转发）：仅焦点子代理的事件进主流（│ 前缀）。
+     * 硬规则：子代理 onDelta 绝不转发（OutputView.appendDelta 共用当前行，多路会撕行），
+     * 本方法只收整行事件（tool_start/tool_result）。
+     */
+    public func appendSubagentEvent(agentId: Int64, text: String): Unit {
+        let focus = this.currentFocusAgentId()
+        if (focus == 0 || focus != agentId) {
+            return  // 非焦点子代理：只在 Agents 面板行里滚动更新
+        }
+        this.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "│ " + text + Ansi.reset())
     }
 
     // ── 测试观测（TUI 逻辑单测用；不触碰终端渲染）──
@@ -647,6 +737,17 @@ public class TuiApp {
     /** 当前审批弹窗标题（多路排队时应为 审批(n/m)） */
     public func testApprovalTitle(): String {
         return this.confirmDialog.currentTitle()
+    }
+
+    /** 排队审批的 agent 身份列表（G-B；与队列平行，父自身审批为空串） */
+    public func testApprovalLabels(): ArrayList<String> {
+        this.approvalLock.lock()
+        let labels = ArrayList<String>()
+        for (l in this.approvalLabels) {
+            labels.add(l)
+        }
+        this.approvalLock.unlock()
+        return labels
     }
 
     /**
@@ -1285,6 +1386,12 @@ public class TuiApp {
             this.toggleReasoning()
             return
         }
+        // Ctrl+G（S3）：循环切换焦点（父 → 各子代理 → 父）。
+        // 方案C 原定 Ctrl+T，实测 ch=20 已被思考展开占用 → 改 Ctrl+G（ch=7，控制字节 text 为空）
+        if (key.ch == 7 && !key.isEsc) {
+            this.cycleFocus()
+            return
+        }
         // Ctrl+C（P0-2）：审批等待中→拒绝审批；agent 忙→中断当前轮；
         // 空闲→第一次确认、第二次退出（防误触丢会话）
         if (key.isCtrlC) {
@@ -1672,9 +1779,11 @@ public class TuiApp {
             let outH0: Int64 = if (statusRow - 8 > 0) { statusRow - 8 } else { 0 }
             // tasksH：Tasks 面板占用行数（无任务时为 0；maxH 用 outH0 限制，误差≤1 行可接受）
             let tasksH: Int64 = this.tasksPanel.height(outH0)
-            // 动态状态行位置：statusRow - 1(间隔) - tasksH(面板高度) - 1(自身)
+            // agentsH：Agents 面板高度（S3），渲染在 Tasks 面板之上
+            let agentsH: Int64 = this.agentsPanel.height(outH0)
+            // 动态状态行位置：statusRow - 1(间隔) - tasksH - agentsH(两块面板) - 1(自身)
             // 无 agent 运行时，agentRow 不使用，仅用于 outH 计算
-            let agentRow: Int64 = if (agentBusy) { statusRow - 1 - tasksH - 1 } else { -1 }
+            let agentRow: Int64 = if (agentBusy) { statusRow - 1 - tasksH - agentsH - 1 } else { -1 }
 
             // 思考块（方案 B）：作为消息流成员由 OutputView 渲染（折叠/展开段），
             // 不再占用独立布局区域——消息区高度恒定，思考随输出滚动回看
@@ -1704,6 +1813,8 @@ public class TuiApp {
                 }
                 // Tasks 面板：有任务时在输出区右下角渲染
                 this.tasksPanel.render(this.canvas, statusRow - 1, cols, outH)
+                // Agents 面板（S3）：Tasks 之上，scheduler 快照驱动
+                this.agentsPanel.render(this.canvas, statusRow - 1 - tasksH, cols, outH)
                 // 动态状态行：agent 执行中时渲染在 Tasks 面板上方
                 if (agentBusy && agentRow >= 8) {
                     this.spinner.tick()
@@ -1837,6 +1948,7 @@ public class TuiApp {
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Tab / ←→       切换视图（对话/帮助）" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Ctrl+E         多行输入编辑（Alt+Enter 提交）" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Ctrl+T         思考过程展开/折叠（推理模型），展开后可上滚回看多轮历史" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Ctrl+G         循环切换焦点（父 → 子代理 → 父），焦点子代理的工具行进入主流" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  PageUp/Down    输出区滚动（Ctrl+U/D 亦可）" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Ctrl+C         空闲退出 / 忙时中断，再按强制退出" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Esc            关闭弹窗 / 退出编辑 / 回对话视图 / 忙时中断并立即发送排队消息" + Ansi.reset())

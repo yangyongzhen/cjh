@@ -295,6 +295,30 @@ def test_approval_queue() -> None:
         s.close()
 
 
+def test_agents_panel_focus() -> None:
+    print("[场景4c] Agents 面板：并发子代理行可见 + Ctrl+G 焦点转发工具行")
+    cfg = make_config_dir()  # 无 approval：子代理一路跑完，不弹审批
+    # CJH_MOCK_TASKS：父并发派两个 explore；CJH_MOCK_DELAY_MS 拖慢每轮，
+    # 给面板行渲染与焦点切换留观察窗口
+    s = PtuSession(cfg, extra_env={"CJH_MOCK_TASKS": "1", "CJH_MOCK_DELAY_MS": "300"})
+    try:
+        s.expect("cjh")
+        s.send("跑面板测试\n")
+        s.expect("Agents")            # 面板标题（节点登记即渲染）
+        check("Agents 面板出现", True)
+        s.expect("explore")           # 面板行：子代理类型
+        check("子代理面板行可见", True)
+        s.send_key(7)                 # Ctrl+G：焦点切到第一个子代理
+        s.expect("│")                 # 焦点子代理的行事件进主流（│ 前缀）
+        check("Ctrl+G 焦点后子代理工具行进主流（│ 前缀）", True)
+        s.expect("FINAL-DONE")
+        check("回合完成", True)
+        s.send_key(3)  # 空闲：一次退出
+        s.wait_exit()
+    finally:
+        s.close()
+
+
 def test_approval_no() -> None:
     print("[场景5] 审批弹窗-拒绝：n 拒绝操作")
     cfg = make_config_dir(approval=["read_file"])
@@ -723,6 +747,7 @@ def main() -> None:
     test_help_view()
     test_approval_yes()
     test_approval_queue()
+    test_agents_panel_focus()
     test_approval_no()
     test_provider_dialog()
     test_provider_dialog_aggregator()

@@ -363,8 +363,13 @@ class TuiBridge {
      * 请求人工审批（agent 线程调用；阻塞直到用户在 TUI 按 y/n）
      */
     public static func requestApproval(prompt: String): Bool {
+        return requestApproval(prompt, "")
+    }
+
+    /** G-B：带 agent 身份的审批（label 来自子代理 task 描述；父自身审批传空串） */
+    public static func requestApproval(prompt: String, label: String): Bool {
         if (let Some(a) <- TuiBridge.app) {
-            return a.requestApproval(prompt)
+            return a.requestApproval(prompt, label)
         }
         return false
     }

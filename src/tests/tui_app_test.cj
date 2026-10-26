@@ -5,6 +5,7 @@ import std.sync.*
 import std.time.*
 import cjterm.*
 import cjh.tui.*
+import cjh.agent.*
 
 /**
  * TuiApp 事件循环按键分发单元测试（此前零覆盖）
@@ -105,6 +106,44 @@ public class TuiAppKeyTest {
         @Assert(app.testRunning(), true)          // 不退出
         @Assert(app.testApprovalQueueSize(), 0)   // 队列清空
         @Assert(app.testApprovalVisible(), false)
+    }
+
+    @TestCase
+    public func testFocusCycleRefreshAgents(): Unit {
+        // S3d：Ctrl+G 焦点循环 父(0) → 子1 → 子2 → 父；无子代理时循环回父
+        let app = TuiApp()
+        @Assert(app.currentFocusAgentId(), 0)
+        app.cycleFocus()  // 无子代理：仍回父
+        @Assert(app.currentFocusAgentId(), 0)
+        var nodes = ArrayList<AgentNode>()
+        nodes.add(AgentNode(101, 1, "任务A", "explore"))
+        nodes.add(AgentNode(102, 1, "任务B", "worker"))
+        app.refreshAgents(nodes)
+        app.cycleFocus()  // 0 → 101
+        @Assert(app.currentFocusAgentId(), 101)
+        app.cycleFocus()  // 101 → 102
+        @Assert(app.currentFocusAgentId(), 102)
+        app.cycleFocus()  // 102 → 0
+        @Assert(app.currentFocusAgentId(), 0)
+    }
+
+    @TestCase
+    public func testApprovalQueueCarriesLabels(): Unit {
+        // S3e G-B：审批队列项带 agent 身份（label 与队列平行；父自身审批为空串）
+        let app = TuiApp()
+        let results = ArrayList<Bool>()
+        results.add(false)
+        let t1 = spawn {
+            results[0] = app.requestApproval("子代理危险操作", "并发审批一号")
+        }
+        @Assert(this.waitFor({ => app.testApprovalVisible() }), true)
+        let labels = app.testApprovalLabels()
+        @Assert(labels.size, 1)
+        @Assert(labels[0], "并发审批一号")
+        app.handleKey(KeyEvent(3))  // Ctrl+C：整体拒绝，解除阻塞
+        let _ = t1.get()
+        @Assert(results[0], false)
+        @Assert(app.testApprovalLabels().size, 0)  // 清队同步清 labels
     }
 
     @TestCase

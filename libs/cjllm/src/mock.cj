@@ -81,13 +81,11 @@ public class MockProvider <: LlmProvider {
         // 的路径，验证 stdx 打到 fd 1 的噪声不会进输入栏。默认 4 步链不变，
         // 不影响 runMockVerify 的"恰好 4 次调用"断言（它不设置该变量）。
         let webFetchUrl: String = mockGetenv("CJH_MOCK_WEB_URL") ?? ""
-        // 环境变量门控（additive，默认关闭）：CJH_MOCK_TASKS=1 时父代理第 1 轮改发
+        // 环境变量门控（additive，默认关闭）：CJH_MOCK_TASKS=1 时父代理**第 1 轮**改发
         // 两个 task 调用（V2d 同批并发）。父判别：tools 里含 task（子 explore 的
-        // registry 已剥离 task，即使环境变量继承到子代理也不会再派）——否则父自己
-        // 不发 read_file 会让审批被父抢先，且子代理第 1 轮的 read_file 撞
-        // capability approval → 两路并发审批进 TUI 队列，供 pty 验证审批队列化
-        //（y 只批队首、标题 审批(n/m)）。
-        if ((mockGetenv("CJH_MOCK_TASKS") ?? "").size > 0) {
+        // registry 已剥离 task，即使环境变量继承到子代理也不会再派）；callCount==1
+        // 限定只派一次——否则父每轮都再派，无限派生永远到不了最终答复。
+        if ((mockGetenv("CJH_MOCK_TASKS") ?? "").size > 0 && this.callCount == 1) {
             var parentHasTask = false
             for (t in tools) {
                 if (t.name == "task") {

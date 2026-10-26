@@ -256,6 +256,14 @@ public class SubagentScheduler {   // 每个父 Agent 一个实例
 > ✅ 落地（2026-10-26，commit `9d0f88b`）：**S1 与 S2a 已完成**（审批队列化 TUI+Web、provider 每子代理独立实例；
 > 门禁：test.sh 552 / test_libs.sh 175（cjterm 加 `ConfirmDialog.currentTitle()`）/ pty 67 / build 零代码告警 / --mock 全过）。
 > 落地明细见 `并行子代理与上下文隔离-方案.md` §11.3；**复核发现的残留见 §7.1**（S2b/S2c 未做，另 4 处需收口）。
+>
+> ✅ 落地（2026-10-27）：**S3 + §7.1 复核收口（A–F）已完成**。S3a `src/agent/scheduler.cj`（AgentNode/AgentNodeState/SubagentScheduler：
+> 登记/终态/当前工具/快照深拷贝/onChanged/并发信号量+排队中断检查/回合 token 归账）；
+> S3c `libs/cjterm/src/agentspanel.cj`（TasksPanel 同款模式，高度 min(n+2,7) + "+N more"，标题全树归账 `Agents (N running · M done · ↑xxk)`）；
+> S3d 主流只讲父的故事 + Agents 面板 + 焦点切换（**键位偏差：方案原定 Ctrl+T，实测 ch=20 已被思考展开占用 → 改 Ctrl+G(ch=7)**，帮助页已同步）；
+> 焦点子代理行事件进主流（`│` 前缀），**delta 绝不转发的硬规则**已写进代码注释；S3e G-B 审批队列项带 agent 身份（label 与队列平行，子代理审批等待时面板行显示"等待审批"）。
+> 测试：scheduler 3 例 + 面板渲染 4 例 + tui 焦点/label 2 例；pty 67 → **75**（+审批排队 4b、Agents 面板/Ctrl+G 焦点 4c；Tab 回归全绿）。
+> S4（边界）、S5-S8 待做；G-A TUI 审批超时随 S4。
 
 ### 7.1 S1/S2a 复核（2026-10-26，读码复核结论）
 
