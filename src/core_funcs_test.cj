@@ -811,6 +811,32 @@ public class SubagentIsolationTest {
         let taskResult = this.lastToolResult(agent.getMessages(), "task")
         @Assert(taskResult.contains("├─ [explore] 调查任务 · ok · 迭代 1"), true)
         @Assert(taskResult.contains("└─ (task 结束)"), true)
+        // S5(c) 事后纠偏：1 轮完成 + 结论 10 字符（<200）→ 尾部挂 [路由提示]
+        @Assert(taskResult.contains("[路由提示]"), true)
+        @Assert(taskResult.contains("请直接处理"), true)
+    }
+
+    @TestCase
+    public func testTaskToolRoutingOff(): Unit {
+        // S5(d)：/parallel off → task 派发物理关闭（execute 直接拒绝，不进 spawnFn）
+        let old = SubagentRouting.current()
+        SubagentRouting.set("off")
+        // 仓颉 lambda 不能捕获可变局部变量：ArrayList 包装哨兵
+        let spawned = ArrayList<Bool>()
+        spawned.add(false)
+        let tool = TaskTool({ _, _, _ =>
+            spawned[0] = true
+            TaskSpawnResult("不应到达", 0, 0, 0, "ok")
+        })
+        var a = JsonObject()
+        a.put("description", JsonString("x"))
+        a.put("prompt", JsonString("y"))
+        a.put("subagent_type", JsonString("explore"))
+        let r = tool.execute(a)
+        SubagentRouting.set(old)  // 恢复（静态状态，别的用例还要用）
+        @Assert(r.isError, false)
+        @Assert(r.content.contains("并行子代理已关闭"), true)
+        @Assert(spawned[0], false)
     }
 
     @TestCase

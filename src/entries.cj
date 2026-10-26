@@ -278,6 +278,8 @@ func runCli(sessionId: String): Int64 {
         let scheduler = SubagentScheduler(cjhCfg.maxSubagents, cjhCfg.maxTasksPerTurn,
             cjhCfg.subagentTokenBudget, cjhCfg.subagentTimeoutMs)
         agent.subagentScheduler = Some(scheduler)
+        // S5：路由模式（settings subagent_mode；运行时 /parallel 切换）
+        SubagentRouting.set(cjhCfg.subagentMode)
         agent.setPluginManager(pluginManager)
         let store = SessionStore(cjhCfg.sessionsDir)
         CliSession.id = ""
@@ -428,6 +430,8 @@ func runJson(prompt: String, sessionId: String): Int64 {
         let scheduler = SubagentScheduler(cjhCfg.maxSubagents, cjhCfg.maxTasksPerTurn,
             cjhCfg.subagentTokenBudget, cjhCfg.subagentTimeoutMs)
         agent.subagentScheduler = Some(scheduler)
+        // S5：路由模式（settings subagent_mode；运行时 /parallel 切换）
+        SubagentRouting.set(cjhCfg.subagentMode)
         agent.setPluginManager(pluginManager)
         let store = SessionStore(cjhCfg.sessionsDir)
 
@@ -631,6 +635,8 @@ func runTui(sessionId: String): Int64 {
         let scheduler = SubagentScheduler(cjhCfg.maxSubagents, cjhCfg.maxTasksPerTurn,
             cjhCfg.subagentTokenBudget, cjhCfg.subagentTimeoutMs)
         agent.subagentScheduler = Some(scheduler)
+        // S5：路由模式（settings subagent_mode；运行时 /parallel 切换）
+        SubagentRouting.set(cjhCfg.subagentMode)
         agent.setPluginManager(pluginManager)
 
         // TodoWriteTool：LLM 通过工具调用管理任务列表（回调绑定到 agent）
@@ -1246,7 +1252,14 @@ func spawnSubagent(provider: LlmProvider, parentRegistry: ToolRegistry, parent: 
         finIterations = summary.rounds
         finPrompt = summary.promptTokens
         finCompletion = summary.completionTokens
-        let resultText = extractSubagentResult(subAgent)
+        var resultText = extractSubagentResult(subAgent)
+        // S5(c) 事后纠偏（比说教有效）：1 轮完成且结论稀薄（<200 字符）的派生，
+        // 明确告诉模型这次外包不划算——用真实成本反馈自我校准
+        if (summary.rounds <= 1 && resultText.toRuneArray().size < 200) {
+            resultText = resultText +
+                "\n[路由提示] 该子任务 ${summary.rounds} 轮完成、结论 ${resultText.toRuneArray().size} 字符；" +
+                "此类任务下次请直接处理（单次派生固定开销约 3–5k token：子代理 system prompt + 全量工具 schema）"
+        }
         return TaskSpawnResult(resultText, summary.rounds,
             summary.promptTokens, summary.completionTokens, status)
     } catch (e: SubagentTimeoutException) {

@@ -44,7 +44,7 @@ public class SubagentConfigTest {
 
     @TestCase
     public func testSubagentLimitsDefaults(): Unit {
-        // 缺省：D9 默认值（并发 4 / 每回合 6 / 预算 200k / 超时 300s）
+        // 缺省：D9 默认值（并发 4 / 每回合 6 / 预算 200k / 超时 300s / 路由 auto）
         let dir = "/tmp/cjh_ut_subagent_cfg_def"
         cleanDir(dir)
         Directory.create(dir)
@@ -54,6 +54,19 @@ public class SubagentConfigTest {
         @Assert(cfg.maxTasksPerTurn, 6)
         @Assert(cfg.subagentTokenBudget, 200000)
         @Assert(cfg.subagentTimeoutMs, 300000)
+        @Assert(cfg.subagentMode, "auto")
+        cleanDir(dir)
+    }
+
+    @TestCase
+    public func testSubagentModeParsed(): Unit {
+        // S5：subagent_mode（auto/on/off）
+        let dir = "/tmp/cjh_ut_subagent_cfg_mode"
+        cleanDir(dir)
+        Directory.create(dir)
+        File.writeTo("${dir}/settings.json", "{\"subagent_mode\": \"off\"}".toArray())
+        let cfg = CjhConfig(dir)
+        @Assert(cfg.subagentMode, "off")
         cleanDir(dir)
     }
 }
