@@ -292,6 +292,10 @@ public class ToolStartEvent {
     public var name: String = ""
     public var args: JsonObject = JsonObject()
     public var meta: FrameMeta = FrameMeta()
+    // S8 可选 agent 身份（D10：缺省不序列化=父回合，字段不虚报）：
+    // agent_id = cjh.agent Agent.agentId；agent_label = task description
+    public var agentId: Int64 = 0
+    public var agentLabel: String = ""
 
     public init() {}
 
@@ -305,6 +309,12 @@ public class ToolStartEvent {
         obj.put("type", JsonString("tool_start"))
         obj.put("name", JsonString(this.name))
         obj.put("args", this.args)
+        if (this.agentId != 0) {
+            obj.put("agent_id", JsonInt(this.agentId))
+        }
+        if (this.agentLabel.size > 0) {
+            obj.put("agent_label", JsonString(this.agentLabel))
+        }
         putFrameMeta(obj, this.meta)
         return obj.toJsonString()
     }
@@ -324,6 +334,9 @@ public class ToolResultEvent {
     public var isError: Bool = false
     public var diff: ?DiffInfo = None
     public var meta: FrameMeta = FrameMeta()
+    // S8 可选 agent 身份（同 tool_start：缺省不序列化=父回合）
+    public var agentId: Int64 = 0
+    public var agentLabel: String = ""
 
     public init() {}
 
@@ -339,6 +352,12 @@ public class ToolResultEvent {
         obj.put("name", JsonString(this.name))
         obj.put("content", JsonString(this.content))
         obj.put("is_error", JsonBool(this.isError))
+        if (this.agentId != 0) {
+            obj.put("agent_id", JsonInt(this.agentId))
+        }
+        if (this.agentLabel.size > 0) {
+            obj.put("agent_label", JsonString(this.agentLabel))
+        }
         if (let Some(d) <- this.diff) {
             obj.put("diff", d.toJson())
         }

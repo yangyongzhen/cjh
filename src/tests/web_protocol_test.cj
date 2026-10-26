@@ -210,6 +210,46 @@ func waitForEvents(ch: CaptureChannel, waitMs: Int64): Unit {
 public class WebProtocolFrameTest {
 
     @TestCase
+    public func testAgentFieldsAbsentForParentFrames(): Unit {
+        // S8/v5：父回合帧不携带 agent 字段（缺省不序列化=字段不虚报，老客户端零影响）
+        let start = ToolStartEvent("read_file", JsonObject())
+        let startObj = parseObj(start.toJson())
+        @Assert(getInt(startObj, "agent_id"), -1)   // 键不存在
+        @Assert(getStr(startObj, "agent_label"), "")
+        let result = ToolResultEvent("read_file", "ok", false)
+        let resultObj = parseObj(result.toJson())
+        @Assert(getInt(resultObj, "agent_id"), -1)
+        @Assert(getStr(resultObj, "agent_label"), "")
+    }
+
+    @TestCase
+    public func testAgentFieldsPresentWhenSet(): Unit {
+        // S8/v5：子代理帧带 agent_id / agent_label
+        let start = ToolStartEvent("grep", JsonObject())
+        start.agentId = 42
+        start.agentLabel = "并发审批一号"
+        let startObj = parseObj(start.toJson())
+        @Assert(getInt(startObj, "agent_id"), 42)
+        @Assert(getStr(startObj, "agent_label"), "并发审批一号")
+        let result = ToolResultEvent("grep", "ok", false)
+        result.agentId = 42
+        result.agentLabel = "并发审批一号"
+        let resultObj = parseObj(result.toJson())
+        @Assert(getInt(resultObj, "agent_id"), 42)
+        @Assert(getStr(resultObj, "agent_label"), "并发审批一号")
+        // 协议版本随帧形状变化递增到 v5
+        @Assert(capabilityProtocolVersion(), 5)
+    }
+
+    private func parseObj(json: String): JsonObject {
+        let parsed = JsonValue.fromStr(json)
+        match (parsed.kind()) {
+            case JsonKind.JsObject => return parsed.asObject()
+            case _ => return JsonObject()
+        }
+    }
+
+    @TestCase
     public func testChatRequestParsesSnakeCaseOverride(): Unit {
         let obj = JsonObject()
         obj.put("message", JsonString("你好"))

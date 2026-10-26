@@ -305,6 +305,16 @@ public class SubagentScheduler {   // 每个父 Agent 一个实例
 > 测试：转录文件真实存在且含子代理过程 + 触碰文件导出 1 例（SubChildProvider 加 case 5：
 > 第 1 轮 read_file 制造触碰、第 2 轮收场；踩坑复录：case 1 每轮都发 read_file 永不收场、
 > Directory.create 不幂等需先 removeIfExists）。S8 待做。
+>
+> ✅ 落地（2026-10-27）：**S8 已完成——阶段 C（S1–S8）全部落地**。
+> 协议升 **v5**：tool_start / tool_result 增可选 `agent_id` / `agent_label`（D10：缺省**不序列化**=
+> 父回合，字段不虚报，老客户端零影响）；capabilities.cj 版本号与帧清单注释同步。
+> 测试：父帧缺字段 / 子帧带字段 + 版本号断言 2 例（web_protocol_test）。
+> 前端按 agent 分列渲染另立项（D10 既定）；`agent_state` 未加（子代理工具帧尚不经 web 通道，
+> 加了即虚报——待 S8 后续把子代理工具事件接入 WS 通道时一并补）。
+> **验收对照（§8 不变量）**：1 权限单调 ✅（writeScope 只收窄+越界写用例）；2 上下文单向流 ✅
+>（简报+结论+transcriptPath 只落盘不回灌）；3 可观测 ✅（面板/焦点/审批队列）；4 有界资源 ✅
+>（并发 4/每回合 6/预算 200k/超时 300s，超限均结构化失败且不挂死）。
 
 ### 7.1 S1/S2a 复核（2026-10-26，读码复核结论）
 
