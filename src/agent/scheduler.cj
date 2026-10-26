@@ -3,6 +3,13 @@ package cjh.agent
 import std.sync.*
 import std.collection.*
 
+/** 子代理墙钟超时（S4）：spawnSubagent 捕获后映射 status=timeout（T2 教训：不用字符串嗅探） */
+public class SubagentTimeoutException <: Exception {
+    public init(msg: String) {
+        super(msg)
+    }
+}
+
 /**
  * 子代理调度器（阶段 C S3，方案C §5 R2）：每个父 Agent 一个实例。
  *
@@ -65,15 +72,50 @@ public class AgentNode {
 public class SubagentScheduler {
     private let maxConcurrent: Int64
     private let sem: Semaphore
+    // S4 边界（0 = 对应项不限）
+    private let maxPerTurn: Int64      // 每回合派生上限（超出 budget_exceeded，直接拒）
+    private let tokenBudget: Int64     // 子代理回合 token 预算
+    public let timeoutMs: Int64        // 子代理墙钟超时
     private let lock: Mutex = Mutex()
     private var nodes: ArrayList<AgentNode> = ArrayList<AgentNode>()
     private var changedCb: () -> Unit = { => }
-    // S4：本回合 token 归账（预算闸门数据源）
+    // 本回合归账：token 累计 + 派生次数（闸门数据源）
     private var tokensThisTurn: Int64 = 0
+    private var spawnedThisTurn: Int64 = 0
 
     public init(maxConcurrent: Int64) {
         this.maxConcurrent = maxConcurrent
         this.sem = Semaphore(maxConcurrent)
+        this.maxPerTurn = 0
+        this.tokenBudget = 0
+        this.timeoutMs = 0
+    }
+
+    public init(maxConcurrent: Int64, maxPerTurn: Int64, tokenBudget: Int64, timeoutMs: Int64) {
+        this.maxConcurrent = maxConcurrent
+        this.sem = Semaphore(maxConcurrent)
+        this.maxPerTurn = maxPerTurn
+        this.tokenBudget = tokenBudget
+        this.timeoutMs = timeoutMs
+    }
+
+    /**
+     * 派生闸门（S4）：本回合派生数达上限，或 token 预算已用尽 → false。
+     * 调用方（spawnSubagent）据此返回结构化 budget_exceeded——模型能读懂并改变策略。
+     */
+    public func allowSpawn(): Bool {
+        this.lock.lock()
+        let overTurns: Bool = this.maxPerTurn > 0 && this.spawnedThisTurn >= this.maxPerTurn
+        let overBudget: Bool = this.tokenBudget > 0 && this.tokensThisTurn >= this.tokenBudget
+        this.lock.unlock()
+        return !overTurns && !overBudget
+    }
+
+    /** 成功派发后计数（在 acquire 成功后调用） */
+    public func recordSpawn(): Unit {
+        this.lock.lock()
+        this.spawnedThisTurn += 1
+        this.lock.unlock()
     }
 
     /** 状态变更回调（TUI markDirty 用；锁外触发） */
@@ -177,10 +219,11 @@ public class SubagentScheduler {
         return t
     }
 
-    /** 回合重置（父 Agent.beginRound 调用） */
+    /** 回合重置（父 Agent.beginRound 调用）：token 归账与派生计数一并清零 */
     public func resetTurn(): Unit {
         this.lock.lock()
         this.tokensThisTurn = 0
+        this.spawnedThisTurn = 0
         this.lock.unlock()
     }
 }
