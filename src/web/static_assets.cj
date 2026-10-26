@@ -155,7 +155,7 @@ public class StaticAssets {
     <div id="approval-modal" class="modal-overlay hidden">
         <div class="modal-dialog approval-dialog">
             <div class="modal-header">
-                <span>⚠ 需要人工确认</span>
+                <span id="approval-title">⚠ 需要人工确认</span>
                 <span id="approval-countdown" class="approval-countdown"></span>
             </div>
             <div class="modal-body">
@@ -1124,8 +1124,9 @@ function handleError(msg) {
 // ====== 审批（approval_request → approval_response） ======
 // 服务端在危险操作前停下回合等人确认：必须给出"同意/拒绝"两条明确出路，
 // 并显示剩余时间——超时由服务端按拒绝处理（回 approval_timeout），前端只如实展示。
-let currentApproval = null;   // { requestId, expiresAt }
+let currentApproval = null;   // { requestId, expiresAt }（队首，当前弹窗）
 let approvalTimer = null;
+let approvalQueue = [];       // S1 队列化：并发 approval_request 按到达顺序排队
 
 function handleApprovalRequest(msg) {
     let requestId = msg.request_id || '';
@@ -1135,22 +1136,44 @@ function handleApprovalRequest(msg) {
         return;
     }
     let ttl = typeof msg.expires_in_ms === 'number' ? msg.expires_in_ms : 300000;
-    currentApproval = { requestId: requestId, expiresAt: Date.now() + ttl };
+    // 排队而非覆盖：并发审批各自带到期时间，队首弹窗，应答后弹下一个
+    approvalQueue.push({ requestId: requestId, expiresAt: Date.now() + ttl, msg: msg });
+    showNextApproval();
+}
+
+/**
+ * 弹出队首审批（已有弹窗在显示时只排队不覆盖）
+ */
+function showNextApproval() {
+    if (currentApproval || approvalQueue.length === 0) { return; }
+    let item = approvalQueue.shift();
+    currentApproval = { requestId: item.requestId, expiresAt: item.expiresAt };
 
     let reasonEl = document.getElementById('approval-reason');
     let toolEl = document.getElementById('approval-tool');
     let argsEl = document.getElementById('approval-args');
     let hintEl = document.getElementById('approval-hint');
-    if (reasonEl) { reasonEl.textContent = msg.reason || '此操作需要人工确认'; }
-    if (toolEl) { toolEl.textContent = msg.tool || '(未知工具)'; }
-    if (argsEl) { argsEl.textContent = formatApprovalArgs(msg.args); }
+    if (reasonEl) { reasonEl.textContent = item.msg.reason || '此操作需要人工确认'; }
+    if (toolEl) { toolEl.textContent = item.msg.tool || '(未知工具)'; }
+    if (argsEl) { argsEl.textContent = formatApprovalArgs(item.msg.args); }
     if (hintEl) { hintEl.textContent = '同意后立即执行；拒绝后模型会收到拒绝结果并继续。超时未答复按拒绝处理。'; }
 
+    updateApprovalTitle();
     let modal = document.getElementById('approval-modal');
     if (modal) { modal.classList.remove('hidden'); }
     setApprovalButtonsEnabled(true);
     startApprovalCountdown();
     showNotice('有操作等待确认，请在弹窗中选择同意或拒绝', 'info');
+}
+
+/**
+ * 标题带队列进度：多路排队时 ⚠ 需要人工确认 (1/3)；单路保持原文
+ */
+function updateApprovalTitle() {
+    let titleEl = document.getElementById('approval-title');
+    if (!titleEl) { return; }
+    let total = approvalQueue.length + (currentApproval ? 1 : 0);
+    titleEl.textContent = total > 1 ? ('⚠ 需要人工确认 (1/' + total + ')') : '⚠ 需要人工确认';
 }
 
 /**
@@ -1218,10 +1241,13 @@ function sendApprovalResponse(approved) {
     // 是否生效看后续工具结果/错误帧，这里不预判
     showNotice(approved ? '已同意执行，等待结果…' : '已拒绝该操作，等待结果…', 'info');
     closeApprovalModal();
+    // S1：队首已答复，队列非空则弹出下一个
+    showNextApproval();
 }
 
 function closeApprovalModal() {
     currentApproval = null;
+    updateApprovalTitle();
     let modal = document.getElementById('approval-modal');
     if (modal) { modal.classList.add('hidden'); }
 }
@@ -1230,6 +1256,7 @@ function closeApprovalModal() {
  * 回合已收尾（done / error）：未答复的审批弹窗一并收掉（服务端已按拒绝/超时处理）
  */
 function closeApprovalIfOpen() {
+    approvalQueue = [];  // 回合结束，排队中的审批不会再有答复机会，一并清掉
     if (!currentApproval) { return; }
     if (approvalTimer) { clearInterval(approvalTimer); approvalTimer = null; }
     closeApprovalModal();

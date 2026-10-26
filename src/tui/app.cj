@@ -114,11 +114,15 @@ public class TuiApp {
     private var editor: MultiLineEditor = MultiLineEditor()
     private var editMode: Bool = false
 
-    // ── 审批链（危险操作需人工确认）──
-    // agent 线程 requestApproval() 阻塞等待；主循环读 y/n 后写回结果
+    // ── 审批链（危险操作需人工确认；S1 队列化：并发请求排队，y 只批队首）──
+    // agent 线程 requestApproval() 阻塞等待；主循环 y/n 写回队首结果并弹出下一项
     private var approvalLock: Mutex = Mutex()
-    private var pendingApproval: Option<String> = None
-    private var approvalResult: Option<Bool> = None
+    private var approvalQueue: ArrayList<String> = ArrayList<String>()   // 排队中的审批 prompt（队首=当前弹窗）
+    private var approvalIds: ArrayList<String> = ArrayList<String>()     // 与 approvalQueue 平行的请求 id
+    private var approvalAnswers: HashMap<String, Bool> = HashMap<String, Bool>()  // 请求 id → 结果（等待方各自读取）
+    private var approvalSeq: AtomicInt64 = AtomicInt64(0)                // 请求 id 发生器（单调，不复用）
+    private var approvalTotal: Int64 = 0                                 // 本批审批总数（队列空→非空时重置）
+    private var approvalAnswered: Int64 = 0                              // 本批已答复数
 
     // 斜杠命令候选（对齐 main.cj handleSlashCommand 支持的命令）
     private static let SLASH_COMMANDS: Array<String> = [
@@ -181,15 +185,26 @@ public class TuiApp {
         tabs.add("帮助")
         this.tabBar.setTabs(tabs)
         this.tabBar.onSelect = { _ => this.markDirty() }
-        // 审批弹窗回调：把 y/n 结果写回等待中的 agent 线程
+        // 审批弹窗回调：把 y/n 结果写回队首等待线程，队列非空则弹出下一项（S1 队列化）
         this.confirmDialog.onResult = { ok =>
+            var next: Option<(String, String)> = None
             this.approvalLock.lock()
             try {
-                this.approvalResult = Some(ok)
-                // 审批完成：清除待审批状态，后续按键恢复正常分发
-                this.pendingApproval = None
+                if (this.approvalQueue.size > 0) {
+                    let id = this.approvalIds.remove(at: 0)
+                    this.approvalQueue.remove(at: 0)
+                    this.approvalAnswers.add(id, ok)
+                    this.approvalAnswered += 1
+                    if (this.approvalQueue.size > 0) {
+                        next = Some((this.approvalTitle(), this.approvalQueue[0]))
+                    }
+                }
             } finally {
                 this.approvalLock.unlock()
+            }
+            match (next) {
+                case Some((t, p)) => this.confirmDialog.show(t, p, "[y]=同意 [n]/[Esc]=拒绝")
+                case None => ()
             }
             this.markDirty()
         }
@@ -527,27 +542,68 @@ public class TuiApp {
      * 返回 true=同意执行，false=拒绝。
      */
     public func requestApproval(prompt: String): Bool {
+        // S1 队列化：并发审批排队，队首负责弹窗；后来者只排队等待自己的结果
+        let id = "apr-" + this.approvalSeq.fetchAdd(1).toString()
+        var title = "审批"
+        var headPrompt = prompt  // 弹窗始终显示队首（后来者入队只刷新标题）
         this.approvalLock.lock()
         try {
-            this.pendingApproval = Some(prompt)
-            this.approvalResult = None
+            let showIt = this.approvalQueue.size == 0
+            if (showIt) {
+                this.approvalTotal = 1
+                this.approvalAnswered = 0
+            } else {
+                this.approvalTotal += 1
+                headPrompt = this.approvalQueue[0]
+            }
+            this.approvalQueue.add(prompt)
+            this.approvalIds.add(id)
+            title = this.approvalTitle()
         } finally {
             this.approvalLock.unlock()
         }
-        // 弹出确认对话框（模态，渲染与按键由 ConfirmDialog 组件负责）
-        this.confirmDialog.show("审批", prompt, "[y]=同意 [n]/[Esc]=拒绝")
+        // 弹出/刷新确认对话框（模态，渲染与按键由 ConfirmDialog 组件负责）
+        this.confirmDialog.show(title, headPrompt, "[y]=同意 [n]/[Esc]=拒绝")
         this.markDirty()
-        // 等待主循环读键写回结果
+        // 等待主循环读键写回自己这份结果
         while (true) {
             this.approvalLock.lock()
-            let result = this.approvalResult
+            let answer = this.approvalAnswers.get(id)
             this.approvalLock.unlock()
-            if (let Some(r) <- result) {
+            if (let Some(r) <- answer) {
                 return r
             }
             sleep(Duration.millisecond * 5)
         }
         return false  // 不可达（while true 仅被 return 退出）
+    }
+
+    /** 审批弹窗标题（调用方需持 approvalLock）：多路排队时显示 审批(n/m) */
+    private func approvalTitle(): String {
+        if (this.approvalTotal <= 1) {
+            return "审批"
+        }
+        return "审批 (${this.approvalAnswered + 1}/${this.approvalTotal})"
+    }
+
+    /**
+     * 整体拒绝全部排队审批（Ctrl+C 调用），返回是否有排队项。
+     * 并发审批下"拒绝一切"比"放行未知操作"安全——后续排队项等待方均解除阻塞。
+     */
+    private func denyAllApprovals(): Bool {
+        this.approvalLock.lock()
+        let hadPending: Bool
+        try {
+            hadPending = this.approvalQueue.size > 0
+            for (id in this.approvalIds) {
+                this.approvalAnswers.add(id, false)
+            }
+            this.approvalIds.clear()
+            this.approvalQueue.clear()
+        } finally {
+            this.approvalLock.unlock()
+        }
+        return hadPending
     }
 
     /**
@@ -559,6 +615,24 @@ public class TuiApp {
     }
 
     // ── 测试观测（TUI 逻辑单测用；不触碰终端渲染）──
+
+    /** 排队中的审批数（含当前弹窗队首） */
+    public func testApprovalQueueSize(): Int64 {
+        this.approvalLock.lock()
+        let n = this.approvalQueue.size
+        this.approvalLock.unlock()
+        return n
+    }
+
+    /** 当前审批弹窗是否可见 */
+    public func testApprovalVisible(): Bool {
+        return this.confirmDialog.isVisible()
+    }
+
+    /** 当前审批弹窗标题（多路排队时应为 审批(n/m)） */
+    public func testApprovalTitle(): String {
+        return this.confirmDialog.currentTitle()
+    }
 
     /**
      * 安全日志：日志写入异常绝不带崩主循环。
@@ -1199,19 +1273,11 @@ public class TuiApp {
         // Ctrl+C（P0-2）：审批等待中→拒绝审批；agent 忙→中断当前轮；
         // 空闲→第一次确认、第二次退出（防误触丢会话）
         if (key.isCtrlC) {
-            // 若有等待中的审批：写回 false 让其解除阻塞（避免 agent 线程悬挂）
-            this.approvalLock.lock()
-            let hasPending: Bool
-            try {
-                hasPending = this.pendingApproval.isSome()
-                if (hasPending) {
-                    this.approvalResult = Some(false)
-                    this.pendingApproval = None
-                }
-            } finally {
-                this.approvalLock.unlock()
-            }
+            // 有等待中的审批：整体拒绝（并发审批下拒绝一切比放行未知操作安全）
+            let hasPending = this.denyAllApprovals()
             if (hasPending) {
+                this.confirmDialog.hide()
+                this.markDirty()
                 return  // 审批拒绝：不退出、不中断任务
             }
             if (this.isAgentBusy()) {
@@ -1238,7 +1304,7 @@ public class TuiApp {
         this.approvalLock.lock()
         let hasPending2: Bool
         try {
-            hasPending2 = this.pendingApproval.isSome()
+            hasPending2 = this.approvalQueue.size > 0
         } finally {
             this.approvalLock.unlock()
         }
