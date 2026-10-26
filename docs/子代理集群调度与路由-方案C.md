@@ -264,6 +264,16 @@ public class SubagentScheduler {   // 每个父 Agent 一个实例
 > 焦点子代理行事件进主流（`│` 前缀），**delta 绝不转发的硬规则**已写进代码注释；S3e G-B 审批队列项带 agent 身份（label 与队列平行，子代理审批等待时面板行显示"等待审批"）。
 > 测试：scheduler 3 例 + 面板渲染 4 例 + tui 焦点/label 2 例；pty 67 → **75**（+审批排队 4b、Agents 面板/Ctrl+G 焦点 4c；Tab 回归全绿）。
 > S4（边界）、S5-S8 待做；G-A TUI 审批超时随 S4。
+>
+> ✅ 落地（2026-10-27，同日）：**S4 + G-A 已完成**。cjcfg 四键 `max_subagents`(4) / `max_tasks_per_turn`(6) /
+> `subagent_token_budget`(200k) / `subagent_timeout_ms`(300s)，0=对应项不限；
+> SubagentScheduler 扩 allowSpawn（派生数/token 预算闸门）+ recordSpawn + 全参构造；
+> spawnSubagent 接闸门：配额满 → 结构化 `budget_exceeded`（文案指引模型改策略）、并发满排队（父中断 → cancelled）、
+> 名额 finally 释放；墙钟超时经 `runSubagentWithTimeout`（线程化 + 25ms 轮询 + 超时中断 + 5s 宽限 + 放弃引用，
+> 抛 `SubagentTimeoutException` 映射 status=timeout，T2 教训：不用字符串嗅探）；beginRound 重置回合归账。
+> **G-A**：TUI 审批超时与服务端同源（subagent_timeout_ms），到点=拒绝 + 自愈摘队（队首则推进/收起弹窗）。
+> 测试：cjcfg 解析 2 例 + scheduler 闸门 1 例 + spawn 集成 2 例（budget_exceeded/timeout）+ TUI 超时 1 例。
+> S5-S8 待做。
 
 ### 7.1 S1/S2a 复核（2026-10-26，读码复核结论）
 

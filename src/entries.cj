@@ -274,8 +274,9 @@ func runCli(sessionId: String): Int64 {
             case Some(sp) => agent.setSummaryProvider(sp)
             case None => ()
         }
-        // S3：子代理调度器（Agents 面板数据源；S4 并发/预算闸门载体）。默认并发 4
-        let scheduler = SubagentScheduler(4)
+        // S4：子代理调度器（面板数据源 + 边界闸门：并发/每回合/token 预算/墙钟超时）
+        let scheduler = SubagentScheduler(cjhCfg.maxSubagents, cjhCfg.maxTasksPerTurn,
+            cjhCfg.subagentTokenBudget, cjhCfg.subagentTimeoutMs)
         agent.subagentScheduler = Some(scheduler)
         agent.setPluginManager(pluginManager)
         let store = SessionStore(cjhCfg.sessionsDir)
@@ -423,8 +424,9 @@ func runJson(prompt: String, sessionId: String): Int64 {
             case Some(sp) => agent.setSummaryProvider(sp)
             case None => ()
         }
-        // S3：子代理调度器（Agents 面板数据源；S4 并发/预算闸门载体）。默认并发 4
-        let scheduler = SubagentScheduler(4)
+        // S4：子代理调度器（面板数据源 + 边界闸门：并发/每回合/token 预算/墙钟超时）
+        let scheduler = SubagentScheduler(cjhCfg.maxSubagents, cjhCfg.maxTasksPerTurn,
+            cjhCfg.subagentTokenBudget, cjhCfg.subagentTimeoutMs)
         agent.subagentScheduler = Some(scheduler)
         agent.setPluginManager(pluginManager)
         let store = SessionStore(cjhCfg.sessionsDir)
@@ -625,8 +627,9 @@ func runTui(sessionId: String): Int64 {
             case Some(sp) => agent.setSummaryProvider(sp)
             case None => ()
         }
-        // S3：子代理调度器（Agents 面板数据源；S4 并发/预算闸门载体）。默认并发 4
-        let scheduler = SubagentScheduler(4)
+        // S4：子代理调度器（面板数据源 + 边界闸门：并发/每回合/token 预算/墙钟超时）
+        let scheduler = SubagentScheduler(cjhCfg.maxSubagents, cjhCfg.maxTasksPerTurn,
+            cjhCfg.subagentTokenBudget, cjhCfg.subagentTimeoutMs)
         agent.subagentScheduler = Some(scheduler)
         agent.setPluginManager(pluginManager)
 
@@ -670,6 +673,9 @@ func runTui(sessionId: String): Int64 {
         agent.onSubagentEvent = { id, _, text =>
             tui.appendSubagentEvent(id, text)
         }
+        // G-A：TUI 审批超时与服务端同源（subagent_timeout_ms；0=不限）——
+        // 用户离开终端时审批到点按拒绝收场，父回合不永久卡死
+        tui.approvalTimeoutMs = cjhCfg.subagentTimeoutMs
 
         // 会话：恢复历史 / 新会话
         let store = SessionStore(cjhCfg.sessionsDir)
@@ -1155,6 +1161,23 @@ func makeSubagentProvider(cjhCfg: CjhConfig): LlmProvider {
  */
 func spawnSubagent(provider: LlmProvider, parentRegistry: ToolRegistry, parent: Agent,
     parentConfig: AgentConfig, description: String, prompt: String, subagentType: String): TaskSpawnResult {
+    // S4 边界闸门：配额满 → 结构化 budget_exceeded（文案告诉模型改策略）；
+    // 并发名额满则排队（排队中父中断 → cancelled，不丢任务不挂死）
+    var slotAcquired = false
+    match (parent.subagentScheduler) {
+        case Some(sched) =>
+            if (!sched.allowSpawn()) {
+                return TaskSpawnResult(
+                    "子代理配额已满（本回合派生上限或 token 预算用尽）。请直接处理本任务，勿再派发。",
+                    0, 0, 0, "budget_exceeded")
+            }
+            if (!sched.acquire({ => parent.isInterrupted() })) {
+                return TaskSpawnResult("子代理排队等待并发名额时被中断", 0, 0, 0, "cancelled")
+            }
+            sched.recordSpawn()
+            slotAcquired = true
+        case None => ()
+    }
     // D1 简报：子任务指令 + 父会话上下文块（taskBriefContext 内部限长 ~1500 字符）
     let brief = prompt + "\n\n" + parent.taskBriefContext()
 
@@ -1202,8 +1225,13 @@ func spawnSubagent(provider: LlmProvider, parentRegistry: ToolRegistry, parent: 
 
     // 中断传播：登记 → 跑 → finally 注销（异常路径也注销，防登记表泄漏）
     parent.registerChild(subAgent)
+    // S4：墙钟超时（0=不限；来自 scheduler 配置）
+    let timeoutMs: Int64 = match (parent.subagentScheduler) {
+        case Some(s) => s.timeoutMs
+        case None => 0
+    }
     try {
-        let summary = subAgent.run(brief)
+        let summary = runSubagentWithTimeout(subAgent, brief, timeoutMs)
         var status = "ok"
         finState = AgentNodeState.Ok
         if (summary.errorCode.size > 0) {
@@ -1221,6 +1249,10 @@ func spawnSubagent(provider: LlmProvider, parentRegistry: ToolRegistry, parent: 
         let resultText = extractSubagentResult(subAgent)
         return TaskSpawnResult(resultText, summary.rounds,
             summary.promptTokens, summary.completionTokens, status)
+    } catch (e: SubagentTimeoutException) {
+        // S4：墙钟超时 → 结构化 timeout（父按失败矩阵"中断并回收引用"处理）
+        finState = AgentNodeState.Timeout
+        return TaskSpawnResult("子代理超时（${timeoutMs}ms 未完成），已中断并回收引用", 0, 0, 0, "timeout")
     } catch (e: Exception) {
         // 仓颉 spawn 内未捕获异常退出码为 0 的已知坑（方案 §10 风险4）：
         // 子代理线程必须 try/catch 全包，失败转结构化 failed 而非静默
@@ -1233,11 +1265,57 @@ func spawnSubagent(provider: LlmProvider, parentRegistry: ToolRegistry, parent: 
                 sched.addTokens(finPrompt + finCompletion)
             case None => ()
         }
+        // S4：释放并发名额（闸门通过后才持有）
+        if (slotAcquired) {
+            match (parent.subagentScheduler) {
+                case Some(sched) => sched.release()
+                case None => ()
+            }
+        }
         // 复核 E：子代理 provider 是每次派生新建的实例，收尾必须 abort() 关掉
         // 池化 keep-alive 连接（同时关 current+pooled），否则每次派生泄漏 1 个 fd
         provider.abort()
         parent.unregisterChild(subAgent)
     }
+}
+
+/**
+ * S4：带墙钟超时的子代理运行（仓颉线程无法 safe kill：超时=置中断 + 5s 宽限 + 放弃引用）。
+ * 超时抛 SubagentTimeoutException（调用方映射 status=timeout）；timeoutMs<=0 内联直跑（现状路径）。
+ */
+func runSubagentWithTimeout(agent: Agent, brief: String, timeoutMs: Int64): RunSummary {
+    if (timeoutMs <= 0) {
+        return agent.run(brief)
+    }
+    // 仓颉 lambda 不能捕获可变局部变量：ArrayList 包装哨兵
+    let out = ArrayList<RunSummary>()
+    let errs = ArrayList<Exception>()
+    let runner = spawn {
+        try {
+            out.add(agent.run(brief))
+        } catch (e: Exception) {
+            errs.add(e)
+        }
+    }
+    var elapsed: Int64 = 0
+    while (out.size == 0 && errs.size == 0 && elapsed < timeoutMs) {
+        sleep(Duration.millisecond * 25)
+        elapsed += 25
+    }
+    if (out.size == 0 && errs.size == 0) {
+        // 超时：中断子代理（runLoop 尽快退出），等 5s 宽限后放弃引用
+        agent.interrupt()
+        var grace: Int64 = 0
+        while (out.size == 0 && errs.size == 0 && grace < 5000) {
+            sleep(Duration.millisecond * 50)
+            grace += 50
+        }
+        throw SubagentTimeoutException("子代理运行超时（${timeoutMs}ms）")
+    }
+    if (errs.size > 0) {
+        throw errs[0]  // 保持原异常路径（failed 出口）
+    }
+    return out[0]
 }
 
 /**

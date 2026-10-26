@@ -152,4 +152,21 @@ public class SubagentSupportTest {
         @Assert(sched.acquire({ => false }), true)   // 释放后可再获取
         sched.release()
     }
+
+    @TestCase
+    public func testSchedulerPerTurnCapAndTokenBudget(): Unit {
+        // S4 闸门：每回合派生上限与 token 预算任一触顶 → allowSpawn=false；
+        // resetTurn（beginRound）一并清零
+        let sched = SubagentScheduler(4, 2, 100, 0)
+        @Assert(sched.allowSpawn(), true)
+        sched.recordSpawn()
+        @Assert(sched.allowSpawn(), true)
+        sched.recordSpawn()
+        @Assert(sched.allowSpawn(), false)   // 派生数达上限 2
+        sched.addTokens(100)
+        sched.resetTurn()
+        @Assert(sched.allowSpawn(), true)    // 回合重置后恢复
+        sched.addTokens(100)                 // 预算 100 已用尽
+        @Assert(sched.allowSpawn(), false)   // token 预算触顶
+    }
 }

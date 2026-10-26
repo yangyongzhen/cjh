@@ -128,6 +128,9 @@ public class TuiApp {
     private var approvalLabels: ArrayList<String> = ArrayList<String>()  // 与 approvalQueue 平行的 agent 身份（G-B；父自身审批为空串）
     private var approvalAnswers: HashMap<String, Bool> = HashMap<String, Bool>()  // 请求 id → 结果（等待方各自读取）
     private var approvalSeq: AtomicInt64 = AtomicInt64(0)                // 请求 id 发生器（单调，不复用）
+    // G-A：审批等待上限（ms）——到点按拒绝收场（与服务端语义对齐），0=不限。
+    // 用户离开终端时，排队审批不能让父回合永久卡死
+    public var approvalTimeoutMs: Int64 = 300000
     private var approvalTotal: Int64 = 0                                 // 本批审批总数（队列空→非空时重置）
     private var approvalAnswered: Int64 = 0                              // 本批已答复数
 
@@ -591,6 +594,7 @@ public class TuiApp {
             this.markDirty()
         }
         // 等待主循环读键写回自己这份结果
+        var waited: Int64 = 0
         while (true) {
             this.approvalLock.lock()
             let answer = this.approvalAnswers.get(id)
@@ -602,9 +606,52 @@ public class TuiApp {
             if (let Some(r) <- answer) {
                 return r
             }
+            // G-A：审批超时=拒绝（自愈摘队：自己从队列移除，队首则推进弹窗），
+            // 防止"用户离开终端 → 父回合永久卡死"
+            if (this.approvalTimeoutMs > 0 && waited >= this.approvalTimeoutMs) {
+                this.expireApproval(id)
+                return false
+            }
             sleep(Duration.millisecond * 5)
+            waited += 5
         }
         return false  // 不可达（while true 仅被 return 退出）
+    }
+
+    /** 审批超时自愈（G-A）：把超时项从队列摘除；若自己是队首则推进/关闭弹窗 */
+    private func expireApproval(id: String): Unit {
+        var next: Option<(String, String)> = None
+        this.approvalLock.lock()
+        try {
+            var idx: Int64 = -1
+            var i: Int64 = 0
+            for (x in this.approvalIds) {
+                if (x == id) {
+                    idx = i
+                }
+                i += 1
+            }
+            if (idx >= 0) {
+                this.approvalIds.remove(at: idx)
+                this.approvalQueue.remove(at: idx)
+                this.approvalLabels.remove(at: idx)
+                if (idx == 0) {
+                    // 队首超时：队列非空则推进弹窗，为空则收起（挂着的死弹窗会盖住输出区）
+                    if (this.approvalQueue.size > 0) {
+                        next = Some((this.approvalTitle(), this.approvalQueue[0]))
+                    } else {
+                        this.confirmDialog.hide()
+                    }
+                }
+            }
+        } finally {
+            this.approvalLock.unlock()
+        }
+        match (next) {
+            case Some((t, p)) => this.confirmDialog.show(t, p, "[y]=同意 [n]/[Esc]=拒绝")
+            case None => ()
+        }
+        this.markDirty()
     }
 
     /** 审批弹窗标题（调用方需持 approvalLock）：多路排队时显示 审批(n/m) */

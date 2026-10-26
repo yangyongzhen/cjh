@@ -75,6 +75,11 @@ public class CjhConfig {
     // 直接赋值（加载 auth.json / 环境变量注入）不置位——避免把 env 里的 Key 顺手落盘。
     private var apiKeyPersistPending: Bool = false
     public var maxIterations: Int64 = 100
+    // S4 子代理边界（方案C D9 默认值；0 = 对应项不限）
+    public var maxSubagents: Int64 = 4            // 并发上限（超出排队）
+    public var maxTasksPerTurn: Int64 = 6         // 每回合派生上限
+    public var subagentTokenBudget: Int64 = 200000  // 子代理回合 token 预算
+    public var subagentTimeoutMs: Int64 = 300000  // 子代理墙钟超时（G-A TUI 审批超时同源）
     public var systemPrompt: String = ""
     // 采样参数（对齐 pi：/settings 可调）
     public var temperature: Float64 = 0.7
@@ -253,6 +258,10 @@ public class CjhConfig {
   "summary_base_url": "",
   "summary_api_key": "",
   "max_iterations": 10,
+  "max_subagents": 4,
+  "max_tasks_per_turn": 6,
+  "subagent_token_budget": 200000,
+  "subagent_timeout_ms": 300000,
   "temperature": 0.7,
   "max_tokens": 16384,
   "system_prompt": "",
@@ -451,6 +460,10 @@ public class CjhConfig {
         root.put("model", JsonString(this.model))
         root.put("provider_protocol", JsonString(this.providerProtocol))
         root.put("max_iterations", JsonInt(this.maxIterations))
+        root.put("max_subagents", JsonInt(this.maxSubagents))
+        root.put("max_tasks_per_turn", JsonInt(this.maxTasksPerTurn))
+        root.put("subagent_token_budget", JsonInt(this.subagentTokenBudget))
+        root.put("subagent_timeout_ms", JsonInt(this.subagentTimeoutMs))
         root.put("system_prompt", JsonString(this.systemPrompt))
         root.put("temperature", JsonFloat(this.temperature))
         root.put("max_tokens", JsonInt(this.maxTokens))
@@ -627,6 +640,31 @@ public class CjhConfig {
                     if (let Some(v) <- obj.get("max_iterations")) {
                         match (v.kind()) {
                             case JsonKind.JsInt => this.maxIterations = v.asInt().getValue()
+                            case _ => ()
+                        }
+                    }
+                    // S4 子代理边界四键（0 = 对应项不限）
+                    if (let Some(v) <- obj.get("max_subagents")) {
+                        match (v.kind()) {
+                            case JsonKind.JsInt => this.maxSubagents = v.asInt().getValue()
+                            case _ => ()
+                        }
+                    }
+                    if (let Some(v) <- obj.get("max_tasks_per_turn")) {
+                        match (v.kind()) {
+                            case JsonKind.JsInt => this.maxTasksPerTurn = v.asInt().getValue()
+                            case _ => ()
+                        }
+                    }
+                    if (let Some(v) <- obj.get("subagent_token_budget")) {
+                        match (v.kind()) {
+                            case JsonKind.JsInt => this.subagentTokenBudget = v.asInt().getValue()
+                            case _ => ()
+                        }
+                    }
+                    if (let Some(v) <- obj.get("subagent_timeout_ms")) {
+                        match (v.kind()) {
+                            case JsonKind.JsInt => this.subagentTimeoutMs = v.asInt().getValue()
                             case _ => ()
                         }
                     }

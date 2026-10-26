@@ -147,6 +147,24 @@ public class TuiAppKeyTest {
     }
 
     @TestCase
+    public func testApprovalTimeoutDenies(): Unit {
+        // G-A：审批超时=拒绝 + 自愈摘队（用户离开终端时父回合不永久卡死）
+        let app = TuiApp()
+        app.approvalTimeoutMs = 60
+        let results = ArrayList<Bool>()
+        results.add(false)
+        let t1 = spawn {
+            results[0] = app.requestApproval("超时审批")
+        }
+        @Assert(this.waitFor({ => app.testApprovalVisible() }), true)
+        // 到点自愈摘队（60ms 上限，waitFor 最长 1s 足够）
+        @Assert(this.waitFor({ => app.testApprovalQueueSize() == 0 }), true)
+        let _ = t1.get()
+        @Assert(results[0], false)                 // 超时=拒绝
+        @Assert(app.testApprovalVisible(), false)  // 弹窗收起
+    }
+
+    @TestCase
     public func testCtrlCQuits(): Unit {
         // 空闲：一次 Ctrl+C 直接退出（用户明确要求，无确认环节）
         let (app, _) = this.buildApp()

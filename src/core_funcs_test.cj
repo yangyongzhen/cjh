@@ -679,6 +679,10 @@ class SubChildProvider <: LlmProvider {
                 return ModelResponse("读一下", calls)
             case 2 =>
                 throw LlmException("子代理模拟异常")
+            case 3 =>
+                // S4 超时用例：每轮 300ms（> 测试超时上限 100ms）
+                sleep(Duration.millisecond * 300)
+                return ModelResponse("child done slow", ArrayList<ToolCall>())
             case _ =>
                 return ModelResponse("child done", ArrayList<ToolCall>())
         }
@@ -862,5 +866,38 @@ public class SubagentIsolationTest {
         @Assert(factory.created[0].callCount, 1)
         @Assert(factory.created[1].callCount, 1)
         @Assert(provider.callCount, 3)  // 父：task → task → final
+    }
+
+    @TestCase
+    public func testSpawnSubagentBudgetExceeded(): Unit {
+        // S4：本回合派生上限触顶 → 后续派生结构化 budget_exceeded（子代理不运行）
+        let provider = SubagentScriptProvider()
+        provider.spawnTwice = true
+        let factory = SubChildFactory()
+        let (agent, _, _) = this.buildParent(provider, Capability(), factory)
+        agent.subagentScheduler = Some(SubagentScheduler(4, 1, 0, 0))  // 每回合只许派 1 个
+        let summary = agent.run("连派两个子任务")
+        @Assert(summary.reply.contains("parent done"), true)
+        let taskResult = this.lastToolResult(agent.getMessages(), "task")
+        @Assert(taskResult.contains("· budget_exceeded"), true)
+        @Assert(taskResult.contains("请直接处理本任务"), true)
+        // factory.make() 是 spawnSubagent 的实参（求值先于闸门），实例会建但子代理不运行：
+        @Assert(factory.created.size, 2)
+        @Assert(factory.created[1].callCount, 0)  // 第二个派生被闸门拦下，LLM 一次未调
+    }
+
+    @TestCase
+    public func testSpawnSubagentTimeout(): Unit {
+        // S4：墙钟超时 → 结构化 timeout（子代理 300ms/轮 > 100ms 上限）
+        let provider = SubagentScriptProvider()
+        let factory = SubChildFactory()
+        factory.childBehavior = 3
+        let (agent, _, _) = this.buildParent(provider, Capability(), factory)
+        agent.subagentScheduler = Some(SubagentScheduler(4, 0, 0, 100))
+        let summary = agent.run("派慢子任务")
+        @Assert(summary.reply.contains("parent done"), true)
+        let taskResult = this.lastToolResult(agent.getMessages(), "task")
+        @Assert(taskResult.contains("· timeout"), true)
+        @Assert(taskResult.contains("已中断并回收引用"), true)
     }
 }
