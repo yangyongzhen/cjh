@@ -714,6 +714,18 @@ class SubChildProvider <: LlmProvider {
                     return ModelResponse("读一下", calls)
                 }
                 return ModelResponse("child done", ArrayList<ToolCall>())
+            case 6 =>
+                // S3 复核 #8 超时归账用例：第 1 轮带"阶段性结论"文本 + read_file
+                // （文本进 history），第 2 轮拖住 → 墙钟超时后父应拿到"已产出部分"
+                if (callCount == 1) {
+                    var calls = ArrayList<ToolCall>()
+                    var a = JsonObject()
+                    a.put("path", JsonString("/tmp/cjh_ut_sub/x.cj"))
+                    calls.add(ToolCall("s6", "read_file", a))
+                    return ModelResponse("阶段性结论：已定位问题在 loop.cj", calls)
+                }
+                sleep(Duration.millisecond * 400)
+                return ModelResponse("child done late", ArrayList<ToolCall>())
             case _ =>
                 return ModelResponse("child done", ArrayList<ToolCall>())
         }
@@ -956,6 +968,24 @@ public class SubagentIsolationTest {
         let taskResult = this.lastToolResult(agent.getMessages(), "task")
         @Assert(taskResult.contains("· timeout"), true)
         @Assert(taskResult.contains("已中断并回收引用"), true)
+    }
+
+    @TestCase
+    public func testSpawnSubagentTimeoutCarriesPartialOutput(): Unit {
+        // S3 复核 #8：方案C §6 要求超时回父文本带上"已产出部分：<最后文本>"——
+        // 此前只回一句"已超时"，子代理已经做出来的半截结论被丢弃（白烧 token），
+        // 且超时路径轮次不归账（面板恒 0）
+        let provider = SubagentScriptProvider()
+        let factory = SubChildFactory()
+        factory.childBehavior = 6  // 第 1 轮：文本+read_file（文本进 history）；第 2 轮拖住
+        let (agent, _, _) = this.buildParent(provider, Capability(), factory)
+        agent.subagentScheduler = Some(SubagentScheduler(4, 0, 0, 150))
+        let summary = agent.run("派一个会超时的子任务")
+        @Assert(summary.reply.contains("parent done"), true)
+        let taskResult = this.lastToolResult(agent.getMessages(), "task")
+        @Assert(taskResult.contains("· timeout"), true)
+        @Assert(taskResult.contains("已产出部分"), true)
+        @Assert(taskResult.contains("阶段性结论"), true)
     }
 
     @TestCase
