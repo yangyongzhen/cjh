@@ -315,6 +315,26 @@ public class SubagentScheduler {   // 每个父 Agent 一个实例
 > **验收对照（§8 不变量）**：1 权限单调 ✅（writeScope 只收窄+越界写用例）；2 上下文单向流 ✅
 >（简报+结论+transcriptPath 只落盘不回灌）；3 可观测 ✅（面板/焦点/审批队列）；4 有界资源 ✅
 >（并发 4/每回合 6/预算 200k/超时 300s，超限均结构化失败且不挂死）。
+>
+> ✅ 复审收口（2026-10-28，S3 交付后两轮复核）：
+> **第一轮（读码）** 发现 12 项，其中 7 项由后续实测提交修掉——
+> 面板刷新从 `onTokenEstimate`（每 SSE 帧）改挂新增的 `Agent.onRoundTick`（每轮一次）+
+> `markTool/markRoundUsage` 变更检测（实测症状是**界面卡死**，不是单纯浪费）；
+> `resetTurn` 清空节点 + 面板运行中优先排序（节点此前只增不删，第 5 个子代理起面板只显示最老的几个）；
+> 边框/行宽改 `TuiCanvas.displayWidth` 计算并补齐。
+> **第二轮（实测复核）** 用真源码探针 + 临时工程 `cjpm test` 验证后修掉剩余关键项：
+> ① `max_subagents: 0` 崩溃（`Semaphore(0)` 抛 `IllegalArgumentException`，与"0=不限"文档矛盾）
+> → `Option<Semaphore>`，≤0 视为不限；
+> ② 派生闸门 TOCTOU（`allowSpawn→acquire→recordSpawn` 三步分离，DAG 同批并发可越过每回合上限）
+> → 原子 `tryBeginSpawn()` + `undoSpawn()`；
+> ③ 超时丢弃已产出结论（违 §6 失败矩阵）→ 回父带「已产出部分：<最后文本>」并归账轮次；
+> ④ `agentsPanel` 漏接 `setUtf8`（非 UTF-8 终端混排）；
+> ⑤ 窄终端行溢出裁掉右边框（实测 75/80/90 列 + 当前工具非空必现）→ 预算不足逐级丢列；
+> ⑥ `height()` 与 `render()` 判据不一致（cols<75 白占布局行）→ 新增 cols 版重载；
+> ⑦ 限流退避 `sleep(2/5/10s)` 期间不可中断（最长 17s 像死机）→ 200ms 切片轮询 `isCancelled`；
+> ⑧ pty 场景 4c 假绿（`expect("│")` 命中面板自身边框）→ 改断焦点反馈行并覆盖完整循环。
+> 测试：cjterm `agentspanel_test` 9 例（+窄宽度/ASCII/高度判据）、cjllm `backoff_test` 4 例、
+> `subagent_support_test` +5 例、`core_funcs_test` +1 例（超时携带已产出部分）。
 
 ### 7.1 S1/S2a 复核（2026-10-26，读码复核结论）
 

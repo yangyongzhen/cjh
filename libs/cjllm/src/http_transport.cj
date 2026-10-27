@@ -686,3 +686,28 @@ public func defaultIdleTimeout(): Duration {
     }
     return Duration.second * secs
 }
+
+/**
+ * 可中断的退避等待（限流重试用）
+ *
+ * 按 200ms 切片轮询 isCancelled，中断/墙钟超时最长 200ms 内生效——
+ * 直接 sleep(2/5/10s) 会让 Ctrl+C 或子代理超时在退避期间完全无响应
+ * （实测：限流窗口按分钟计时，用户以为程序死了）。
+ *
+ * @param ms 总退避毫秒数
+ * @param isCancelled 中断判定（provider 的 cancelChecker 同源）
+ * @return false = 等待期间被取消（调用方应按中断路径收场，不要继续重试）
+ */
+internal func backoffWait(ms: Int64, isCancelled: () -> Bool): Bool {
+    var waited: Int64 = 0
+    while (waited < ms) {
+        if (isCancelled()) {
+            return false
+        }
+        let rest: Int64 = ms - waited
+        let slice: Int64 = if (rest < 200) { rest } else { 200 }
+        sleep(Duration.millisecond * slice)
+        waited += slice
+    }
+    return !isCancelled()
+}
