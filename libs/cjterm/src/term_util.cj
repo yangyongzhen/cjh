@@ -258,3 +258,59 @@ public func isModernTerminalEnv(): Bool {
     }
     return false
 }
+
+/** 当前构建是否跑在 Windows 上（`@When` 判据，无需运行时 FFI） */
+@When[os == "Windows"]
+public func isWindowsHost(): Bool {
+    return true
+}
+
+@When[os != "Windows"]
+public func isWindowsHost(): Bool {
+    return false
+}
+
+/**
+ * 提示符是否用"花体图标"（❯ / 🔍）而不是 ASCII（> / ?）
+ *
+ * 与 UTF-8 能力**分开判**：conhost（PowerShell / 老控制台窗口）在 cjh 切到代码页 65001 后
+ * `isUtf8()` 为 true、框线也能画，但**字体**常常没有 U+276F ❯ 的字形 → 渲染成方框
+ * （用户实测，Windows Terminal 正常）。故 Windows 上额外要求"现代终端环境"
+ * （Windows Terminal / ConEmu），否则降级成 ASCII 图标。
+ *
+ * 覆盖开关：`CJH_ASCII_ICONS=1` 强制 ASCII（任何终端可用），
+ * `CJH_FORCE_UTF8=1` 强制花体（经 isModernTerminalEnv 生效）。
+ */
+public func useFancyPromptGlyphs(): Bool {
+    return useFancyPromptGlyphsFrom(
+        TermEnv.getenv("CJH_ASCII_ICONS"),
+        TermEnv.getenv("CJH_FORCE_UTF8"),
+        isModernTerminalEnv(),
+        isWindowsHost())
+}
+
+/**
+ * 纯函数判据（不读环境变量，供单测）
+ *
+ * @param asciiIcons    CJH_ASCII_ICONS 的值（非空 = 强制 ASCII 图标）
+ * @param forceUtf8     CJH_FORCE_UTF8 的值（非空 = 强制花体图标）
+ * @param modernTerminal 是否现代终端环境（Windows Terminal / ConEmu 等）
+ * @param isWindows     是否 Windows
+ */
+public func useFancyPromptGlyphsFrom(asciiIcons: ?String, forceUtf8: ?String,
+    modernTerminal: Bool, isWindows: Bool): Bool {
+    if (let Some(v) <- asciiIcons) {
+        if (v.size > 0) {
+            return false  // 显式强制 ASCII（conhost 字体缺字形的兜底开关）
+        }
+    }
+    if (let Some(v) <- forceUtf8) {
+        if (v.size > 0) {
+            return true  // 显式强制花体
+        }
+    }
+    if (isWindows) {
+        return modernTerminal  // Windows 只信现代终端的字体
+    }
+    return true  // POSIX 终端字体普遍覆盖 ❯/🔍
+}

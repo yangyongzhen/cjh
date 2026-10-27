@@ -110,7 +110,7 @@ public class ListPicker {
             let text = this.items[idx]
             if (idx == this.selected) {
                 out[n] = Ansi.bg(Ansi.THEME_ACCENT) + Ansi.fg(Ansi.COLOR_BLACK) +
-                    "❯ " + text + Ansi.reset()
+                    (if (useFancyPromptGlyphs()) { "❯ " } else { "> " }) + text + Ansi.reset()
             } else {
                 out[n] = Ansi.fg(Ansi.THEME_MUTED) + "  " + text + Ansi.reset()
             }

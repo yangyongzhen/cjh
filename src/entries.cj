@@ -327,8 +327,10 @@ func runCli(sessionId: String): Int64 {
         }
 
         // 交互循环
+        // 图标与 TUI 同判据：conhost 字体缺 ❯ 字形时用 "> "（useFancyPromptGlyphs 见 cjterm）
+        let cliIcon = if (useFancyPromptGlyphs()) { "❯ " } else { "> " }
         while (true) {
-            print("\n❯ ", flush: true)
+            print("\n${cliIcon}", flush: true)
             let line = readLineFromStdIn()
             if (line.isNone()) {
                 break
