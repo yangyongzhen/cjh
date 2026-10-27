@@ -293,7 +293,8 @@ public class TuiApp {
                 // 完整内容随提交进入 agent 会话；历史持久化
                 let echoLine = this.inputBox.lastEchoText()
                 // 行内卡片只用 fg 改色（❯ accent → 正文素白），不用 reset（保整行 bg）
-                this.appendUserLine(Ansi.fg(Ansi.THEME_ACCENT) + "❯ " + Ansi.fg(Ansi.COLOR_TEXT) +
+                // 图标与输入框提示符同判据：conhost 缺 ❯ 字形时回显也用 "> "
+                this.appendUserLine(Ansi.fg(Ansi.THEME_ACCENT) + this.echoIcon() + Ansi.fg(Ansi.COLOR_TEXT) +
                     (if (echoLine.size > 0) { echoLine } else { finalLine }))
                 this.saveHistory()
                 this.appendOutput("")  // 空行：分隔用户输入与 Agent 回复
@@ -327,6 +328,16 @@ public class TuiApp {
         return this.term.isUtf8()
     }
 
+    /**
+     * 用户输入回显前缀（与输入框提示符同一判据）
+     *
+     * conhost（PowerShell 老控制台）字体常缺 U+276F ❯ → 显示成方框，
+     * 与输入框共用 `useFancyPromptGlyphs()`：不可靠时降级成 "> "。
+     */
+    private func echoIcon(): String {
+        return if (this.term.isUtf8() && useFancyPromptGlyphs()) { "❯ " } else { "> " }
+    }
+
     public func run(): Unit {
         this.term.enableRaw()
         // Windows enableRaw 会主动切换控制台代码页（936→65001），晚于组件构造——
@@ -334,6 +345,9 @@ public class TuiApp {
         // 初值可能过时，此处统一重设，消除"logo 已 ASCII、弹窗仍 UTF-8"新混排
         let utf8Now = this.term.isUtf8()
         this.inputBox.setUtf8(utf8Now)
+        // 图标（❯/🔍）与 UTF-8 分开判：conhost 字体缺 U+276F 字形会显示成方框
+        // （Windows Terminal 正常）→ 非现代终端降级成 "> "（CJH_ASCII_ICONS=1 可强制）
+        this.inputBox.setFancyIcons(useFancyPromptGlyphs())
         this.statusBar.setUtf8(utf8Now)
         this.tabBar.setUtf8(utf8Now)
         this.tasksPanel.setUtf8(utf8Now)
@@ -1715,7 +1729,7 @@ public class TuiApp {
         this.inputBox.clear()
         if (text.size > 0) {
             this.safeLog("info", "editor submit: '${text}'")
-            this.appendUserLine(Ansi.fg(Ansi.THEME_ACCENT) + "❯ " + Ansi.fg(Ansi.COLOR_TEXT) + text)
+            this.appendUserLine(Ansi.fg(Ansi.THEME_ACCENT) + this.echoIcon() + Ansi.fg(Ansi.COLOR_TEXT) + text)
             this.onSubmit(text)
         }
         this.markDirty()
