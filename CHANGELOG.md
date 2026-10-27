@@ -6,6 +6,34 @@ cjh 版本变更记录。依据 git tag 史 + 提交史整理；版本号规则�
 
 ## [Unreleased]
 
+### 破坏性变更：工具链迁移到 Cangjie 1.2.0
+
+- **目标 SDK：Cangjie 1.0.5 + stdx 1.0.5.1 → Cangjie 1.2.0 + stdx 1.2.0.1**。7 个 `cjpm.toml` 的 `cjc-version` 全部改为 `1.2.0`；代码已实质依赖 1.2.0 的 stdx 路径，**Linux 开发机/CI 必须同步升级 SDK 与 stdx**（`cjpm.toml` 的 Linux target 段 `path-option` 仍指向 `cangjie-stdx-linux-x64-1.0.5.1`，升级时一并改）。
+- **stdx 公共 API 三处变更已适配**：`DerBlob` 从 `stdx.crypto.x509` 迁到 `stdx.crypto.common`；`TlsClientConfig.domain` 改名 `serverName`；`CertificateVerifyMode` 只在 `stdx.net.tls.common` 导出且 `CustomCA()` 改收 `Array<stdx.crypto.common.Certificate>`（`systemRootCerts()` 的返回需逐元素上转）。原在 cjutil + cjllm 三处重复，现收敛为 `cjutil.buildTlsClientConfig(host)`。
+
+### Windows 原生门禁（`scripts/test_win.ps1`）
+
+- **一条命令跑完 Windows 侧**：stdx 自动探测（`-Stdx` / `CJH_WINDOWS_STDX` / `CJH_STDX_ROOT` / `~/.cangjie/stdx` / `<盘>:\cangjie-stdx\...`）→ 先给"源码 import stdx 的 libs"临时补 `[target.x86_64-w64-mingw32.bin-dependencies]`（cjpm 的 bin-dependencies 不向依赖包传播）→ 根包派生 Windows 配置（清 `--static`、`link-option = "-lcrypt32 -lws2_32"`）→ `cjpm build` + `cjpm test` → 逐包 `libs/*` → 结束恢复全部基线。结果分 `FAIL` / `ENV`（工具链版本不匹配）/ `SKIP`（缺 stdx），后两者退出码 2。
+- **`cjpm test -j 1` 串行跑**：Cangjie 1.2.0 的 `cjpm test` 默认并行，而本仓库测试大量共享全局态（Theme/Ansi、`CJH_CONFIG_DIR`、临时目录）→ 并行下同一份代码两次跑失败集合都不同。串行后结果确定。
+- **实测**：Windows 11 + Cangjie 1.2.0 / mingw32 + stdx 1.2.0.1 → **7 个目标全 PASS、0 FAIL、0 SKIP、构建 0 告警**；用例数 根包 **539** + cjcfg 14 + cjconfig 7 + cjllm 49 + cjlog 1 + cjterm 83 + cjutil 13 = **706 例全绿**；`--mock` 端到端通过（4 段工具链 + FINAL-DONE）。
+
+### 修复（Windows 原生跑通暴露的真问题）
+
+- **GlobTool 在 Windows 上 `*` 跨目录**：`Directory.walk` 的 `fi.path` 用 `\`、glob 模式一律 `/`，未归一导致 `makeRelative` 前缀全部落空、退回绝对路径，`*.txt` 匹配到 `sub\c.txt`、输出也变绝对路径。`considerGlobFile` 前置 `toSlashPath` 归一，输出统一 `/` 风格。
+- **子代理简报在 Windows 丢上下文**：`summarizeFrom` 提取路径只认 `/`（byte 47），Windows 路径一个都提不到。改为同时认 `\` 并回溯 token 边界、补上盘符（`C:`），子代理 briefing 恢复携带"涉及文件"。
+- **`ast_grep` 降级路径依赖外部 `grep` 二进制**：Windows 无该命令 → 整个降级直接报错。改为进程内复用 `GrepTool`（同一套 walk + Regex），跨平台可用。
+- **转录路径 / 语料清单路径混排**：`writeSubagentTranscript` 与 `refManifestPath` 用 `\` 的 base 拼 `/` 会得到 `C:\x/y.md`；统一归一为 `/` 风格输出。
+- **cjterm 平台守卫收口**：`term_posix.cj` 的 termios 声明与常量、`term_windows.cj` 的 Win32 常量、`term_util.safeFromUtf8`、POSIX 专属 import 全部补 `@When`；顺手删 6 个纯死常量（`ENABLE_WINDOW_INPUT`/`WAIT_TIMEOUT` 等）。**Windows 构建告警 32 → 0**。
+- **死代码清理**：删掉无调用方的 `TuiBridge.requestApproval(prompt)` 单参重载（1.2.0 会对未使用的 public static 报 unused function）。
+
+### 测试（跨平台化）
+
+- **临时目录全部跨平台**：新增 `cjutil.tmpDir()/tmpPath(name)`（POSIX `/tmp`、Windows `%TEMP%`、`CJH_TMP` 可覆盖）；16 个测试文件约 95 处 `/tmp` 字面量改为 `tmpPath(...)`（断言里的期望路径同步），`--mock`/`--startup-log`/ref 临时克隆等**非测试默认落点**一并改。
+- **清理不再 shell 出去调 bash**：`removeTree`/`removeTreeForTest` 改 `std.fs.removeIfExists(recursive: true)`——原实现 Windows 上抛异常被吞、目录残留，导致 skills/trust/ast_grep 六例 `path is already exists`。
+- **颜色断言不再受 `NO_COLOR` 影响**：8 个断言 ANSI 色的用例开头显式 `Ansi.noColor = false`（Linux CI 通常不设、本机设了 `NO_COLOR=1`）。
+- **POSIX 专有用例显式守卫**：bash 工具/会话 16 例、grep-glob 快慢路径与 symlink 6 例、示例 shell 插件 3 例、bracketed paste 解码 1 类；单个依赖 bash 管道的用例用文件级 `posixShellAvailable()` 运行时跳过（`@When` 不能加在 `@TestCase` 方法上）。
+- **cjllm mock HTTP server**：Windows 上「带未读入站数据 close」会发 RST（10054），内核丢弃已写响应 → chunked 3 例失败、连接关闭定界读到空。改为回写前先 drain 客户端请求（`KeepAliveServer` 自己会读，跳过）。
+
 ### 变更
 - **开源许可证明确为 MIT**：新增 [LICENSE](./LICENSE)（Copyright (c) 2026 yangyongzhen）、`cjpm.toml` 补 `license = "MIT"` 字段、双语 README 徽章与 License 段落指向该文件。
 - **README 补齐生态价值的两条实证**：①「工程踩坑经验」由一句话概括改为量化描述（**51 条 / 1000+ 行**，每条含现象 + 排查铁证 + 可复用配方）；② 新增「向上游反馈的问题」小节，列出提交给 `Cangjie/UsersForum` 的 **12 条（#3473–#3484）**缺陷与提案，其中静态链接下 `cjpm test` 崩溃、Windows 目标 `--static*` 静默无效两条带 issue 直链与 A/B 实测对照，并记录复核中推翻自身 3 条旧结论的经过（中英双语同步）。
