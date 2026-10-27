@@ -2,7 +2,7 @@
   cjc-version = "1.2.0"
   name = "cjh"
   description = "nothing here"
-  version = "1.6.0"
+  version = "1.6.1"
   license = "MIT"
   target-dir = ""
   output-type = "executable"
