@@ -24,6 +24,7 @@ package cjterm
  */
 
 // O_WRONLY（Linux/macOS 同为 1）
+@When[os != "Windows"]
 private let TTY_O_WRONLY: Int32 = 1
 
 // ===== POSIX：真正做隔离 =====
@@ -138,7 +139,8 @@ public func ttyOutFd(): Int32 {
 }
 
 @When[os == "Windows"]
-public func writeAllFd(fd: Int32, text: String): Bool {
+public func writeAllFd(_: Int32, _: String): Bool {
+    // Windows 不做 fd 隔离（TUI 直接用控制台）；形参加下划线消 unused 告警
     return false
 }
 

@@ -8,6 +8,7 @@ package cjterm
  * 重包——Windows 原生构建会因此连 `cjpm build` 都过不去（stdx 无 windows 平台
  * 目录时报 `can not find package 'stdx.encoding.json'`）。
  */
+@When[os != "Windows"]
 internal func safeFromUtf8(bytes: Array<UInt8>): String {
     var sb = StringBuilder()
     var i = 0
