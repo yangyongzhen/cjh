@@ -1887,9 +1887,12 @@ public class TuiApp {
                 }
                 // Tasks 面板：有任务时在输出区左下角渲染
                 this.tasksPanel.render(this.canvas, statusRow - 1, cols, outH)
-                // Agents 面板（S3）：右下角，与 Tasks **同底线**（availRow 相同，
-                // 各自内部底对齐；列一左一右不重叠）
+                // Agents 面板（S3）：右下角，与 Tasks **同底线**。overlay 模式：
+                // 两面板共用行带，Agents 按列拼接只写自己列区间（整行替换会抹掉
+                // Tasks 列——实测"任务单显示不全"的根因）
+                this.canvas.setOverlay(true)
                 this.agentsPanel.render(this.canvas, statusRow - 1, cols, outH)
+                this.canvas.setOverlay(false)
                 // 动态状态行：agent 执行中时渲染在 Tasks 面板上方
                 if (agentBusy && agentRow >= 8) {
                     this.spinner.tick()
