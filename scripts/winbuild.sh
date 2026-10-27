@@ -13,10 +13,10 @@ cd "$(dirname "$0")/.."
 # runtime DLL（libboundscheck/libcangjie-runtime）+ openssl DLL
 #（libcangjie-dynamicLoader-opensslFFI.a 运行时 dlopen，须同目录）。
 # 勿改回 dynamic/stdx：那会让 exe 动态依赖 12 个 libstdx.*.dll（v1.3.5 回归）。
-WINDOWS_STDX="${CJH_WINDOWS_STDX:-/root/.cangjie/stdx/cangjie-stdx-windows-x64-1.0.5.1/windows_x86_64_cjnative/static/stdx}"
+WINDOWS_STDX="${CJH_WINDOWS_STDX:-/root/.cangjie/stdx/cangjie-stdx-windows-x64-1.2.0.1/windows_x86_64_cjnative/static/stdx}"
 if [ ! -d "$WINDOWS_STDX" ]; then
     echo "[winbuild.sh] 缺少 windows stdx: $WINDOWS_STDX"
-    echo "  解压 docs/cangjie-stdx-windows-x64-1.0.5.1.zip 到 ~/.cangjie/stdx/cangjie-stdx-windows-x64-1.0.5.1/"
+    echo "  解压 cangjie-stdx-windows-x64-1.2.0.1.zip 到 ~/.cangjie/stdx/cangjie-stdx-windows-x64-1.2.0.1/"
     exit 1
 fi
 
