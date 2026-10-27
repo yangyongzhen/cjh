@@ -608,7 +608,11 @@ public class InputBox <: Component {
             }
         }
         let baseCols = if (curRowOff == 0) { TuiCanvas.displayWidth(this.promptText) } else { 2 }
-        canvas.setCursor(row + curRowOff + 1, baseCols + col)
+        // +1：setCursor/Ansi.moveTo 是 **1-based**（`ESC[row;colH`），而上面累计的
+        // baseCols/col 是"宽度和"（0 基）。此前少了这个 +1——ASCII 下光标压在最后一个字符上
+        // 不易察觉，中文下正好落在"汉字的第二格"＝看起来光标在字中间（Windows/终端实测）。
+        // 实测校准："ab" → 列 8、"你好"(各 2 列) → 列 10（提示符 "╰─ ❯ " 占 1..5）。
+        canvas.setCursor(row + curRowOff + 1, baseCols + col + 1)
         return viewH
     }
 

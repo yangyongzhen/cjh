@@ -61,4 +61,39 @@ public class InputPromptIconTest {
         // POSIX：字体普遍覆盖 ❯，无需现代终端判据
         @Assert(useFancyPromptGlyphsFrom(None, None, false, false), true)
     }
+
+    // ── 光标列（1-based）回归：中文光标曾落在汉字中间 ──
+
+    /** 渲染输入框后取画布光标列（1-based；提示符 + 文本显示宽度 + 1） */
+    private func cursorColOf(text: String): Int64 {
+        let ib = InputBox()
+        for (r in text.toRuneArray()) {
+            ib.handleKey(KeyEvent(r.toString()))
+        }
+        let canvas = TuiCanvas()
+        canvas.begin(4, 80, true)
+        ib.render(canvas, 0, 80, 5)
+        let (_, col) = canvas.cursorPosition()
+        return col
+    }
+
+    @TestCase
+    public func testCursorColumnAscii(): Unit {
+        // 提示符 "╰─ ❯ " 占 1..5 列，ASCII 文本从第 6 列起：
+        // "ab" 占 6、7 → 光标应在第 8 列（1-based）。此前少 1（7），光标压在 'b' 上。
+        @Assert(this.cursorColOf("ab"), 8)
+    }
+
+    @TestCase
+    public func testCursorColumnCjk(): Unit {
+        // "你好" 各占 2 列（6-7、8-9）→ 光标应在第 10 列；
+        // 此前是 9 ＝ 落在"好"的第二格，视觉上就是"光标在汉字中间"（用户实测）
+        @Assert(this.cursorColOf("你好"), 10)
+    }
+
+    @TestCase
+    public func testCursorColumnMixedWidth(): Unit {
+        @Assert(this.cursorColOf("你a"), 9)
+        @Assert(this.cursorColOf("a你"), 9)
+    }
 }

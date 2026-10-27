@@ -203,6 +203,15 @@ public class TuiCanvas {
     }
 
     /**
+     * 当前硬件光标位置（1-based；观测/单测用）
+     *
+     * 单测直接取这个值，比解析 flush() 里的 ESC[row;colH 稳（差分渲染会混入多行 CSP）。
+     */
+    public func cursorPosition(): (Int64, Int64) {
+        return (this.cursorRow, this.cursorCol)
+    }
+
+    /**
      * 完成本帧：返回差分渲染指令（只重绘变化行），并定位光标。
      */
     public func flush(): String {
