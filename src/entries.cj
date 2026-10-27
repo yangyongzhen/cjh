@@ -84,7 +84,7 @@ public class ModelProviderFactory <: ProviderFactory {
      */
     public func create(target: ModelTarget): LlmProvider {
         if ((readEnv("CJH_MOCK") ?? "") == "1") {
-            return MockProvider("/tmp/cjh_verify.txt")
+            return MockProvider(tmpPath("cjh_verify.txt"))
         }
         let providerName = readEnv("CJH_PROVIDER") ?? ""
         let protocol = if (providerName.size > 0) { providerName } else { this.cfg.providerProtocol }
@@ -265,7 +265,7 @@ func runCli(sessionId: String): Int64 {
     try {
         let provider: LlmProvider
         if ((readEnv("CJH_MOCK") ?? "") == "1") {
-            provider = MockProvider("/tmp/cjh_verify.txt")
+            provider = MockProvider(tmpPath("cjh_verify.txt"))
         } else {
             provider = makeProvider(cjhCfg)
         }
@@ -417,7 +417,7 @@ func runJson(prompt: String, sessionId: String): Int64 {
     try {
         let provider: LlmProvider
         if ((readEnv("CJH_MOCK") ?? "") == "1") {
-            provider = MockProvider("/tmp/cjh_verify.txt")
+            provider = MockProvider(tmpPath("cjh_verify.txt"))
         } else {
             provider = makeProvider(cjhCfg)
         }
@@ -547,7 +547,7 @@ func runTui(sessionId: String): Int64 {
         if (!profiling) { return }
         let elapsed = MonoTime.now() - t0
         try {
-            let f = File("/tmp/cjh_startup.log", OpenMode.Append)
+            let f = File(tmpPath("cjh_startup.log"), OpenMode.Append)
             f.write(stringToBytes("${elapsed}\t${label}\n"))
             f.close()
         } catch (e: Exception) {}
@@ -621,7 +621,7 @@ func runTui(sessionId: String): Int64 {
     try {
         let provider: LlmProvider
         if ((readEnv("CJH_MOCK") ?? "") == "1") {
-            provider = MockProvider("/tmp/cjh_verify.txt")
+            provider = MockProvider(tmpPath("cjh_verify.txt"))
         } else {
             provider = makeProvider(cjhCfg)
         }
@@ -1167,7 +1167,7 @@ func buildSubagentConfig(parent: AgentConfig, subagentType: String): AgentConfig
  */
 func makeSubagentProvider(cjhCfg: CjhConfig): LlmProvider {
     if ((readEnv("CJH_MOCK") ?? "") == "1") {
-        return MockProvider("/tmp/cjh_verify.txt")
+        return MockProvider(tmpPath("cjh_verify.txt"))
     }
     // 复核 E：warmup=false——实例用完即弃（finally abort()），预热连接纯开销
     return makeProvider(cjhCfg, false)

@@ -1,5 +1,7 @@
 package cjh.tests
 
+import cjutil.*
+
 import std.collection.*
 import stdx.encoding.json.*
 import std.fs.*
@@ -69,7 +71,7 @@ func refReadyCorpus(name: String): String {
 
 @Test
 public func testRefManifestPathJoin(): Unit {
-    @Assert(refManifestPath("/tmp/x"), "/tmp/x/" + REF_MANIFEST_FILE)
+    @Assert(refManifestPath(tmpPath("x")), tmpPath("x/") + REF_MANIFEST_FILE)
     @Assert(REF_MANIFEST_FILE, ".cjh-ref-manifest.json")
 }
 
@@ -93,7 +95,7 @@ public func testRefManifestRoundTrip(): Unit {
 
 @Test
 public func testRefManifestLoadMissingDir(): Unit {
-    @Assert(loadRefManifest("/tmp/cjh_ut_ref_cli_absent_dir_xyz").isSome(), false)
+    @Assert(loadRefManifest(tmpPath("cjh_ut_ref_cli_absent_dir_xyz")).isSome(), false)
 }
 
 @Test
@@ -136,7 +138,7 @@ public func testRefManifestSkipsMalformedEntries(): Unit {
 
 @Test
 public func testRefStatusNotInstalled(): Unit {
-    let t = refStatusText("/tmp/cjh_ut_ref_cli_never_exist_abc")
+    let t = refStatusText(tmpPath("cjh_ut_ref_cli_never_exist_abc"))
     @Assert(t.contains("未安装"), true)
     @Assert(t.contains("cjh ref update"), true)
 }
@@ -173,7 +175,7 @@ public func testRefStatusBrokenManifest(): Unit {
 
 @Test
 public func testRefVerifyMissingDir(): Unit {
-    let r = refVerifyResult("/tmp/cjh_ut_ref_cli_never_exist_def")
+    let r = refVerifyResult(tmpPath("cjh_ut_ref_cli_never_exist_def"))
     @Assert(r.ok, false)
     @Assert(r.issues >= 1, true)
 }
@@ -232,7 +234,7 @@ public func testRefVerifyDetectsMissingFile(): Unit {
 @Test
 public func testRefCliUsageWithoutSubcommand(): Unit {
     let args = ["ref"]
-    let r = refCliMain(args, "/tmp/cjh_ut_ref_cli_never_exist_ghi")
+    let r = refCliMain(args, tmpPath("cjh_ut_ref_cli_never_exist_ghi"))
     @Assert(r.exitCode, 2)
     @Assert(r.output.contains("用法"), true)
     @Assert(r.output.contains("update"), true)
@@ -241,7 +243,7 @@ public func testRefCliUsageWithoutSubcommand(): Unit {
 @Test
 public func testRefCliUnknownSubcommand(): Unit {
     let args = ["ref", "bogus"]
-    let r = refCliMain(args, "/tmp/cjh_ut_ref_cli_never_exist_jkl")
+    let r = refCliMain(args, tmpPath("cjh_ut_ref_cli_never_exist_jkl"))
     @Assert(r.exitCode, 2)
     @Assert(r.output.contains("未知子命令"), true)
 }

@@ -1,5 +1,7 @@
 package cjh
 
+import cjutil.*
+
 import std.collection.*
 import std.env.*
 import std.fs.*
@@ -25,7 +27,7 @@ import stdx.crypto.keys.*
  */
 
 func coreTestTempDir(name: String): String {
-    let dir = "/tmp/cjh_ut_" + name
+    let dir = tmpPath("cjh_ut_") + name
     removeTreeForTest(dir)
     Directory.create(dir, recursive: true)
     return dir
@@ -36,11 +38,11 @@ func coreWriteTextFile(path: String, content: String): Unit {
 }
 
 func removeTreeForTest(path: String): Unit {
+    // Cangjie 1.2.0 迁移 + 跨平台：原实现 shell 出去调 `/bin/bash -c "rm -rf"`，
+    // Windows 上没有 /bin/bash、异常被吞 → 清理静默失败，下一次 Directory.create
+    // 报 "path is already exists"（skills/trust 等用例因此 ERROR）
     try {
-        var args = Array<String>(2, repeat: "")
-        args[0] = "-c"
-        args[1] = "rm -rf '" + path + "'"
-        let _ = executeWithOutput("/bin/bash", args)
+        removeIfExists(path, recursive: true)
     } catch (e: Exception) {
         // 忽略清理失败
     }
@@ -135,7 +137,7 @@ public class CoreSkillsTest {
     @TestCase
     public func testLoadSkillsNonexistentDir(): Unit {
         var enabled = ArrayList<String>()
-        @Assert(loadSkills("/tmp/cjh_ut_no_such_skills_dir", enabled), "")
+        @Assert(loadSkills(tmpPath("cjh_ut_no_such_skills_dir"), enabled), "")
     }
 
     @TestCase
@@ -477,7 +479,7 @@ public class CoreTrustTest {
 
     @TestCase
     public func testReadTrustListMissing(): Unit {
-        @Assert(readTrustList("/tmp/cjh_ut_no_such/trusted-publishers").size, 0)
+        @Assert(readTrustList(tmpPath("cjh_ut_no_such/trusted-publishers")).size, 0)
     }
 
     // 端到端：签名插件在开放/严格模式下的加载行为
@@ -545,8 +547,8 @@ public func testRefPanelNeedsConfirmOnlyForNetworkUpdate(): Unit {
     @Assert(refPanelNeedsConfirm(["/ref", "update"]), true)
     @Assert(refPanelNeedsConfirm(["/ref", "update", "--branch", "b"]), true)
     @Assert(refPanelNeedsConfirm(["/ref", "update", "--yes"]), false)
-    @Assert(refPanelNeedsConfirm(["/ref", "update", "--source", "/tmp/x"]), false)
-    @Assert(refPanelNeedsConfirm(["/ref", "update", "--source", "/tmp/x", "--dry-run"]), false)
+    @Assert(refPanelNeedsConfirm(["/ref", "update", "--source", tmpPath("x")]), false)
+    @Assert(refPanelNeedsConfirm(["/ref", "update", "--source", tmpPath("x"), "--dry-run"]), false)
     // 纯本地动作一律不拦
     @Assert(refPanelNeedsConfirm(["/ref", "status"]), false)
     @Assert(refPanelNeedsConfirm(["/ref", "search", "ArrayList"]), false)
@@ -566,8 +568,8 @@ public func testRefPanelOptionOfReadsValueOrDefault(): Unit {
 
 @Test
 public func testRefPanelConfirmTextShowsPlanAndGate(): Unit {
-    let t = refPanelConfirmText(["/ref", "update"], "/tmp/corpus")
-    @Assert(t.contains("/tmp/corpus"), true)
+    let t = refPanelConfirmText(["/ref", "update"], tmpPath("corpus"))
+    @Assert(t.contains(tmpPath("corpus")), true)
     @Assert(t.contains("CangjieSkills"), true)
     @Assert(t.contains("cangjie-1.0.5"), true)
     @Assert(t.contains("--yes"), true)
@@ -684,7 +686,7 @@ class SubChildProvider <: LlmProvider {
             case 1 =>
                 var calls = ArrayList<ToolCall>()
                 var a = JsonObject()
-                a.put("path", JsonString("/tmp/cjh_ut_sub/x.cj"))
+                a.put("path", JsonString(tmpPath("cjh_ut_sub/x.cj")))
                 calls.add(ToolCall("s1", "read_file", a))
                 return ModelResponse("读一下", calls)
             case 2 =>
@@ -698,7 +700,7 @@ class SubChildProvider <: LlmProvider {
                 if (callCount == 1) {
                     var calls = ArrayList<ToolCall>()
                     var w = JsonObject()
-                    w.put("path", JsonString("/tmp/cjh_ut_scope/outside/x.cj"))
+                    w.put("path", JsonString(tmpPath("cjh_ut_scope/outside/x.cj")))
                     w.put("content", JsonString("boom"))
                     calls.add(ToolCall("w1", "write_file", w))
                     return ModelResponse("写一下", calls)
@@ -709,7 +711,7 @@ class SubChildProvider <: LlmProvider {
                 if (callCount == 1) {
                     var calls = ArrayList<ToolCall>()
                     var a = JsonObject()
-                    a.put("path", JsonString("/tmp/cjh_ut_sub/x.cj"))
+                    a.put("path", JsonString(tmpPath("cjh_ut_sub/x.cj")))
                     calls.add(ToolCall("s5", "read_file", a))
                     return ModelResponse("读一下", calls)
                 }
@@ -720,7 +722,7 @@ class SubChildProvider <: LlmProvider {
                 if (callCount == 1) {
                     var calls = ArrayList<ToolCall>()
                     var a = JsonObject()
-                    a.put("path", JsonString("/tmp/cjh_ut_sub/x.cj"))
+                    a.put("path", JsonString(tmpPath("cjh_ut_sub/x.cj")))
                     calls.add(ToolCall("s6", "read_file", a))
                     return ModelResponse("阶段性结论：已定位问题在 loop.cj", calls)
                 }
@@ -769,7 +771,7 @@ public class SubagentIsolationTest {
         registry.register(TodoWriteTool(
             { _ => 1 }, { _ => () }, { _ => () }, { _, _ => () }, { => () }, { => "Tasks:" }))
         let config = AgentConfig("parent system", 5, cap, 0, 0, 6, 6000,
-            "/tmp/cjh_ut_sub_spill", "sess-sub")
+            tmpPath("cjh_ut_sub_spill"), "sess-sub")
         let agent = Agent(provider, registry, config)
         registry.register(TaskTool({ d, p, t, s =>
             spawnSubagent(factory.make(), registry, agent, config, d, p, t, s)
@@ -822,7 +824,7 @@ public class SubagentIsolationTest {
         @Assert(sub.compactThreshold == 0, true)
         @Assert(sub.compactTokenThreshold == 0, true)
         @Assert(sub.sessionId == "sess-sub/sub-explore", true)
-        @Assert(sub.spillDir == "/tmp/cjh_ut_sub_spill", true)
+        @Assert(sub.spillDir == tmpPath("cjh_ut_sub_spill"), true)
         @Assert(sub.toolResultMaxChars == config.toolResultMaxChars, true)
     }
 
@@ -835,12 +837,13 @@ public class SubagentIsolationTest {
         // tool 消息）→ 简报摘要应携带该路径（D1 上下文块）
         var history = ArrayList<ChatMessage>()
         history.add(ChatMessage("user", "主任务"))
+        let mainPath = tmpPath("cjh_ut_sub/main.cj")
         var hc = ArrayList<ToolCall>()
         var ha = JsonObject()
-        ha.put("path", JsonString("/tmp/cjh_ut_sub/main.cj"))
+        ha.put("path", JsonString(mainPath))
         hc.add(ToolCall("h1", "read_file", ha))
         history.add(ChatMessage("assistant", "读主文件", hc))
-        history.add(ChatMessage("tool", "已读取 /tmp/cjh_ut_sub/main.cj 的内容", "h1", "read_file"))
+        history.add(ChatMessage("tool", "已读取 ${mainPath} 的内容", "h1", "read_file"))
         agent.loadHistory(history)
 
         let summary = agent.run("派个子任务")
@@ -849,7 +852,7 @@ public class SubagentIsolationTest {
         @Assert(factory.created.size, 1)
         @Assert(factory.created[0].lastChildUser.contains("查一下"), true)
         @Assert(factory.created[0].lastChildUser.contains("--- 父会话上下文"), true)
-        @Assert(factory.created[0].lastChildUser.contains("/tmp/cjh_ut_sub/main.cj"), true)
+        @Assert(factory.created[0].lastChildUser.contains(mainPath), true)
         // 树状结果：ok 状态 + 树形头尾（#8）
         let taskResult = this.lastToolResult(agent.getMessages(), "task")
         @Assert(taskResult.contains("├─ [explore] 调查任务 · ok · 迭代 1"), true)
@@ -1002,7 +1005,7 @@ public class SubagentIsolationTest {
         a.put("description", JsonString("越界写"))
         a.put("prompt", JsonString("写文件"))
         a.put("subagent_type", JsonString("worker"))
-        a.put("scope", JsonString("/tmp/cjh_ut_scope/allowed/*"))
+        a.put("scope", JsonString(tmpPath("cjh_ut_scope/allowed/*")))
         let tool = TaskTool({ d, p, t, s =>
             spawnSubagent(factory.make(), ToolRegistry(), agent, config, d, p, t, s)
         })
@@ -1010,32 +1013,33 @@ public class SubagentIsolationTest {
         @Assert(r.isError, false)
         // 子代理第二轮应观察到 write_file 被写域拒绝
         @Assert(factory.created[0].lastToolObserved.contains("超出本子代理写域"), true)
-        @Assert(factory.created[0].lastToolObserved.contains("/tmp/cjh_ut_scope/outside/x.cj"), true)
+        @Assert(factory.created[0].lastToolObserved.contains(tmpPath("cjh_ut_scope/outside/x.cj")), true)
     }
 
     @TestCase
     public func testSpawnSubagentTranscriptAndFilesTouched(): Unit {
         // S7：转录落盘（spillDir/<sid>/sub-<type>/transcript-<agentId>.md，
         // 含子代理完整过程）+ 触碰文件导出（子代理 read_file → filesTouched）
-        let spillDir = "/tmp/cjh_ut_s7_transcript"
+        let spillDir = tmpPath("cjh_ut_s7_transcript")
         try { removeIfExists(spillDir, recursive: true) } catch (e: Exception) { () }
         let provider = SubagentScriptProvider()
         let factory = SubChildFactory()
         factory.childBehavior = 5  // 第 1 轮 read_file（触碰文件），第 2 轮收场
         let (agent, _, _) = this.buildParent(provider, Capability(), factory)
         // buildParent 的 spillDir = /tmp/cjh_ut_sub_spill（sess-sub）；清理后断言
-        try { removeIfExists("/tmp/cjh_ut_sub_spill", recursive: true) } catch (e: Exception) { () }
+        try { removeIfExists(tmpPath("cjh_ut_sub_spill"), recursive: true) } catch (e: Exception) { () }
         // 子代理要读的目标文件必须存在——否则它 5 轮耗尽在重试读上，产不出最终结论
         // （Directory.create 不幂等：已存在目录会抛 FSException，先清再建）
-        try { removeIfExists("/tmp/cjh_ut_sub", recursive: true) } catch (e: Exception) { () }
-        Directory.create("/tmp/cjh_ut_sub", recursive: true)
-        File.writeTo("/tmp/cjh_ut_sub/x.cj", "hello sub".toArray())
+        try { removeIfExists(tmpPath("cjh_ut_sub"), recursive: true) } catch (e: Exception) { () }
+        Directory.create(tmpPath("cjh_ut_sub"), recursive: true)
+        File.writeTo(tmpPath("cjh_ut_sub/x.cj"), "hello sub".toArray())
         let summary = agent.run("派转录子任务")
         @Assert(summary.reply.contains("parent done"), true)
         let taskResult = this.lastToolResult(agent.getMessages(), "task")
         // 转录路径在树尾，文件真实存在且含子代理过程
-        @Assert(taskResult.contains("转录: /tmp/cjh_ut_sub_spill/sess-sub/sub-explore/transcript-"), true)
-        @Assert(taskResult.contains("触碰文件: /tmp/cjh_ut_sub/x.cj"), true)
+        // （期望值用 tmpPath 拼：跨平台路径由 tmpPath 决定，不能写死 /tmp）
+        @Assert(taskResult.contains("转录: " + tmpPath("cjh_ut_sub_spill/sess-sub/sub-explore/transcript-")), true)
+        @Assert(taskResult.contains("触碰文件: " + tmpPath("cjh_ut_sub/x.cj")), true)
         let line = taskResult.split("\n", -1)
         var transcriptPath = ""
         for (l in line) {
@@ -1048,6 +1052,6 @@ public class SubagentIsolationTest {
         let content = String.fromUtf8(File.readFrom(transcriptPath))
         @Assert(content.contains("## user"), true)
         @Assert(content.contains("child done"), true)
-        try { removeIfExists("/tmp/cjh_ut_sub_spill", recursive: true) } catch (e: Exception) { () }
+        try { removeIfExists(tmpPath("cjh_ut_sub_spill"), recursive: true) } catch (e: Exception) { () }
     }
 }

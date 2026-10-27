@@ -1,5 +1,7 @@
 package cjh.tests
 
+import cjutil.*
+
 import std.collection.*
 import std.sync.*
 import stdx.encoding.json.*
@@ -214,7 +216,7 @@ public class ApprovalChannelTest {
     public func testApprovalRequestJsonShape(): Unit {
         // 帧形状固定：客户端据 request_id 回传、据 args 展示"到底要动什么"
         var args = JsonObject()
-        args.put("path", JsonString("/tmp/secret.txt"))
+        args.put("path", JsonString(tmpPath("secret.txt")))
         let ev = ApprovalRequestEvent("s1#t1#a1", "read_file", args, "文件操作需人工确认")
         ev.meta = FrameMeta("s1", "s1#t1", "s1#t1#m1")
         ev.expiresInMs = 300000
@@ -229,7 +231,7 @@ public class ApprovalChannelTest {
         @Assert(getStr(p, "turn_id"), "s1#t1")
         @Assert(getStr(p, "message_id"), "s1#t1#m1")
         match (p.get("args")) {
-            case Some(v) => @Assert(getStr(v.asObject(), "path"), "/tmp/secret.txt")
+            case Some(v) => @Assert(getStr(v.asObject(), "path"), tmpPath("secret.txt"))
             case None => @Assert("args 缺失", "")
         }
     }

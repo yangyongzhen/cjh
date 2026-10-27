@@ -1,5 +1,7 @@
 package cjh.tests
 
+import cjutil.*
+
 import stdx.encoding.json.*
 import std.fs.*
 import cjh.tools.*
@@ -112,7 +114,7 @@ public class GlobToolTest {
 class GlobToolMatches {
     public static func matchStarEnd(): Bool {
         // 用 GlobTool 执行 "sub/**" 应匹配 sub/c.txt
-        let dir = "/tmp/cjh_ut_globstar"
+        let dir = tmpPath("cjh_ut_globstar")
         try {
             removeTree(dir)
             Directory.create(dir + "/sub", recursive: true)

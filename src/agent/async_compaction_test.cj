@@ -1,5 +1,7 @@
 package cjh.agent
 
+import cjutil.*
+
 import std.collection.*
 import std.fs.*
 import std.time.*
@@ -216,7 +218,7 @@ public class AsyncCompactionTest {
     @TestCase
     public func testNotTriggeredWhenBelowThreshold(): Unit {
         let mainProvider = ScriptedMainProvider(1, 500, 1)
-        let gate = ReleaseGateSummaryProvider("/tmp/cjh_ac_none_f1", true)
+        let gate = ReleaseGateSummaryProvider(tmpPath("cjh_ac_none_f1"), true)
         let tool = NoOpTool(0, "")
         let agent = acBuildAgent(mainProvider, tool, 1000000, 5, 5, 50, Some(gate))
         let s = agent.run("ac 未达阈值")
@@ -235,8 +237,8 @@ public class AsyncCompactionTest {
     @TestCase
     public func testAsyncTriggersThenAppliedNextRound(): Unit {
         let mainProvider = ScriptedMainProvider(1, 500, 1)
-        let gate = ReleaseGateSummaryProvider("/tmp/cjh_ac_async_f2", false)
-        let tool = NoOpTool(1, "/tmp/cjh_ac_async_f2")
+        let gate = ReleaseGateSummaryProvider(tmpPath("cjh_ac_async_f2"), false)
+        let tool = NoOpTool(1, tmpPath("cjh_ac_async_f2"))
         let agent = acBuildAgent(mainProvider, tool, 3, 5, 5, 50, Some(gate))
         let before = Int64(agent.getMessages().size)  // 1(system)+5(history)=6
         let s = agent.run("ac 异步")
@@ -257,7 +259,7 @@ public class AsyncCompactionTest {
     @TestCase
     public func testIncompleteDefersToLaterRound(): Unit {
         let mainProvider = ScriptedMainProvider(1, 500, 1)
-        let gate = ReleaseGateSummaryProvider("/tmp/cjh_ac_defer_f3", true)
+        let gate = ReleaseGateSummaryProvider(tmpPath("cjh_ac_defer_f3"), true)
         let tool = NoOpTool(0, "")
         let agent = acBuildAgent(mainProvider, tool, 3, 5, 5, 50, Some(gate))
         let s = agent.run("ac 顺延")
@@ -278,7 +280,7 @@ public class AsyncCompactionTest {
         let mainProvider = ScriptedMainProvider(1, 500, 1)
         // 工具第 1 次调用 sleep 100ms（写 dummy 释放文件）：保证 spawn 内两次瞬时 throw
         // 在 round 2 checkPending 前完成 → tryGet 拿到 ""（空）→ 确定性触发回退，无竞态
-        let tool = NoOpTool(1, "/tmp/cjh_ac_fallback_f4")
+        let tool = NoOpTool(1, tmpPath("cjh_ac_fallback_f4"))
         let agent = acBuildAgent(mainProvider, tool, 3, 5, 5, 50, Some(SummaryThrowProvider()))
         let s = agent.run("ac 回退")
         @Assert(s.reply.contains("FINAL-DONE"), true)  // 失败不崩，回合正常完成
