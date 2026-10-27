@@ -237,7 +237,11 @@ public class OpenAiProvider <: LlmProvider {
         // P1-5 key 轮换：401/429/5xx → 换备用 key 重试（防限流中断任务）
         let keys = this.allKeys()
         var lastErr = ""
-        for (ki in 0..keys.size) {
+        // while 而非 for-in：限流退避需要"同 key 重试"（显式索引控制）
+        var ki: Int64 = 0
+        // 限流退避计数（单次 chatStream 内累计，最多 2 次：1s/3s）
+        var throttleRetry: Int64 = 0
+        while (ki < keys.size) {
             let key = keys[ki]
             // 连接复用：优先取池中连接（省 TCP+TLS 握手）；复用后若代理已
             // 关 keep-alive（读响应头 EOF），重建连接重试一次
@@ -316,9 +320,23 @@ public class OpenAiProvider <: LlmProvider {
                 }
                 lastErr = "HTTP ${status}: ${err}"
                 errTr.close()
+                // 限流退避重试（修实测"5 路并发派发全 failed"）：部分聚合端点把限流
+                // 返回成 400 + Throttling body（非 429），原逻辑只重试 401/429/5xx，
+                // 400-Throttling 直接 throw → 子代理跑到一半全灭、父对话无下文。
+                // 现统一把限流视为可重试：同 key 退避重试至多 2 次（1s/3s），
+                // 仍失败按原逻辑换 key/抛出
+                let throttled: Bool = status == 429 || status >= 500 ||
+                    (status == 400 && (err.contains("Throttl") || err.contains("throttl")))
+                if (throttled && throttleRetry < 2) {
+                    throttleRetry += 1
+                    let delay: Int64 = if (throttleRetry == 1) { 1 } else { 3 }
+                    sleep(Duration.second * delay)
+                    continue  // 同 key 重试
+                }
                 // 认证/限流/服务端错误：换 key 重试；其他 4xx 业务错误直接抛出
                 if (status == 401 || status == 429 || status >= 500) {
                     if (ki < keys.size - 1) {
+                        ki += 1
                         continue  // 换下一个 key
                     }
                 }
@@ -367,6 +385,18 @@ public class OpenAiProvider <: LlmProvider {
         }
         let modelResp = acc.finish()
         modelResp.timedOut = parser.timedOut
+        // 用量接入（修实测面板 ↑0）：openai 流式路径此前从不回填 usage（finish() 只带
+        // 文本/工具调用），回合归账/面板/预算基线全部恒 0。优先取 SSE usage 帧
+        // （feed() 已解析进 acc.promptTokens/completionTokens）；端点不回传 usage 时
+        // 回落到流式估算（prompt=历史字符数/4，completion=回复长度/4，口径同 onTokenEstimate）
+        if (acc.promptTokens > 0 || acc.completionTokens > 0) {
+            modelResp.usage.promptTokens = acc.promptTokens
+            modelResp.usage.completionTokens = acc.completionTokens
+            modelResp.usage.cachedTokens = acc.cachedTokens
+        } else if (acc.text.size > 0 || acc.estimatedPromptTokens > 0) {
+            modelResp.usage.promptTokens = acc.estimatedPromptTokens
+            modelResp.usage.completionTokens = Int64(acc.text.size) / 4
+        }
         return modelResp
             }  // for key 轮换循环
         // 不可达兜底：循环内 200 已 return，所有 key 失败已 throw
