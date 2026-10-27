@@ -337,6 +337,9 @@ public class TuiApp {
         this.statusBar.setUtf8(utf8Now)
         this.tabBar.setUtf8(utf8Now)
         this.tasksPanel.setUtf8(utf8Now)
+        // S3 复核 #3：Agents 面板此前漏接（构造默认 utf8=true）——其它面板降级成 +-|
+        // 时它仍画 ╭─╮│ 与 ▶ ✓ ✗，正是历史上反复修的"UTF-8 与 ASCII 混排"
+        this.agentsPanel.setUtf8(utf8Now)
         this.spinner.setUtf8(utf8Now)
         this.confirmDialog.setUtf8(utf8Now)
         this.welcomeView.setUtf8(utf8Now)
@@ -1846,8 +1849,9 @@ public class TuiApp {
             let outH0: Int64 = if (statusRow - 8 > 0) { statusRow - 8 } else { 0 }
             // tasksH：Tasks 面板占用行数（无任务时为 0；maxH 用 outH0 限制，误差≤1 行可接受）
             let tasksH: Int64 = this.tasksPanel.height(outH0)
-            // agentsH：Agents 面板高度（S3），渲染在 Tasks 面板之上
-            let agentsH: Int64 = this.agentsPanel.height(outH0)
+            // agentsH：Agents 面板高度（S3），渲染在 Tasks 面板之上；
+            // 传 cols 与 render 同判据（S3 复核 #9：太窄时面板不画就不能预先占布局行）
+            let agentsH: Int64 = this.agentsPanel.height(outH0, cols)
             // 动态状态行位置：statusRow - 1(间隔) - tasksH - agentsH(两块面板) - 1(自身)
             // 无 agent 运行时，agentRow 不使用，仅用于 outH 计算
             let agentRow: Int64 = if (agentBusy) { statusRow - 1 - tasksH - agentsH - 1 } else { -1 }

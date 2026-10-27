@@ -96,6 +96,16 @@ public class AgentsPanelTest {
         return -1
     }
 
+    /** 取第一条含 marker 的内容行（剥 ANSI 后的屏幕行） */
+    private func rowLineOf(lines: ArrayList<String>, needle: String): String {
+        for (l in lines) {
+            if (l.contains(needle)) {
+                return l
+            }
+        }
+        return ""
+    }
+
     @TestCase
     public func testAgentsPanelTitleAndRows(): Unit {
         let panel = AgentsPanel()
@@ -219,5 +229,61 @@ public class AgentsPanelTest {
         rows.add(AgentRow(53, "C", "explore", RowOk, 2, 300, 0, "", false))
         panel.updateRows(rows)
         @Assert(panel.heartbeat(), "3 agents (3/5 1/5) ↑600")
+    }
+
+    @TestCase
+    public func testAgentsPanelNarrowWidthKeepsRightBorder(): Unit {
+        // S3 复核 #4 收口：75/80/90 列 + 当前工具非空时，行内容曾超 panelW-2，
+        // 被 Canvas.truncate 从右侧裁掉右边框（实测 body 以 "re"/"read_f" 结尾）
+        let panel = AgentsPanel()
+        panel.setUtf8(true)
+        var rows = ArrayList<AgentRow>()
+        rows.add(AgentRow(61, "并发审批子任务", "explore", RowRunning, 2, 1200, 300, "read_file", false))
+        panel.updateRows(rows)
+        var w: Int64 = 75
+        while (w <= 90) {
+            let lines = this.renderLines(panel, w, 16)
+            let rowLine = this.rowLineOf(lines, "▶")
+            @Assert(rowLine.size > 0, true)
+            @Assert(rowLine.endsWith("│"), true)        // 右边框必须在（此前被裁）
+            @Assert(TuiCanvas.displayWidth(rowLine), w)  // 整行恰好铺满终端宽
+            @Assert(rowLine.contains("并"), true)        // 标签没被挤没（此前 80 列只剩 1 字）
+            w += 5
+        }
+        // 宽度够（110 列 → panelW=44）时工具列恢复显示（低信息列只是让位，不是永久丢弃）
+        let wide = this.rowLineOf(this.renderLines(panel, 110, 16), "▶")
+        @Assert(wide.contains("read_file"), true)
+        @Assert(wide.endsWith("│"), true)
+    }
+
+    @TestCase
+    public func testAgentsPanelAsciiFallback(): Unit {
+        // S3 复核 #3：非 UTF-8 终端必须整体降级（TuiApp 此前漏接 setUtf8，
+        // 面板永远画 UTF-8 框线与状态符 → logo/弹窗 ASCII 而面板仍 UTF-8 的混排）
+        let panel = AgentsPanel()
+        panel.setUtf8(false)
+        var rows = ArrayList<AgentRow>()
+        rows.add(AgentRow(71, "找配置", "explore", RowRunning, 1, 100, 0, "", false))
+        panel.updateRows(rows)
+        let text = this.renderToText(panel, 120, 16)
+        @Assert(text.contains("+"), true)      // 边框降级
+        @Assert(text.contains(">"), true)      // 运行中状态符降级
+        @Assert(text.contains("╭"), false)
+        @Assert(text.contains("│"), false)
+        @Assert(text.contains("▶"), false)
+    }
+
+    @TestCase
+    public func testAgentsPanelHeightRespectsCols(): Unit {
+        // S3 复核 #9：太窄（cols*2/5 < 30，即 cols < 75）面板根本不渲染，
+        // 高度必须为 0——否则白占布局行、动态状态行被顶上去留一片空白
+        let panel = AgentsPanel()
+        var rows = ArrayList<AgentRow>()
+        rows.add(AgentRow(81, "A", "explore", RowRunning, 1, 100, 0, "", false))
+        panel.updateRows(rows)
+        @Assert(panel.height(16, 60), 0)
+        @Assert(panel.height(16, 74), 0)   // 边界：74*2/5 = 29 < 30
+        @Assert(panel.height(16, 80), 3)   // 1 行 + 上下边框
+        @Assert(panel.height(16), 3)       // 不传 cols 的旧调用行为不变
     }
 }
