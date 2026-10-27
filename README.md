@@ -351,6 +351,10 @@ In the TUI the same operations are available as `/ref status`, `/ref verify`, `/
 # Activate Cangjie environment (sets PATH; build is static-linked single file, no runtime libs needed)
 source cj-env.sh
 
+# First time on a new machine: auto-detect local Cangjie SDK / stdx and rewrite
+# the absolute paths in all cjpm.toml files (cjpm.toml does not support env vars)
+./scripts/setup_paths.sh        # add --check to verify without writing
+
 # Build (produces cjh, statically linked Cangjie runtime + stdx, only system libs remain)
 cjpm build
 
