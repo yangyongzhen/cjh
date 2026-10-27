@@ -10,6 +10,8 @@
   link-option = ""
   package-configuration = {}
 
+# 刻意保持零依赖：cjterm 只用到 cjutil 的两个 UTF-8 辅助函数，已内联到
+# term_util.cj（与 truncateUtf8 同策略）。依赖 cjutil 会让终端库被迫拉进
+# stdx（json/http/crypto），Windows 原生构建直接编不过（S3 复审收口）。
 [dependencies]
-  cjutil = { path = "../cjutil" }
 

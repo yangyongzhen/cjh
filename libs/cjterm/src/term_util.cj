@@ -1,6 +1,80 @@
 package cjterm
 
 /**
+ * UTF-8 安全解码：非法字节序列用替换字符（U+FFFD）代替，不抛异常。
+ *
+ * 内联自 cjutil（与 truncateUtf8 同策略：独立库自包含，零外部依赖）。
+ * 背景：cjterm 全库只此一处需要 cjutil，却让整个终端库被迫依赖一个带 stdx 的
+ * 重包——Windows 原生构建会因此连 `cjpm build` 都过不去（stdx 无 windows 平台
+ * 目录时报 `can not find package 'stdx.encoding.json'`）。
+ */
+internal func safeFromUtf8(bytes: Array<UInt8>): String {
+    var sb = StringBuilder()
+    var i = 0
+    let n = bytes.size
+    while (i < n) {
+        let b0 = bytes[i]
+        var len = 1
+        var valid = true
+        if (b0 < 0x80u8) {
+            len = 1
+        } else if ((b0 & 0xE0u8) == 0xC0u8) {
+            len = 2
+        } else if ((b0 & 0xF0u8) == 0xE0u8) {
+            len = 3
+        } else if ((b0 & 0xF8u8) == 0xF0u8) {
+            len = 4
+        } else {
+            valid = false
+        }
+        if (valid && i + len > n) {
+            valid = false
+        }
+        if (valid) {
+            for (j in 1..len) {
+                if ((bytes[i + j] & 0xC0u8) != 0x80u8) {
+                    valid = false
+                    break
+                }
+            }
+        }
+        if (valid) {
+            try {
+                sb.append(String.fromUtf8(bytes[i..i + len]))
+            } catch (e: Exception) {
+                sb.append("\u{FFFD}")
+            }
+            i += len
+        } else {
+            sb.append("\u{FFFD}")
+            i += 1
+        }
+    }
+    return sb.toString()
+}
+
+/**
+ * 字节安全截断：最多截取 maxBytes 字节，若落在 UTF-8 多字节字符中间则递减到合法边界。
+ *
+ * 内联自 cjutil（独立库自包含，零外部依赖）；避免 String 切片在字符中间抛
+ * IllegalArgumentException: Invalid utf8 byte sequence。
+ */
+internal func truncateUtf8(text: String, maxBytes: Int64): String {
+    if (text.size <= maxBytes) {
+        return text
+    }
+    var k = maxBytes
+    while (k > 0) {
+        try {
+            return text[0..k]
+        } catch (e: Exception) {
+            k -= 1
+        }
+    }
+    return ""
+}
+
+/**
  * 单个控制字符判定（`KeyEvent.text` 契约兜底）：控制键的 text 应为空串。
  *
  * 背景（v1.4.0）：`KeyEvent(ch)` 旧实现无条件 `text = Rune(ch).toString()`，
