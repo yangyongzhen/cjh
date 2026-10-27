@@ -247,7 +247,10 @@ function Get-FirstErrors([string]$out, [int]$n = 6) {
 }
 
 function Invoke-CjpmTest([string]$workdir, [string]$label) {
-    $cmdArgs = @("test")
+    # -j 1：串行跑。Cangjie 1.2.0 的 cjpm test 默认并行各包/用例，而本仓库测试大量共享
+    # 全局态（Theme/Ansi、CJH_CONFIG_DIR、临时目录）→ 并行下同一批用例会随机红/绿
+    # （实测同一份代码两次跑失败集合不同）。串行后结果确定，才配当门禁。
+    $cmdArgs = @("test", "-j", "1")
     if ($Filter) { $cmdArgs += @("--filter", $Filter) }
     $r = Run-Native "cjpm" $cmdArgs $workdir
     $summary = Get-TestSummary $r.Out

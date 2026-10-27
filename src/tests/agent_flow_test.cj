@@ -99,6 +99,10 @@ public class AgentFlowTest {
 
     @TestCase
     public func testToolResultTruncationAndSpill(): Unit {
+        // 依赖 POSIX 管道（yes | tr | head）；Windows 上 bash 回落 PowerShell，跳过
+        if (!posixShellAvailable()) {
+            return
+        }
         writeTextFile(tmpPath("cjh_flow_a.txt"), "A\n")
         writeTextFile(tmpPath("cjh_flow_b.txt"), "B\n")
         let spillDir = testTempDir("flowtrunc")

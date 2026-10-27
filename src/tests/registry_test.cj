@@ -1,5 +1,8 @@
 package cjh.tests
 
+import std.fs.*
+import cjutil.*
+
 import stdx.encoding.json.*
 import cjh.tools.*
 
@@ -31,11 +34,16 @@ public class RegistryTest {
 
     @TestCase
     public func testExecuteDispatch(): Unit {
+        // 用跨平台工具验证 dispatch 链路（原用 bash echo：Windows 上 BashTool 回落
+        // PowerShell/无 Git Bash 时报错，测的就不再是 registry 本身了）
         let registry = ToolRegistry()
-        registry.register(BashTool())
+        registry.register(ReadTool())
+        let f = tmpPath("cjh_ut_registry_dispatch.txt")
+        try { removeIfExists(f) } catch (e: Exception) { () }
+        File.writeTo(f, "dispatched".toArray())
         var args = JsonObject()
-        args.put("command", JsonString("echo dispatched"))
-        let result = registry.execute("bash", args)
+        args.put("path", JsonString(f))
+        let result = registry.execute("read_file", args)
         @Assert(result.isError, false)
         @Assert(result.content.contains("dispatched"), true)
     }

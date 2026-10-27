@@ -62,3 +62,21 @@ func removeTree(path: String): Unit {
         // 清理失败不影响测试结果
     }
 }
+
+/**
+ * POSIX shell（/bin/bash）是否可用
+ *
+ * 供「整类没法整体守卫、只有单个用例依赖 bash 管道」的场景用（如 agent_flow 的
+ * `yes x | tr -d '\n' | head -c 5000`）：Windows 上 BashTool 回落 PowerShell，
+ * 该类管道不成立 → 用例开头 `if (!posixShellAvailable()) { return }` 跳过。
+ * （`@When` 不能加在 `@TestCase` 方法上，只能下沉到文件级函数。）
+ */
+@When[os != "Windows"]
+func posixShellAvailable(): Bool {
+    return true
+}
+
+@When[os == "Windows"]
+func posixShellAvailable(): Bool {
+    return false
+}

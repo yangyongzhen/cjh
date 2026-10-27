@@ -71,7 +71,8 @@ func refReadyCorpus(name: String): String {
 
 @Test
 public func testRefManifestPathJoin(): Unit {
-    @Assert(refManifestPath(tmpPath("x")), tmpPath("x/") + REF_MANIFEST_FILE)
+    // refManifestPath 输出统一 `/` 风格（Windows 上 base 的 `\` 已归一），期望值同步归一
+    @Assert(refManifestPath(tmpPath("x")), tmpPath("x").replace("\\", "/") + "/" + REF_MANIFEST_FILE)
     @Assert(REF_MANIFEST_FILE, ".cjh-ref-manifest.json")
 }
 
