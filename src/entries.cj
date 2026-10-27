@@ -943,6 +943,14 @@ func runTui(sessionId: String): Int64 {
                         tui.appendOutput(Ansi.reset())
                         StreamState.active = false
                     }
+                    // 修实测"主窗口没下文"：LLM 调用失败时 runLoop 把错误吞进 summary
+                    //（reply="[LLM 调用异常: ...]"、errorCode="run_failed"），TUI 从不渲染
+                    // → 用户只看到 [saved ...]，回合无声结束。失败必须可见
+                    if (summary.errorCode.size > 0) {
+                        TuiBridge.output(Ansi.fg(Ansi.THEME_ERR) +
+                            "⚠ 本回合执行失败（${summary.errorCode}）：${summary.errorMessage}" +
+                            Ansi.reset())
+                    }
                     // 保存会话（含首轮时创建 ID）
                     if (SessionState.current.size == 0) {
                         SessionState.current = store.save(agent.history())
