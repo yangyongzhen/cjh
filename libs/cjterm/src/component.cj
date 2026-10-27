@@ -157,7 +157,10 @@ public class TuiCanvas {
      *         那会把多字节字符按 Latin-1 误解码（"对话"→"å¯¹"乱码）。
      */
     public func truncate(text: String, cols: Int64): String {
-        let maxVisible = cols - 1
+        // 允许恰好 cols 列可见字符（修实测"右对齐面板右边框被截"）：此前 maxVisible =
+        // cols-1 的保守留白会把右对齐面板的最后一位（右边框 ╮/│）截掉。光标位置由
+        // moveTo 显式定位、不依赖自然换行，写满最后一列是安全的
+        let maxVisible = cols
         var sb = StringBuilder()
         var visible: Int64 = 0
         var i: Int64 = 0
