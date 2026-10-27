@@ -54,26 +54,11 @@ internal func safeFromUtf8(bytes: Array<UInt8>): String {
     return sb.toString()
 }
 
-/**
- * 字节安全截断：最多截取 maxBytes 字节，若落在 UTF-8 多字节字符中间则递减到合法边界。
+/** 字节安全截断（已废弃）——
  *
- * 内联自 cjutil（独立库自包含，零外部依赖）；避免 String 切片在字符中间抛
- * IllegalArgumentException: Invalid utf8 byte sequence。
+ * 上游面板改为 `TuiCanvas.truncate`（ANSI/显示宽感知）后本函数已无调用方，
+ * 删除以免 Cangjie 1.2.0 报 unused function；保留此注记解释历史。
  */
-internal func truncateUtf8(text: String, maxBytes: Int64): String {
-    if (text.size <= maxBytes) {
-        return text
-    }
-    var k = maxBytes
-    while (k > 0) {
-        try {
-            return text[0..k]
-        } catch (e: Exception) {
-            k -= 1
-        }
-    }
-    return ""
-}
 
 /**
  * 单个控制字符判定（`KeyEvent.text` 契约兜底）：控制键的 text 应为空串。
