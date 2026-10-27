@@ -168,7 +168,9 @@ public class AgentsPanel {
         let reset: String = Ansi.reset()
         let bx = BoxChars(this.utf8)
 
-        // 标题：Agents (N running · M done · ↑xxk)
+        // 顶边框：╭─ Agents (N running · M done · ↑xxk) ───╮
+        // 显示宽度算填充（修实测"边框不齐"）：title.size 是字节数，中文/·/↑ 都是多字节，
+        // 字节数 > 显示宽度会把横线补短；且原公式总数差 1 列（顶 panelW-1 vs 底 panelW）
         var running: Int64 = 0
         var done: Int64 = 0
         var totalTokens: Int64 = 0
@@ -181,9 +183,9 @@ public class AgentsPanel {
             totalTokens += r.promptTokens
         }
         let title: String = "Agents (${running} running · ${done} done · ↑${fmtTokenCount(totalTokens)})"
+        let titleW: Int64 = TuiCanvas.displayWidth(title)
         var topLine: String = muted + bx.tl + bx.hc + " " + reset + accent + title + reset + muted + " "
-        let used: Int64 = 4 + Int64(title.size) + 1
-        var dashCount: Int64 = panelW - used - 1
+        var dashCount: Int64 = panelW - titleW - 5
         if (dashCount < 0) { dashCount = 0 }
         var i: Int64 = 0
         while (i < dashCount) {
@@ -200,8 +202,17 @@ public class AgentsPanel {
         while (row < startRow + panelH - 1 && idx < Int64(items.size)) {
             let r: AgentRow = items[idx]
             if (idx == bodyRows - 1 && Int64(items.size) > bodyRows) {
-                // 最后一行让位给 "+N more"
-                let more: String = muted + bx.vc + reset + "  " + muted + "+${Int64(items.size) - idx} more" + reset + muted + bx.vc + reset
+                // 最后一行让位给 "+N more"（同款显示宽度补齐，右边框对齐）
+                let moreText: String = "  +${Int64(items.size) - idx} more"
+                var morePad: Int64 = (panelW - 2) - TuiCanvas.displayWidth(moreText)
+                if (morePad < 0) { morePad = 0 }
+                var moreSpaces: String = ""
+                var mi: Int64 = 0
+                while (mi < morePad) {
+                    moreSpaces += " "
+                    mi += 1
+                }
+                let more: String = muted + bx.vc + reset + moreText + moreSpaces + muted + bx.vc + reset
                 canvas.setLine(row, more)
                 row += 1
                 break
@@ -242,11 +253,25 @@ public class AgentsPanel {
             if (Int64(toolCol.size) > 16) {
                 toolCol = truncateUtf8(toolCol, 16)
             }
+            // 行内容按显示宽度补齐到 panelW-2 再补右边框（修实测"每行右端参差"）
+            var body: String = " " + marker + " " + r.kind + focusMark + "  " + label + "  " +
+                iterCol + "  ↑" + fmtTokenCount(r.promptTokens)
+            if (toolCol.size > 0) {
+                body += "  " + toolCol
+            }
+            var pad: Int64 = (panelW - 2) - TuiCanvas.displayWidth(body)
+            if (pad < 0) { pad = 0 }
+            var padStr: String = ""
+            i = 0
+            while (i < pad) {
+                padStr += " "
+                i += 1
+            }
             let line: String = muted + bx.vc + reset + " " + markerColor + marker + reset + " " +
                 r.kind + focusMark + "  " + label + "  " +
                 muted + iterCol + "  ↑${fmtTokenCount(r.promptTokens)}" + reset +
                 (if (toolCol.size > 0) { "  " + muted + toolCol + reset } else { "" }) +
-                muted + bx.vc + reset
+                padStr + muted + bx.vc + reset
             canvas.setLine(row, line)
             row += 1
             idx += 1
