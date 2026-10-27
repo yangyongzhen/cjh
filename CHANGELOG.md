@@ -12,7 +12,8 @@ cjh 版本变更记录。依据 git tag 史 + 提交史整理；版本号规则�
 
 ### 新增（Windows 原生测试门禁）
 
-- **`scripts/test_win.ps1`**：一条命令对齐 Linux 的 `test.sh` + `test_libs.sh`——根包 `cjpm.toml` 临时派生为 Windows 版（清 `--static`、`link-option = "-lcrypt32 -lws2_32"`、补 `[target.x86_64-w64-mingw32.bin-dependencies]`）→ `cjpm build` + `cjpm test` → 逐包 `libs/*` → 结束恢复基线（含强杀兜底、派生态自检）。缺 windows stdx 的包显式 `SKIP` 且 **exit 2**（"未验证"≠"通过"）。实测：cjlog 1/1、cjterm 83/83 全过，0 告警。
+- **`scripts/test_win.ps1`**：一条命令对齐 Linux 的 `test.sh` + `test_libs.sh`——先给"源码 import stdx 的 libs"临时补 `[target.x86_64-w64-mingw32.bin-dependencies]`（cjpm 的 bin-dependencies 不向依赖包传播），再把根包 `cjpm.toml` 派生为 Windows 版（清 `--static`、`link-option = "-lcrypt32 -lws2_32"`）→ `cjpm build` + `cjpm test` → 逐包 `libs/*` → 结束恢复全部基线（含强杀兜底、派生态自检）。windows stdx 自动探测（`-Stdx` / `CJH_WINDOWS_STDX` / `CJH_STDX_ROOT` / `~/.cangjie/stdx` / `<盘>:\cangjie-stdx\...`）。区分 `FAIL`（真红）/`ENV`（工具链版本不匹配）/`SKIP`（缺 stdx），后两者 exit 2。实测：cjterm 83/83、cjconfig 7/7、cjlog 1/1 全过（共 91 例），0 告警。
+- **cjconfig 的 Windows 可跑化**：`test_env_helper.cj` 的 `foreign func setenv` 加 `@When[os != "Windows"]`（Windows 链接期 `undefined symbol: setenv`）；`testEnvOverrides` 的 env 段挪到文件级 `env_override_helper.cj`（`@When` 不能加在 `@TestCase` 方法上，Test 宏会报 `unexpected conditional compilation directive`）；测试目录改用跨平台 `testTmpPath`（POSIX `/tmp`，Windows `%TEMP%`）。
 - **cjterm 解除对 cjutil 的依赖**（`safeFromUtf8` 内联进 `term_util.cj`）：此前终端库只为一处 POSIX 代码的 UTF-8 辅助就依赖带 stdx 的 cjutil，Windows 原生 `cjpm build` 直接编不过。现 cjterm 对 stdx 零依赖，可独立构建/测试。
 - **补齐 POSIX 侧 `@When` 守卫**：`term_posix.cj` 的 `tcgetattr/tcsetattr/ioctl` 文件级 foreign 声明、`tty_out_test.cj` 的 `pipe` 与测试类、`trace_test.cj` 的测试类——此前守卫只挡住类，mingw 缺这些符号导致链接期 undefined symbol。
 - **测试临时目录跨平台**：新增 `libs/cjterm/src/test_tmp_test.cj`；Windows 落 `%TEMP%`（`/tmp` 在 Windows 会解析到盘根 `C:\tmp`，普通用户无权限），清理改用 `std.fs.removeIfExists(recursive: true)` 取代 `bash rm -rf`。
