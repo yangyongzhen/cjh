@@ -323,13 +323,16 @@ public class OpenAiProvider <: LlmProvider {
                 // 限流退避重试（修实测"5 路并发派发全 failed"）：部分聚合端点把限流
                 // 返回成 400 + Throttling body（非 429），原逻辑只重试 401/429/5xx，
                 // 400-Throttling 直接 throw → 子代理跑到一半全灭、父对话无下文。
-                // 现统一把限流视为可重试：同 key 退避重试至多 2 次（1s/3s），
+                // 现统一把限流视为可重试：同 key 退避重试至多 3 次（2s/5s/10s，
+                // 共 17s——实测 1s/3s 穿不透按分钟计的限流窗口），
                 // 仍失败按原逻辑换 key/抛出
                 let throttled: Bool = status == 429 || status >= 500 ||
                     (status == 400 && (err.contains("Throttl") || err.contains("throttl")))
-                if (throttled && throttleRetry < 2) {
+                if (throttled && throttleRetry < 3) {
                     throttleRetry += 1
-                    let delay: Int64 = if (throttleRetry == 1) { 1 } else { 3 }
+                    let delay: Int64 = if (throttleRetry == 1) { 2 } else {
+                        if (throttleRetry == 2) { 5 } else { 10 }
+                    }
                     sleep(Duration.second * delay)
                     continue  // 同 key 重试
                 }
