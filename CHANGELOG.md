@@ -10,6 +10,13 @@ cjh 版本变更记录。依据 git tag 史 + 提交史整理；版本号规则�
 - **开源许可证明确为 MIT**：新增 [LICENSE](./LICENSE)（Copyright (c) 2026 yangyongzhen）、`cjpm.toml` 补 `license = "MIT"` 字段、双语 README 徽章与 License 段落指向该文件。
 - **README 补齐生态价值的两条实证**：①「工程踩坑经验」由一句话概括改为量化描述（**51 条 / 1000+ 行**，每条含现象 + 排查铁证 + 可复用配方）；② 新增「向上游反馈的问题」小节，列出提交给 `Cangjie/UsersForum` 的 **12 条（#3473–#3484）**缺陷与提案，其中静态链接下 `cjpm test` 崩溃、Windows 目标 `--static*` 静默无效两条带 issue 直链与 A/B 实测对照，并记录复核中推翻自身 3 条旧结论的经过（中英双语同步）。
 
+### 新增（Windows 原生测试门禁）
+
+- **`scripts/test_win.ps1`**：一条命令对齐 Linux 的 `test.sh` + `test_libs.sh`——根包 `cjpm.toml` 临时派生为 Windows 版（清 `--static`、`link-option = "-lcrypt32 -lws2_32"`、补 `[target.x86_64-w64-mingw32.bin-dependencies]`）→ `cjpm build` + `cjpm test` → 逐包 `libs/*` → 结束恢复基线（含强杀兜底、派生态自检）。缺 windows stdx 的包显式 `SKIP` 且 **exit 2**（"未验证"≠"通过"）。实测：cjlog 1/1、cjterm 83/83 全过，0 告警。
+- **cjterm 解除对 cjutil 的依赖**（`safeFromUtf8` 内联进 `term_util.cj`）：此前终端库只为一处 POSIX 代码的 UTF-8 辅助就依赖带 stdx 的 cjutil，Windows 原生 `cjpm build` 直接编不过。现 cjterm 对 stdx 零依赖，可独立构建/测试。
+- **补齐 POSIX 侧 `@When` 守卫**：`term_posix.cj` 的 `tcgetattr/tcsetattr/ioctl` 文件级 foreign 声明、`tty_out_test.cj` 的 `pipe` 与测试类、`trace_test.cj` 的测试类——此前守卫只挡住类，mingw 缺这些符号导致链接期 undefined symbol。
+- **测试临时目录跨平台**：新增 `libs/cjterm/src/test_tmp_test.cj`；Windows 落 `%TEMP%`（`/tmp` 在 Windows 会解析到盘根 `C:\tmp`，普通用户无权限），清理改用 `std.fs.removeIfExists(recursive: true)` 取代 `bash rm -rf`。
+
 ### 修复（S3 阶段复审收口）
 
 - **`max_subagents: 0` 让进程起不来**（P1）：`Semaphore(0)` / `Semaphore(-1)` 会抛 `IllegalArgumentException`（实测 `Invalid amount to acquire.` / `Negative count.`），而设置文档语义是「四键 0 = 对应项不限」——用户按文档配 0 后 `runTui` 在构造 scheduler 时抛异常，直接「启动失败」退出。现 `SubagentScheduler` 用 `Option<Semaphore>`：并发上限 ≤ 0 = 不限（`acquire` 恒成功、`release` 空操作），另三键 0 的语义不变。

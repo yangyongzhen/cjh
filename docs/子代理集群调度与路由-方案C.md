@@ -361,6 +361,8 @@ public class SubagentScheduler {   // 每个父 Agent 一个实例
 本机（Windows + `D:\Program Files (x86)\Cangjie`）**只能编译不能过门禁**：`scripts/test.sh` / `test_libs.sh` 是 bash + `/tmp` 路径，`cjpm.toml` 是 Linux 静态链接配置（rpath/linux stdx），且本机 `~/.cangjie/stdx` 只有 `ohos-aarch64`，没有 windows-x64 stdx。
 → **S1–S8 的实现与验证必须在 Linux 开发机（或等价环境）执行**，否则 AGENTS.md 的三道门禁（`test.sh` 549+ / `test_libs.sh` 175 / `tui_pty_test.py` 67+）无法出凭证。
 
+> ⚠️ 2026-10-28 更新：**Windows 原生已能跑一部分**——`scripts/test_win.ps1`（根包配置临时派生 + 逐包 libs）实测 **cjlog 1/1、cjterm 83/83 全过**；根包与 cjutil/cjcfg/cjconfig/cjllm 因缺 windows stdx 显式 SKIP（exit 2）。但 `tui_pty_test.py`、`--mock` 端到端、发布体积/`ldd` 核对仍须 Linux，**上述"必须 Linux 出凭证"的结论只对这三项成立**。
+
 ---
 
 ## 8. 验收标准（用原方案的四个不变量当标尺）
