@@ -17,7 +17,11 @@ foreign func unsetenv(name: CString): Int32
  * - 关闭时绝不落盘（正常路径零副作用）
  *
  * 临时目录：/tmp/cjh_ut_trace_*（用例内自建自清；仓颉无递归删除 API → bash rm -rf）
+ *
+ * @When[os != "Windows"]：全靠 libc setenv/unsetenv 改环境变量再读回，POSIX 专有
+ * （setenv 定义在 env_test_helper.cj 的 POSIX 分支里，Windows 下会 undeclared）
  */
+@When[os != "Windows"]
 @Test
 public class KeyTraceTest {
 

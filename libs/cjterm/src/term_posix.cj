@@ -12,7 +12,6 @@ package cjterm
  */
 
 import std.collection.*
-import cjutil.*
 
 // ===== termios FFI（直接调 libc，无外部 .so 依赖）=====
 // Linux termios 结构体布局（x86_64，60 字节）：
@@ -25,15 +24,21 @@ import cjutil.*
 //   speed_t  c_ispeed;  // offset 48 (padding)
 //   speed_t  c_ospeed;  // offset 52
 //   // padding to 60
+// 逐条 @When：本文件顶部注释声称"Windows 构建不编译本文件"，但实际上只有类被
+// 挡住，文件级 foreign 声明与常量照样编译——mingw 没有 tcgetattr/tcsetattr/ioctl，
+// 链接期会报 undefined symbol（实测 Windows 原生 cjpm test 直接失败）。
+@When[os != "Windows"]
 @C
 foreign func tcgetattr(fd: Int32, termios: CPointer<UInt8>): Int32
 
+@When[os != "Windows"]
 @C
 foreign func tcsetattr(fd: Int32, optionalActions: Int32, termios: CPointer<UInt8>): Int32
 
 @C
 foreign func read(fd: Int32, buf: CPointer<UInt8>, count: UInt64): Int64
 
+@When[os != "Windows"]
 @C
 foreign func ioctl(fd: Int32, request: UInt64, arg: CPointer<UInt8>): Int32
 
