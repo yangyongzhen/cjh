@@ -340,7 +340,9 @@ public class TuiCanvas {
         if (cp >= 0xFFE0 && cp <= 0xFFE6) { return true }    // 全角符号
         if (cp >= 0x20000 && cp <= 0x2FFFD) { return true }  // CJK 扩展 B+
         if (cp >= 0x1F000 && cp <= 0x1FAFF) { return true }  // emoji（📁 等，终端占 2 列）
-        if (cp >= 0x2600 && cp <= 0x27BF) { return true }    // 杂项符号/装饰（★ ☀ ♥ ▶ ● ⬢ 等，部分终端占 2 列）
+        // 杂项符号（✓ ✗ ☐ ⚠ ★ ● 等，U+2600-27BF）按 **1 列**计：这是 wcwidth 的
+        // "歧义宽度"区段，主流终端默认窄渲染。此前按 2 列算——用户终端实锤窄渲染，
+        // 面板内容行（含 ✗/✓）右边框相对顶/底边系统性左移 1 列（"中间区域不对齐"）
         return false
     }
 
