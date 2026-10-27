@@ -26,7 +26,7 @@ public class SubagentConfigTest {
 
     @TestCase
     public func testSubagentLimitsParsed(): Unit {
-        let dir = "/tmp/cjh_ut_subagent_cfg"
+        let dir = testTmpPath("cjh_ut_subagent_cfg")
         cleanDir(dir)
         Directory.create(dir)
         var sb = StringBuilder()
@@ -45,7 +45,7 @@ public class SubagentConfigTest {
     @TestCase
     public func testSubagentLimitsDefaults(): Unit {
         // 缺省：D9 默认值（并发 4 / 每回合 6 / 预算 200k / 超时 300s / 路由 auto）
-        let dir = "/tmp/cjh_ut_subagent_cfg_def"
+        let dir = testTmpPath("cjh_ut_subagent_cfg_def")
         cleanDir(dir)
         Directory.create(dir)
         File.writeTo("${dir}/settings.json", "{\"model\": \"m\", \"base_url\": \"https://x/v1\"}".toArray())
@@ -61,7 +61,7 @@ public class SubagentConfigTest {
     @TestCase
     public func testSubagentModeParsed(): Unit {
         // S5：subagent_mode（auto/on/off）
-        let dir = "/tmp/cjh_ut_subagent_cfg_mode"
+        let dir = testTmpPath("cjh_ut_subagent_cfg_mode")
         cleanDir(dir)
         Directory.create(dir)
         File.writeTo("${dir}/settings.json", "{\"subagent_mode\": \"off\"}".toArray())

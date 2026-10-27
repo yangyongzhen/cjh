@@ -21,7 +21,8 @@ package cjutil
  */
 
 import stdx.crypto.keys.*
-import stdx.crypto.x509.DerBlob
+// Cangjie 1.2.0 迁移：DerBlob 定义在 stdx.crypto.common（x509 那份已不可访问）
+import stdx.crypto.common.DerBlob
 
 /**
  * SM2 验签结果

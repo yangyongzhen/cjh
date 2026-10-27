@@ -1,5 +1,5 @@
 [package]
-  cjc-version = "1.0.5"
+  cjc-version = "1.2.0"
   name = "cjllm"
   description = "cjllm：仓颉 LLM 客户端库（OpenAI 兼容协议 + SSE 流式 + 工具调用 + mock）"
   version = "0.1.0"

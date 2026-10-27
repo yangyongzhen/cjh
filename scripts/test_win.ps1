@@ -204,9 +204,11 @@ function New-PackageConfig([string]$relPath, [string]$stdxPath, [bool]$isRoot) {
         # 测试不静态链接：Windows 下 --static 会被工具链静默忽略（已知上游问题），
         # 且静态链接下测试框架有崩溃史（见 scripts/test.sh 头注释）。
         $text = [regex]::Replace($text, '(?m)^\s*compile-option\s*=.*$', '  compile-option = ""')
-        # Linux rpath 换 mingw 系统库（crypt32: x509；ws2_32: 网络）
-        $text = [regex]::Replace($text, '(?m)^\s*link-option\s*=.*$', '  link-option = "-lcrypt32 -lws2_32"')
     }
+    # Linux rpath 换 mingw 系统库（crypt32: x509 系统根证书 CertOpenSystemStoreA 等；ws2_32: 网络）。
+    # 每个派生过的包都要换：libs 的测试二进制各自链接，不继承根包的 link-option
+    # （实测 cjutil/cjllm 的 cjpm test 报 CertOpenSystemStoreA undefined）。
+    $text = [regex]::Replace($text, '(?m)^\s*link-option\s*=.*$', '  link-option = "-lcrypt32 -lws2_32"')
     if ($text -notmatch 'x86_64-w64-mingw32\.bin-dependencies') {
         # 路径必须用正斜杠写进 TOML：双引号内的 \c \w 是非法转义，cjpm 会直接
         # 报 "parse the '.\cjpm.toml' file failed"（实测踩过）

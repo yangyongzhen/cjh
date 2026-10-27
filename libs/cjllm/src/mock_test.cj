@@ -68,6 +68,8 @@ public class MockReasoningPadTest {
 }
 
 // 复现台闸门用的环境变量写入（与 mock.cj 的 getenv 同款零依赖做法）
+// @When：setenv 是 POSIX 符号，Windows 原生链接报 undefined symbol
+@When[os != "Windows"]
 @C
 foreign func setenv(name: CString, value: CString, overwrite: Int32): Int32
 
@@ -79,7 +81,10 @@ foreign func setenv(name: CString, value: CString, overwrite: Int32): Int32
  * - 非空 → 第 2 轮单发 `web_fetch`，URL 原样透传给工具（HTTP 层全真实）
  *
  * 每个用例开头都重新设置该变量：共享进程内不依赖上一用例的清理动作。
+ *
+ * @When[os != "Windows"]：整个契约建立在 libc setenv 上（Windows 无该符号）
  */
+@When[os != "Windows"]
 @Test
 public class MockWebFetchGateTest {
 

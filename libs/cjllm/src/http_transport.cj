@@ -28,7 +28,6 @@ import std.time.*
 import std.collection.*
 import std.convert.Parsable
 import stdx.net.tls.*
-import stdx.crypto.x509.X509Certificate
 import cjutil.*
 
 /**
@@ -132,10 +131,8 @@ public class HttpStreamClient {
                         match (this.tlsConfig) {
                             case Some(c) => cfg = c
                             case None =>
-                                var c = TlsClientConfig()
-                                c.verifyMode = CertificateVerifyMode.CustomCA(X509Certificate.systemRootCerts())
-                                c.domain = Some(this.host)
-                                cfg = c
+                                // Cangjie 1.2.0 迁移：构造细节统一收进 cjutil.buildTlsClientConfig
+                                cfg = buildTlsClientConfig(this.host)
                         }
                         let tls = TlsSocket.client(sock, session: None, clientConfig: cfg)
                         // 握手：宽容预算（建连不是流式，慢代理正常）；完成后切短读轮询

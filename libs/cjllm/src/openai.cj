@@ -3,8 +3,6 @@ package cjllm
 import stdx.encoding.json.*
 import std.sync.*
 
-import stdx.net.tls.*
-import stdx.crypto.x509.X509Certificate
 import std.collection.*
 import cjutil.*
 
@@ -229,9 +227,8 @@ public class OpenAiProvider <: LlmProvider {
         //       在 read 层天然实现，不再依赖 TUI 外层轮询）
         //   - 显式加载系统根证书 + 设置 SNI：TlsClientConfig 默认不自动发 SNI，
         //     部分服务端（如 taotoken.net）在无 SNI 时返回不可信证书导致 unknown CA
-        var tlsConfig = TlsClientConfig()
-        tlsConfig.verifyMode = CertificateVerifyMode.CustomCA(X509Certificate.systemRootCerts())
-        tlsConfig.domain = Some(this.sniHost())
+        // Cangjie 1.2.0 迁移：构造细节统一收进 cjutil.buildTlsClientConfig
+        let tlsConfig = buildTlsClientConfig(this.sniHost())
         let (host, port, path, useTls) = splitEndpoint(this.endpointUrl())
 
         // P1-5 key 轮换：401/429/5xx → 换备用 key 重试（防限流中断任务）

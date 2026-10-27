@@ -1,5 +1,5 @@
 [package]
-  cjc-version = "1.0.5"
+  cjc-version = "1.2.0"
   name = "cjcfg"
   description = "cjcfg：仓颉配置系统库（settings.json + auth.json + 会话持久化，环境变量覆盖）"
   version = "0.1.0"

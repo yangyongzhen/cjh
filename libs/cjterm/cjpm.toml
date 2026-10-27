@@ -1,5 +1,5 @@
 [package]
-  cjc-version = "1.0.5"
+  cjc-version = "1.2.0"
   name = "cjterm"
   description = "cjterm：仓颉终端 UI 库（ANSI 控制 + 差分渲染 + termios 原始模式）"
   version = "0.1.0"
