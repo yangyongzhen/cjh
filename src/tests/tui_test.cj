@@ -940,8 +940,10 @@ public class InputBoxHistoryTest {
         canvas.begin(4, 80, true)
         ib.render(canvas, 0, 80, 5)
         let flushed = canvas.flush()
-        // CUP: ESC[row;colH——光标行 1（首行）、列 = 提示符 5 + marker 21 = 26
-        @Assert(flushed.contains(Rune(27).toString() + "[1;26H"), true)
+        // CUP: ESC[row;colH——光标行 1（首行）、列 = 提示符显示宽 + marker 21 码点。
+        // 提示符 "╰─ ❯ " 的显示宽随宽度规则走：❯(U+276F) 属 wcwidth"歧义宽度"区段，
+        // 上游 50aca35 起按 **1 列**计（此前 2 列，实测终端窄渲染）→ 列 26 → 25。
+        @Assert(flushed.contains(Rune(27).toString() + "[1;25H"), true)
     }
 
     @TestCase
