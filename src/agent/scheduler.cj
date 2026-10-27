@@ -71,7 +71,12 @@ public class AgentNode {
 
 public class SubagentScheduler {
     private let maxConcurrent: Int64
-    private let sem: Semaphore
+    // 并发信号量：None = 不限（maxConcurrent <= 0）。
+    // 必须容忍 <= 0：settings 文档语义是"四键 0 = 对应项不限"，而
+    // Semaphore(0) / Semaphore(-1) 会抛 IllegalArgumentException（实测：
+    // "Invalid amount to acquire." / "Negative count."）——此前直接构造会让
+    // 用户配了 max_subagents: 0 后整个进程起不来（S3 复核 P1）。
+    private let sem: Option<Semaphore>
     // S4 边界（0 = 对应项不限）
     private let maxPerTurn: Int64      // 每回合派生上限（超出 budget_exceeded，直接拒）
     private let tokenBudget: Int64     // 子代理回合 token 预算
@@ -87,7 +92,7 @@ public class SubagentScheduler {
 
     public init(maxConcurrent: Int64) {
         this.maxConcurrent = maxConcurrent
-        this.sem = Semaphore(maxConcurrent)
+        this.sem = SubagentScheduler.makeSem(maxConcurrent)
         this.maxPerTurn = 0
         this.tokenBudget = 0
         this.timeoutMs = 0
@@ -95,28 +100,52 @@ public class SubagentScheduler {
 
     public init(maxConcurrent: Int64, maxPerTurn: Int64, tokenBudget: Int64, timeoutMs: Int64) {
         this.maxConcurrent = maxConcurrent
-        this.sem = Semaphore(maxConcurrent)
+        this.sem = SubagentScheduler.makeSem(maxConcurrent)
         this.maxPerTurn = maxPerTurn
         this.tokenBudget = tokenBudget
         this.timeoutMs = timeoutMs
     }
 
+    /** 并发上限 <= 0 = 不限（settings 语义）；Semaphore 不接受非正数 */
+    private static func makeSem(n: Int64): Option<Semaphore> {
+        if (n <= 0) {
+            return None
+        }
+        return Some(Semaphore(n))
+    }
+
     /**
-     * 派生闸门（S4）：本回合派生数达上限，或 token 预算已用尽 → false。
-     * 调用方（spawnSubagent）据此返回结构化 budget_exceeded——模型能读懂并改变策略。
+     * 原子派生闸门（S3 复核 #7 修 TOCTOU）：判定 + 计数在同一把锁内完成。
+     *
+     * 背景：旧用法 `allowSpawn() → acquire() → recordSpawn()` 三步分离（该 API 已移除，
+     * 留着就是漏洞源），而 DAG 批处理会**同批并发**执行多个 task 调用
+     * （`loop.cj` 拓扑组内 spawn）；两个线程可同时通过判定（此时谁都没计数），
+     * 实测可越过 max_tasks_per_turn。合并成一次加锁后，超额直接拒（budget_exceeded）。
+     *
+     * @return true = 已占一个回合名额（并发名额另由 acquire 控制）
      */
-    public func allowSpawn(): Bool {
+    public func tryBeginSpawn(): Bool {
         this.lock.lock()
         let overTurns: Bool = this.maxPerTurn > 0 && this.spawnedThisTurn >= this.maxPerTurn
         let overBudget: Bool = this.tokenBudget > 0 && this.tokensThisTurn >= this.tokenBudget
+        if (overTurns || overBudget) {
+            this.lock.unlock()
+            return false
+        }
+        this.spawnedThisTurn += 1
         this.lock.unlock()
-        return !overTurns && !overBudget
+        return true
     }
 
-    /** 成功派发后计数（在 acquire 成功后调用） */
-    public func recordSpawn(): Unit {
+    /**
+     * 派生计数回退：tryBeginSpawn 已计数、但 acquire 排队期间被父中断（名额没拿到）。
+     * 不回退会让取消的排队者白占一个回合名额（下一批派生被误拒）。
+     */
+    public func undoSpawn(): Unit {
         this.lock.lock()
-        this.spawnedThisTurn += 1
+        if (this.spawnedThisTurn > 0) {
+            this.spawnedThisTurn -= 1
+        }
         this.lock.unlock()
     }
 
@@ -234,23 +263,31 @@ public class SubagentScheduler {
 
     /**
      * 并发槽：满则排队（每 50ms 重试），排队期间父被中断 → 返回 false（调用方转 cancelled）。
-     * 不丢弃任务（方案C D9：超出排队）。
+     * 不丢弃任务（方案C D9：超出排队）。maxConcurrent <= 0（不限）时恒成功。
      */
     public func acquire(isInterrupted: () -> Bool): Bool {
-        while (true) {
-            if (this.sem.tryAcquire()) {
-                return true
-            }
-            if (isInterrupted()) {
-                return false
-            }
-            sleep(Duration.millisecond * 50)
+        match (this.sem) {
+            case Some(s) =>
+                while (true) {
+                    if (s.tryAcquire()) {
+                        return true
+                    }
+                    if (isInterrupted()) {
+                        return false
+                    }
+                    sleep(Duration.millisecond * 50)
+                }
+            case None =>
+                return true  // 不限并发
         }
-        return false  // 不可达（while true 仅被 return 退出）
+        return true  // 不可达（各分支均 return）
     }
 
     public func release(): Unit {
-        this.sem.release()
+        match (this.sem) {
+            case Some(s) => s.release()
+            case None => ()  // 不限并发：无名额可还
+        }
     }
 
     // ── S4 预算归账（闸门逻辑在 S4 接线；此处只做累计与回合重置） ──

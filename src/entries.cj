@@ -1201,15 +1201,17 @@ func spawnSubagent(provider: LlmProvider, parentRegistry: ToolRegistry, parent: 
     var slotAcquired = false
     match (parent.subagentScheduler) {
         case Some(sched) =>
-            if (!sched.allowSpawn()) {
+            // S3 复核 #7：原子闸门（判定+计数同锁）——旧用法 allowSpawn→acquire→recordSpawn
+            // 三步分离，DAG 同批并发派发时多线程可同时通过判定，实际派生数越过 max_tasks_per_turn
+            if (!sched.tryBeginSpawn()) {
                 return TaskSpawnResult(
                     "子代理配额已满（本回合派生上限或 token 预算用尽）。请直接处理本任务，勿再派发。",
                     0, 0, 0, "budget_exceeded")
             }
             if (!sched.acquire({ => parent.isInterrupted() })) {
+                sched.undoSpawn()  // 名额没拿到：回退计数，不白占回合配额
                 return TaskSpawnResult("子代理排队等待并发名额时被中断", 0, 0, 0, "cancelled")
             }
-            sched.recordSpawn()
             slotAcquired = true
         case None => ()
     }
