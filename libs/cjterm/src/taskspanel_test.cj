@@ -74,6 +74,41 @@ public class TasksPanelTest {
         return -1
     }
 
+    /** 差分 flush 输出无换行符：按 ESC[r;1H 定位序列切行（解析同 renderLines） */
+    private func linesFromRaw(raw: String): ArrayList<String> {
+        let lines = ArrayList<String>()
+        var cur = StringBuilder()
+        var inEsc = false
+        for (r in raw.toRuneArray()) {
+            let ch = r.toString()
+            if (inEsc) {
+                if ((ch >= "a" && ch <= "z") || (ch >= "A" && ch <= "Z")) {
+                    inEsc = false
+                    if (ch == "H") {
+                        lines.add(stripAnsi(cur.toString()))
+                        cur = StringBuilder()
+                    }
+                }
+                continue
+            }
+            if (ch == "\u{1b}") {
+                inEsc = true
+                continue
+            }
+            cur.append(ch)
+        }
+        if (cur.size > 0) {
+            lines.add(stripAnsi(cur.toString()))
+        }
+        let out = ArrayList<String>()
+        for (l in lines) {
+            if (l.size > 0) {
+                out.add(l)
+            }
+        }
+        return out
+    }
+
     @TestCase
     public func testTasksPanelLeftAligned(): Unit {
         // 左右分栏（用户要求）：Tasks 面板固定左侧——面板行前导空格必须为 0
@@ -106,6 +141,30 @@ public class TasksPanelTest {
         @Assert(rowLine.contains("✓"), true)
         @Assert(findLine(lines, "▶") >= 0, true)
         @Assert(findLine(lines, "☐") >= 0, true)
+    }
+
+    @TestCase
+    public func testTuiCanvasOverlaySplice(): Unit {
+        // overlay 按列拼接（修实测"双面板同行互踩"）：前缀保留 + 目标区间写入
+        // + 被覆盖区无残留。flush 输出无换行符，按 ESC[r;1H 定位序列切行取证
+        let canvas = TuiCanvas()
+        canvas.begin(4, 40, true)
+        canvas.setLine(0, "左侧内容甲乙丙")
+        canvas.setOverlay(true)
+        canvas.setOffset(10)
+        canvas.setLine(0, "右侧覆盖")
+        canvas.setOverlay(false)
+        canvas.setOffset(0)
+        let lines = this.linesFromRaw(canvas.flush())
+        @Assert(lines.size > 0, true)
+        let l = lines[0]
+        // 前缀 [0,10)：左侧内容甲（8 列）+ 补空格至 10 列
+        @Assert(l.startsWith("左侧内容甲"), true)
+        // 目标区间 [10,18) 写入"右侧覆盖"
+        @Assert(l.contains("右侧覆盖"), true)
+        // 被覆盖区（乙丙，位于原行 [10,14)）不残留
+        @Assert(l.contains("乙"), false)
+        @Assert(l.contains("丙"), false)
     }
 
     @TestCase

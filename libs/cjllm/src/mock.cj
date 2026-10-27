@@ -102,10 +102,24 @@ public class MockProvider <: LlmProvider {
                 argsT2.put("description", JsonString("并发审批二号"))
                 argsT2.put("prompt", JsonString("查一下"))
                 argsT2.put("subagent_type", JsonString("explore"))
+                // 双面板同屏回归：同批先写 3 条 todo 再派 task——Tasks（左）与
+                // Agents（右）落在同一行带，验证 overlay 按列拼接不互踩
+                var argsTd1 = JsonObject()
+                argsTd1.put("action", JsonString("add"))
+                argsTd1.put("content", JsonString("汇总1：项目结构和主要模块"))
+                var argsTd2 = JsonObject()
+                argsTd2.put("action", JsonString("add"))
+                argsTd2.put("content", JsonString("汇总2：配置文件的组成"))
+                var argsTd3 = JsonObject()
+                argsTd3.put("action", JsonString("add"))
+                argsTd3.put("content", JsonString("汇总3：测试的组织方式"))
                 var callsT = ArrayList<ToolCall>()
+                callsT.add(ToolCall("call_1td1", "todo_write", argsTd1))
+                callsT.add(ToolCall("call_1td2", "todo_write", argsTd2))
+                callsT.add(ToolCall("call_1td3", "todo_write", argsTd3))
                 callsT.add(ToolCall("call_1t1", "task", argsT1))
                 callsT.add(ToolCall("call_1t2", "task", argsT2))
-                return ModelResponse("并发派两个子代理。", callsT)
+                return ModelResponse("先写任务列表，再并发派两个子代理。", callsT)
             }
         }
         match (this.callCount) {
