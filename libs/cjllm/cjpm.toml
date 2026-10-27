@@ -15,4 +15,4 @@
   cjlog = { path = "../cjlog" }
 
 [target.x86_64-unknown-linux-gnu.bin-dependencies]
-    path-option = ["/root/.cangjie/stdx/cangjie-stdx-linux-x64-1.0.5.1/dynamic/stdx"]
+    path-option = ["/root/.cangjie/stdx/cangjie-stdx-linux-x64-1.2.0.1/dynamic/stdx"]
