@@ -41,9 +41,9 @@ public class RefManifest {
     public var entries: ArrayList<RefManifestEntry> = ArrayList<RefManifestEntry>()
 }
 
-/** 语料清单路径。 */
+/** 语料清单路径（跨平台：`/` 风格输出，Windows 的 `\` 先归一，避免 `C:\x/.cjh-ref-manifest.json` 混排）。 */
 public func refManifestPath(refDir: String): String {
-    return refDir + "/" + REF_MANIFEST_FILE
+    return refDir.replace("\\", "/") + "/" + REF_MANIFEST_FILE
 }
 
 /** 仓颉枚举不支持 == / != 比较，统一用 match 转 Bool 的谓词。 */

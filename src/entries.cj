@@ -1388,7 +1388,9 @@ func writeSubagentTranscript(subConfig: AgentConfig, subAgent: Agent,
             sb.append("## ${m.role}\n\n${m.content}\n\n")
         }
         File.writeTo(path, sb.toString().toArray())
-        return path
+        // 返回路径统一 `/` 风格：spillDir 在 Windows 是 `\`，直接拼接会得到 `C:\x/y/z.md`
+        // 这类混排路径；工具输出统一正斜杠，模型复用与断言都稳定
+        return path.replace("\\", "/")
     } catch (e: Exception) {
         Log.warn("子代理转录落盘失败（不影响主流程）: ${e}")
         return ""

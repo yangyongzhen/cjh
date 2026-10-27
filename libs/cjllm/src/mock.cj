@@ -3,6 +3,7 @@ package cjllm
 import std.collection.*
 import std.convert.Parsable
 import stdx.encoding.json.*
+import cjutil.*
 
 /**
  * Mock LLM Provider：用于离线验证 agent 工具调用链（无 API Key 环境）
@@ -160,9 +161,9 @@ public class MockProvider <: LlmProvider {
                 calls.add(ToolCall("call_2", "grep", args2))
                 return ModelResponse("再用 grep 搜索。", calls)
             case 3 =>
-                // 工具调用 3：列出目录
+                // 工具调用 3：列出目录（跨平台：POSIX /tmp，Windows %TEMP%）
                 var args3 = JsonObject()
-                args3.put("path", JsonString("/tmp"))
+                args3.put("path", JsonString(tmpDir()))
                 var calls = ArrayList<ToolCall>()
                 calls.add(ToolCall("call_3", "list_dir", args3))
                 return ModelResponse("再看看目录。", calls)

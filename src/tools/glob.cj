@@ -161,13 +161,28 @@ func walkTree(dir: String, st: GlobCallState): Unit {
  * 保证两条路径的 relPath 计算、匹配、计数、200 截断逻辑完全一致）。
  */
 func considerGlobFile(fiPath: String, st: GlobCallState): Unit {
-    let relPath = makeRelative(st.basePath, fiPath)
+    // Windows 跨平台修复（Cangjie 1.2.0 迁移实测）：`Directory.walk` 的 fi.path 用 `\`，
+    // 而 glob 模式一律用 `/`。不归一的话 makeRelative 的前缀匹配全部落空（退回绝对路径），
+    // 于是 `*` 会跨目录匹配（`*.txt` 命中 `sub\c.txt`）、相对路径输出也变成绝对路径。
+    let base = toSlashPath(st.basePath)
+    let full = toSlashPath(fiPath)
+    let relPath = makeRelative(base, full)
     if (globMatchDirect(st.pattern, 0, relPath, 0)) {
         if (st.count < 200) {
             st.matches.add(relPath)
         }
         st.count += 1
     }
+}
+
+/**
+ * 路径分隔符归一化：Windows 的 `\` → `/`
+ *
+ * glob 模式（用户输入/工具约定）一律用 `/`；文件系统 API 在 Windows 返回 `\`。
+ * 匹配与展示前统一归一，保证跨平台行为一致（输出路径也是 `/` 风格，便于模型复用）。
+ */
+func toSlashPath(p: String): String {
+    return p.replace("\\", "/")
 }
 
 /**
