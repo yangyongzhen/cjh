@@ -1,6 +1,7 @@
 package cjh.agent
 
 import std.collection.*
+import std.time.*
 import stdx.encoding.json.*
 import cjllm.*
 import cjh.tools.*
@@ -131,6 +132,25 @@ public class SubagentSupportTest {
         sched.markTool(201, "grep")
         sched.finish(201, AgentNodeState.Ok, 1, 10, 5)
         @Assert(fires.size, 3)  // register / markTool / finish 各触发一次
+    }
+
+    @TestCase
+    public func testSchedulerStaggerGate(): Unit {
+        // 错峰门（修实测"并发派发撞 provider 限流"）：同一波并发派发的起跑时刻
+        // 按 staggerMs 错开（第 k 个等 k*staggerMs）；空闲后锚点重置，下一波从 0 起算
+        let sched = SubagentScheduler(4)
+        sched.setStaggerMs(100)
+        sched.staggerGate()                       // 首个 slot（或空闲重置后）：不等
+        let t0 = DateTime.now()
+        sched.staggerGate()                       // 第二个 slot：等到 100ms 预算
+        let cost = (DateTime.now() - t0).toMilliseconds()
+        @Assert(cost >= 60, true)                 // 至少等到 slot 预算（留抖动余量）
+        // 空闲重置：无运行中节点且超过一个间隔后，门重新从 0 起算
+        sleep(Duration.millisecond * 150)
+        let t1 = DateTime.now()
+        sched.staggerGate()
+        let cost2 = (DateTime.now() - t1).toMilliseconds()
+        @Assert(cost2 < 50, true)                 // 重置后不再等待
     }
 
     @TestCase

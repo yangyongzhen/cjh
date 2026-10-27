@@ -1275,6 +1275,12 @@ func spawnSubagent(provider: LlmProvider, parentRegistry: ToolRegistry, parent: 
         case Some(s) => s.timeoutMs
         case None => 0
     }
+    // 错峰派发：并发起跑按 staggerMs 间隔错开，摊平 provider 请求洪峰
+    //（修实测"5 路并发派发撞限流全灭"；顺序派发时自动等 0，无额外开销）
+    match (parent.subagentScheduler) {
+        case Some(s) => s.staggerGate()
+        case None => ()
+    }
     try {
         let summary = runSubagentWithTimeout(subAgent, brief, timeoutMs)
         var status = "ok"

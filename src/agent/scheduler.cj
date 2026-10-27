@@ -2,6 +2,7 @@ package cjh.agent
 
 import std.sync.*
 import std.collection.*
+import std.time.*
 
 /** 子代理墙钟超时（S4）：spawnSubagent 捕获后映射 status=timeout（T2 教训：不用字符串嗅探） */
 public class SubagentTimeoutException <: Exception {
@@ -316,5 +317,63 @@ public class SubagentScheduler {
         let cb = this.changedCb
         this.lock.unlock()
         cb()
+    }
+
+    // ===== 错峰派发（修实测"并发派发撞 provider 限流"：5 路同时起跑全灭）=====
+    // 并发子代理的起跑时刻按 staggerMs 间隔错开，把瞬时请求洪峰摊平。
+    // 顺序派发（前一个跑完才派下一个）时 elapsed 已远超 slot 预算，自动等 0；
+    // 全部节点终态后锚点重置，下一波并发从 0 重新起算。
+    private var gateAnchor: DateTime = DateTime.now()
+    private var gateSlot: Int64 = 0
+    private var staggerMs: Int64 = 1000
+
+    /** 调整错峰间隔（测试用：调小以快速验证门逻辑） */
+    public func setStaggerMs(ms: Int64): Unit {
+        this.lock.lock()
+        this.staggerMs = ms
+        this.lock.unlock()
+    }
+
+    /** 当前错峰间隔 */
+    public func getStaggerMs(): Int64 {
+        this.lock.lock()
+        let ms = this.staggerMs
+        this.lock.unlock()
+        return ms
+    }
+
+    /**
+     * 错峰派发门：子代理起跑前调用。同一波并发派发的起跑时刻按 staggerMs
+     * 错开（第 k 个等 k*staggerMs）。等待在锁外进行，不阻塞面板刷新与配额闸门。
+     */
+    public func staggerGate(): Unit {
+        this.lock.lock()
+        let now = DateTime.now()
+        var elapsed = (now - this.gateAnchor).toMilliseconds()
+        // 空闲重置：上一波全部终态且距锚点已超过一个间隔 → 下一波从 0 起算
+        var anyRunning = false
+        for (n in this.nodes) {
+            var running = false
+            match (n.state) {
+                case AgentNodeState.Running => running = true
+                case _ => ()
+            }
+            if (running) {
+                anyRunning = true
+                break
+            }
+        }
+        if (!anyRunning && elapsed > this.staggerMs) {
+            this.gateAnchor = now
+            this.gateSlot = 0
+            elapsed = 0
+        }
+        let target = this.gateSlot * this.staggerMs
+        let wait = target - elapsed
+        this.gateSlot += 1
+        this.lock.unlock()
+        if (wait > 0) {
+            sleep(Duration.millisecond * wait)
+        }
     }
 }
