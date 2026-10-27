@@ -41,6 +41,10 @@ import std.collection.*
 import std.io.*
 import stdx.net.http.*
 import stdx.net.tls.*
+// Cangjie 1.2.0 迁移：CertificateVerifyMode 只在 stdx.net.tls.common 导出；
+// Certificate / DerBlob 等公共 DER 类型在 stdx.crypto.common
+import stdx.net.tls.common.*
+import stdx.crypto.common.*
 import stdx.crypto.x509.X509Certificate
 
 /**
@@ -101,6 +105,26 @@ func normalizeTimeoutSeconds(timeoutSeconds: Int64): Int64 {
     return timeoutSeconds
 }
 
+/**
+ * 构造客户端 TLS 配置（系统根证书 + SNI 域名）
+ *
+ * 集中一处：cjutil 自用 + cjllm 的 openai/anthropic/http_transport 三处都构造同款配置。
+ * Cangjie 1.2.0 迁移把这两行都改了（`TlsClientConfig.domain` → `serverName`、
+ * `CertificateVerifyMode.CustomCA` 改收 `Array<stdx.crypto.common.Certificate>`，
+ * 且枚举只在 `stdx.net.tls.common` 导出），写四遍就是踩四遍。
+ */
+public func buildTlsClientConfig(host: String): TlsClientConfig {
+    var tlsConfig = TlsClientConfig()
+    let roots = X509Certificate.systemRootCerts()
+    // systemRootCerts() 返回 Array<X509Certificate>，CustomCA 要 Array<Certificate>（接口）
+    let certs = Array<Certificate>(roots.size, { i => roots[i] })
+    tlsConfig.verifyMode = CertificateVerifyMode.CustomCA(certs)
+    if (host.size > 0) {
+        tlsConfig.serverName = Some(host)
+    }
+    return tlsConfig
+}
+
 public func httpClientFetch(
     method: String,
     url: String,
@@ -111,13 +135,8 @@ public func httpClientFetch(
     body: ?String,
     extraHeaders: ?Map<String, String>
 ): HttpFetchResult {
-    // 配置 TLS
-    var tlsConfig = TlsClientConfig()
-    tlsConfig.verifyMode = CertificateVerifyMode.CustomCA(X509Certificate.systemRootCerts())
-    let host = extractHostFromUrl(url)
-    if (host.size > 0) {
-        tlsConfig.domain = Some(host)
-    }
+    // 配置 TLS（stdx 1.2.0 语义集中在 buildTlsClientConfig）
+    let tlsConfig = buildTlsClientConfig(extractHostFromUrl(url))
 
     // 归一化超时：调用方可能传入 0/负值（配置解析不校验）或手改出来的极大值
     let effectiveTimeout = normalizeTimeoutSeconds(timeoutSeconds)

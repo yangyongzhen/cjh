@@ -1,5 +1,5 @@
 [package]
-  cjc-version = "1.0.5"
+  cjc-version = "1.2.0"
   name = "cjutil"
   description = "cjutil：仓颉通用工具库（日志、UTF-8 安全解码等基础设施），可独立贡献给仓颉生态"
   version = "0.1.0"
