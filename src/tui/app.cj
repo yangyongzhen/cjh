@@ -1973,6 +1973,13 @@ public class TuiApp {
         if (qLen > 0) {
             line += Ansi.fg(Ansi.THEME_ACCENT) + " · 📥 排队 ${qLen} 条待发送" + Ansi.reset()
         }
+        // S3 修实测"干活时主界面啥也没有"：状态行追加子代理聚合心跳
+        //（如 3 agents (2/5 4/5 1/5) ↑3.2k）；状态行每秒 tick 刷新，零刷屏成本
+        let hb = this.agentsPanel.heartbeat()
+        if (hb.size > 0) {
+            line += Ansi.fg(Ansi.THEME_MUTED) + "  · " + Ansi.reset() +
+                Ansi.fg(Ansi.THEME_ACCENT) + hb + Ansi.reset()
+        }
         canvas.setLine(row, line)
     }
 

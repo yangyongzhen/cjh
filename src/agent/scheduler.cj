@@ -268,12 +268,16 @@ public class SubagentScheduler {
         return t
     }
 
-    /** 回合重置（父 Agent.beginRound 调用）：归账三项一并清零 */
+    /** 回合重置（父 Agent.beginRound 调用）：归账清零 + 节点面板清空
+     * （修实测"结束后不消失"：终态节点保留到本回合结束供总结条归账，下一回合开始时清空） */
     public func resetTurn(): Unit {
         this.lock.lock()
         this.tokensThisTurn = 0
         this.spawnedThisTurn = 0
         this.wastedThisTurn = 0
+        this.nodes.clear()
+        let cb = this.changedCb
         this.lock.unlock()
+        cb()
     }
 }

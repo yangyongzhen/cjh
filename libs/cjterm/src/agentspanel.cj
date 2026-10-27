@@ -89,6 +89,46 @@ public class AgentsPanel {
         return f
     }
 
+    /**
+     * 状态行聚合心跳（S3 修实测"干活时主界面啥也没有"）：
+     * 无节点返回 ""；有节点返回 "3 agents (2/5 4/5 1/5) ↑3.2k"
+     * （运行中轮次最多展示 3 个，token 为全树 prompt 累计）。
+     * 状态行每秒 tick 刷新，零刷屏成本；整体状态仍看右下面板。
+     */
+    public func heartbeat(): String {
+        this.lock.lock()
+        let total = this.rows.size
+        var running: Int64 = 0
+        var totalTokens: Int64 = 0
+        var iters: String = ""
+        var shown: Int64 = 0
+        for (r in this.rows) {
+            totalTokens += r.promptTokens
+            match (r.state) {
+                case RowRunning =>
+                    running += 1
+                    if (shown < 3) {
+                        if (shown > 0) {
+                            iters += " "
+                        }
+                        iters += "${r.iterations}/5"
+                        shown += 1
+                    }
+                case _ => ()
+            }
+        }
+        this.lock.unlock()
+        if (total == 0) {
+            return ""
+        }
+        var s = "${total} agents"
+        if (running > 0) {
+            s += " (${iters})"
+        }
+        s += " ↑${fmtTokenCount(totalTokens)}"
+        return s
+    }
+
     /** 更新行快照（装配层从 scheduler.snapshot() 转换后推送；调用方持有的是拷贝） */
     public func updateRows(rows: ArrayList<AgentRow>): Unit {
         this.lock.lock()
@@ -133,6 +173,25 @@ public class AgentsPanel {
         }
         let focus = this.focusId
         this.lock.unlock()
+
+        // 运行中排最前（修实测"agent 多时不滚动到最新"）：高度上限 7 只显示前几行，
+        // 运行中的节点最有信息量，必须稳定可见；终态靠后、超出折叠 "+N more"
+        var runningRows = ArrayList<AgentRow>()
+        var otherRows = ArrayList<AgentRow>()
+        for (r in items) {
+            match (r.state) {
+                case RowRunning => runningRows.add(r)
+                case _ => otherRows.add(r)
+            }
+        }
+        var sorted = ArrayList<AgentRow>()
+        for (r in runningRows) {
+            sorted.add(r)
+        }
+        for (r in otherRows) {
+            sorted.add(r)
+        }
+        items = sorted
 
         let panelW: Int64 = if (cols * 2 / 5 < 60) { cols * 2 / 5 } else { 60 }
         if (panelW < 30) {
