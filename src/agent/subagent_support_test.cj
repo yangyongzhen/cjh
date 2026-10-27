@@ -155,19 +155,118 @@ public class SubagentSupportTest {
 
     @TestCase
     public func testSchedulerPerTurnCapAndTokenBudget(): Unit {
-        // S4 闸门：每回合派生上限与 token 预算任一触顶 → allowSpawn=false；
-        // resetTurn（beginRound）一并清零
+        // S4 闸门：每回合派生上限与 token 预算任一触顶 → 拒派（budget_exceeded）；
+        // resetTurn（beginRound）一并清零。走原子 tryBeginSpawn（旧两步 API 已移除）
         let sched = SubagentScheduler(4, 2, 100, 0)
-        @Assert(sched.allowSpawn(), true)
-        sched.recordSpawn()
-        @Assert(sched.allowSpawn(), true)
-        sched.recordSpawn()
-        @Assert(sched.allowSpawn(), false)   // 派生数达上限 2
+        @Assert(sched.tryBeginSpawn(), true)
+        @Assert(sched.tryBeginSpawn(), true)
+        @Assert(sched.tryBeginSpawn(), false)   // 派生数达上限 2
         sched.addTokens(100)
         sched.resetTurn()
-        @Assert(sched.allowSpawn(), true)    // 回合重置后恢复
-        sched.addTokens(100)                 // 预算 100 已用尽
-        @Assert(sched.allowSpawn(), false)   // token 预算触顶
+        @Assert(sched.tryBeginSpawn(), true)    // 回合重置后恢复
+        sched.resetTurn()
+        sched.addTokens(100)                    // 预算 100 已用尽
+        @Assert(sched.tryBeginSpawn(), false)   // token 预算触顶
+    }
+
+    // ── S3 复核：并发上限 0/负 → 不限（Semaphore(0) 会抛异常，曾导致进程起不来） ──
+
+    @TestCase
+    public func testSchedulerNonPositiveConcurrencyMeansUnlimited(): Unit {
+        // settings 语义"四键 0 = 不限"；Semaphore(0)/Semaphore(-1) 直接构造会抛
+        // IllegalArgumentException（Invalid amount to acquire. / Negative count.），
+        // 此前 max_subagents=0 会让整个进程启动失败
+        let zero = SubagentScheduler(0)
+        var i: Int64 = 0
+        while (i < 8) {
+            @Assert(zero.acquire({ => false }), true)
+            i += 1
+        }
+        zero.release()  // 不限并发：release 是空操作，不崩
+        @Assert(zero.acquire({ => false }), true)
+        let negative = SubagentScheduler(-2)
+        @Assert(negative.acquire({ => false }), true)
+        negative.release()
+    }
+
+    // ── S3 复核 #7：派生闸门原子化（修 allowSpawn→acquire→recordSpawn 的 TOCTOU） ──
+
+    @TestCase
+    public func testSchedulerTryBeginSpawnIsAtomic(): Unit {
+        // DAG 同批并发派生（loop.cj 拓扑组内 spawn）下，旧三步用法会被多线程同时通过
+        // 判定而越过 max_tasks_per_turn。原子版：8 路并发抢 2 个名额 → 恰好 2 个成功
+        let sched = SubagentScheduler(64, 2, 0, 0)
+        let got = ArrayList<Bool>()
+        var i: Int64 = 0
+        while (i < 8) {
+            got.add(false)
+            i += 1
+        }
+        var futures = ArrayList<Future<Unit>>()
+        i = 0
+        while (i < 8) {
+            let idx = i
+            futures.add(spawn { got[idx] = sched.tryBeginSpawn() })
+            i += 1
+        }
+        for (f in futures) {
+            let _ = f.get()
+        }
+        var wins: Int64 = 0
+        for (r in got) {
+            if (r) {
+                wins += 1
+            }
+        }
+        @Assert(wins, 2)   // 精确限流：不多不少
+    }
+
+    @TestCase
+    public func testSchedulerUndoSpawnRefundsQuota(): Unit {
+        // 闸门计数在 acquire 之前发生；排队期间被父中断（名额没拿到）必须回退，
+        // 否则被取消的排队者白占一个回合名额，后续派生被误拒
+        let sched = SubagentScheduler(4, 1, 0, 0)
+        @Assert(sched.tryBeginSpawn(), true)
+        @Assert(sched.tryBeginSpawn(), false)   // 已用掉唯一名额
+        sched.undoSpawn()
+        @Assert(sched.tryBeginSpawn(), true)    // 回退后可再派
+    }
+
+    @TestCase
+    public func testSchedulerChangeDetectionSkipsRedundantNotify(): Unit {
+        // 面板刷新靠 onChanged；高频源（曾经的每 SSE 帧）会把主循环淹没，
+        // 故 markTool/markRoundUsage 无实际变化时不得触发回调
+        let sched = SubagentScheduler(4)
+        let fires = ArrayList<Int64>()
+        fires.add(0)
+        sched.onChanged({ => fires[0] += 1 })
+        sched.register(AgentNode(301, 1, "任务A", "explore"))
+        @Assert(fires[0], 1)
+        sched.markTool(301, "read_file")
+        @Assert(fires[0], 2)
+        sched.markTool(301, "read_file")        // 同名工具 → 不重绘
+        @Assert(fires[0], 2)
+        sched.markRoundUsage(301, 1, 100, 10)
+        @Assert(fires[0], 3)
+        sched.markRoundUsage(301, 1, 100, 10)   // 三项都没变 → 不重绘
+        @Assert(fires[0], 3)
+        sched.markRoundUsage(301, 2, 200, 20)   // 变了 → 通知
+        @Assert(fires[0], 4)
+    }
+
+    @TestCase
+    public func testSchedulerResetTurnClearsNodes(): Unit {
+        // 回合级面板：终态节点保留到本回合结束供总结条归账，下一回合开始清空
+        // （此前只增不删，长会话里面板永远显示最早的几个、跑的反而被折叠）
+        let sched = SubagentScheduler(4)
+        sched.onChanged({ => () })
+        sched.register(AgentNode(401, 1, "任务B", "worker"))
+        sched.register(AgentNode(402, 1, "任务C", "worker"))
+        sched.finish(401, AgentNodeState.Ok, 1, 100, 10)
+        @Assert(sched.nodeCount(), 2)
+        sched.resetTurn()
+        @Assert(sched.nodeCount(), 0)
+        @Assert(sched.tokensUsed(), 0)
     }
 
     // ── S6：task scope → DAG 冲突消解（internal 方法，包内直测） ──
