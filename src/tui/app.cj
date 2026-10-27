@@ -97,6 +97,7 @@ public class TuiApp {
     private var focusAgentId: Int64 = 0
     private var focusLock: Mutex = Mutex()
     private var focusCandidates: ArrayList<Int64> = ArrayList<Int64>()  // 可聚焦子代理 id（最近快照）
+    private var focusNames: ArrayList<(Int64, String)> = ArrayList<(Int64, String)>()  // id → kind·label（切换反馈用）
     // provider 配置表单弹窗（/provider 无参数时弹出）
     private var providerDialog: FormDialog = FormDialog()
     // 视图切换标签栏（对话 / 帮助）
@@ -704,6 +705,12 @@ public class TuiApp {
             ids.add(n.agentId)
         }
         this.focusCandidates = ids
+        // 焦点切换反馈用的名称表（id → kind·label）
+        let names = ArrayList<(Int64, String)>()
+        for (n in nodes) {
+            names.add((n.agentId, "${n.kind}·${n.label}"))
+        }
+        this.focusNames = names
         let focus = this.focusAgentId
         this.focusLock.unlock()
         this.agentsPanel.updateRows(rows)
@@ -741,8 +748,21 @@ public class TuiApp {
         }
         let next = candidates[(idx + 1) % candidates.size]
         this.focusAgentId = next
+        var nextName = "主对话（父）"
+        for ((id, name) in this.focusNames) {
+            if (id == next) {
+                nextName = name
+            }
+        }
         this.focusLock.unlock()
         this.agentsPanel.setFocus(next)
+        // 切换即时反馈（修实测"切了没感觉"）：聚焦子代理时其**后续**工具行才以
+        // │ 前缀进主流（历史不回放、delta 不转发是硬规则），所以切完主动说一声
+        if (next == 0) {
+            this.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "── 焦点回到主对话 ──" + Ansi.reset())
+        } else {
+            this.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "── 焦点: ${nextName}（其后续工具行将带 │ 显示于此）──" + Ansi.reset())
+        }
         this.markDirty()
     }
 
