@@ -10,6 +10,22 @@ cjh 版本变更记录。依据 git tag 史 + 提交史整理；版本号规则�
 - **开源许可证明确为 MIT**：新增 [LICENSE](./LICENSE)（Copyright (c) 2026 yangyongzhen）、`cjpm.toml` 补 `license = "MIT"` 字段、双语 README 徽章与 License 段落指向该文件。
 - **README 补齐生态价值的两条实证**：①「工程踩坑经验」由一句话概括改为量化描述（**51 条 / 1000+ 行**，每条含现象 + 排查铁证 + 可复用配方）；② 新增「向上游反馈的问题」小节，列出提交给 `Cangjie/UsersForum` 的 **12 条（#3473–#3484）**缺陷与提案，其中静态链接下 `cjpm test` 崩溃、Windows 目标 `--static*` 静默无效两条带 issue 直链与 A/B 实测对照，并记录复核中推翻自身 3 条旧结论的经过（中英双语同步）。
 
+### 修复（S3 阶段复审收口）
+
+- **`max_subagents: 0` 让进程起不来**（P1）：`Semaphore(0)` / `Semaphore(-1)` 会抛 `IllegalArgumentException`（实测 `Invalid amount to acquire.` / `Negative count.`），而设置文档语义是「四键 0 = 对应项不限」——用户按文档配 0 后 `runTui` 在构造 scheduler 时抛异常，直接「启动失败」退出。现 `SubagentScheduler` 用 `Option<Semaphore>`：并发上限 ≤ 0 = 不限（`acquire` 恒成功、`release` 空操作），另三键 0 的语义不变。
+- **派生闸门 TOCTOU**：旧用法 `allowSpawn() → acquire() → recordSpawn()` 三步分离，而 DAG 会把同批多个 `task` 调用**并发**执行（explore 无写边、不建依赖），多线程可同时通过判定而越过 `max_tasks_per_turn`。新增原子 `tryBeginSpawn()`（判定+计数同锁）、`undoSpawn()`（排队被中断时退回名额），`spawnSubagent` 改走新路径。
+- **超时丢弃已产出结论**：方案C §6 要求超时回父文本带「已产出部分：<最后文本>」，实现只回一句「已中断并回收引用」——子代理跑出来的半截结论被丢（白烧 token）。现超时路径导出子代理最后一条 assistant 文本（≤800 字符），并把已完成轮次归账到面板（此前恒 0）。
+- **Agents 面板在非 UTF-8 终端混排**：`TuiApp.run` 统一重设 8 个组件的 `setUtf8` 时漏了 `agentsPanel`（构造默认 `utf8=true`），其它面板降级成 `+-|` 后它仍画 `╭─╮│` 与 `▶ ✓ ✗`。补上接线。
+- **Agents 面板窄终端右边框被裁**：`labelBudget` 钳到 2 且工具列永不丢弃，行内容超 `panelW-2` → `Canvas.truncate` 从右侧裁掉边框（实测 75/80/90 列 + 当前工具非空必现：`│ ▶ explore*  并  2/5  ↑1.2k  re`）。改为按显示宽度预算、预算不足时**逐级丢列**（先当前工具列、再 ↑token 列，宽度让给 label）。`height()` 同时新增 cols 版重载，与 `render` 共用「太窄不渲染」判据——此前窄终端上面板不画却照占布局行（cols=60 实测 height=4、渲染 0 行）。
+- **限流退避期间不可中断**：`sleep(2s/5s/10s)` 退避窗口内 Ctrl+C / 子代理墙钟超时最长 17s 无响应（像死机）。新增可中断 `backoffWait`（200ms 切片轮询 `isCancelled`），取消时抛 `StreamInterruptedException` 走中断路径；顺手修正「最多 2 次：1s/3s」的过期注释（实现是 3 次 2/5/10s）。
+- **pty 场景 4c 假绿**：断言 `expect("│")` 会命中 Agents 面板自身的左右边框，Ctrl+G 完全失效也是绿的。改断焦点切换的即时反馈行 `── 焦点: explore·并发审批一号 ──`，并覆盖「子1 → 子2 → 父」完整循环。
+
+### 测试（本次收口）
+
+- `libs/cjterm` `agentspanel_test` 6 → **9 例**：新增窄宽度右边框（75/80/90 列）、非 UTF-8 降级、`height(outH, cols)` 判据；`cjllm` 新增 `backoff_test` **4 例**（立即取消/走满/中途取消/0ms 边界）；`subagent_support_test` 新增 **5 例**（并发 ≤0 = 不限、`tryBeginSpawn` 8 线程抢 2 名额精确限流、`undoSpawn` 回退、变更检测不重复通知、`resetTurn` 清节点）；`core_funcs_test` 新增超时携带「已产出部分」e2e 1 例。
+- 面板行为在临时工程实跑验证（`cjpm test` 9/9 绿）；scheduler 与 `backoffWait` 用隔离探针编译执行验证（16 项 / 8 项断言全过）。
+
+
 ## [v1.5.1] - 2026-10-17
 
 ### 新增

@@ -239,7 +239,7 @@ public class OpenAiProvider <: LlmProvider {
         var lastErr = ""
         // while 而非 for-in：限流退避需要"同 key 重试"（显式索引控制）
         var ki: Int64 = 0
-        // 限流退避计数（单次 chatStream 内累计，最多 2 次：1s/3s）
+        // 限流退避计数（单次 chatStream 内累计，最多 3 次：2s/5s/10s，共 17s）
         var throttleRetry: Int64 = 0
         while (ki < keys.size) {
             let key = keys[ki]
@@ -330,10 +330,14 @@ public class OpenAiProvider <: LlmProvider {
                     (status == 400 && (err.contains("Throttl") || err.contains("throttl")))
                 if (throttled && throttleRetry < 3) {
                     throttleRetry += 1
-                    let delay: Int64 = if (throttleRetry == 1) { 2 } else {
-                        if (throttleRetry == 2) { 5 } else { 10 }
+                    let delayMs: Int64 = if (throttleRetry == 1) { 2000 } else {
+                        if (throttleRetry == 2) { 5000 } else { 10000 }
                     }
-                    sleep(Duration.second * delay)
+                    // 可中断等待（200ms 切片轮询 isCancelled）：此前直接 sleep(2/5/10s)，
+                    // 退避期间 Ctrl+C / 子代理墙钟超时最长 17s 无人响应（界面像死了）
+                    if (!backoffWait(delayMs, isCancelled)) {
+                        throw StreamInterruptedException()
+                    }
                     continue  // 同 key 重试
                 }
                 // 认证/限流/服务端错误：换 key 重试；其他 4xx 业务错误直接抛出
