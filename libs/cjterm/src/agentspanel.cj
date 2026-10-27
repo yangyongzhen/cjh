@@ -143,8 +143,25 @@ public class AgentsPanel {
         return n > 0
     }
 
-    /** 预计算面板高度（不渲染）：min(节点数+2, 7) */
+    /**
+     * 预计算面板高度（不渲染）：min(节点数+2, 7)——不看列宽的旧签名
+     * （单测/不想占布局行的调用方用；TUI 请用带 cols 的重载）
+     */
     public func height(outH: Int64): Int64 {
+        return this.height(outH, 1000)
+    }
+
+    /**
+     * 预计算面板高度（不渲染），cols 版与 render 同一"太窄不渲染"判据。
+     *
+     * 此前 height 不看列宽，窄终端上 render 直接 return 0 却照样占掉布局行
+     * （S3 复核 #9：cols=60 实测 height=4、渲染 0 行，动态状态行被顶上去留空白）
+     */
+    public func height(outH: Int64, cols: Int64): Int64 {
+        let panelW: Int64 = if (cols * 2 / 5 < 60) { cols * 2 / 5 } else { 60 }
+        if (panelW < 30) {
+            return 0  // 渲染器同样放弃（见 render），此处不能预先占位
+        }
         this.lock.lock()
         if (this.rows.size == 0) {
             this.lock.unlock()
@@ -309,26 +326,51 @@ public class AgentsPanel {
             }
             let iterCol: String = if (isRunning) { "${r.iterations}/5" } else { "${r.iterations}" }
             var toolCol: String = r.currentTool
-            if (Int64(toolCol.size) > 16) {
-                toolCol = truncateUtf8(toolCol, 16)
-            }
-            // label 按行内剩余宽度动态截断（修窄面板行溢出）：总宽 - 其余各列实际宽度。
-            // body = " " + marker + " " + kind + focusMark + "  " + label + "  " + iterCol + "  ↑tok" [+ "  " + tool]
             let prefixW: Int64 = 1 + TuiCanvas.displayWidth(marker) + 1 + TuiCanvas.displayWidth(r.kind) +
                 TuiCanvas.displayWidth(focusMark) + 2
-            let suffixW: Int64 = 2 + TuiCanvas.displayWidth(iterCol) + 2 + 1 +
-                TuiCanvas.displayWidth(fmtTokenCount(r.promptTokens))
-            let toolW: Int64 = if (toolCol.size > 0) { 2 + TuiCanvas.displayWidth(toolCol) } else { 0 }
-            var labelBudget: Int64 = (panelW - 2) - prefixW - suffixW - toolW
-            if (labelBudget < 2) { labelBudget = 2 }
+            let tokStr: String = fmtTokenCount(r.promptTokens)
+            // 窄面板逐级丢列（S3 复核 #4 收口）：panelW 内放不下时按"信息量从低到高"放弃——
+            // 先丢当前工具列、再丢 ↑token 列，把宽度让给 label。此前只把 labelBudget 钳到 2、
+            // 工具列永不丢弃，行内容必超 panelW-2 → Canvas.truncate 从右侧裁掉右边框
+            // （实测 75/80/90 列 + 当前工具非空时必现；无工具列时 80 列正常）
+            var showTool: Bool = toolCol.size > 0
+            var showTok: Bool = true
+            var labelBudget: Int64 = 0
+            var guard: Int64 = 0
+            while (guard < 3) {
+                guard += 1
+                let suffixW: Int64 = 2 + TuiCanvas.displayWidth(iterCol) +
+                    (if (showTok) { 3 + TuiCanvas.displayWidth(tokStr) } else { 0 })
+                let toolW: Int64 = if (showTool) { 2 + TuiCanvas.displayWidth(toolCol) } else { 0 }
+                labelBudget = (panelW - 2) - prefixW - suffixW - toolW
+                if (labelBudget >= 4) {
+                    break
+                }
+                if (showTool) {
+                    showTool = false
+                } else if (showTok) {
+                    showTok = false
+                } else {
+                    break
+                }
+            }
+            if (labelBudget < 2) {
+                labelBudget = 2
+            }
+            // 工具列按显示宽截断（字节截断在中文/宽字符工具名上会错位）
+            if (showTool && TuiCanvas.displayWidth(toolCol) > 16) {
+                toolCol = canvas.truncate(toolCol, 16)
+            }
             var label: String = r.label
             if (TuiCanvas.displayWidth(label) > labelBudget) {
                 label = canvas.truncate(label, labelBudget)
             }
             // 行内容按显示宽度补齐到 panelW-2 再补右边框（修实测"每行右端参差"）
-            var body: String = " " + marker + " " + r.kind + focusMark + "  " + label + "  " +
-                iterCol + "  ↑" + fmtTokenCount(r.promptTokens)
-            if (toolCol.size > 0) {
+            var body: String = " " + marker + " " + r.kind + focusMark + "  " + label + "  " + iterCol
+            if (showTok) {
+                body += "  ↑" + tokStr
+            }
+            if (showTool) {
                 body += "  " + toolCol
             }
             var pad: Int64 = (panelW - 2) - TuiCanvas.displayWidth(body)
@@ -341,8 +383,9 @@ public class AgentsPanel {
             }
             let line: String = muted + bx.vc + reset + " " + markerColor + marker + reset + " " +
                 r.kind + focusMark + "  " + label + "  " +
-                muted + iterCol + "  ↑${fmtTokenCount(r.promptTokens)}" + reset +
-                (if (toolCol.size > 0) { "  " + muted + toolCol + reset } else { "" }) +
+                muted + iterCol + reset +
+                (if (showTok) { muted + "  ↑" + tokStr + reset } else { "" }) +
+                (if (showTool) { "  " + muted + toolCol + reset } else { "" }) +
                 padStr + muted + bx.vc + reset
             canvas.setLine(row, line)
             row += 1

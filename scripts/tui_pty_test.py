@@ -296,7 +296,7 @@ def test_approval_queue() -> None:
 
 
 def test_agents_panel_focus() -> None:
-    print("[场景4c] Agents 面板：并发子代理行可见 + Ctrl+G 焦点转发工具行")
+    print("[场景4c] Agents 面板：并发子代理行可见 + Ctrl+G 焦点切换（真断言，非框线假绿）")
     cfg = make_config_dir()  # 无 approval：子代理一路跑完，不弹审批
     # CJH_MOCK_TASKS：父并发派两个 explore；CJH_MOCK_DELAY_MS 拖慢每轮，
     # 给面板行渲染与焦点切换留观察窗口
@@ -308,9 +308,18 @@ def test_agents_panel_focus() -> None:
         check("Agents 面板出现", True)
         s.expect("explore")           # 面板行：子代理类型
         check("子代理面板行可见", True)
-        s.send_key(7)                 # Ctrl+G：焦点切到第一个子代理
-        s.expect("│")                 # 焦点子代理的行事件进主流（│ 前缀）
-        check("Ctrl+G 焦点后子代理工具行进主流（│ 前缀）", True)
+        # Ctrl+G：焦点 父 → 子。断言"── 焦点: <kind>·<label> ──"这条即时反馈行——
+        # 此前断 expect("│") 是假绿：面板左右边框本身就输出 │，Ctrl+G 完全失效也会命中。
+        # 注：两个子代理同批并发派发，注册顺序不确定 → 只断"反馈行出现 N 次"，不断具体是哪个
+        s.send_key(7)
+        s.expect("── 焦点: ")
+        check("Ctrl+G 焦点切到子代理（即时反馈行，不再靠框线假绿）", True)
+        s.send_key(7)                 # 子1 → 子2
+        s.expect_count("── 焦点: ", 2)
+        check("Ctrl+G 焦点循环到另一个子代理", True)
+        s.send_key(7)                 # 子2 → 父
+        s.expect("焦点回到主对话")
+        check("Ctrl+G 循环回父", True)
         s.expect("FINAL-DONE")
         check("回合完成", True)
         s.send_key(3)  # 空闲：一次退出
