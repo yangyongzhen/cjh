@@ -1313,8 +1313,26 @@ func spawnSubagent(provider: LlmProvider, parentRegistry: ToolRegistry, parent: 
         return result
     } catch (e: SubagentTimeoutException) {
         // S4：墙钟超时 → 结构化 timeout（父按失败矩阵"中断并回收引用"处理）
+        // S3 复核 #8：按方案C §6 回父文本要点"超时，已产出部分：<最后文本>"——
+        // 此前只回一句"已超时"，父拿不到子代理已经做出来的半截结论，等于白烧 token
         finState = AgentNodeState.Timeout
-        return TaskSpawnResult("子代理超时（${timeoutMs}ms 未完成），已中断并回收引用", 0, 0, 0, "timeout")
+        finIterations = subAgent.currentRounds()
+        var timeoutText = "子代理超时（${timeoutMs}ms 未完成），已中断并回收引用"
+        // 读已产出文本：超时是"放弃引用"（仓颉线程无法 safe kill），子代理线程可能仍在
+        // 往 messages 里写——读失败就只回超时，不因归账把父回合再拖崩
+        var partial = ""
+        try {
+            let p = extractSubagentResult(subAgent)
+            if (p != "(子代理未产生回复文本)") {
+                partial = p
+            }
+        } catch (ex: Exception) {
+            Log.warn("超时子代理的过程文本读取失败（不影响父回合）: ${ex}")
+        }
+        if (partial.size > 0) {
+            timeoutText = timeoutText + "，已产出部分：\n" + truncateUtf8(partial, 800)
+        }
+        return TaskSpawnResult(timeoutText, finIterations, 0, 0, "timeout")
     } catch (e: Exception) {
         // 仓颉 spawn 内未捕获异常退出码为 0 的已知坑（方案 §10 风险4）：
         // 子代理线程必须 try/catch 全包，失败转结构化 failed 而非静默
