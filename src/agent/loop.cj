@@ -316,6 +316,9 @@ public class Agent {
     // 子代理行事件回调（S3d 焦点转发用）：(agentId, kind: tool_start|tool_result, text)
     // 硬规则：子代理 onDelta 绝不转发（OutputView 单流会撕行），只转发整行事件
     public var onSubagentEvent: (Int64, String, String) -> Unit = { _, _, _ => }
+    // 每轮一次的轮次/用量回调（S3 修实测卡死）：(rounds, promptTokens, completionTokens)。
+    // 面板刷新必须挂这里（每轮一次、provider 无关），不能挂 onTokenEstimate（每 SSE chunk 一次）
+    public var onRoundTick: (Int64, Int64, Int64) -> Unit = { _, _, _ => }
     // 回合结束回调（渲染回合总结条：轮数/工具数/耗时/token用量/缓存命中率）
     public var onRunComplete: (RunSummary) -> Unit = { _ => }
     // 排队输入拉取回调（atomcode 式"steer"：TUI 忙时提交只入队不打断，
@@ -823,6 +826,10 @@ public class Agent {
             // 下一轮请求前 checkPendingCompact 换装或顺延）
             this.maybeTriggerBackgroundCompact()
             this.onTokens(response.usage.promptTokens + response.usage.completionTokens)
+            // S3 修实测卡死：每轮一次的轮次/用量回调（provider 无关）。此前面板刷新接在
+            // onTokenEstimate 上——anthropic 每 SSE chunk 回调一次，长流式下每秒成百次
+            // 锁+快照拷贝+全帧置脏，主循环被淹没（界面静止、输入无响应）
+            this.onRoundTick(iterations, summary.promptTokens, summary.completionTokens)
             Log.info("第 ${iterations} 轮完成 | 耗时 ${roundMs}ms | prompt ${response.usage.promptTokens} completion ${response.usage.completionTokens} cached ${response.usage.cachedTokens} | toolCalls ${response.toolCalls.size} | textLen ${response.text.size} | truncated ${response.truncated} | timedOut ${response.timedOut}")
 
             // SSE 空闲超时：网络长时间无新数据，已收文本/tool_calls 保留。

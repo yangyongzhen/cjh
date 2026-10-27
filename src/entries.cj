@@ -1243,10 +1243,11 @@ func spawnSubagent(provider: LlmProvider, parentRegistry: ToolRegistry, parent: 
             subAgent.onToolResult = { name, _ =>
                 parent.onSubagentEvent(subAgent.agentId, "tool_result", "↳ ${name}")
             }
-            // 轮次刷新（修实测问题"数字不变"）：provider 每轮响应都回调 onTokenEstimate，
-            // 此时取子代理已完成轮次回写面板（此前只在 finish 落一次，运行中恒 0/5）
-            subAgent.onTokenEstimate = { _ =>
-                sched.markRounds(subAgent.agentId, subAgent.currentRounds())
+            // 轮次/用量刷新（修实测卡死）：挂 onRoundTick——每轮一次、provider 无关。
+            // 不能挂 onTokenEstimate：anthropic 每 SSE chunk 回调一次，长流式下每秒成百次
+            // 锁+快照拷贝+全帧置脏，主循环被淹没（界面静止、输入无响应——用户实测复现）
+            subAgent.onRoundTick = { rounds, p, c =>
+                sched.markRoundUsage(subAgent.agentId, rounds, p, c)
             }
         case None => ()
     }
