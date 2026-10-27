@@ -75,6 +75,23 @@ public class AgentsPanelTest {
             }
         }
         @Assert(leading, 72)
+        // 边框对齐（修实测"边框不齐"）：顶行/底行/内容行显示宽度一致（= panelW 48）
+        var bottomLine: String = ""
+        for (l in text.split("\n", -1)) {
+            if (l.contains("╰") || l.contains("+")) {
+                bottomLine = l
+                break
+            }
+        }
+        var rowLine: String = ""
+        for (l in text.split("\n", -1)) {
+            if (l.contains("找配置")) {
+                rowLine = l
+                break
+            }
+        }
+        @Assert(TuiCanvas.displayWidth(panelLine), TuiCanvas.displayWidth(bottomLine))
+        @Assert(TuiCanvas.displayWidth(rowLine), TuiCanvas.displayWidth(bottomLine))
     }
 
     @TestCase
