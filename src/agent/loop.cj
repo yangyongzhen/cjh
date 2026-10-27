@@ -426,6 +426,14 @@ public class Agent {
     }
 
     /**
+     * 当前已完成轮次（只读展示用；面板按轮刷新数据源）。
+     * 故意不加锁：轮次是单调计数，展示竞态无害（最多旧一轮）。
+     */
+    public func currentRounds(): Int64 {
+        return this.roundsCompleted
+    }
+
+    /**
      * 回合结束：统一清理（正常/中断/异常所有出口，状态回 Idle）
      */
     private func endRound(): Unit {

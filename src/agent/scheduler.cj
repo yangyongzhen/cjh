@@ -181,6 +181,19 @@ public class SubagentScheduler {
         cb()
     }
 
+    /** 轮次列更新（S3 修实测问题：每轮 LLM 响应经 onTokenEstimate 转发，面板 i/5 实时递增） */
+    public func markRounds(agentId: Int64, rounds: Int64): Unit {
+        this.lock.lock()
+        for (n in this.nodes) {
+            if (n.agentId == agentId) {
+                n.iterations = rounds
+            }
+        }
+        let cb = this.changedCb
+        this.lock.unlock()
+        cb()
+    }
+
     /** 面板只读快照（深拷贝，调用方随意持有） */
     public func snapshot(): ArrayList<AgentNode> {
         this.lock.lock()

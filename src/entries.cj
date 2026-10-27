@@ -1243,6 +1243,11 @@ func spawnSubagent(provider: LlmProvider, parentRegistry: ToolRegistry, parent: 
             subAgent.onToolResult = { name, _ =>
                 parent.onSubagentEvent(subAgent.agentId, "tool_result", "↳ ${name}")
             }
+            // 轮次刷新（修实测问题"数字不变"）：provider 每轮响应都回调 onTokenEstimate，
+            // 此时取子代理已完成轮次回写面板（此前只在 finish 落一次，运行中恒 0/5）
+            subAgent.onTokenEstimate = { _ =>
+                sched.markRounds(subAgent.agentId, subAgent.currentRounds())
+            }
         case None => ()
     }
 
