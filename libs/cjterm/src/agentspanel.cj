@@ -241,8 +241,13 @@ public class AgentsPanel {
             }
             totalTokens += r.promptTokens
         }
-        let title: String = "Agents (${running} running · ${done} done · ↑${fmtTokenCount(totalTokens)})"
-        let titleW: Int64 = TuiCanvas.displayWidth(title)
+        var title: String = "Agents (${running} running · ${done} done · ↑${fmtTokenCount(totalTokens)})"
+        var titleW: Int64 = TuiCanvas.displayWidth(title)
+        // 窄面板降级（修实测 80 列下框顶溢出被截）：标题 + 边框 5 列装不下时改短标题
+        if (titleW + 5 > panelW) {
+            title = "Agents ${running}↑${fmtTokenCount(totalTokens)}"
+            titleW = TuiCanvas.displayWidth(title)
+        }
         var topLine: String = muted + bx.tl + bx.hc + " " + reset + accent + title + reset + muted + " "
         var dashCount: Int64 = panelW - titleW - 5
         if (dashCount < 0) { dashCount = 0 }
@@ -303,14 +308,22 @@ public class AgentsPanel {
                 case _ => ()
             }
             let iterCol: String = if (isRunning) { "${r.iterations}/5" } else { "${r.iterations}" }
-            let maxContentW: Int64 = panelW - 30
-            var label: String = r.label
-            if (Int64(label.size) > maxContentW) {
-                label = truncateUtf8(label, maxContentW)
-            }
             var toolCol: String = r.currentTool
             if (Int64(toolCol.size) > 16) {
                 toolCol = truncateUtf8(toolCol, 16)
+            }
+            // label 按行内剩余宽度动态截断（修窄面板行溢出）：总宽 - 其余各列实际宽度。
+            // body = " " + marker + " " + kind + focusMark + "  " + label + "  " + iterCol + "  ↑tok" [+ "  " + tool]
+            let prefixW: Int64 = 1 + TuiCanvas.displayWidth(marker) + 1 + TuiCanvas.displayWidth(r.kind) +
+                TuiCanvas.displayWidth(focusMark) + 2
+            let suffixW: Int64 = 2 + TuiCanvas.displayWidth(iterCol) + 2 + 1 +
+                TuiCanvas.displayWidth(fmtTokenCount(r.promptTokens))
+            let toolW: Int64 = if (toolCol.size > 0) { 2 + TuiCanvas.displayWidth(toolCol) } else { 0 }
+            var labelBudget: Int64 = (panelW - 2) - prefixW - suffixW - toolW
+            if (labelBudget < 2) { labelBudget = 2 }
+            var label: String = r.label
+            if (TuiCanvas.displayWidth(label) > labelBudget) {
+                label = canvas.truncate(label, labelBudget)
             }
             // 行内容按显示宽度补齐到 panelW-2 再补右边框（修实测"每行右端参差"）
             var body: String = " " + marker + " " + r.kind + focusMark + "  " + label + "  " +
