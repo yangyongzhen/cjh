@@ -1770,25 +1770,47 @@ public class Agent {
                 if (m.name == "read_file" || m.name == "write_file" || m.name == "edit_file" ||
                     m.name == "append_file" || m.name == "hashline_edit" || m.name == "grep" || m.name == "glob") {
                     // 常见格式："Written <path> ..." / "<path>:<line>: ..." / "=== <path> ==="
+                    // 跨平台（Cangjie 1.2.0 迁移）：POSIX `/` 与 Windows `\` 都要认，
+                    // 且 Windows 路径要带上盘符（C:\...）——原实现只找 '/'，Windows 上
+                    // 一个路径都提取不到（子代理简报因此丢上下文）
                     let c = m.content
                     var i: Int64 = 0
                     while (i < c.size) {
-                        // 提取 / 开头的路径片段（简化启发式）
-                        if (c[i] == 47u8) {  // '/'
-                            var j = i
-                            var path = StringBuilder()
-                            while (j < c.size && c[j] != 32u8 && c[j] != 10u8 && c[j] != 58u8 && c[j] != 41u8 && path.toString().size < 120) {
-                                path.append(String(Rune(c[j])))
-                                j += 1
-                            }
-                            let p = path.toString()
-                            if (p.size > 4 && (p.contains(".") || p.contains("/"))) {
-                                files.add(p)
-                            }
-                            i = j
-                        } else {
+                        let b = c[i]
+                        if (b != 47u8 && b != 92u8) {  // 非 '/' 也非 '\'
                             i += 1
+                            continue
                         }
+                        // 起点回退到 token 边界（空白/换行/括号/引号/冒号即停）
+                        var s = i
+                        while (s > 0) {
+                            let pb = c[s - 1]
+                            if (pb == 32u8 || pb == 10u8 || pb == 13u8 || pb == 9u8 ||
+                                pb == 40u8 || pb == 34u8 || pb == 39u8 || pb == 58u8) {
+                                break
+                            }
+                            s -= 1
+                        }
+                        // 冒号前一位是盘符字母（C:）时把「C:」两字节一起补进来
+                        if (s >= 1 && c[s - 1] == 58u8) {
+                            s -= 1
+                            if (s >= 1 &&
+                                ((c[s - 1] >= 65u8 && c[s - 1] <= 90u8) ||
+                                (c[s - 1] >= 97u8 && c[s - 1] <= 122u8))) {
+                                s -= 1
+                            }
+                        }
+                        // 终点：空白/换行/右括号
+                        var j = i
+                        while (j < c.size && c[j] != 32u8 && c[j] != 10u8 && c[j] != 13u8 &&
+                            c[j] != 9u8 && c[j] != 41u8 && (j - s) < 200) {
+                            j += 1
+                        }
+                        let p = c[s..j]
+                        if (p.size > 4 && (p.contains(".") || p.contains("/") || p.contains("\\"))) {
+                            files.add(p)
+                        }
+                        i = j
                     }
                 }
             }

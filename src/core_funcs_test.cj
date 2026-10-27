@@ -1037,8 +1037,9 @@ public class SubagentIsolationTest {
         @Assert(summary.reply.contains("parent done"), true)
         let taskResult = this.lastToolResult(agent.getMessages(), "task")
         // 转录路径在树尾，文件真实存在且含子代理过程
-        // （期望值用 tmpPath 拼：跨平台路径由 tmpPath 决定，不能写死 /tmp）
-        @Assert(taskResult.contains("转录: " + tmpPath("cjh_ut_sub_spill/sess-sub/sub-explore/transcript-")), true)
+        // （期望值用 tmpPath 拼并归一成 `/`：转录路径的输出统一正斜杠）
+        let spillExpect = tmpPath("cjh_ut_sub_spill").replace("\\", "/")
+        @Assert(taskResult.contains("转录: " + spillExpect + "/sess-sub/sub-explore/transcript-"), true)
         @Assert(taskResult.contains("触碰文件: " + tmpPath("cjh_ut_sub/x.cj")), true)
         let line = taskResult.split("\n", -1)
         var transcriptPath = ""
