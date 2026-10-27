@@ -162,8 +162,12 @@ public class TasksPanel {
             return 0
         }
 
-        // 渲染边框和任务行
+        // 列定位（S3 修实测问题）：Screen.setLine 只能从第 0 列写起，此前 startCol
+        // 形参被 renderBox 忽略、面板实际贴左（与设计"右下"不符）。改用 Box 容器
+        // 同款 setOffset 机制整体右移，渲染完恢复 0
+        canvas.setOffset(startCol)
         this.renderBox(canvas, startRow, startCol, panelW, actualH, items, doneCount, inProgressCount, openCount)
+        canvas.setOffset(0)
         return actualH
     }
 

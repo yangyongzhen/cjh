@@ -58,6 +58,23 @@ public class AgentsPanelTest {
         @Assert(text.contains("read_file"), true)         // 当前工具列
         @Assert(text.contains("查依赖"), true)
         @Assert(text.contains("✓"), true)                 // 终态符号
+        // 右对齐（修实测"贴左"问题）：cols=120、panelW=min(60,120*2/5)=48 → 起始列 72
+        var panelLine: String = ""
+        for (l in text.split("\n", -1)) {
+            if (l.contains("Agents (")) {
+                panelLine = l
+                break
+            }
+        }
+        var leading: Int64 = 0
+        for (r in panelLine.toRuneArray()) {
+            if (r.toString() == " ") {
+                leading += 1
+            } else {
+                break
+            }
+        }
+        @Assert(leading, 72)
     }
 
     @TestCase

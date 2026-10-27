@@ -151,7 +151,11 @@ public class AgentsPanel {
             return 0
         }
 
+        // 列定位（S3 修实测问题）：与 Tasks 面板同款 setOffset 机制整体右移，
+        // 此前 startCol 被忽略导致面板贴左
+        canvas.setOffset(startCol)
         this.renderBox(canvas, startRow, startCol, panelW, actualH, items, focus)
+        canvas.setOffset(0)
         return actualH
     }
 
