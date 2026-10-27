@@ -168,30 +168,50 @@ public class SubagentScheduler {
         cb()
     }
 
-    /** 当前工具列更新（onToolStart 转发） */
+    /** 当前工具列更新（onToolStart 转发；变更检测：同名工具重复调用不重绘） */
     public func markTool(agentId: Int64, tool: String): Unit {
         this.lock.lock()
+        var changed = false
         for (n in this.nodes) {
             if (n.agentId == agentId) {
-                n.currentTool = tool
+                if (n.currentTool != tool) {
+                    n.currentTool = tool
+                    changed = true
+                }
             }
         }
         let cb = this.changedCb
         this.lock.unlock()
-        cb()
+        if (changed) {
+            cb()
+        }
     }
 
-    /** 轮次列更新（S3 修实测问题：每轮 LLM 响应经 onTokenEstimate 转发，面板 i/5 实时递增） */
-    public func markRounds(agentId: Int64, rounds: Int64): Unit {
+    /**
+     * 轮次/用量更新（S3 修实测卡死）：由 onRoundTick（每轮一次）驱动，iterations/
+     * promptTokens/completionTokens 一次落齐。变更检测：三项都没变就跳过 cb——
+     * 防御任何高频回调源把主循环淹没（cb = 快照拷贝 + markDirty 全帧置脏）。
+     */
+    public func markRoundUsage(agentId: Int64, rounds: Int64, promptTokens: Int64,
+        completionTokens: Int64): Unit {
         this.lock.lock()
+        var changed = false
         for (n in this.nodes) {
             if (n.agentId == agentId) {
-                n.iterations = rounds
+                if (n.iterations != rounds || n.promptTokens != promptTokens ||
+                    n.completionTokens != completionTokens) {
+                    n.iterations = rounds
+                    n.promptTokens = promptTokens
+                    n.completionTokens = completionTokens
+                    changed = true
+                }
             }
         }
         let cb = this.changedCb
         this.lock.unlock()
-        cb()
+        if (changed) {
+            cb()
+        }
     }
 
     /** 面板只读快照（深拷贝，调用方随意持有） */
