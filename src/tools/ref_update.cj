@@ -558,7 +558,7 @@ public func refUpdate(refDir: String, opts: RefUpdateOptions): RefCliResult {
     var netMode = false
     if (repoRoot.size == 0) {
         netMode = true
-        tmpDir = refSiblingDir("/tmp/cjh-ref-clone", refNowStamp())
+        tmpDir = refSiblingDir(tmpPath("cjh-ref-clone"), refNowStamp())
         if (exists(tmpDir)) {
             refRemoveTree(tmpDir)
         }

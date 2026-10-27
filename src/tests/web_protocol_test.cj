@@ -1,5 +1,7 @@
 package cjh.tests
 
+import cjutil.*
+
 import std.collection.*
 import stdx.encoding.json.*
 import cjcfg.*
@@ -162,7 +164,7 @@ public class StubProviderFactory <: ProviderFactory {
 
     public func create(target: ModelTarget): LlmProvider {
         this.created.add(target.model)
-        return MockProvider("/tmp/cjh_ut_gw_ctrl_mock.txt")
+        return MockProvider(tmpPath("cjh_ut_gw_ctrl_mock.txt"))
     }
 
     /**

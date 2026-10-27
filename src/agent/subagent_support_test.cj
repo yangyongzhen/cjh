@@ -1,5 +1,7 @@
 package cjh.agent
 
+import cjutil.*
+
 import std.collection.*
 import std.time.*
 import stdx.encoding.json.*
@@ -28,7 +30,7 @@ class BriefScriptProvider <: LlmProvider {
         if (callCount == 1) {
             var calls = ArrayList<ToolCall>()
             var a1 = JsonObject()
-            a1.put("path", JsonString("/tmp/cjh_ut_brief/alpha.cj"))
+            a1.put("path", JsonString(tmpPath("cjh_ut_brief/alpha.cj")))
             calls.add(ToolCall("b1", "read_file", a1))
             return ModelResponse("去读文件", calls)
         }
@@ -64,7 +66,7 @@ public class SubagentSupportTest {
         let brief = agent.taskBriefContext()
         // D1：上下文块 = 触碰文件表 + 会话摘要
         @Assert(brief.contains("--- 父会话上下文"), true)
-        @Assert(brief.contains("/tmp/cjh_ut_brief/alpha.cj"), true)
+        @Assert(brief.contains(tmpPath("cjh_ut_brief/alpha.cj")), true)
         @Assert(brief.contains("会话摘要"), true)
         @Assert(brief.contains("最后任务"), true)
     }

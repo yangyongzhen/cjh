@@ -1,5 +1,7 @@
 package cjh.tests
 
+import cjutil.*
+
 import std.collection.*
 import std.sync.*
 import std.time.*
@@ -83,16 +85,16 @@ public class DagBenchProvider <: LlmProvider {
         match (callCount) {
             case 1 =>
                 // 并发实验批：4 个不同 path 的"写" → 规则"不同 path 可并发（即使都是写）" → 全并发
-                calls.add(DagBenchProvider.probe("b1", "/tmp/cjh_bench/r1", this.ms))
-                calls.add(DagBenchProvider.probe("b2", "/tmp/cjh_bench/r2", this.ms))
-                calls.add(DagBenchProvider.probe("b3", "/tmp/cjh_bench/r3", this.ms))
-                calls.add(DagBenchProvider.probe("b4", "/tmp/cjh_bench/r4", this.ms))
+                calls.add(DagBenchProvider.probe("b1", tmpPath("cjh_bench/r1"), this.ms))
+                calls.add(DagBenchProvider.probe("b2", tmpPath("cjh_bench/r2"), this.ms))
+                calls.add(DagBenchProvider.probe("b3", tmpPath("cjh_bench/r3"), this.ms))
+                calls.add(DagBenchProvider.probe("b4", tmpPath("cjh_bench/r4"), this.ms))
             case 2 =>
                 // 串行对照组批：4 个"写"全落同一 path → 规则"同 path 且含写 → 串行" → 链式依赖
-                calls.add(DagBenchProvider.probe("s1", "/tmp/cjh_bench/same", this.ms))
-                calls.add(DagBenchProvider.probe("s2", "/tmp/cjh_bench/same", this.ms))
-                calls.add(DagBenchProvider.probe("s3", "/tmp/cjh_bench/same", this.ms))
-                calls.add(DagBenchProvider.probe("s4", "/tmp/cjh_bench/same", this.ms))
+                calls.add(DagBenchProvider.probe("s1", tmpPath("cjh_bench/same"), this.ms))
+                calls.add(DagBenchProvider.probe("s2", tmpPath("cjh_bench/same"), this.ms))
+                calls.add(DagBenchProvider.probe("s3", tmpPath("cjh_bench/same"), this.ms))
+                calls.add(DagBenchProvider.probe("s4", tmpPath("cjh_bench/same"), this.ms))
             case _ =>
                 return ModelResponse("BENCH-DONE", ArrayList<ToolCall>())
         }
@@ -135,7 +137,7 @@ public class DagBenchTest {
         report.append("reply=${summary.reply}\n")
         let reportStr = report.toString()
         println(reportStr)
-        writeTextFile("/tmp/cjh_dag_bench_report.txt", reportStr)
+        writeTextFile(tmpPath("cjh_dag_bench_report.txt"), reportStr)
 
         // 断言：并发生效（远快于全串行 2400ms）且串行对照组未被错误并行
         @Assert(summary.reply.contains("BENCH-DONE"), true)

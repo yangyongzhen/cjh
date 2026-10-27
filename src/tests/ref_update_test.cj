@@ -1,5 +1,7 @@
 package cjh.tests
 
+import cjutil.*
+
 import std.collection.*
 import std.fs.*
 import cjh.tools.*
@@ -50,7 +52,7 @@ func ruLocalOpts(source: String): RefUpdateOptions {
 
 @Test
 public func testRefRebuildFailsWithoutCorpus(): Unit {
-    let r = refRebuild("/tmp/cjh_ut_ru_never_exist_ghi")
+    let r = refRebuild(tmpPath("cjh_ut_ru_never_exist_ghi"))
     @Assert(r.exitCode, 1)
     @Assert(r.output.contains("语料目录不存在"), true)
 }
@@ -212,7 +214,7 @@ public func testRefUpdatePrefersAgentsLayoutWhenBothExist(): Unit {
 @Test
 public func testRefUpdateMissingSourceFails(): Unit {
     let corpus = ruCorpus("ru_upd_miss")
-    let r = refUpdate(corpus, ruLocalOpts("/tmp/cjh_ut_ru_never_exist_jkl"))
+    let r = refUpdate(corpus, ruLocalOpts(tmpPath("cjh_ut_ru_never_exist_jkl")))
     @Assert(r.exitCode, 1)
     @Assert(r.output.contains("来源目录不存在"), true)
     @Assert(exists(refManifestPath(corpus)), false)

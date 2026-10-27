@@ -158,7 +158,7 @@ public class PluginManager {
         func tmark(label: String): Unit {
             if (!profiling) { return }
             try {
-                let f = File("/tmp/cjh_startup.log", OpenMode.Append)
+                let f = File(tmpPath("cjh_startup.log"), OpenMode.Append)
                 f.write(stringToBytes("  [PLUGIN] ${label}\n"))
                 f.close()
             } catch (e: Exception) {}

@@ -1,5 +1,7 @@
 package cjh.tests
 
+import cjutil.*
+
 import std.fs.*
 import stdx.encoding.json.*
 import cjh.tools.*
@@ -11,7 +13,7 @@ import cjh.tools.*
 public class EditUtf8Test {
     @TestCase
     public func testReplaceWithMultibyteChar(): Unit {
-        let path = "/tmp/cjh_edit_utf8.txt"
+        let path = tmpPath("cjh_edit_utf8.txt")
         // 含 ×（2 字节）和中文的文件内容
         File.writeTo(path, "function spawnBoss() {\n    bossCount++;\n    // Boss 血量随击败次数成长：首个 80，之后 ×1.35\n}\n".toArray())
         let tool = EditTool()
@@ -30,7 +32,7 @@ public class EditUtf8Test {
 
     @TestCase
     public func testMultibyteBeforeMatch(): Unit {
-        let path = "/tmp/cjh_edit_utf8b.txt"
+        let path = tmpPath("cjh_edit_utf8b.txt")
         // 匹配位置之前有 × 等多字节字符（i 逐字节前进会落在中间）
         File.writeTo(path, "价格：×100 元\n需要修改这一行\n".toArray())
         let tool = EditTool()

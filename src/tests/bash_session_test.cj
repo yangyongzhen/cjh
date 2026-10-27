@@ -6,7 +6,11 @@ import cjh.tools.*
 /**
  * BashSession 持久会话测试（P1-3）：
  * 跨命令保留 cwd/env、输出、退出码、超时重建。
+ *
+ * @When[os != "Windows"]：契约建立在 /bin/bash 持久子进程 + POSIX 信号语义上；
+ * Windows 上 BashTool 回落 PowerShell，cwd/env 保持、超时杀进程、stderr 采集全不同。
  */
+@When[os != "Windows"]
 @Test
 public class BashSessionTest {
 
