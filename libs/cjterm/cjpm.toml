@@ -1,5 +1,5 @@
 [package]
-  cjc-version = "1.0.5"
+  cjc-version = "1.2.0"
   name = "cjterm"
   description = "cjterm：仓颉终端 UI 库（ANSI 控制 + 差分渲染 + termios 原始模式）"
   version = "0.1.0"
@@ -10,6 +10,8 @@
   link-option = ""
   package-configuration = {}
 
+# 刻意保持零依赖：cjterm 只用到 cjutil 的两个 UTF-8 辅助函数，已内联到
+# term_util.cj（与 truncateUtf8 同策略）。依赖 cjutil 会让终端库被迫拉进
+# stdx（json/http/crypto），Windows 原生构建直接编不过（S3 复审收口）。
 [dependencies]
-  cjutil = { path = "../cjutil" }
 

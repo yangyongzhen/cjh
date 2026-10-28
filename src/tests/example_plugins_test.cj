@@ -14,6 +14,15 @@ import cjh.tools.*
  * 定位仓库根：测试进程 cwd = 仓库根（scripts/test.sh 固定 cd 根目录），
  * 带常见开发路径兜底。
  */
+/**
+ * 示例插件（example/plugins 下的 shell 脚本）加载与 hook 改写
+ *
+ * @When[os != "Windows"]：示例插件是 shell 脚本（plugin.json 里声明 `sh`/`bash` 入口），
+ * Windows 原生没有对应解释器，插件加载/执行路径不可用。
+ *
+ * 注：块注释里不能出现星号紧贴斜杠的序列（会触发嵌套注释，见 AGENTS.md）。
+ */
+@When[os != "Windows"]
 @Test
 public class ExamplePluginsTest {
 

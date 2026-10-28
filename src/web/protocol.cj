@@ -292,6 +292,10 @@ public class ToolStartEvent {
     public var name: String = ""
     public var args: JsonObject = JsonObject()
     public var meta: FrameMeta = FrameMeta()
+    // S8 可选 agent 身份（D10：缺省不序列化=父回合，字段不虚报）：
+    // agent_id = cjh.agent Agent.agentId；agent_label = task description
+    public var agentId: Int64 = 0
+    public var agentLabel: String = ""
 
     public init() {}
 
@@ -305,6 +309,12 @@ public class ToolStartEvent {
         obj.put("type", JsonString("tool_start"))
         obj.put("name", JsonString(this.name))
         obj.put("args", this.args)
+        if (this.agentId != 0) {
+            obj.put("agent_id", JsonInt(this.agentId))
+        }
+        if (this.agentLabel.size > 0) {
+            obj.put("agent_label", JsonString(this.agentLabel))
+        }
         putFrameMeta(obj, this.meta)
         return obj.toJsonString()
     }
@@ -324,6 +334,9 @@ public class ToolResultEvent {
     public var isError: Bool = false
     public var diff: ?DiffInfo = None
     public var meta: FrameMeta = FrameMeta()
+    // S8 可选 agent 身份（同 tool_start：缺省不序列化=父回合）
+    public var agentId: Int64 = 0
+    public var agentLabel: String = ""
 
     public init() {}
 
@@ -339,6 +352,12 @@ public class ToolResultEvent {
         obj.put("name", JsonString(this.name))
         obj.put("content", JsonString(this.content))
         obj.put("is_error", JsonBool(this.isError))
+        if (this.agentId != 0) {
+            obj.put("agent_id", JsonInt(this.agentId))
+        }
+        if (this.agentLabel.size > 0) {
+            obj.put("agent_label", JsonString(this.agentLabel))
+        }
         if (let Some(d) <- this.diff) {
             obj.put("diff", d.toJson())
         }
@@ -527,12 +546,15 @@ public class ApprovalRequestEvent {
  * code / retryable 为后加字段：老客户端只读 message 不受影响，
  * 新客户端据 code 决定「重试 / 换模型 / 新建会话」。code 缺省 "internal"。
  * 帧身份三字段对回合内错误有值；与回合无关的错误（帧格式错误等）为空串。
+ * request_id 为后加可选字段：审批类错误（approval_timeout/approval_unknown）带值，
+ * 客户端按 id 精确关掉对应审批项（队列里其余项不受牵连）；老客户端忽略。
  */
 public class ErrorEvent {
     public var message: String = ""
     public var code: String = ""
     public var retryable: Bool = false
     public var meta: FrameMeta = FrameMeta()
+    public var requestId: String = ""
 
     public init() {}
 
@@ -552,6 +574,9 @@ public class ErrorEvent {
         obj.put("message", JsonString(this.message))
         obj.put("code", JsonString(if (this.code.size > 0) { this.code } else { "internal" }))
         obj.put("retryable", JsonBool(this.retryable))
+        if (this.requestId.size > 0) {
+            obj.put("request_id", JsonString(this.requestId))
+        }
         putFrameMeta(obj, this.meta)
         return obj.toJsonString()
     }

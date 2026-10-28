@@ -20,7 +20,8 @@ import cjutil.*
 @Test
 public class ApiKeyPersistTest {
     private static func testDir(tag: String): String {
-        return "/tmp/cjh_ut_apikey_${tag}"
+        // 跨平台：POSIX /tmp/cjh_ut_apikey_*，Windows %TEMP%\cjh_ut_apikey_*
+        return testTmpPath("cjh_ut_apikey_${tag}")
     }
 
     private static func readText(path: String): String {

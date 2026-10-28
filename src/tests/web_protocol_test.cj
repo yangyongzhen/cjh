@@ -1,5 +1,7 @@
 package cjh.tests
 
+import cjutil.*
+
 import std.collection.*
 import stdx.encoding.json.*
 import cjcfg.*
@@ -41,6 +43,8 @@ public class CaptureChannel <: Channel {
     public var doneRawJson: ArrayList<String> = ArrayList<String>()
     // 错误事件的帧身份（与 errors 一一对应）
     public var errorMetas: ArrayList<FrameMeta> = ArrayList<FrameMeta>()
+    // 审批类错误的 request_id（与 errors 按 sendApprovalError 到达顺序追加）
+    public var approvalErrorIds: ArrayList<String> = ArrayList<String>()
     // 审批请求（危险操作前网关推来；测试据此答复或放任超时）
     public var approvals: ArrayList<ApprovalRequestInfo> = ArrayList<ApprovalRequestInfo>()
     // 工具结果（按到达顺序；三个列表一一对应）
@@ -88,6 +92,12 @@ public class CaptureChannel <: Channel {
         retryable: Bool): Unit {
         this.errors.add(CapturedError(message, code, retryable))
         this.errorMetas.add(meta)
+    }
+
+    public func sendApprovalError(_: String, requestId: String, message: String,
+        code: String): Unit {
+        this.errors.add(CapturedError(message, code, false))
+        this.approvalErrorIds.add(requestId)
     }
 
     public func sendAck(_: String, ack: AckInfo): Unit {
@@ -154,7 +164,7 @@ public class StubProviderFactory <: ProviderFactory {
 
     public func create(target: ModelTarget): LlmProvider {
         this.created.add(target.model)
-        return MockProvider("/tmp/cjh_ut_gw_ctrl_mock.txt")
+        return MockProvider(tmpPath("cjh_ut_gw_ctrl_mock.txt"))
     }
 
     /**
@@ -200,6 +210,46 @@ func waitForEvents(ch: CaptureChannel, waitMs: Int64): Unit {
  */
 @Test
 public class WebProtocolFrameTest {
+
+    @TestCase
+    public func testAgentFieldsAbsentForParentFrames(): Unit {
+        // S8/v5：父回合帧不携带 agent 字段（缺省不序列化=字段不虚报，老客户端零影响）
+        let start = ToolStartEvent("read_file", JsonObject())
+        let startObj = parseObj(start.toJson())
+        @Assert(getInt(startObj, "agent_id"), -1)   // 键不存在
+        @Assert(getStr(startObj, "agent_label"), "")
+        let result = ToolResultEvent("read_file", "ok", false)
+        let resultObj = parseObj(result.toJson())
+        @Assert(getInt(resultObj, "agent_id"), -1)
+        @Assert(getStr(resultObj, "agent_label"), "")
+    }
+
+    @TestCase
+    public func testAgentFieldsPresentWhenSet(): Unit {
+        // S8/v5：子代理帧带 agent_id / agent_label
+        let start = ToolStartEvent("grep", JsonObject())
+        start.agentId = 42
+        start.agentLabel = "并发审批一号"
+        let startObj = parseObj(start.toJson())
+        @Assert(getInt(startObj, "agent_id"), 42)
+        @Assert(getStr(startObj, "agent_label"), "并发审批一号")
+        let result = ToolResultEvent("grep", "ok", false)
+        result.agentId = 42
+        result.agentLabel = "并发审批一号"
+        let resultObj = parseObj(result.toJson())
+        @Assert(getInt(resultObj, "agent_id"), 42)
+        @Assert(getStr(resultObj, "agent_label"), "并发审批一号")
+        // 协议版本随帧形状变化递增到 v5
+        @Assert(capabilityProtocolVersion(), 5)
+    }
+
+    private func parseObj(json: String): JsonObject {
+        let parsed = JsonValue.fromStr(json)
+        match (parsed.kind()) {
+            case JsonKind.JsObject => return parsed.asObject()
+            case _ => return JsonObject()
+        }
+    }
 
     @TestCase
     public func testChatRequestParsesSnakeCaseOverride(): Unit {

@@ -1,5 +1,7 @@
 package cjh.tests
 
+import cjutil.*
+
 import std.collection.*
 import std.fs.*
 import stdx.encoding.json.*
@@ -36,10 +38,10 @@ class FlowProvider <: LlmProvider {
                 // 并行批：两个不同文件 read + 一个 bash（不同"资源"→ 同一组并发）
                 var calls = ArrayList<ToolCall>()
                 var a1 = JsonObject()
-                a1.put("path", JsonString("/tmp/cjh_flow_a.txt"))
+                a1.put("path", JsonString(tmpPath("cjh_flow_a.txt")))
                 calls.add(ToolCall("flow_1a", "read_file", a1))
                 var a2 = JsonObject()
-                a2.put("path", JsonString("/tmp/cjh_flow_b.txt"))
+                a2.put("path", JsonString(tmpPath("cjh_flow_b.txt")))
                 calls.add(ToolCall("flow_1b", "read_file", a2))
                 var a3 = JsonObject()
                 a3.put("command", JsonString("echo flow-ok"))
@@ -72,8 +74,8 @@ public class AgentFlowTest {
 
     @TestCase
     public func testParallelBatchExecution(): Unit {
-        writeTextFile("/tmp/cjh_flow_a.txt", "A\n")
-        writeTextFile("/tmp/cjh_flow_b.txt", "B\n")
+        writeTextFile(tmpPath("cjh_flow_a.txt"), "A\n")
+        writeTextFile(tmpPath("cjh_flow_b.txt"), "B\n")
         let spillDir = testTempDir("flowspill")
         let provider = FlowProvider("echo short")
         let agent = this.buildAgent(provider, spillDir, "sess1")
@@ -97,8 +99,12 @@ public class AgentFlowTest {
 
     @TestCase
     public func testToolResultTruncationAndSpill(): Unit {
-        writeTextFile("/tmp/cjh_flow_a.txt", "A\n")
-        writeTextFile("/tmp/cjh_flow_b.txt", "B\n")
+        // 依赖 POSIX 管道（yes | tr | head）；Windows 上 bash 回落 PowerShell，跳过
+        if (!posixShellAvailable()) {
+            return
+        }
+        writeTextFile(tmpPath("cjh_flow_a.txt"), "A\n")
+        writeTextFile(tmpPath("cjh_flow_b.txt"), "B\n")
         let spillDir = testTempDir("flowtrunc")
         // 生成 5000 字符输出（去换行，纯 5000 个 x）
         let provider = FlowProvider("yes x | tr -d '\\n' | head -c 5000")
@@ -130,8 +136,8 @@ public class AgentFlowTest {
     public func testDagSerialOnSamePath(): Unit {
         // 同 path 写后读 → 必须串行（不并发）：
         // write_file(a) + read_file(a) 同路径且含写 → deps 边
-        writeTextFile("/tmp/cjh_flow_a.txt", "A\n")
-        writeTextFile("/tmp/cjh_flow_b.txt", "B\n")
+        writeTextFile(tmpPath("cjh_flow_a.txt"), "A\n")
+        writeTextFile(tmpPath("cjh_flow_b.txt"), "B\n")
         let spillDir = testTempDir("flowserial")
         let registry = ToolRegistry()
         registry.register(BashTool())
@@ -146,7 +152,7 @@ public class AgentFlowTest {
         // 同 path 写读 → 必须串行：无并发批（parallelBatches=0），写入先于读取
         @Assert(summary.parallelBatches, 0)
         // 写入生效（read 在 write 之后执行，读到 WRITTEN）
-        @Assert(readTextFile("/tmp/cjh_flow_a.txt"), "WRITTEN\n")
+        @Assert(readTextFile(tmpPath("cjh_flow_a.txt")), "WRITTEN\n")
     }
 }
 
@@ -165,11 +171,11 @@ class SerialWriteProvider <: LlmProvider {
             case 1 =>
                 var calls = ArrayList<ToolCall>()
                 var w = JsonObject()
-                w.put("path", JsonString("/tmp/cjh_flow_a.txt"))
+                w.put("path", JsonString(tmpPath("cjh_flow_a.txt")))
                 w.put("content", JsonString("WRITTEN\n"))
                 calls.add(ToolCall("ser_1", "write_file", w))
                 var r = JsonObject()
-                r.put("path", JsonString("/tmp/cjh_flow_a.txt"))
+                r.put("path", JsonString(tmpPath("cjh_flow_a.txt")))
                 calls.add(ToolCall("ser_2", "read_file", r))
                 return ModelResponse("写后读", calls)
             case _ =>
@@ -188,14 +194,14 @@ public class AgentHookTest {
         registry.register(BashTool())
         registry.register(ReadTool())
         let config = AgentConfig("hook test", 10, Capability(),
-            0, 0, 6, 2000, "/tmp/cjh_hook_spill", "sess-hook")
+            0, 0, 6, 2000, tmpPath("cjh_hook_spill"), "sess-hook")
         return Agent(provider, registry, config)
     }
 
     @TestCase
     public func testAllHooksFire(): Unit {
         // MockProvider：有流式 onDelta（最终答复）+ 思考流 onReasoning + 4 轮工具循环
-        let provider = MockProvider("/tmp/cjh_hook_verify.txt")
+        let provider = MockProvider(tmpPath("cjh_hook_verify.txt"))
         let agent = this.buildHookAgent(provider)
         // 事件计数器
         let preCount = Array<Int64>(1, repeat: 0)
@@ -297,11 +303,11 @@ public class HookExemptTest {
 public class InterruptResetTest {
     @TestCase
     public func testInterruptThenNewRunWorks(): Unit {
-        let provider = MockProvider("/tmp/cjh_int_reset.txt")
+        let provider = MockProvider(tmpPath("cjh_int_reset.txt"))
         let registry = ToolRegistry()
         registry.register(BashTool())
         let config = AgentConfig("reset test", 10, Capability(),
-            0, 0, 6, 2000, "/tmp/cjh_int_spill", "sess-reset")
+            0, 0, 6, 2000, tmpPath("cjh_int_spill"), "sess-reset")
         let agent = Agent(provider, registry, config)
         // 第一轮：运行中中断
         agent.interrupt()
@@ -323,13 +329,13 @@ public class RoundStateTest {
         let registry = ToolRegistry()
         registry.register(BashTool())
         let config = AgentConfig("state test", 10, Capability(),
-            0, 0, 6, 2000, "/tmp/cjh_state_spill", "sess-state")
+            0, 0, 6, 2000, tmpPath("cjh_state_spill"), "sess-state")
         return Agent(provider, registry, config)
     }
 
     @TestCase
     public func testStateTransitions(): Unit {
-        let agent = this.buildStateAgent(MockProvider("/tmp/cjh_state.txt"))
+        let agent = this.buildStateAgent(MockProvider(tmpPath("cjh_state.txt")))
         // 初始 Idle
         match (agent.getRoundState()) {
             case RoundState.Idle => ()

@@ -14,12 +14,17 @@ import std.collection.*
  *
  * 另：同款 dup/dup2 配方（suppressStderr）已在 term_posix.cj 跑了很久，
  * 这里不重复测系统调用本身。
+ *
+ * @When[os != "Windows"]：契约建立在 pipe(2)/read(2)/close(2) 的 POSIX fd 语义上
+ * （mingw 无这些符号，Windows 原生 `cjpm test` 链接期直接报 undefined symbol）
  */
 // pipe(2)：造一对 fd（读端 / 写端）
+@When[os != "Windows"]
 @C
 foreign func pipe(fds: CPointer<Int32>): Int32
 
 // 1.0.5 的 Option 没有 getOrThrow()，与 term_posix.cj 一致用 if (let p <- ...) 收口
+@When[os != "Windows"]
 private func allocI32(count: Int64): CPointer<Int32> {
     unsafe {
         if (let p <- LibC.malloc<Int32>(count: count)) {
@@ -29,6 +34,7 @@ private func allocI32(count: Int64): CPointer<Int32> {
     }
 }
 
+@When[os != "Windows"]
 private func allocBytes(count: Int64): CPointer<UInt8> {
     unsafe {
         if (let p <- LibC.malloc<UInt8>(count: count)) {
@@ -38,6 +44,7 @@ private func allocBytes(count: Int64): CPointer<UInt8> {
     }
 }
 
+@When[os != "Windows"]
 @Test
 public class TtyOutWriteTest {
 

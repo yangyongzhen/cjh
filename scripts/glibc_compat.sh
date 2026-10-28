@@ -10,7 +10,7 @@
 # 与 scripts/winbuild.sh 同一套手法：临时改 cjpm.toml 的 link-option，退出时无条件还原。
 #
 # 用法：
-#   source /opt/cangjie/cangjie-1.0.5/envsetup.sh
+#   source /opt/cangjie/cangjie/envsetup.sh
 #   ./scripts/glibc_compat.sh            # 构建（产物在 target/release/bin/cjh）
 #   ./scripts/glibc_compat.sh --check    # 只检查现有产物的 glibc 需求
 
@@ -46,7 +46,7 @@ if ! command -v gcc > /dev/null 2>&1; then
     exit 1
 fi
 if ! command -v cjpm > /dev/null 2>&1; then
-    echo "✗ 找不到 cjpm，先 source 仓颉环境：source /opt/cangjie/cangjie-1.0.5/envsetup.sh"
+    echo "✗ 找不到 cjpm，先 source 仓颉环境：source /opt/cangjie/cangjie/envsetup.sh"
     exit 1
 fi
 

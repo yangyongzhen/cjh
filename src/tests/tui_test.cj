@@ -129,6 +129,9 @@ public class MarkdownRenderTest {
 
     @TestCase
     public func testHeadingNotTag(): Unit {
+        // NO_COLOR 环境变量会把 Ansi 全部降级为空串（Linux CI 通常不设、本机设了）——
+        // 颜色相关断言显式打开，别把环境差异当回归
+        Ansi.noColor = false
         // #tag / 非 ATX（# 后无空格）→ 原样输出，不渲染成标题
         let m = MarkdownRender()
         let out = m.process("#tag") + m.finish()
@@ -346,6 +349,7 @@ public class OutputViewThinkingTest {
 
     @TestCase
     public func testThinkingOmpColors(): Unit {
+        Ansi.noColor = false  // 颜色断言见上（NO_COLOR 环境变量）
         // 思考颜色精确对齐 omp（collab-web transcript.css）：
         // 内容 = --fg-muted ≈ 249 #aaaaaa + 斜体；标签 = --fg-faint ≈ 244 #787878
         // 比正文素白暗一档（可区分），比中灰 MUTED 亮（不闷）——用户对比 omp 实测认可
@@ -379,6 +383,7 @@ public class AnsiTest {
 
     @TestCase
     public func testEscapeSequences(): Unit {
+        Ansi.noColor = false  // 颜色断言见上（NO_COLOR 环境变量）
         let esc = Rune(27).toString()
         @Assert(Ansi.esc(), esc)
         @Assert(Ansi.bold(), esc + "[1m")
@@ -547,6 +552,7 @@ public class MarkdownHighlightTest {
 
     @TestCase
     public func testCodeBlockNoLangPlain(): Unit {
+        Ansi.noColor = false  // 颜色断言见上（NO_COLOR 环境变量）
         // 无语言标注：不高亮（防误判，对齐 OMP），灰底
         let m = MarkdownRender()
         let out = m.process("```\nlet x = 1\n```") + m.finish()
@@ -576,6 +582,7 @@ public class MarkdownHighlightTest {
 
     @TestCase
     public func testCodeBlockStringComment(): Unit {
+        Ansi.noColor = false  // 颜色断言见上（NO_COLOR 环境变量）
         // 字符串绿 + 注释灰蓝（行注释）
         let m = MarkdownRender()
         let out = m.process("```js\n") +
@@ -589,6 +596,7 @@ public class MarkdownHighlightTest {
 
     @TestCase
     public func testCodeBlockBlockComment(): Unit {
+        Ansi.noColor = false  // 颜色断言见上（NO_COLOR 环境变量）
         // 块注释 /* */ 完整检测
         let m = MarkdownRender()
         let out = m.process("```rust\n") +
@@ -606,6 +614,7 @@ public class MarkdownHighlightTest {
 public class ThinkingMdTest {
     @TestCase
     public func testThinkingInlineMarkdown(): Unit {
+        Ansi.noColor = false  // 颜色断言见上（NO_COLOR 环境变量）
         let out = OutputView()
         out.setThinking("检查 **game.js** 与 `src/game.js` 配置", true)
         // 展开态渲染：灰斜体 + 行内高亮
@@ -931,7 +940,10 @@ public class InputBoxHistoryTest {
         canvas.begin(4, 80, true)
         ib.render(canvas, 0, 80, 5)
         let flushed = canvas.flush()
-        // CUP: ESC[row;colH——光标行 1（首行）、列 = 提示符 5 + marker 21 = 26
+        // CUP: ESC[row;colH（**1-based**）——光标行 1（首行），
+        // 列 = 提示符显示宽(5) + marker "[Paste #1, +5 lines]"(20 码点) + 1 = 26。
+        // 注：❯(U+276F) 属 wcwidth"歧义宽度"，上游 50aca35 起按 1 列计（此前 2 列）；
+        // 另修了 cursorCol 少 +1 的 bug（中文下光标落在汉字中间，见 cjterm input_prompt_test）。
         @Assert(flushed.contains(Rune(27).toString() + "[1;26H"), true)
     }
 

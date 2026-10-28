@@ -16,12 +16,12 @@
     'nav.download': '下载',
     'nav.ecosystem': '生态',
     'nav.docs': '文档',
-    'nav.cta': '下载 v1.5.3',
+    'nav.cta': '下载 v1.6.1',
 
     'hero.title': '用仓颉语言<br><span class="grad">从零实现的终端编码代理</span>',
     'hero.lede':
       '说一句话，Agent 自己规划、调工具、读结果、迭代到完成；全过程在 TUI 里实时可见，也能用内置 Web 界面远程驱动。<strong>单二进制零依赖</strong> —— 一个文件就是一个 agent。',
-    'hero.download': '下载 v1.5.3',
+    'hero.download': '下载 v1.6.1',
     'hero.start': '30 秒上手',
     'hero.repo': 'AtomGit 仓库 →',
 
@@ -53,13 +53,17 @@
       '从工具调用提取资源访问 <code>(path, isWrite)</code> 构建依赖图，拓扑分组，同组 <code>spawn</code> 并发、组间串行；<code>parallelSavedMs</code> 实时量化省下的时间。',
     'c4.h': 'TUI 差分渲染',
     'c4.p':
-      '自实现 termios + ANSI 差分刷新（纯 libc FFI，不依赖第三方库）：Markdown 渲染、<code>/</code> 命令补全、10 套主题、危险操作审批弹窗。',
+      '自实现 termios + ANSI 差分刷新（纯 libc FFI，不依赖第三方库）：Markdown 渲染、<code>/</code> 命令补全、10 套主题、Tasks / Agents 双面板左右分栏、危险操作审批队列化。',
     'c5.h': 'Web 远程驱动',
     'c5.p':
       '内置 HTTP Server + WebSocket 流式对话 + REST API + 前端 SPA，浏览器里远程驱动同一个 Agent，token 鉴权与启动安全审计默认开启。',
     'c6.h': '插件信任链',
     'c6.p':
       '技能即 Markdown，插件可携带工具；SHA256 校验和 + SM2 国密签名（仓颉 <code>stdx.crypto</code> 原生），从语言层到供应链层双保险。',
+
+    'c7.h': '并行子代理，可控可观测',
+    'c7.p':
+      '<code>task</code> 工具并发派发 <code>explore</code>/<code>worker</code> 子代理，右下 Agents 面板实时呈现轮次 / token / 当前工具；并发数、token 预算、超时四键管控，错峰起跑 + 限流退避重试 —— 5 路并发实测扛得住真实服务商限流。',
 
     'shots.h': '界面',
     'shots.p': '终端里的全屏 TUI，和浏览器里的实时流。',

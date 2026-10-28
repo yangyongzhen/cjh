@@ -393,6 +393,27 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
                 // 无参数：弹出交互式主题选择 picker（上下键选择，Enter 确认）
                 tui.showThemePicker(Theme.list(), Theme.current())
             }
+        case "/parallel" =>
+            // S5 /parallel on|off|auto：子代理路由开关（off = task 派发物理关闭）。
+            // 无参数：显示当前模式与用法。运行时切换，不回写 settings（重启回到 subagent_mode）
+            let parts = args.split(" ", -1)
+            if (parts.size > 1 && parts[1].size > 0) {
+                let m = parts[1]
+                if (m == "on" || m == "off" || m == "auto") {
+                    SubagentRouting.set(m)
+                    let desc: String = if (m == "off") { "子代理派发已关闭（模型将直接处理任务）" }
+                        else if (m == "on") { "子代理派发已开启" }
+                        else { "子代理路由回到判定表自主模式" }
+                    tui.appendOutput(Ansi.fg(Ansi.THEME_OK) + "[parallel: ${m}] ${desc}" + Ansi.reset())
+                    tui.markDirty()
+                } else {
+                    tui.appendOutput(Ansi.fg(Ansi.THEME_ERR) + "用法: /parallel on|off|auto（当前: ${SubagentRouting.current()}）" + Ansi.reset())
+                    tui.markDirty()
+                }
+            } else {
+                tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "用法: /parallel on|off|auto（当前: ${SubagentRouting.current()}）" + Ansi.reset())
+                tui.markDirty()
+            }
         case _ =>
             tui.appendOutput(Ansi.fg(Ansi.THEME_ERR) + "未知命令: ${cmd}（输入 /help 查看）" + Ansi.reset())
     }

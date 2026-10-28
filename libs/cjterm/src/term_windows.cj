@@ -45,8 +45,6 @@ private let ENABLE_PROCESSED_INPUT: UInt32 = 0x1
 private let ENABLE_LINE_INPUT: UInt32 = 0x2
 @When[os == "Windows"]
 private let ENABLE_ECHO_INPUT: UInt32 = 0x4
-@When[os == "Windows"]
-private let ENABLE_WINDOW_INPUT: UInt32 = 0x8
 // 输出 VT 模式（Windows 10 1809+）
 @When[os == "Windows"]
 private let ENABLE_VIRTUAL_TERMINAL_PROCESSING: UInt32 = 0x4
@@ -57,14 +55,6 @@ private let RAW_CLEAR_INPUT: UInt32 = ENABLE_PROCESSED_INPUT | ENABLE_LINE_INPUT
 // ===== 输入事件类型 =====
 @When[os == "Windows"]
 private let KEY_EVENT: UInt16 = 0x1
-@When[os == "Windows"]
-private let MOUSE_EVENT: UInt16 = 0x2
-@When[os == "Windows"]
-private let WINDOW_BUFFER_SIZE_EVENT: UInt16 = 0x4
-@When[os == "Windows"]
-private let MENU_EVENT: UInt16 = 0x8
-@When[os == "Windows"]
-private let FOCUS_EVENT: UInt16 = 0x10
 
 // ===== 虚拟键码 =====
 @When[os == "Windows"]
@@ -110,8 +100,6 @@ private let OPEN_EXISTING: UInt32 = 3
 // ===== WaitForSingleObject =====
 @When[os == "Windows"]
 private let WAIT_OBJECT_0: UInt32 = 0
-@When[os == "Windows"]
-private let WAIT_TIMEOUT: UInt32 = 0x102
 
 // ===== Win32 API（kernel32.dll，Windows 系统自带）=====
 @When[os == "Windows"]

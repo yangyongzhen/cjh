@@ -55,6 +55,10 @@ public class TuiCanvas {
     // 列偏移：内容区左侧预留列数（Box 内嵌子组件时设置，子组件 setLine/setCursor
     // 自动左移 offsetCol 列，避免覆盖左/右边框）
     private var offsetCol: Int64 = 0
+    // overlay 模式（左右分栏面板）：offsetCol>0 时 setLine 改为**按列拼接**——
+    // 只替换本组件占用的列区间，保留同行其他列（Tasks 左 / Agents 右同屏
+    // 共行带，整行替换会互相抹掉对方）。默认 false（整行替换，原语义）
+    private var overlayMode: Bool = false
     // 上一帧尺寸（自感知 resize：外部 sizeChanged 标志可能被主循环先行消耗）
     private var lastRows: Int64 = -1
     private var lastCols: Int64 = -1
@@ -94,6 +98,15 @@ public class TuiCanvas {
         return this.offsetCol
     }
 
+    /**
+     * overlay 模式开关（左右分栏面板同屏共用行带时开启）：
+     * 开启期间 offsetCol>0 的 setLine 按列拼接（只写本组件列区间），
+     * 关闭后恢复整行替换原语义。渲染完务必恢复 false。
+     */
+    public func setOverlay(v: Bool): Unit {
+        this.overlayMode = v
+    }
+
     public func getCols(): Int64 { return this.cols }
     public func getRows(): Int64 { return this.rows }
 
@@ -104,6 +117,10 @@ public class TuiCanvas {
         if (row < 0 || row >= this.rows) {
             return
         }
+        if (this.overlayMode && this.offsetCol > 0) {
+            this.spliceCols(row, this.offsetCol, text)
+            return
+        }
         var line = text
         if (this.offsetCol > 0) {
             line = this.fillSpaces(this.offsetCol) + line
@@ -112,11 +129,86 @@ public class TuiCanvas {
     }
 
     /**
+     * 按列拼接（overlay 模式内部实现）：把 text 写入 row 的 [startCol, startCol+宽)
+     * 列区间，保留该区间之外的既有内容。ANSI 感知——可见字符按显示宽度计
+     * （CJK/emoji 占 2 列），转义序列随其所属段保留/丢弃。
+     */
+    private func spliceCols(row: Int64, startCol: Int64, text: String): Unit {
+        let existing = this.lines[row]
+        let runes = existing.toRuneArray()
+        var sb = StringBuilder()
+        // 1) 前缀：复制 existing 可见宽 [0, startCol) 的内容（不足补空格）；
+        //    ANSI 序列整体跟随复制
+        var vis: Int64 = 0
+        var i: Int64 = 0
+        var inEsc = false
+        while (i < runes.size) {
+            let ch = runes[i].toString()
+            if (inEsc) {
+                sb.append(ch)
+                if ((ch >= "a" && ch <= "z") || (ch >= "A" && ch <= "Z")) { inEsc = false }
+                i += 1
+                continue
+            }
+            if (ch == "\u{1b}") {
+                inEsc = true
+                sb.append(ch)
+                i += 1
+                continue
+            }
+            if (vis >= startCol) { break }
+            sb.append(ch)
+            vis += TuiCanvas.displayWidth(ch)
+            i += 1
+        }
+        while (vis < startCol) {
+            sb.append(" ")
+            vis += 1
+        }
+        // 2) 插入 text（含自身 ANSI 与右对齐填充）
+        sb.append(text)
+        // 3) 跳过 existing 被覆盖区 [startCol, startCol+textW)，其后内容原样保留
+        let endCol = startCol + TuiCanvas.displayWidth(text)
+        var skipVis = startCol
+        inEsc = false
+        while (i < runes.size) {
+            let ch = runes[i].toString()
+            if (inEsc) {
+                i += 1
+                if ((ch >= "a" && ch <= "z") || (ch >= "A" && ch <= "Z")) { inEsc = false }
+                continue
+            }
+            if (ch == "\u{1b}") {
+                inEsc = true
+                i += 1
+                continue
+            }
+            if (skipVis >= endCol) { break }
+            skipVis += TuiCanvas.displayWidth(ch)
+            i += 1
+        }
+        while (i < runes.size) {
+            sb.append(runes[i].toString())
+            i += 1
+        }
+        this.lines[row] = this.truncate(sb.toString(), this.cols)
+    }
+
+    /**
      * 设置硬件光标位置（1-based 行列，默认 (1,1)；自动叠加列偏移）
      */
     public func setCursor(row: Int64, col: Int64): Unit {
         this.cursorRow = row
         this.cursorCol = col + this.offsetCol
+    }
+
+    /**
+     * 当前硬件光标位置（1-based；观测/单测用）
+     *
+     * 单测直接取这个值，比解析 flush() 里的 ESC[row;colH 稳（差分渲染会混入多行 CSP）。
+     */
+    public func cursorPosition(): (Int64, Int64) {
+        return (this.cursorRow, this.cursorCol)
     }
 
     /**
@@ -157,7 +249,10 @@ public class TuiCanvas {
      *         那会把多字节字符按 Latin-1 误解码（"对话"→"å¯¹"乱码）。
      */
     public func truncate(text: String, cols: Int64): String {
-        let maxVisible = cols - 1
+        // 允许恰好 cols 列可见字符（修实测"右对齐面板右边框被截"）：此前 maxVisible =
+        // cols-1 的保守留白会把右对齐面板的最后一位（右边框 ╮/│）截掉。光标位置由
+        // moveTo 显式定位、不依赖自然换行，写满最后一列是安全的
+        let maxVisible = cols
         var sb = StringBuilder()
         var visible: Int64 = 0
         var i: Int64 = 0
@@ -254,7 +349,9 @@ public class TuiCanvas {
         if (cp >= 0xFFE0 && cp <= 0xFFE6) { return true }    // 全角符号
         if (cp >= 0x20000 && cp <= 0x2FFFD) { return true }  // CJK 扩展 B+
         if (cp >= 0x1F000 && cp <= 0x1FAFF) { return true }  // emoji（📁 等，终端占 2 列）
-        if (cp >= 0x2600 && cp <= 0x27BF) { return true }    // 杂项符号/装饰（★ ☀ ♥ ▶ ● ⬢ 等，部分终端占 2 列）
+        // 杂项符号（✓ ✗ ☐ ⚠ ★ ● 等，U+2600-27BF）按 **1 列**计：这是 wcwidth 的
+        // "歧义宽度"区段，主流终端默认窄渲染。此前按 2 列算——用户终端实锤窄渲染，
+        // 面板内容行（含 ✗/✓）右边框相对顶/底边系统性左移 1 列（"中间区域不对齐"）
         return false
     }
 

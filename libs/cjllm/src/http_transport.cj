@@ -28,7 +28,6 @@ import std.time.*
 import std.collection.*
 import std.convert.Parsable
 import stdx.net.tls.*
-import stdx.crypto.x509.X509Certificate
 import cjutil.*
 
 /**
@@ -132,10 +131,8 @@ public class HttpStreamClient {
                         match (this.tlsConfig) {
                             case Some(c) => cfg = c
                             case None =>
-                                var c = TlsClientConfig()
-                                c.verifyMode = CertificateVerifyMode.CustomCA(X509Certificate.systemRootCerts())
-                                c.domain = Some(this.host)
-                                cfg = c
+                                // Cangjie 1.2.0 迁移：构造细节统一收进 cjutil.buildTlsClientConfig
+                                cfg = buildTlsClientConfig(this.host)
                         }
                         let tls = TlsSocket.client(sock, session: None, clientConfig: cfg)
                         // 握手：宽容预算（建连不是流式，慢代理正常）；完成后切短读轮询
@@ -685,4 +682,29 @@ public func defaultIdleTimeout(): Duration {
         // 非法配置用默认
     }
     return Duration.second * secs
+}
+
+/**
+ * 可中断的退避等待（限流重试用）
+ *
+ * 按 200ms 切片轮询 isCancelled，中断/墙钟超时最长 200ms 内生效——
+ * 直接 sleep(2/5/10s) 会让 Ctrl+C 或子代理超时在退避期间完全无响应
+ * （实测：限流窗口按分钟计时，用户以为程序死了）。
+ *
+ * @param ms 总退避毫秒数
+ * @param isCancelled 中断判定（provider 的 cancelChecker 同源）
+ * @return false = 等待期间被取消（调用方应按中断路径收场，不要继续重试）
+ */
+internal func backoffWait(ms: Int64, isCancelled: () -> Bool): Bool {
+    var waited: Int64 = 0
+    while (waited < ms) {
+        if (isCancelled()) {
+            return false
+        }
+        let rest: Int64 = ms - waited
+        let slice: Int64 = if (rest < 200) { rest } else { 200 }
+        sleep(Duration.millisecond * slice)
+        waited += slice
+    }
+    return !isCancelled()
 }

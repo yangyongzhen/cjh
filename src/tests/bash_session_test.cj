@@ -6,7 +6,11 @@ import cjh.tools.*
 /**
  * BashSession 持久会话测试（P1-3）：
  * 跨命令保留 cwd/env、输出、退出码、超时重建。
+ *
+ * @When[os != "Windows"]：契约建立在 /bin/bash 持久子进程 + POSIX 信号语义上；
+ * Windows 上 BashTool 回落 PowerShell，cwd/env 保持、超时杀进程、stderr 采集全不同。
  */
+@When[os != "Windows"]
 @Test
 public class BashSessionTest {
 
@@ -88,10 +92,12 @@ public class BashSessionTest {
         try {
             @Assert(s.testReapedCount(), 0)
             // 命令挂死 → 超时 → killSession（terminate + wait 回收）
-            // 用 sleep 2（非 sleep 10）：killSession 只杀 bash 本体，其孙进程
-            // sleep 会被 re-parent 到测试进程并持有 stdout 管道直到自然退出，
-            // sleep 越短读线程 EOF 越快，用例越短（回收 bash 本身是瞬时的）
-            let (c1, o1) = s.execute("sleep 2", 1)
+            // 用 sleep 15 / timeout 3（曾为 sleep 2 / 1）：1.2.0 全量跑实测整机级
+            // 停顿（探针实锤单次 50ms sleep 膨胀 ~4.5s，疑 swap/GC STW），1s 余量
+            // 会整段跳过超时窗口（c1==0 假通过）。余量 12s 可吸收秒级停顿；断言
+            // 语义不变——超时触发 + killSession 回收照旧验证。killSession 只杀
+            // bash 本体，孙进程 sleep 被 re-parent 持有管道直到自然退出
+            let (c1, o1) = s.execute("sleep 15", 3)
             @Assert(c1, -1)
             @Assert(o1.contains("超时"), true)
             @Assert(s.testReapedCount(), 1)  // 超时会话进程已被 wait 回收，非僵尸

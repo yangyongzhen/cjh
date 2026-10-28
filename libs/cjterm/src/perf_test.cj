@@ -1,7 +1,6 @@
 package cjterm
 
 import std.fs.*
-import std.process.*
 
 /**
  * 渲染性能埋点（perf.cj）测试：
@@ -10,7 +9,8 @@ import std.process.*
  * - 落盘节奏：计数到点（每 60 次渲染）或间隔到点（2s）才写一行，绝不逐帧 I/O
  * - 统计行为纯整数（renders=/folds=/avgFoldUs=/maxFoldUs=/lastFoldUs=/lastLines=/lastActiveRunes=）
  *
- * 临时目录：/tmp/cjh_ut_perf_*（用例内自建自清；仓颉无递归删除 API → bash rm -rf）
+ * 临时目录：testTmpPath("perf_*")（POSIX=/tmp/cjh_ut_perf_*，Windows=%TEMP%\cjh_ut_perf_*；
+ * 清理改用 std.fs.removeIfExists 递归删除，不再 shell 出去调 bash rm -rf）
  */
 
 /** 可编程微秒时间源（用类承载可变状态，避免 lambda 捕获可变变量的限制） */
@@ -28,17 +28,7 @@ class FakeMicros <: MicrosSource {
 public class PerfTraceTest {
 
     private func freshDir(name: String): String {
-        let dir = "/tmp/cjh_ut_perf_" + name
-        try {
-            var args = Array<String>(2, repeat: "")
-            args[0] = "-c"
-            args[1] = "rm -rf '" + dir + "'"
-            let _ = executeWithOutput("/bin/bash", args)
-        } catch (e: Exception) {
-            // 清理失败不影响用例
-        }
-        Directory.create(dir, recursive: true)
-        return dir
+        return freshTestDir(testTmpPath("perf_" + name))
     }
 
     /** 默认关闭：所有入口零副作用（不计数、不读时钟、无落点） */

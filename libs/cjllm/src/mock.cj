@@ -3,6 +3,7 @@ package cjllm
 import std.collection.*
 import std.convert.Parsable
 import stdx.encoding.json.*
+import cjutil.*
 
 /**
  * Mock LLM Provider：用于离线验证 agent 工具调用链（无 API Key 环境）
@@ -26,7 +27,7 @@ public class MockProvider <: LlmProvider {
         this.scriptedPath = scriptedPath
     }
 
-    public func chatStream(_: ArrayList<ChatMessage>, _: ArrayList<ToolSpec>,
+    public func chatStream(_: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
         onDelta: (String) -> Unit, onReasoning: (String) -> Unit,
         onTokenEstimate: (Int64) -> Unit, _: () -> Bool): ModelResponse {
         // 模拟推理模型的思考流（reasoning_content 增量，分帧回调）
@@ -81,6 +82,47 @@ public class MockProvider <: LlmProvider {
         // 的路径，验证 stdx 打到 fd 1 的噪声不会进输入栏。默认 4 步链不变，
         // 不影响 runMockVerify 的"恰好 4 次调用"断言（它不设置该变量）。
         let webFetchUrl: String = mockGetenv("CJH_MOCK_WEB_URL") ?? ""
+        // 环境变量门控（additive，默认关闭）：CJH_MOCK_TASKS=1 时父代理**第 1 轮**改发
+        // 两个 task 调用（V2d 同批并发）。父判别：tools 里含 task（子 explore 的
+        // registry 已剥离 task，即使环境变量继承到子代理也不会再派）；callCount==1
+        // 限定只派一次——否则父每轮都再派，无限派生永远到不了最终答复。
+        if ((mockGetenv("CJH_MOCK_TASKS") ?? "").size > 0 && this.callCount == 1) {
+            var parentHasTask = false
+            for (t in tools) {
+                if (t.name == "task") {
+                    parentHasTask = true
+                    break
+                }
+            }
+            if (parentHasTask) {
+                var argsT1 = JsonObject()
+                argsT1.put("description", JsonString("并发审批一号"))
+                argsT1.put("prompt", JsonString("查一下"))
+                argsT1.put("subagent_type", JsonString("explore"))
+                var argsT2 = JsonObject()
+                argsT2.put("description", JsonString("并发审批二号"))
+                argsT2.put("prompt", JsonString("查一下"))
+                argsT2.put("subagent_type", JsonString("explore"))
+                // 双面板同屏回归：同批先写 3 条 todo 再派 task——Tasks（左）与
+                // Agents（右）落在同一行带，验证 overlay 按列拼接不互踩
+                var argsTd1 = JsonObject()
+                argsTd1.put("action", JsonString("add"))
+                argsTd1.put("content", JsonString("汇总1：项目结构和主要模块"))
+                var argsTd2 = JsonObject()
+                argsTd2.put("action", JsonString("add"))
+                argsTd2.put("content", JsonString("汇总2：配置文件的组成"))
+                var argsTd3 = JsonObject()
+                argsTd3.put("action", JsonString("add"))
+                argsTd3.put("content", JsonString("汇总3：测试的组织方式"))
+                var callsT = ArrayList<ToolCall>()
+                callsT.add(ToolCall("call_1td1", "todo_write", argsTd1))
+                callsT.add(ToolCall("call_1td2", "todo_write", argsTd2))
+                callsT.add(ToolCall("call_1td3", "todo_write", argsTd3))
+                callsT.add(ToolCall("call_1t1", "task", argsT1))
+                callsT.add(ToolCall("call_1t2", "task", argsT2))
+                return ModelResponse("先写任务列表，再并发派两个子代理。", callsT)
+            }
+        }
         match (this.callCount) {
             case 1 =>
                 // 工具调用 1：并发 2 个 read-only 工具（V2d 并发执行引擎验证）
@@ -102,6 +144,7 @@ public class MockProvider <: LlmProvider {
                     callsB.add(ToolCall("call_2", "bash", argsB))
                     return ModelResponse("再用 bash 执行一下。", callsB)
                 }
+                // CJH_MOCK_TASKS 的 task 派发在 match 之前统一处理（父判别见上）。
                 if (webFetchUrl.size > 0) {
                     // 端到端复现台：真实发一次 web_fetch（HTTP 层全真实）
                     var argsW = JsonObject()
@@ -118,9 +161,9 @@ public class MockProvider <: LlmProvider {
                 calls.add(ToolCall("call_2", "grep", args2))
                 return ModelResponse("再用 grep 搜索。", calls)
             case 3 =>
-                // 工具调用 3：列出目录
+                // 工具调用 3：列出目录（跨平台：POSIX /tmp，Windows %TEMP%）
                 var args3 = JsonObject()
-                args3.put("path", JsonString("/tmp"))
+                args3.put("path", JsonString(tmpDir()))
                 var calls = ArrayList<ToolCall>()
                 calls.add(ToolCall("call_3", "list_dir", args3))
                 return ModelResponse("再看看目录。", calls)

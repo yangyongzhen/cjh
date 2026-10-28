@@ -84,7 +84,7 @@ public class ModelProviderFactory <: ProviderFactory {
      */
     public func create(target: ModelTarget): LlmProvider {
         if ((readEnv("CJH_MOCK") ?? "") == "1") {
-            return MockProvider("/tmp/cjh_verify.txt")
+            return MockProvider(tmpPath("cjh_verify.txt"))
         }
         let providerName = readEnv("CJH_PROVIDER") ?? ""
         let protocol = if (providerName.size > 0) { providerName } else { this.cfg.providerProtocol }
@@ -265,7 +265,7 @@ func runCli(sessionId: String): Int64 {
     try {
         let provider: LlmProvider
         if ((readEnv("CJH_MOCK") ?? "") == "1") {
-            provider = MockProvider("/tmp/cjh_verify.txt")
+            provider = MockProvider(tmpPath("cjh_verify.txt"))
         } else {
             provider = makeProvider(cjhCfg)
         }
@@ -274,6 +274,12 @@ func runCli(sessionId: String): Int64 {
             case Some(sp) => agent.setSummaryProvider(sp)
             case None => ()
         }
+        // S4：子代理调度器（面板数据源 + 边界闸门：并发/每回合/token 预算/墙钟超时）
+        let scheduler = SubagentScheduler(cjhCfg.maxSubagents, cjhCfg.maxTasksPerTurn,
+            cjhCfg.subagentTokenBudget, cjhCfg.subagentTimeoutMs)
+        agent.subagentScheduler = Some(scheduler)
+        // S5：路由模式（settings subagent_mode；运行时 /parallel 切换）
+        SubagentRouting.set(cjhCfg.subagentMode)
         agent.setPluginManager(pluginManager)
         let store = SessionStore(cjhCfg.sessionsDir)
         CliSession.id = ""
@@ -321,8 +327,10 @@ func runCli(sessionId: String): Int64 {
         }
 
         // 交互循环
+        // 图标与 TUI 同判据：conhost 字体缺 ❯ 字形时用 "> "（useFancyPromptGlyphs 见 cjterm）
+        let cliIcon = if (useFancyPromptGlyphs()) { "❯ " } else { "> " }
         while (true) {
-            print("\n❯ ", flush: true)
+            print("\n${cliIcon}", flush: true)
             let line = readLineFromStdIn()
             if (line.isNone()) {
                 break
@@ -411,7 +419,7 @@ func runJson(prompt: String, sessionId: String): Int64 {
     try {
         let provider: LlmProvider
         if ((readEnv("CJH_MOCK") ?? "") == "1") {
-            provider = MockProvider("/tmp/cjh_verify.txt")
+            provider = MockProvider(tmpPath("cjh_verify.txt"))
         } else {
             provider = makeProvider(cjhCfg)
         }
@@ -420,6 +428,12 @@ func runJson(prompt: String, sessionId: String): Int64 {
             case Some(sp) => agent.setSummaryProvider(sp)
             case None => ()
         }
+        // S4：子代理调度器（面板数据源 + 边界闸门：并发/每回合/token 预算/墙钟超时）
+        let scheduler = SubagentScheduler(cjhCfg.maxSubagents, cjhCfg.maxTasksPerTurn,
+            cjhCfg.subagentTokenBudget, cjhCfg.subagentTimeoutMs)
+        agent.subagentScheduler = Some(scheduler)
+        // S5：路由模式（settings subagent_mode；运行时 /parallel 切换）
+        SubagentRouting.set(cjhCfg.subagentMode)
         agent.setPluginManager(pluginManager)
         let store = SessionStore(cjhCfg.sessionsDir)
 
@@ -446,9 +460,10 @@ func runJson(prompt: String, sessionId: String): Int64 {
             }
         ))
 
-        // TaskTool：派发子代理执行独立任务（spawnFn 回调注入）
-        registry.register(TaskTool({ description, prompt, subagentType =>
-            spawnSubagent(provider, registry, config, description, prompt, subagentType)
+        // TaskTool：派发子代理执行独立任务（spawnFn 回调注入；父 agent 用于简报上下文块）
+        // S2：子代理 provider 每次派生新建实例，避免共享单槽 transport 的 abort 串台（P0-2）
+        registry.register(TaskTool({ description, prompt, subagentType, scope =>
+            spawnSubagent(makeSubagentProvider(cjhCfg), registry, agent, config, description, prompt, subagentType, scope)
         }))
 
         // 恢复会话（--resume <id>）
@@ -534,7 +549,7 @@ func runTui(sessionId: String): Int64 {
         if (!profiling) { return }
         let elapsed = MonoTime.now() - t0
         try {
-            let f = File("/tmp/cjh_startup.log", OpenMode.Append)
+            let f = File(tmpPath("cjh_startup.log"), OpenMode.Append)
             f.write(stringToBytes("${elapsed}\t${label}\n"))
             f.close()
         } catch (e: Exception) {}
@@ -608,7 +623,7 @@ func runTui(sessionId: String): Int64 {
     try {
         let provider: LlmProvider
         if ((readEnv("CJH_MOCK") ?? "") == "1") {
-            provider = MockProvider("/tmp/cjh_verify.txt")
+            provider = MockProvider(tmpPath("cjh_verify.txt"))
         } else {
             provider = makeProvider(cjhCfg)
         }
@@ -618,6 +633,12 @@ func runTui(sessionId: String): Int64 {
             case Some(sp) => agent.setSummaryProvider(sp)
             case None => ()
         }
+        // S4：子代理调度器（面板数据源 + 边界闸门：并发/每回合/token 预算/墙钟超时）
+        let scheduler = SubagentScheduler(cjhCfg.maxSubagents, cjhCfg.maxTasksPerTurn,
+            cjhCfg.subagentTokenBudget, cjhCfg.subagentTimeoutMs)
+        agent.subagentScheduler = Some(scheduler)
+        // S5：路由模式（settings subagent_mode；运行时 /parallel 切换）
+        SubagentRouting.set(cjhCfg.subagentMode)
         agent.setPluginManager(pluginManager)
 
         // TodoWriteTool：LLM 通过工具调用管理任务列表（回调绑定到 agent）
@@ -642,15 +663,27 @@ func runTui(sessionId: String): Int64 {
                 return result
             }
         ))
-        // TaskTool：派发子代理执行独立任务（spawnFn 回调注入）
-        registry.register(TaskTool({ description, prompt, subagentType =>
-            spawnSubagent(provider, registry, config, description, prompt, subagentType)
+        // TaskTool：派发子代理执行独立任务（spawnFn 回调注入；父 agent 用于简报上下文块）
+        // S2：子代理 provider 每次派生新建实例，避免共享单槽 transport 的 abort 串台（P0-2）
+        registry.register(TaskTool({ description, prompt, subagentType, scope =>
+            spawnSubagent(makeSubagentProvider(cjhCfg), registry, agent, config, description, prompt, subagentType, scope)
         }))
 
         // 线程安全的输出队列（agent 在调用线程运行，输出经队列到 TUI）
         let tui = TuiApp()
         tuiOpt = Some(tui)
         tui.setModel(cjhCfg.model)
+
+        // S3d：Agents 面板数据源（scheduler 变更 → 深拷贝快照 → TUI）+ 焦点行事件转发
+        scheduler.onChanged({ =>
+            tui.refreshAgents(scheduler.snapshot())
+        })
+        agent.onSubagentEvent = { id, _, text =>
+            tui.appendSubagentEvent(id, text)
+        }
+        // G-A：TUI 审批超时与服务端同源（subagent_timeout_ms；0=不限）——
+        // 用户离开终端时审批到点按拒绝收场，父回合不永久卡死
+        tui.approvalTimeoutMs = cjhCfg.subagentTimeoutMs
 
         // 会话：恢复历史 / 新会话
         let store = SessionStore(cjhCfg.sessionsDir)
@@ -755,7 +788,16 @@ func runTui(sessionId: String): Int64 {
         agent.onApproval = { name, args, reason =>
             TuiBridge.ensureNewline()
             TuiBridge.output(Ansi.fg(Ansi.THEME_WARN) + "⚠ 需人工确认: ${name} " + Ansi.reset() + Ansi.fg(Ansi.THEME_MUTED) + formatToolArgs(name, args) + Ansi.reset())
-            TuiBridge.requestApproval(reason)
+            // G-B：审批项带 agent 身份——子代理审批的 reason 以 "[task:label] " 开头，
+            // 提取 label 存入审批队列（父自身审批无前缀，label 为空）
+            var label = ""
+            if (reason.startsWith("[task:")) {
+                let segs = reason.split("]", -1)
+                if (segs.size > 1) {
+                    label = segs[0].replace("[task:", "")
+                }
+            }
+            TuiBridge.requestApproval(reason, label)
         }
         agent.onAssistantText = { text =>
             // 回复内容左侧缩进 1 个空格：不贴左边缘，视觉更舒适
@@ -801,8 +843,28 @@ func runTui(sessionId: String): Int64 {
             // tokens 走 cjterm.fmtTokenCount（与实时状态行/思考折叠行同格式：1.2k）
             let tokTotal = s.totalTokens()
             // 格式：─── ✓ 2 rounds · 3 tools · 42.6s · 1.5k tokens · 99% cached ───
+            // S7：有子代理时追加全树归账 N agents (x✓ y✗)，低效派生 ⚠N（>0 才显示）
+            var stat = "✓ ${s.rounds} ${roundWord} · ${s.toolCalls} ${toolWord} · ${secInt}.${secTenths}s · ${fmtTokenCount(tokTotal)} tokens · ${rate}% cached"
+            var okCount: Int64 = 0
+            var failCount: Int64 = 0
+            for (node in scheduler.snapshot()) {
+                match (node.state) {
+                    case AgentNodeState.Ok => okCount += 1
+                    case AgentNodeState.Failed => failCount += 1
+                    case AgentNodeState.Timeout => failCount += 1
+                    case AgentNodeState.Cancelled => failCount += 1
+                    case AgentNodeState.BudgetExceeded => failCount += 1
+                    case _ => ()
+                }
+            }
+            if (okCount + failCount > 0) {
+                stat = stat + " · ${okCount + failCount} agents (${okCount}✓ ${failCount}✗)"
+                let wasted = scheduler.wastedCount()
+                if (wasted > 0) {
+                    stat = stat + " · ⚠${wasted} 低效派生"
+                }
+            }
             // 整行统一灰色（THEME_MUTED），居中：左右横线等分
-            let stat = "✓ ${s.rounds} ${roundWord} · ${s.toolCalls} ${toolWord} · ${secInt}.${secTenths}s · ${fmtTokenCount(tokTotal)} tokens · ${rate}% cached"
             let (_, cols) = TermSize.get()
             let statW = TuiCanvas.displayWidth(stat)
             // 内容总宽 = 左横线 + 1空格 + stat + 1空格 + 右横线
@@ -882,6 +944,14 @@ func runTui(sessionId: String): Int64 {
                     if (StreamState.active) {
                         tui.appendOutput(Ansi.reset())
                         StreamState.active = false
+                    }
+                    // 修实测"主窗口没下文"：LLM 调用失败时 runLoop 把错误吞进 summary
+                    //（reply="[LLM 调用异常: ...]"、errorCode="run_failed"），TUI 从不渲染
+                    // → 用户只看到 [saved ...]，回合无声结束。失败必须可见
+                    if (summary.errorCode.size > 0) {
+                        TuiBridge.output(Ansi.fg(Ansi.THEME_ERR) +
+                            "⚠ 本回合执行失败（${summary.errorCode}）：${summary.errorMessage}" +
+                            Ansi.reset())
                     }
                     // 保存会话（含首轮时创建 ID）
                     if (SessionState.current.size == 0) {
@@ -1048,38 +1118,324 @@ func listSessions(): Int64 {
 }
 
 /**
- * 派发子代理执行独立任务
+ * 构造子代理 registry 视图（方案 §6 / 决策 D2）
  *
- * 创建一个临时 Agent，用相同 provider 和 tools，跑一轮独立对话，返回结果。
- * 子代理有独立的 messages 历史，不影响主对话。
- * 子代理 max_iterations 限制为 5（避免失控）。
+ * - G3 深度 1：剥离 task（子代理不得再派子代理，防 fork bomb）
+ * - G4 todo 隔离：剥离 todo_write（其回调绑定父 agent，子代理调用会写主会话任务面板）
+ * - G2 explore 结构化只读：仅保留 isReadOnly()==true 的工具，写工具物理不可达，
+ *   不依赖 system prompt 自觉（bash 本身 isReadOnly()==false，自动被排除）
+ * - worker：全量工具（仍受继承的 capability 三域闸门约束）
+ *
+ * 工具实例与父共享（工具层每调用独立状态，无静态踩踏，见 GlobCallState 等）。
+ */
+func buildSubagentRegistry(parent: ToolRegistry, subagentType: String): ToolRegistry {
+    let reg = ToolRegistry()
+    for (spec in parent.specs()) {
+        if (spec.name == "task" || spec.name == "todo_write") {
+            continue
+        }
+        if (subagentType == "explore" && !parent.isReadOnly(spec.name)) {
+            continue
+        }
+        match (parent.getTool(spec.name)) {
+            case Some(t) => reg.register(t)
+            case None => ()
+        }
+    }
+    return reg
+}
+
+/**
+ * 构造子代理 AgentConfig（方案 §6）
+ *
+ * - G1 capability 继承：直接复用父 Capability 实例——三域白名单/审批链与父一致，
+ *   保证"子权限 ⊆ 父权限"（此前两参构造默认宽松，父开严格审批子代理却畅通无阻）
+ * - 子代理短生命周期（maxIterations=5）：关闭 compaction（条数/token 阈值均 0），
+ *   避免后台摘要线程与 5 轮快跑竞争
+ * - G6 落盘隔离：spillDir 继承，sessionId 追加 /sub-<type> 段——落盘路径
+ *   spillDir/<sid>/sub-<type>/<toolCallId>.txt（writeSpill 递归建目录，天然生效）
+ */
+func buildSubagentConfig(parent: AgentConfig, subagentType: String): AgentConfig {
+    let subSession = parent.sessionId + "/sub-" + subagentType
+    return AgentConfig(buildSubagentPrompt(subagentType), 5, parent.capability,
+        0, 0, 6, parent.toolResultMaxChars, parent.spillDir, subSession)
+}
+
+/**
+ * S2：子代理 provider 工厂——每次派生新建实例。
+ * OpenAiProvider.currentTransport 是单槽，父/子共享同一实例时，
+ * 任一 agent 的 abort() 会关到"最后注册"的那条连接（评审 P0-2）。
+ * mock 模式沿用同一构造路径（MockProvider 无连接，无串台问题）。
+ */
+func makeSubagentProvider(cjhCfg: CjhConfig): LlmProvider {
+    if ((readEnv("CJH_MOCK") ?? "") == "1") {
+        return MockProvider(tmpPath("cjh_verify.txt"))
+    }
+    // 复核 E：warmup=false——实例用完即弃（finally abort()），预热连接纯开销
+    return makeProvider(cjhCfg, false)
+}
+
+/**
+ * 派发子代理执行独立任务（方案定稿 §5-§7）
+ *
+ * 创建一个临时 Agent，跑一轮独立对话，返回结构化结果：
+ * - 上下文隔离：子代理有独立 messages 历史，父历史一个字节不给（比 fork-COW 更彻底）；
+ *   上下文经"简报 ↓"显式传递 = 子任务 prompt + 父会话上下文块（触碰文件表 + 摘要，决策 D1）
+ * - 权限单调：capability 继承父实例 + registry 视图收窄（explore 只读 / 深度 1 / 剥离 todo_write）
+ * - 审批传播（G5）：子代理触发审批经父通道，reason 打 [task:description] 前缀，
+ *   TUI 弹窗 / WS approval_request 的 reason 字段都会展示，协议零变更
+ * - 中断传播：登记到父 → 跑 → finally 注销；父 interrupt() 时子代理同置中断（cancelled 出口）
+ * - 结构化出口：status = ok / failed（errorCode 非空或执行异常）/ cancelled（父中断传播）
  *
  * @param provider 父 Agent 的 provider（复用连接）
- * @param registry 父 Agent 的工具注册表（复用工具）
- * @param config 父 Agent 的配置（复用 system prompt）
- * @param description 3-5 词任务标签
- * @param prompt 完整任务指令
+ * @param parentRegistry 父 Agent 的工具注册表（构造子视图的来源）
+ * @param parent 父 Agent 实例（taskBriefContext 简报来源 + 审批/中断传播目标）
+ * @param parentConfig 父 Agent 的配置（capability/spillDir/sessionId 继承）
+ * @param description 任务标签（审批 reason 前缀 [task:description] 用）
+ * @param prompt 子任务指令
  * @param subagentType "explore"（只读）或 "worker"（可写）
- * @return TaskSpawnResult 子代理执行结果
  */
-func spawnSubagent(provider: LlmProvider, registry: ToolRegistry, _: AgentConfig,
-    _: String, prompt: String, subagentType: String): TaskSpawnResult {
-    // 构造子代理 system prompt
-    let systemPrompt = buildSubagentPrompt(subagentType)
+func spawnSubagent(provider: LlmProvider, parentRegistry: ToolRegistry, parent: Agent,
+    parentConfig: AgentConfig, description: String, prompt: String, subagentType: String,
+    scope: ArrayList<String>): TaskSpawnResult {
+    // S4 边界闸门：配额满 → 结构化 budget_exceeded（文案告诉模型改策略）；
+    // 并发名额满则排队（排队中父中断 → cancelled，不丢任务不挂死）
+    var slotAcquired = false
+    match (parent.subagentScheduler) {
+        case Some(sched) =>
+            // S3 复核 #7：原子闸门（判定+计数同锁）——旧用法 allowSpawn→acquire→recordSpawn
+            // 三步分离，DAG 同批并发派发时多线程可同时通过判定，实际派生数越过 max_tasks_per_turn
+            if (!sched.tryBeginSpawn()) {
+                return TaskSpawnResult(
+                    "子代理配额已满（本回合派生上限或 token 预算用尽）。请直接处理本任务，勿再派发。",
+                    0, 0, 0, "budget_exceeded")
+            }
+            if (!sched.acquire({ => parent.isInterrupted() })) {
+                sched.undoSpawn()  // 名额没拿到：回退计数，不白占回合配额
+                return TaskSpawnResult("子代理排队等待并发名额时被中断", 0, 0, 0, "cancelled")
+            }
+            slotAcquired = true
+        case None => ()
+    }
+    // D1 简报：子任务指令 + 父会话上下文块（taskBriefContext 内部限长 ~1500 字符）
+    let brief = prompt + "\n\n" + parent.taskBriefContext()
 
-    // 创建子 Agent：复用父 Agent 的 provider 和 tools，max_iterations 限制为 5
-    let subConfig = AgentConfig(systemPrompt, 5)
-    let subAgent = Agent(provider, registry, subConfig)
+    let subRegistry = buildSubagentRegistry(parentRegistry, subagentType)
+    let subConfig = buildSubagentConfig(parentConfig, subagentType)
+    // S6：task scope → 子代理写域（AND 收窄；explore 只读不受影响）
+    subConfig.writeScope = scope
+    let subAgent = Agent(provider, subRegistry, subConfig)
 
-    // 子代理不需要 TUI 回调，默认空回调即可
-    // 运行子代理
-    let summary = subAgent.run(prompt)
+    // G5 审批传播：子审批经父通道，reason 加前缀（工具名/参数原样透传，客户端无需改版）
+    // G-B：审批等待期间面板"当前工具"列显示 等待审批（审批返回后恢复工具名）
+    let parentApproval = parent.onApproval
+    subAgent.onApproval = { toolName, args, reason =>
+        match (parent.subagentScheduler) {
+            case Some(s) => s.markTool(subAgent.agentId, "等待审批")
+            case None => ()
+        }
+        let approved = parentApproval(toolName, args, "[task:${description}] ${reason}")
+        match (parent.subagentScheduler) {
+            case Some(s) => s.markTool(subAgent.agentId, toolName)
+            case None => ()
+        }
+        approved
+    }
 
-    // 提取子代理的最终回复文本
-    let resultText = extractSubagentResult(subAgent)
+    // S3b 调度器接线：节点登记 + 当前工具转发 + 行事件上抛（焦点转发由 UI 决定去留）
+    match (parent.subagentScheduler) {
+        case Some(sched) =>
+            let node = AgentNode(subAgent.agentId, parent.agentId, description, subagentType)
+            node.state = AgentNodeState.Running
+            sched.register(node)
+            subAgent.onToolStart = { name, _ =>
+                sched.markTool(subAgent.agentId, name)
+                parent.onSubagentEvent(subAgent.agentId, "tool_start", "▶ ${name}")
+            }
+            subAgent.onToolResult = { name, _ =>
+                parent.onSubagentEvent(subAgent.agentId, "tool_result", "↳ ${name}")
+            }
+            // 轮次/用量刷新（修实测卡死）：挂 onRoundTick——每轮一次、provider 无关。
+            // 不能挂 onTokenEstimate：anthropic 每 SSE chunk 回调一次，长流式下每秒成百次
+            // 锁+快照拷贝+全帧置脏，主循环被淹没（界面静止、输入无响应——用户实测复现）
+            subAgent.onRoundTick = { rounds, p, c =>
+                sched.markRoundUsage(subAgent.agentId, rounds, p, c)
+            }
+        case None => ()
+    }
 
-    return TaskSpawnResult(resultText, summary.rounds,
-        summary.promptTokens, summary.completionTokens)
+    // 终态回写所需（finally 统一落齐；异常路径 Failed + 零归账）
+    var finState = AgentNodeState.Failed
+    var finIterations: Int64 = 0
+    var finPrompt: Int64 = 0
+    var finCompletion: Int64 = 0
+
+    // 中断传播：登记 → 跑 → finally 注销（异常路径也注销，防登记表泄漏）
+    parent.registerChild(subAgent)
+    // S4：墙钟超时（0=不限；来自 scheduler 配置）
+    let timeoutMs: Int64 = match (parent.subagentScheduler) {
+        case Some(s) => s.timeoutMs
+        case None => 0
+    }
+    // 错峰派发：并发起跑按 staggerMs 间隔错开，摊平 provider 请求洪峰
+    //（修实测"5 路并发派发撞限流全灭"；顺序派发时自动等 0，无额外开销）
+    match (parent.subagentScheduler) {
+        case Some(s) => s.staggerGate()
+        case None => ()
+    }
+    try {
+        let summary = runSubagentWithTimeout(subAgent, brief, timeoutMs)
+        var status = "ok"
+        finState = AgentNodeState.Ok
+        if (summary.errorCode.size > 0) {
+            status = "failed"
+            finState = AgentNodeState.Failed
+        }
+        // 中断出口：runLoop 中断分支固定以 "[已中断" 开头返回（含请求期/流式中断）
+        if (summary.reply.contains("[已中断")) {
+            status = "cancelled"
+            finState = AgentNodeState.Cancelled
+        }
+        finIterations = summary.rounds
+        finPrompt = summary.promptTokens
+        finCompletion = summary.completionTokens
+        var resultText = extractSubagentResult(subAgent)
+        // S5(c) 事后纠偏（比说教有效）：1 轮完成且结论稀薄（<200 字符）的派生，
+        // 明确告诉模型这次外包不划算——用真实成本反馈自我校准
+        if (summary.rounds <= 1 && resultText.toRuneArray().size < 200) {
+            resultText = resultText +
+                "\n[路由提示] 该子任务 ${summary.rounds} 轮完成、结论 ${resultText.toRuneArray().size} 字符；" +
+                "此类任务下次请直接处理（单次派生固定开销约 3–5k token：子代理 system prompt + 全量工具 schema）"
+            // S7：低效派生归账（总结条 ⚠N）
+            match (parent.subagentScheduler) {
+                case Some(sched) => sched.addWasted()
+                case None => ()
+            }
+        }
+        let result = TaskSpawnResult(resultText, summary.rounds,
+            summary.promptTokens, summary.completionTokens, status)
+        // S7：触碰文件导出（子代理自己 recordTouchedPaths 的结果）
+        result.filesTouched = subAgent.getTouchedFiles()
+        // S7：完整过程转录落盘（回父上下文的是结论，过程在盘上可回看）
+        result.transcriptPath = writeSubagentTranscript(subConfig, subAgent, description, status)
+        return result
+    } catch (e: SubagentTimeoutException) {
+        // S4：墙钟超时 → 结构化 timeout（父按失败矩阵"中断并回收引用"处理）
+        // S3 复核 #8：按方案C §6 回父文本要点"超时，已产出部分：<最后文本>"——
+        // 此前只回一句"已超时"，父拿不到子代理已经做出来的半截结论，等于白烧 token
+        finState = AgentNodeState.Timeout
+        finIterations = subAgent.currentRounds()
+        var timeoutText = "子代理超时（${timeoutMs}ms 未完成），已中断并回收引用"
+        // 读已产出文本：超时是"放弃引用"（仓颉线程无法 safe kill），子代理线程可能仍在
+        // 往 messages 里写——读失败就只回超时，不因归账把父回合再拖崩
+        var partial = ""
+        try {
+            let p = extractSubagentResult(subAgent)
+            if (p != "(子代理未产生回复文本)") {
+                partial = p
+            }
+        } catch (ex: Exception) {
+            Log.warn("超时子代理的过程文本读取失败（不影响父回合）: ${ex}")
+        }
+        if (partial.size > 0) {
+            timeoutText = timeoutText + "，已产出部分：\n" + truncateUtf8(partial, 800)
+        }
+        return TaskSpawnResult(timeoutText, finIterations, 0, 0, "timeout")
+    } catch (e: Exception) {
+        // 仓颉 spawn 内未捕获异常退出码为 0 的已知坑（方案 §10 风险4）：
+        // 子代理线程必须 try/catch 全包，失败转结构化 failed 而非静默
+        return TaskSpawnResult("子代理执行异常: ${e}", 0, 0, 0, "failed")
+    } finally {
+        // S3b：终态回写面板 + token 归账（异常路径 Failed/0）
+        match (parent.subagentScheduler) {
+            case Some(sched) =>
+                sched.finish(subAgent.agentId, finState, finIterations, finPrompt, finCompletion)
+                sched.addTokens(finPrompt + finCompletion)
+            case None => ()
+        }
+        // S4：释放并发名额（闸门通过后才持有）
+        if (slotAcquired) {
+            match (parent.subagentScheduler) {
+                case Some(sched) => sched.release()
+                case None => ()
+            }
+        }
+        // 复核 E：子代理 provider 是每次派生新建的实例，收尾必须 abort() 关掉
+        // 池化 keep-alive 连接（同时关 current+pooled），否则每次派生泄漏 1 个 fd
+        provider.abort()
+        parent.unregisterChild(subAgent)
+    }
+}
+
+/**
+ * S7：子代理完整过程转录落盘（markdown）。
+ * 路径 = spillDir/<subSessionId>/transcript-<agentId>.md；spillDir 为空（测试/未配置）跳过。
+ * 转录失败不影响主流程（返回 ""）。
+ */
+func writeSubagentTranscript(subConfig: AgentConfig, subAgent: Agent,
+    description: String, status: String): String {
+    if (subConfig.spillDir.size == 0) {
+        return ""
+    }
+    let dir = subConfig.spillDir + "/" + subConfig.sessionId
+    let path = dir + "/transcript-" + subAgent.agentId.toString() + ".md"
+    try {
+        if (!exists(dir)) {
+            Directory.create(dir, recursive: true)
+        }
+        var sb = StringBuilder()
+        sb.append("# task ${description} (${subConfig.sessionId})\n\n")
+        sb.append("- status: ${status}\n\n")
+        for (m in subAgent.getMessages()) {
+            sb.append("## ${m.role}\n\n${m.content}\n\n")
+        }
+        File.writeTo(path, sb.toString().toArray())
+        // 返回路径统一 `/` 风格：spillDir 在 Windows 是 `\`，直接拼接会得到 `C:\x/y/z.md`
+        // 这类混排路径；工具输出统一正斜杠，模型复用与断言都稳定
+        return path.replace("\\", "/")
+    } catch (e: Exception) {
+        Log.warn("子代理转录落盘失败（不影响主流程）: ${e}")
+        return ""
+    }
+}
+
+/**
+ * S4：带墙钟超时的子代理运行（仓颉线程无法 safe kill：超时=置中断 + 5s 宽限 + 放弃引用）。
+ * 超时抛 SubagentTimeoutException（调用方映射 status=timeout）；timeoutMs<=0 内联直跑（现状路径）。
+ */
+func runSubagentWithTimeout(agent: Agent, brief: String, timeoutMs: Int64): RunSummary {
+    if (timeoutMs <= 0) {
+        return agent.run(brief)
+    }
+    // 仓颉 lambda 不能捕获可变局部变量：ArrayList 包装哨兵
+    let out = ArrayList<RunSummary>()
+    let errs = ArrayList<Exception>()
+    let runner = spawn {
+        try {
+            out.add(agent.run(brief))
+        } catch (e: Exception) {
+            errs.add(e)
+        }
+    }
+    var elapsed: Int64 = 0
+    while (out.size == 0 && errs.size == 0 && elapsed < timeoutMs) {
+        sleep(Duration.millisecond * 25)
+        elapsed += 25
+    }
+    if (out.size == 0 && errs.size == 0) {
+        // 超时：中断子代理（runLoop 尽快退出），等 5s 宽限后放弃引用
+        agent.interrupt()
+        var grace: Int64 = 0
+        while (out.size == 0 && errs.size == 0 && grace < 5000) {
+            sleep(Duration.millisecond * 50)
+            grace += 50
+        }
+        throw SubagentTimeoutException("子代理运行超时（${timeoutMs}ms）")
+    }
+    if (errs.size > 0) {
+        throw errs[0]  // 保持原异常路径（failed 出口）
+    }
+    return out[0]
 }
 
 /**
@@ -1095,23 +1451,23 @@ func buildSubagentPrompt(subagentType: String): String {
         case "explore" =>
             sb.append("你的职责是只读调查. 你可以:\n")
             sb.append("- 读取文件 (read_file, glob, grep, list_dir)\n")
-            sb.append("- 执行只读命令 (bash 里只读操作)\n")
-            sb.append("- 搜索代码结构\n\n")
+            sb.append("- 搜索代码与知识库 (ast_grep, cangjie_ref 等只读工具)\n\n")
             sb.append("你不能:\n")
-            sb.append("- 修改任何文件 (write_file, edit, append_file, hashline_edit 禁用)\n")
-            sb.append("- 执行有副作用的命令 (git commit, rm, etc.)\n\n")
+            sb.append("- 修改任何文件 (写文件工具不在你的工具列表里)\n")
+            sb.append("- 执行命令 (bash 不在你的工具列表里)\n\n")
             sb.append("完成后汇报你的发现, 不要做任何修改.\n")
         case "worker" =>
             sb.append("你的职责是完成指定任务. 你可以:\n")
             sb.append("- 读取和修改文件\n")
             sb.append("- 执行命令\n")
-            sb.append("- 使用所有可用工具\n\n")
+            sb.append("- 使用提供的全部工具 (不含 task 派发与任务列表管理)\n\n")
             sb.append("完成任务后汇报你做了什么.\n")
         case _ =>
             sb.append("完成指定任务并汇报结果.\n")
     }
     sb.append("\n注意:\n")
     sb.append("- 你有独立的对话历史, 看不到主会话的上下文\n")
+    sb.append("- 任务简报末尾附有父会话上下文块 (触碰文件表+摘要), 优先利用它精准定位, 避免重复大面积探索\n")
     sb.append("- 最多 5 次迭代, 高效完成任务\n")
     sb.append("- 不要请求用户确认, 自主决策\n")
     return sb.toString()

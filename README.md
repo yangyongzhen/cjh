@@ -5,7 +5,7 @@
 **A terminal coding agent built from scratch in Huawei's Cangjie language — one static binary, zero runtime dependencies: one file is one agent.**
 
 [![Website](https://img.shields.io/badge/website-yangyongzhen.github.io%2Fcjh-00868B)](https://yangyongzhen.github.io/cjh/)
-[![Release](https://img.shields.io/badge/release-v1.5.3-00868B)](https://atomgit.com/qq8864/cjh/releases)
+[![Release](https://img.shields.io/badge/release-v1.6.1-00868B)](https://atomgit.com/qq8864/cjh/releases)
 [![Cangjie](https://img.shields.io/badge/language-Cangjie-00868B)](https://cangjie-lang.cn)
 [![Tests](https://img.shields.io/badge/tests-536%20passed-2ea44f)](./scripts/test.sh)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-lightgrey)](https://atomgit.com/qq8864/cjh/releases)
@@ -28,19 +28,19 @@ Say one sentence in the terminal: the agent plans, calls tools, reads results, a
 **Try it without spending a cent** (Mock mode: no network, no API key needed):
 
 ```bash
-curl -LO https://atomgit.com/qq8864/cjh/releases/download/v1.5.3/cjh-v1.5.3-linux-x64
-chmod +x cjh-v1.5.3-linux-x64
-CJH_MOCK=1 ./cjh-v1.5.3-linux-x64
+curl -LO https://atomgit.com/qq8864/cjh/releases/download/v1.6.1/cjh-v1.6.1-linux-x64
+chmod +x cjh-v1.6.1-linux-x64
+CJH_MOCK=1 ./cjh-v1.6.1-linux-x64
 ```
 
 **Connect a real model** (any one provider key works):
 
 ```bash
 export DEEPSEEK_API_KEY=sk-xxx     # or OPENAI_API_KEY / DASHSCOPE_API_KEY / CJH_API_KEY
-./cjh-v1.5.3-linux-x64             # TUI by default; --cli for plain text, --mode json for headless
+./cjh-v1.6.1-linux-x64             # TUI by default; --cli for plain text, --mode json for headless
 ```
 
-Windows: grab [`cjh-v1.5.3-windows-x64-selfcontained.zip`](https://atomgit.com/qq8864/cjh/releases/download/v1.5.3/cjh-v1.5.3-windows-x64-selfcontained.zip) and unzip — keep the exe next to its 4 runtime DLLs. Building from source: see [Quick Start](#-quick-start).
+Windows: grab [`cjh-v1.6.1-windows-x64-selfcontained.zip`](https://atomgit.com/qq8864/cjh/releases/download/v1.6.1/cjh-v1.6.1-windows-x64-selfcontained.zip) and unzip — keep the exe next to its 4 runtime DLLs. Building from source: see [Quick Start](#-quick-start).
 
 ![cjh session demo (real CLI output, mock mode)](docs/imgs/cjh-demo.gif)
 
@@ -55,7 +55,7 @@ Windows: grab [`cjh-v1.5.3-windows-x64-selfcontained.zip`](https://atomgit.com/q
 | **What** | A terminal coding agent harness written from scratch in Cangjie: agent loop (message state machine + tool-call protocol) + tool system + diff-rendered TUI + remote web UI + plugin trust chain |
 | **Who** | ① people who want AI to edit code in the terminal without installing a Node/Python toolchain; ② Cangjie learners looking for a runnable, readable AI-application reference; ③ regulated / domestic-stack teams that require "no foreign runtime dependencies" |
 | **Why** | One static binary (Linux 17.1 MB / Windows exe 14.1 MB) with zero runtime dependencies; token efficiency and execution speed are measured, not claimed; plugins carry SHA256 checksums + SM2 signatures |
-| **Status** | v1.5.3, 536 unit tests green (plus 175 across the 5 publishable libraries), Linux / Windows builds published; parallel multi-agent orchestration on the roadmap (the `task` tool already ships explore / worker primitives) |
+| **Status** | v1.6.1, 536 unit tests green (plus 175 across the 5 publishable libraries), Linux / Windows builds published; parallel multi-agent orchestration on the roadmap (the `task` tool already ships explore / worker primitives) |
 
 ---
 
@@ -351,6 +351,10 @@ In the TUI the same operations are available as `/ref status`, `/ref verify`, `/
 # Activate Cangjie environment (sets PATH; build is static-linked single file, no runtime libs needed)
 source cj-env.sh
 
+# First time on a new machine: auto-detect local Cangjie SDK / stdx and rewrite
+# the absolute paths in all cjpm.toml files (cjpm.toml does not support env vars)
+./scripts/setup_paths.sh        # add --check to verify without writing
+
 # Build (produces cjh, statically linked Cangjie runtime + stdx, only system libs remain)
 cjpm build
 
@@ -567,7 +571,7 @@ cjh has a built-in MCP client supporting stdio transport + JSON-RPC 2.0. After c
 
 | Version | Main Features |
 |---|---|
-| **v1.5.3** | **issue #6 fix: `POST /api/settings` now persists `apiKey`**. The endpoint used to write the key into memory only (`saveAll()` never wrote `api_key`, and the loader's `loadAuth()` reads `auth.json` alone), so a changed `baseUrl` / `model` took effect immediately while the key vanished on restart — yet the response still said `{"ok":true}`. The `/provider` path, which calls `saveApiKey()` to write `auth.json`, *was* persistent, so the two paths disagreed and a caller had no way to tell them apart. The fix keeps the "credentials live only in `auth.json`" split: a new `setApiKeyPendingPersist()` marks the key dirty and `saveAll()` flushes it to `auth.json` **after** writing `settings.json` — deliberately not unconditional, because keys may also come from `OPENAI_API_KEY` and friends and unconditional persistence would leak env credentials to disk. The response gains a `note` ("API key written to auth.json; still in effect after restart") whose condition matches the write exactly. Adds 3 `ApiKeyPersistTest` cases (persist / read back after restart / non-dirty key not persisted) plus a `CjhConfig.init(dir:)` overload so tests can isolate the config directory |
+| **v1.6.1** | **issue #6 fix: `POST /api/settings` now persists `apiKey`**. The endpoint used to write the key into memory only (`saveAll()` never wrote `api_key`, and the loader's `loadAuth()` reads `auth.json` alone), so a changed `baseUrl` / `model` took effect immediately while the key vanished on restart — yet the response still said `{"ok":true}`. The `/provider` path, which calls `saveApiKey()` to write `auth.json`, *was* persistent, so the two paths disagreed and a caller had no way to tell them apart. The fix keeps the "credentials live only in `auth.json`" split: a new `setApiKeyPendingPersist()` marks the key dirty and `saveAll()` flushes it to `auth.json` **after** writing `settings.json` — deliberately not unconditional, because keys may also come from `OPENAI_API_KEY` and friends and unconditional persistence would leak env credentials to disk. The response gains a `note` ("API key written to auth.json; still in effect after restart") whose condition matches the write exactly. Adds 3 `ApiKeyPersistTest` cases (persist / read back after restart / non-dirty key not persisted) plus a `CjhConfig.init(dir:)` overload so tests can isolate the config directory |
 | **v1.5.2** | **Regression fixes after web-auth tightening + version self-report correction**: 401 now uses a real status code (previously the error body was written into the body while the HTTP line stayed `200 OK`, so the frontend's `res.ok` was true and liveness checks faked success) with a `WWW-Authenticate: Bearer` header; auth is **graded per path** — only `api`-prefixed routes and `ws` are gated while `/` and `/assets/*` stay open (top-level browser navigation cannot carry `Authorization`, so a configured token would otherwise lock the UI out); the frontend gained token support (`?token=` on first visit is written to `localStorage` and stripped from the address bar, every API call goes through `apiFetch()`, WS carries `?token=`, 401 prompts for input once); token extraction accepts both `Authorization: Bearer` and `?token=` and splits on `&` when matching the key name (`?token=x&other=1` no longer never matches); `/api/health`'s version collapsed into a single `CJH_WEB_VERSION` constant (it was hardcoded to `1.3.0` and kept reporting `1.3.0` all the way into 1.5.x) guarded for consistency against `Logo.VERSION`; `scripts/glibc_compat.sh` now judges by the highest glibc requirement (the old regex read the ancient `GLIBC_2.4` as 2.4x and raised false reds); README gains this cj-tauri desktop client showcase |
 | **v1.5.1** | **Web channel contract completion + failure / truncation signals**: WS control frames are no longer silent — `switch_model` / `compact` always answer `ack` and `cancel` / `abort` always answer `cancelled` (`was_running` reports truthfully whether a turn was running when the frame arrived), only unregistered channels are ignored; adds a `capabilities` manifest (enumerating the 7 inbound / 9 outbound frame surface as actually dispatched, incl. `structured_errors` / `diff_in_tool_result`), per-frame message identity (`FrameMeta{session_id, turn_id, message_id}`), a **WS approval channel** (`approval_request` / `approval_response`) and **structured diffs** in tool results (`src/tools/textdiff.cj` pure functions + `DiffInfo` on `ToolResult`); `GET/PUT /api/mcp` and `POST /api/workspace`; a failed turn returns a structured `error` frame (4 codes + `retryable`) instead of an empty `done`; the `done` frame gains an **optional boolean** `truncated` (upstream `max_tokens` cut-off, omitted when not truncated; `finish_reason` keeps its closed three values); TUI output decoupled from fd 1 and the stdx `readTimer` WARN leak into the TUI fixed |
 | **v1.5.0** | **Cangjie built-in knowledge layer (phase 3) + TUI `/ref` panel**: adds the `cjh ref status / verify / rebuild / update` subcommands — `status` / `verify` / `rebuild` are fully local (`verify` recomputes SHA-256 per file against the manifest and reports missing / modified / extra entries), while `update` is the **only network entry point** and strictly human-triggered (`--source` refreshes offline, `--repo` / `--branch` switch the source, `--dry-run` previews only, `--restore` rolls back from the pre-overwrite snapshot); the snapshot lives outside the corpus directory, and after overwriting the manifest is rescanned and self-checked with automatic rollback if any step fails; **same-named skills align `.md` only** (old md removed, upstream non-md assets kept, skills absent upstream untouched); `cjh ref search` reuses the phase-2 retrieval; the TUI `/ref` panel mirrors it (network actions require `--yes`) |

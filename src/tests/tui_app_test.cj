@@ -1,8 +1,11 @@
 package cjh.tests
 
 import std.collection.*
+import std.sync.*
+import std.time.*
 import cjterm.*
 import cjh.tui.*
+import cjh.agent.*
 
 /**
  * TuiApp 事件循环按键分发单元测试（此前零覆盖）
@@ -12,10 +15,10 @@ import cjh.tui.*
  * handleKey 不依赖终端渲染，仅改内部状态 + 组件分发，可直接驱动。
  *
  * 覆盖：Ctrl+C 退出、普通输入、Enter 提交回调、/命令补全、Esc 关闭、
- * 视图切换、多行编辑进出/Alt+Enter 提交、Tab 补全。
+ * 视图切换、多行编辑进出/Alt+Enter 提交、Tab 补全、
+ * 审批队列化（S1：并发请求排队、y 只批队首、Ctrl+C 整体拒绝）。
  *
- * 不测：审批弹窗（requestApproval 阻塞等待主循环，且 pendingApproval 为私有无法预设）、
- * render 渲染（TermSize.ioctl 需终端）。
+ * 不测：render 渲染（TermSize.ioctl 需终端）。
  */
 @Test
 public class TuiAppKeyTest {
@@ -37,6 +40,128 @@ public class TuiAppKeyTest {
     private func keyChar(c: Int32): KeyEvent {
         // 普通输入字符：ch + seq=字符（text 取 seq）
         return KeyEvent(c, Rune(c).toString())
+    }
+
+    /** 轮询等待条件成立（最多 ~1s），供 agent 线程排队/弹窗就绪 */
+    private func waitFor(cond: () -> Bool): Bool {
+        var i: Int64 = 0
+        while (i < 200) {
+            if (cond()) { return true }
+            sleep(Duration.millisecond * 5)
+            i += 1
+        }
+        return false
+    }
+
+    @TestCase
+    public func testApprovalQueueConcurrentYApprovesHeadOnly(): Unit {
+        // S1：两路并发审批排队；y 只批队首，第二路仍阻塞且标题推进 审批(2/2)
+        let app = TuiApp()
+        // 仓颉 lambda 不能捕获可变局部变量：用 ArrayList 包装结果哨兵
+        let results = ArrayList<Bool>()
+        results.add(false)
+        results.add(false)
+        let t1 = spawn {
+            results[0] = app.requestApproval("第一个危险操作")
+        }
+        @Assert(this.waitFor({ => app.testApprovalVisible() }), true)
+        let t2 = spawn {
+            results[1] = app.requestApproval("第二个危险操作")
+        }
+        @Assert(this.waitFor({ => app.testApprovalQueueSize() == 2 }), true)
+        // 入队与弹窗标题刷新跨锁两步：轮询等标题推进，避免 add 与 show 之间的窗口
+        @Assert(this.waitFor({ => app.testApprovalTitle() == "审批 (1/2)" }), true)
+        app.handleKey(this.keyChar(121))  // y：只批队首
+        let _ = t1.get()  // lambda 为 Unit（赋值表达式），直接断言结果哨兵
+        @Assert(results[0], true)
+        @Assert(app.testApprovalQueueSize(), 1)   // 第二路仍在排队
+        @Assert(app.testApprovalVisible(), true)
+        @Assert(app.testApprovalTitle(), "审批 (2/2)")
+        app.handleKey(this.keyChar(110))  // n：拒绝第二路
+        let _ = t2.get()
+        @Assert(results[1], false)
+        @Assert(app.testApprovalVisible(), false)
+    }
+
+    @TestCase
+    public func testApprovalQueueCtrlCDeniesAll(): Unit {
+        // S1：审批等待中 Ctrl+C → 整体拒绝（两路都解除阻塞且为 false），不退出不中断
+        let app = TuiApp()
+        let results = ArrayList<Bool>()
+        results.add(false)
+        results.add(false)
+        let t1 = spawn {
+            results[0] = app.requestApproval("第一个危险操作")
+        }
+        @Assert(this.waitFor({ => app.testApprovalVisible() }), true)
+        let t2 = spawn {
+            results[1] = app.requestApproval("第二个危险操作")
+        }
+        @Assert(this.waitFor({ => app.testApprovalQueueSize() == 2 }), true)
+        app.handleKey(KeyEvent(3))  // Ctrl+C：整体拒绝
+        let _ = t1.get()
+        let _ = t2.get()
+        @Assert(results[0], false)  // 复核 D：两路都必须拿到 false（解除阻塞且未越权放行）
+        @Assert(results[1], false)
+        @Assert(app.testRunning(), true)          // 不退出
+        @Assert(app.testApprovalQueueSize(), 0)   // 队列清空
+        @Assert(app.testApprovalVisible(), false)
+    }
+
+    @TestCase
+    public func testFocusCycleRefreshAgents(): Unit {
+        // S3d：Ctrl+G 焦点循环 父(0) → 子1 → 子2 → 父；无子代理时循环回父
+        let app = TuiApp()
+        @Assert(app.currentFocusAgentId(), 0)
+        app.cycleFocus()  // 无子代理：仍回父
+        @Assert(app.currentFocusAgentId(), 0)
+        var nodes = ArrayList<AgentNode>()
+        nodes.add(AgentNode(101, 1, "任务A", "explore"))
+        nodes.add(AgentNode(102, 1, "任务B", "worker"))
+        app.refreshAgents(nodes)
+        app.cycleFocus()  // 0 → 101
+        @Assert(app.currentFocusAgentId(), 101)
+        app.cycleFocus()  // 101 → 102
+        @Assert(app.currentFocusAgentId(), 102)
+        app.cycleFocus()  // 102 → 0
+        @Assert(app.currentFocusAgentId(), 0)
+    }
+
+    @TestCase
+    public func testApprovalQueueCarriesLabels(): Unit {
+        // S3e G-B：审批队列项带 agent 身份（label 与队列平行；父自身审批为空串）
+        let app = TuiApp()
+        let results = ArrayList<Bool>()
+        results.add(false)
+        let t1 = spawn {
+            results[0] = app.requestApproval("子代理危险操作", "并发审批一号")
+        }
+        @Assert(this.waitFor({ => app.testApprovalVisible() }), true)
+        let labels = app.testApprovalLabels()
+        @Assert(labels.size, 1)
+        @Assert(labels[0], "并发审批一号")
+        app.handleKey(KeyEvent(3))  // Ctrl+C：整体拒绝，解除阻塞
+        let _ = t1.get()
+        @Assert(results[0], false)
+        @Assert(app.testApprovalLabels().size, 0)  // 清队同步清 labels
+    }
+
+    @TestCase
+    public func testApprovalTimeoutDenies(): Unit {
+        // G-A：审批超时=拒绝 + 自愈摘队（用户离开终端时父回合不永久卡死）
+        let app = TuiApp()
+        app.approvalTimeoutMs = 60
+        let results = ArrayList<Bool>()
+        results.add(false)
+        let t1 = spawn {
+            results[0] = app.requestApproval("超时审批")
+        }
+        @Assert(this.waitFor({ => app.testApprovalVisible() }), true)
+        // 到点自愈摘队（60ms 上限，waitFor 最长 1s 足够）
+        @Assert(this.waitFor({ => app.testApprovalQueueSize() == 0 }), true)
+        let _ = t1.get()
+        @Assert(results[0], false)                 // 超时=拒绝
+        @Assert(app.testApprovalVisible(), false)  // 弹窗收起
     }
 
     @TestCase

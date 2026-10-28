@@ -16,7 +16,11 @@ import cjterm.*
  *  - stripEscapeSequences(s)：控制序列剥离
  * 端到端（stdin 读 + 闭合标记）由 scripts/tui_pty_test.py 的 bracketed
  * paste 场景覆盖。
+ *
+ * @When[os != "Windows"]：被测原语挂在 PosixTerminalBackend 上，Windows 构建该类
+ * 整体被 @When 排除（Windows 走 Win32 控制台事件，无 bracketed paste）
  */
+@When[os != "Windows"]
 @Test
 public class TermPasteDecodeTest {
 

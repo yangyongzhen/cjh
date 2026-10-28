@@ -353,6 +353,10 @@ TUI 里有等价面板：`/ref status` · `/ref verify` · `/ref rebuild` · `/r
 # 激活仓颉环境（设 PATH；构建为静态链接单文件，无需运行时库）
 source cj-env.sh
 
+# 新机器首次构建：自动探测本机 SDK/stdx 路径，改写全部 cjpm.toml 里的
+# 绝对路径（cjpm.toml 不支持环境变量展开，仓库里的路径是上一台构建机的）
+./scripts/setup_paths.sh        # 加 --check 只校验不改写
+
 # 构建（产物为 cjh，静态链接仓颉运行时 + stdx，仅余系统库依赖，直接运行）
 cjpm build
 

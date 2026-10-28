@@ -1,25 +1,64 @@
 package cjterm
 
 /**
- * 字节安全截断：最多截取 maxBytes 字节，若落在 UTF-8 多字节字符中间则递减到合法边界。
+ * UTF-8 安全解码：非法字节序列用替换字符（U+FFFD）代替，不抛异常。
  *
- * 内联自 cjutil（独立库自包含，零外部依赖）；避免 String 切片在字符中间抛
- * IllegalArgumentException: Invalid utf8 byte sequence。
+ * 内联自 cjutil（与 truncateUtf8 同策略：独立库自包含，零外部依赖）。
+ * 背景：cjterm 全库只此一处需要 cjutil，却让整个终端库被迫依赖一个带 stdx 的
+ * 重包——Windows 原生构建会因此连 `cjpm build` 都过不去（stdx 无 windows 平台
+ * 目录时报 `can not find package 'stdx.encoding.json'`）。
  */
-internal func truncateUtf8(text: String, maxBytes: Int64): String {
-    if (text.size <= maxBytes) {
-        return text
-    }
-    var k = maxBytes
-    while (k > 0) {
-        try {
-            return text[0..k]
-        } catch (e: Exception) {
-            k -= 1
+@When[os != "Windows"]
+internal func safeFromUtf8(bytes: Array<UInt8>): String {
+    var sb = StringBuilder()
+    var i = 0
+    let n = bytes.size
+    while (i < n) {
+        let b0 = bytes[i]
+        var len = 1
+        var valid = true
+        if (b0 < 0x80u8) {
+            len = 1
+        } else if ((b0 & 0xE0u8) == 0xC0u8) {
+            len = 2
+        } else if ((b0 & 0xF0u8) == 0xE0u8) {
+            len = 3
+        } else if ((b0 & 0xF8u8) == 0xF0u8) {
+            len = 4
+        } else {
+            valid = false
+        }
+        if (valid && i + len > n) {
+            valid = false
+        }
+        if (valid) {
+            for (j in 1..len) {
+                if ((bytes[i + j] & 0xC0u8) != 0x80u8) {
+                    valid = false
+                    break
+                }
+            }
+        }
+        if (valid) {
+            try {
+                sb.append(String.fromUtf8(bytes[i..i + len]))
+            } catch (e: Exception) {
+                sb.append("\u{FFFD}")
+            }
+            i += len
+        } else {
+            sb.append("\u{FFFD}")
+            i += 1
         }
     }
-    return ""
+    return sb.toString()
 }
+
+/** 字节安全截断（已废弃）——
+ *
+ * 上游面板改为 `TuiCanvas.truncate`（ANSI/显示宽感知）后本函数已无调用方，
+ * 删除以免 Cangjie 1.2.0 报 unused function；保留此注记解释历史。
+ */
 
 /**
  * 单个控制字符判定（`KeyEvent.text` 契约兜底）：控制键的 text 应为空串。
@@ -218,4 +257,60 @@ public func isModernTerminalEnv(): Bool {
         return true
     }
     return false
+}
+
+/** 当前构建是否跑在 Windows 上（`@When` 判据，无需运行时 FFI） */
+@When[os == "Windows"]
+public func isWindowsHost(): Bool {
+    return true
+}
+
+@When[os != "Windows"]
+public func isWindowsHost(): Bool {
+    return false
+}
+
+/**
+ * 提示符是否用"花体图标"（❯ / 🔍）而不是 ASCII（> / ?）
+ *
+ * 与 UTF-8 能力**分开判**：conhost（PowerShell / 老控制台窗口）在 cjh 切到代码页 65001 后
+ * `isUtf8()` 为 true、框线也能画，但**字体**常常没有 U+276F ❯ 的字形 → 渲染成方框
+ * （用户实测，Windows Terminal 正常）。故 Windows 上额外要求"现代终端环境"
+ * （Windows Terminal / ConEmu），否则降级成 ASCII 图标。
+ *
+ * 覆盖开关：`CJH_ASCII_ICONS=1` 强制 ASCII（任何终端可用），
+ * `CJH_FORCE_UTF8=1` 强制花体（经 isModernTerminalEnv 生效）。
+ */
+public func useFancyPromptGlyphs(): Bool {
+    return useFancyPromptGlyphsFrom(
+        TermEnv.getenv("CJH_ASCII_ICONS"),
+        TermEnv.getenv("CJH_FORCE_UTF8"),
+        isModernTerminalEnv(),
+        isWindowsHost())
+}
+
+/**
+ * 纯函数判据（不读环境变量，供单测）
+ *
+ * @param asciiIcons    CJH_ASCII_ICONS 的值（非空 = 强制 ASCII 图标）
+ * @param forceUtf8     CJH_FORCE_UTF8 的值（非空 = 强制花体图标）
+ * @param modernTerminal 是否现代终端环境（Windows Terminal / ConEmu 等）
+ * @param isWindows     是否 Windows
+ */
+public func useFancyPromptGlyphsFrom(asciiIcons: ?String, forceUtf8: ?String,
+    modernTerminal: Bool, isWindows: Bool): Bool {
+    if (let Some(v) <- asciiIcons) {
+        if (v.size > 0) {
+            return false  // 显式强制 ASCII（conhost 字体缺字形的兜底开关）
+        }
+    }
+    if (let Some(v) <- forceUtf8) {
+        if (v.size > 0) {
+            return true  // 显式强制花体
+        }
+    }
+    if (isWindows) {
+        return modernTerminal  // Windows 只信现代终端的字体
+    }
+    return true  // POSIX 终端字体普遍覆盖 ❯/🔍
 }
