@@ -136,7 +136,7 @@
 
     'footer.tag': '仓颉语言实现的 Coding Agent Harness',
     'footer.note':
-      'v1.6.1 · 本站为纯静态页面（无外部依赖），源码见仓库 <code>site/</code> · QQ 技术交流群 <strong>92381027</strong> · 开源许可 <a href="https://atomgit.com/qq8864/cjh/blob/main/LICENSE" target="_blank" rel="noopener">MIT</a>',
+      'v1.6.1 · 本站为纯静态页面（无外部依赖），源码见仓库 <code>site/</code> · QQ 技术交流群 <strong>92381027</strong> · 开源许可 <a href="https://atomgit.com/qq8864/cjh/blob/main/LICENSE" target="_blank" rel="noopener">MIT</a> · <a href="https://atomgit.com/qq8864/cjh" target="_blank" rel="noopener">AtomGit 仓库</a>',
   };
 
   const nodes = Array.from(document.querySelectorAll('[data-i18n]'));
