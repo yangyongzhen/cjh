@@ -34,7 +34,7 @@
   <div class="nav-cta">
     <button class="lang-switch" id="lang-switch" type="button" aria-label="Switch language / 切换语言">中文</button>
     <a class="btn btn-ghost" href="https://github.com/yangyongzhen/cjh" target="_blank" rel="noopener">GitHub</a>
-    <a class="btn btn-primary" href="https://atomgit.com/qq8864/cjh/releases" target="_blank" rel="noopener" data-i18n="nav.cta">Download v1.5.3</a>
+    <a class="btn btn-primary" href="https://atomgit.com/qq8864/cjh/releases" target="_blank" rel="noopener" data-i18n="nav.cta">Download v1.6.1</a>
   </div>
 </header>
 
@@ -49,7 +49,7 @@
       <h1 data-i18n="hero.title">A terminal coding agent<br><span class="grad">written in Cangjie</span></h1>
       <p class="lede" data-i18n="hero.lede">Say what you want once — the agent plans, calls tools, reads results and iterates until the job is done, all visible live in the TUI, or driven remotely from the built-in web UI. <strong>One static binary, zero dependencies</strong> — one file is the whole agent.</p>
       <div class="hero-actions">
-        <a class="btn btn-primary btn-lg" href="#download" data-i18n="hero.download">Download v1.5.3</a>
+        <a class="btn btn-primary btn-lg" href="#download" data-i18n="hero.download">Download v1.6.1</a>
         <a class="btn btn-ghost btn-lg" href="#start" data-i18n="hero.start">Quickstart in 30s</a>
         <a class="btn btn-link" href="https://atomgit.com/qq8864/cjh" target="_blank" rel="noopener" data-i18n="hero.repo">AtomGit repository →</a>
       </div>
@@ -66,9 +66,9 @@
         <span class="term-title">bash — quickstart</span>
       </div>
       <pre class="term-body"><code><span class="c-dim" data-i18n="term.nokey"># No API key needed: mock mode runs the whole loop</span>
-<span class="c-prompt">$</span> curl -LO https://atomgit.com/qq8864/cjh/releases/download/v1.5.3/cjh-v1.5.3-linux-x64
-<span class="c-prompt">$</span> chmod +x cjh-v1.5.3-linux-x64
-<span class="c-prompt">$</span> CJH_MOCK=1 ./cjh-v1.5.3-linux-x64
+<span class="c-prompt">$</span> curl -LO https://atomgit.com/qq8864/cjh/releases/download/v1.6.1/cjh-v1.6.1-linux-x64
+<span class="c-prompt">$</span> chmod +x cjh-v1.6.1-linux-x64
+<span class="c-prompt">$</span> CJH_MOCK=1 ./cjh-v1.6.1-linux-x64
 
 <span class="c-dim" data-i18n="term.realmodel"># Point it at a real model (any provider key)</span>
 <span class="c-prompt">$</span> export DEEPSEEK_API_KEY=sk-xxx
@@ -110,7 +110,7 @@
     <article class="card">
       <div class="card-ico">▤</div>
       <h3 data-i18n="c4.h">Diff-rendered TUI</h3>
-      <p data-i18n="c4.p">Hand-written termios + ANSI diff refresh over raw libc FFI, no third-party terms: Markdown, <code>/</code> command completion, 10 themes, approval dialogs for risky actions.</p>
+      <p data-i18n="c4.p">Hand-written termios + ANSI diff refresh over raw libc FFI, no third-party terms: Markdown, <code>/</code> command completion, 10 themes, side-by-side Tasks/Agents panels, queued approvals for risky actions.</p>
     </article>
     <article class="card">
       <div class="card-ico">◍</div>
@@ -121,6 +121,11 @@
       <div class="card-ico">⊕</div>
       <h3 data-i18n="c6.h">Plugin trust chain</h3>
       <p data-i18n="c6.p">Skills are just Markdown and plugins may ship tools; SHA256 checksums plus SM2 signatures (native <code>stdx.crypto</code>) cover the supply chain from the language layer up.</p>
+    </article>
+    <article class="card">
+      <div class="card-ico">⧉</div>
+      <h3 data-i18n="c7.h">Parallel subagents, under control</h3>
+      <p data-i18n="c7.p">The <code>task</code> tool spawns <code>explore</code>/<code>worker</code> subagents concurrently, watched live in the bottom-right Agents panel — bounded by concurrency/token/time budgets, with staggered starts and throttle backoff so 5-way fan-out survives real-provider rate limits.</p>
     </article>
   </div>
 </section>
@@ -154,9 +159,9 @@
   <div class="start-grid">
     <div class="panel">
       <div class="panel-head"><span data-i18n="p1.h">① Try it with zero keys (mock)</span><button class="copy" data-copy="#cmd-mock" type="button" data-i18n="copy">Copy</button></div>
-      <pre id="cmd-mock"><code>curl -LO https://atomgit.com/qq8864/cjh/releases/download/v1.5.3/cjh-v1.5.3-linux-x64
-chmod +x cjh-v1.5.3-linux-x64
-CJH_MOCK=1 ./cjh-v1.5.3-linux-x64</code></pre>
+      <pre id="cmd-mock"><code>curl -LO https://atomgit.com/qq8864/cjh/releases/download/v1.6.1/cjh-v1.6.1-linux-x64
+chmod +x cjh-v1.6.1-linux-x64
+CJH_MOCK=1 ./cjh-v1.6.1-linux-x64</code></pre>
     </div>
     <div class="panel">
       <div class="panel-head"><span data-i18n="p2.h">② Attach a real model</span><button class="copy" data-copy="#cmd-real" type="button" data-i18n="copy">Copy</button></div>
@@ -176,11 +181,11 @@ cjh-v1.5.3-windows-x64.exe</code></pre>
 
 <section class="section" id="download">
   <div class="section-head">
-    <h2 data-i18n="dl.h">Download v1.5.3</h2>
+    <h2 data-i18n="dl.h">Download v1.6.1</h2>
     <p data-i18n="dl.p">Prebuilt for Linux and Windows, ready to run. <a href="https://atomgit.com/qq8864/cjh/releases" target="_blank" rel="noopener">All releases →</a></p>
   </div>
   <div class="dl-grid">
-    <a class="dl" href="https://atomgit.com/qq8864/cjh/releases/download/v1.5.3/cjh-v1.5.3-linux-x64">
+    <a class="dl" href="https://atomgit.com/qq8864/cjh/releases/download/v1.6.1/cjh-v1.6.1-linux-x64">
       <div class="dl-top"><span class="dl-os">Linux x64</span><span class="dl-size">17.1 MB</span></div>
       <div class="dl-name">cjh-v1.5.3-linux-x64</div>
       <div class="dl-desc" data-i18n="dl1.desc">Static single file, <code>chmod +x</code> and run. Needs glibc ≥ 2.34.</div>
@@ -261,7 +266,7 @@ cjh-v1.5.3-windows-x64.exe</code></pre>
     <h2 data-i18n="cta.h">One file is the whole agent</h2>
     <p data-i18n="cta.p">17 MB download, no runtime to install. Questions and ideas — open an issue.</p>
     <div class="hero-actions center">
-      <a class="btn btn-primary btn-lg" href="https://atomgit.com/qq8864/cjh/releases" target="_blank" rel="noopener" data-i18n="nav.cta">Download v1.5.3</a>
+      <a class="btn btn-primary btn-lg" href="https://atomgit.com/qq8864/cjh/releases" target="_blank" rel="noopener" data-i18n="nav.cta">Download v1.6.1</a>
       <a class="btn btn-ghost btn-lg" href="https://atomgit.com/qq8864/cjh/issues" target="_blank" rel="noopener" data-i18n="cta.issue">Open an issue</a>
     </div>
   </div>
