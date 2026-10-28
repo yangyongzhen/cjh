@@ -6,6 +6,7 @@
 
 [![Website](https://img.shields.io/badge/website-yangyongzhen.github.io%2Fcjh-00868B)](https://yangyongzhen.github.io/cjh/)
 [![Release](https://img.shields.io/badge/release-v1.6.1-00868B)](https://atomgit.com/qq8864/cjh/releases)
+[![AtomGitStars](https://atomgit.com/qq8864/cjh/star/new_badge.svg)](https://atomgit.com/qq8864/cjh)
 [![Cangjie](https://img.shields.io/badge/language-Cangjie-00868B)](https://cangjie-lang.cn)
 [![Tests](https://img.shields.io/badge/tests-536%20passed-2ea44f)](./scripts/test.sh)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-lightgrey)](https://atomgit.com/qq8864/cjh/releases)
