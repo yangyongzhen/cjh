@@ -55,7 +55,7 @@ Windows: grab [`cjh-v1.6.1-windows-x64-selfcontained.zip`](https://atomgit.com/q
 | **What** | A terminal coding agent harness written from scratch in Cangjie: agent loop (message state machine + tool-call protocol) + tool system + diff-rendered TUI + remote web UI + plugin trust chain |
 | **Who** | ① people who want AI to edit code in the terminal without installing a Node/Python toolchain; ② Cangjie learners looking for a runnable, readable AI-application reference; ③ regulated / domestic-stack teams that require "no foreign runtime dependencies" |
 | **Why** | One static binary (Linux 17.1 MB / Windows exe 14.1 MB) with zero runtime dependencies; token efficiency and execution speed are measured, not claimed; plugins carry SHA256 checksums + SM2 signatures |
-| **Status** | v1.6.1, 536 unit tests green (plus 175 across the 5 publishable libraries), Linux / Windows builds published; parallel multi-agent orchestration on the roadmap (the `task` tool already ships explore / worker primitives) |
+| **Status** | v1.6.1, 1150 unit tests green (plus 203 across the 6 publishable libraries), Linux / Windows builds published; parallel multi-agent orchestration on the roadmap (the `task` tool already ships explore / worker primitives) |
 
 ---
 
@@ -131,7 +131,7 @@ cjh's orientation is **parallel sub-agents + context isolation** (Linux-fork-lik
 |---|---|
 | **Cangjie ecosystem** | The most complete "AI application in Cangjie" reference: TUI (cjterm), SSE streaming (cjllm), MCP client, plugin SM2 signature, cross-platform terminal layer — "first" or "most complete" implementations in five directions; the 5 standalone libraries under libs/ are infrastructure ready to be reused |
 | **Xinchuang / government & enterprise** | Single binary with zero dependencies + no foreign runtime dependency + SM2 national-cryptography signing — "no foreign dependencies" is a real differentiator in sensitive scenarios |
-| **Engineering quality** | 441 unit tests (root package) + 93 in the `libs/cjterm` package + 67 PTY checks (16 scenarios); tests have genuinely caught 10+ latent bugs (including the edit tool that "never actually worked" before); performance optimization backed by measured data (prompt peak 42.9K→9.4K, per-round 5-22s→2-5s); CI gate (all-green tests, red-first-then-green) enforced |
+| **Engineering quality** | 1150 unit tests (root package) + 203 across the 6 library packages + 77 PTY scenarios; tests have genuinely caught 10+ latent bugs (including the edit tool that "never actually worked" before); performance optimization backed by measured data (prompt peak 42.9K→9.4K, per-round 5-22s→2-5s); CI gate (all-green tests, red-first-then-green) enforced |
 | **Design judgment** | Truncation + spill-to-disk backtrack for token savings (not naive truncation — no middle information lost); hashline anchor-point editing; multi-agent takes parallel sub-agents + context isolation, explicitly "claiming no conceptual novelty, choosing an implementation orientation" |
 | **Learning / porting** | Well-commented source (16%–26% on critical paths, comments explain "why" rather than restate code) + a complete docs set (architecture design, 30+ pitfall records, tool design docs); low cost to pick up |
 
@@ -531,7 +531,7 @@ cjh has a built-in MCP client supporting stdio transport + JSON-RPC 2.0. After c
 
 ## 🧪 Testing & Quality Assurance
 
-**441 unit tests, all green** (root package + 93 in the `libs/cjterm` package, the latter run via `cd libs/cjterm && cjpm test`; one-shot `./scripts/test.sh` auto-switches to dynamic linking) + **67 PTY integration checks (16 scenarios)** (`python3 scripts/tui_pty_test.py`, real TUI driven via pseudo-terminal), covering all 15 built-in tools + Agent core + TUI rendering/events/thinking weaving + infrastructure:
+**1150 unit tests, all green** (5 root test suites; one-shot `./scripts/test.sh` auto-switches to dynamic linking) + **203 library-package tests** (6 libs, one-shot `./scripts/test_libs.sh`) + **77 PTY scenarios** (`python3 scripts/tui_pty_test.py`, real TUI driven via pseudo-terminal), covering all 15 built-in tools + Agent core + TUI rendering/events/thinking weaving + infrastructure:
 
 | Test domain | Coverage |
 |---|---|
