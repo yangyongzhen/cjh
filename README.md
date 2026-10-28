@@ -28,7 +28,7 @@ Say one sentence in the terminal: the agent plans, calls tools, reads results, a
 **Try it without spending a cent** (Mock mode: no network, no API key needed):
 
 ```bash
-curl -LO https://atomgit.com/qq8864/cjh/releases/download/v1.6.1/cjh-v1.6.1-linux-x64
+curl -LO https://api.atomgit.com/api/v5/repos/qq8864/cjh/releases/v1.6.1/attach_files/cjh-v1.6.1-linux-x64
 chmod +x cjh-v1.6.1-linux-x64
 CJH_MOCK=1 ./cjh-v1.6.1-linux-x64
 ```
@@ -40,7 +40,7 @@ export DEEPSEEK_API_KEY=sk-xxx     # or OPENAI_API_KEY / DASHSCOPE_API_KEY / CJH
 ./cjh-v1.6.1-linux-x64             # TUI by default; --cli for plain text, --mode json for headless
 ```
 
-Windows: grab [`cjh-v1.6.1-windows-x64-selfcontained.zip`](https://atomgit.com/qq8864/cjh/releases/download/v1.6.1/cjh-v1.6.1-windows-x64-selfcontained.zip) and unzip — keep the exe next to its 4 runtime DLLs. Building from source: see [Quick Start](#-quick-start).
+Windows: grab [`cjh-v1.6.1-windows-x64-selfcontained.zip`](https://api.atomgit.com/api/v5/repos/qq8864/cjh/releases/v1.6.1/attach_files/cjh-v1.6.1-windows-x64-selfcontained.zip) and unzip — keep the exe next to its 4 runtime DLLs. Building from source: see [Quick Start](#-quick-start).
 
 ![cjh session demo (real CLI output, mock mode)](docs/imgs/cjh-demo.gif)
 
