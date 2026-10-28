@@ -1,7 +1,7 @@
 # cjh 功能清单
 
-> 最后更新：2026-10-17
-> 版本：v1.5.3
+> 最后更新：2026-10-28
+> 版本：v1.6.1
 > 性质：cjh 已具备和支持的功能完整列表
 
 ---
@@ -247,6 +247,8 @@
 
 | 版本 | 主要功能 |
 |------|----------|
+| v1.6.1 | 默认系统提示词补 todo_write 任务列表规范（修 Tasks 面板不弹出）；双平台二进制包重打（SDK 1.2.0） |
+| v1.6.0 | **并行子代理阶段 C 全量落地（S1-S8）**：task 派发 explore/worker + DAG 资源依赖调度 + Agents 面板可观测（Ctrl+G 焦点/转录）+ 四键边界管控 + 审批队列化 + 路由策略（/parallel）；实测修复系列：限流退避重试（可中断）/流式 usage 接线/父回合失败显式提示/错峰派发/面板左右分栏（overlay 按列拼接）/歧义宽度 1 列；SDK 1.2.0 迁移 + setup_paths.sh；README/官网双语同步 |
 | v1.0.0 | 初始版本：TUI + Agent 循环 + 基础工具 |
 | v1.1.0 | V2c 记忆分层 + V2b 插件系统 + 树形会话 + V3b Ollama 支持 |
 | v1.2.0 | V2d 并发执行引擎 + P0-P2 工具效率提升 + 输入队列方案 B + Tasks 面板 + TodoWriteTool |
@@ -286,7 +288,7 @@
 | 优先级 | 功能 | 说明 |
 |--------|------|------|
 | ★★★ | P3 连接池 1→N | 传输层 `pooledTransport` 单槽→2-4 槽（host:port 键），主+摘要 provider 交替省建连 |
-| ★★★ | V4 agent 集群调度（V4a→V4d 分阶段） | 编排器 + 子 agent 并行（进程内写域门禁/契约/角色模型/模型路由/集群资源闸门/Swarm Skill）——核心差异化（`task` 工具已建 explore/worker 基础）；分阶段与可测验收口径见 方案与架构设计-v2 §4.5（3），逐条落地性评估（复用点/最小可用版本/工作量/判定）见 §4.5（5） |
+| ✅ 已落地 | V4 agent 集群调度 | 并行子代理阶段 C 全量落地（S1-S8）：DAG 资源依赖调度 + Agents 面板可观测 + 四键边界管控 + 审批队列 + 归账转录；明细见《子代理集群调度与路由-方案C》。进阶（异步 task/archetype/工件缓存）见《异步子代理与进阶能力-方案D》（待评审） |
 | ★★☆ | V2b 插件系统完整形态 | WASM 工具沙箱 + 中心仓 + `cjh install`（信任链三步已闭环，沙箱与仓库分发是剩余项） |
 | ★★☆ | V2e IM 网关 | Channel 抽象 + Web 渠道 + 审批远程化 |
 | ★★☆ | V3b 协议深化 | Provider Registry + 模型能力描述 |
@@ -298,5 +300,17 @@
 | 项 | 说明 |
 |----|------|
 | **独立开源库包** | cjllm（LLM 协议/SSE/多 provider）/ cjterm（TUI 渲染/主题/双平台输入）/ cjutil（UTF-8 安全/SHA256/SM2/hex/runWithBudget）/ cjlog（异步分级日志）/ cjconfig（配置管理）——均含 LICENSE + README + 发布指南 + examples + CI，已发布独立仓库 v0.1.0；cjcfg 为内部架构库不独立发布 |
-| **测试门禁** | `scripts/test.sh`（根包 441 用例，自动切动态链接配置）+ `python3 scripts/tui_pty_test.py`（TUI 伪终端 16 场景）+ `--mock` 端到端（工具调用链验证）；库包另有 `cd libs/cjterm && cjpm test`；交付前必须全绿 |
+| **测试门禁** | `scripts/test.sh`（根包 5 套件 1150 用例，自动切动态链接配置）+ `scripts/test_libs.sh`（六库 203 用例）+ `python3 scripts/tui_pty_test.py`（TUI 伪终端 77 场景）+ `--mock` 端到端（工具调用链验证）；换机器先跑 `scripts/setup_paths.sh` 改写 SDK/stdx 路径；交付前必须全绿 |
 | **发版流程** | 版本号三处同步（cjpm.toml + logo.cj VERSION + 标题栏注释）+ 打 tag + 双远端推送；重大更新递增中间位、小更新递增最后位 |
+
+## 二十、并行子代理（阶段 C，v1.6.0+）
+
+| 功能 | 说明 |
+|------|------|
+| **task 派发子代理** | explore（只读，不建依赖边）/ worker（可写），同回合多路并发；写冲突自动串行 |
+| **可观测三件套** | 右下 Agents 面板（轮次/token/当前工具实时，`Ctrl+G` 焦点切换单代理工具行）+ 全树归账总结条（`N agents (x✓ y✗) · ⚠N 低效派生`）+ 完整过程转录落盘（`~/.cjh/spill/`） |
+| **边界管控四键** | `max_subagents` / `max_tasks_per_turn` / `subagent_token_budget` / `subagent_timeout_ms`，超限结构化拒绝（`budget_exceeded` / `timeout`） |
+| **审批队列化** | 多路并发审批 `审批(n/m)`、`y` 只批队首、Ctrl+C 整体拒绝；审批项带 `[task:label]` 身份 |
+| **稳定并发** | 错峰派发（并发起跑 1s 间隔）+ 限流退避重试（400-Throttling/429/5xx，同 key 3 次退避可中断）+ 流式 usage 接线 + 父回合失败显式提示 |
+| **路由策略** | `/parallel on|off|auto`；1 轮稀薄结论事后纠偏（`[路由提示]`） |
+| **方案文档** | `docs/子代理集群调度与路由-方案C.md`（已落地）；`docs/异步子代理与进阶能力-方案D.md`（异步 task / archetype / 工件缓存，待评审） |
