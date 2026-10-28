@@ -254,6 +254,15 @@ The screenshot above is the cjh GUI client built with **cj-tauri** (a Tauri-like
 - **Topological group scheduling**: tools in the same group spawn concurrently, groups execute serially, maintaining LLM's original feedback order
 - **Performance baseline measurement**: `parallelBatches` / `parallelSavedMs` / `maxParallelism` three-dimensional stats
 
+### Parallel Subagents (Phase C, v1.6.0+)
+
+- **task tool dispatches subagents**: `explore` (read-only, no dependency edges) / `worker` (writable), multiple concurrent dispatches per turn; write conflicts auto-serialize
+- **Observability trio**: bottom-right **Agents panel** (live per-agent rounds/tokens/current tool, `Ctrl+G` focus switch to watch one agent's tool lines) + tree-wide accounting summary (`N agents (x✓ y✗) · ⚠N wasteful spawns`) + full process transcript on disk (`~/.cjh/spill/`)
+- **Boundary controls (4 keys)**: `max_subagents` / `max_tasks_per_turn` / `subagent_token_budget` / `subagent_timeout_ms` (configurable in settings); over-limit rejections are structured (`budget_exceeded` / `timeout`)
+- **Queued approvals**: concurrent approvals no longer overwrite each other — title shows `审批(n/m)`, `y` approves only the queue head, Ctrl+C rejects all; approval items carry `[task:label]` identity
+- **Stable concurrency (field-tested)**: staggered dispatch (concurrent starts spread 1s apart to flatten request bursts) + throttle backoff retry (400-Throttling/429/5xx retried on same key up to 3 times, Ctrl+C-interruptible) + streaming usage wiring (panel tokens go live) + explicit parent-turn failure lines (`⚠ 本回合执行失败（错误码）` — no more silent hangs)
+- **Routing policy**: `/parallel on|off|auto` toggles dispatch; thin 1-round subagent conclusions get a post-hoc `[路由提示]` nudge, teaching the model to handle small tasks directly
+
 ### LLM Provider Layer
 
 | Provider | Protocol | Notes |
@@ -278,9 +287,9 @@ The screenshot above is the cjh GUI client built with **cj-tauri** (a Tauri-like
 - **Thinking (reasoning models)**: collapsed mode (default) keeps a one-line summary pinned to the end of the message flow — `Ctrl+T` expands it; expanded mode **weaves each round's thinking at that round's start** (right before its own reply, pi-transcript order: what it thought, then the reply) instead of dumping everything at the end of the session; content lines use a two-space indent + muted italics + the background card; `PageUp`/`Ctrl+U` scrolls back through earlier rounds' thinking; an over-long round is **middle-truncated** (head and tail kept, order preserved per round); rendering uses incremental folding with frozen head segments (typical frame 4459µs→311µs)
 - **Multi-line editor**: Ctrl+E to enter, Alt+Enter to submit
 - **Slash command completion**: `/` triggers dropdown completion
-- **Tasks panel**: Agent's built-in task list displayed in real time
+- **Tasks panel**: Agent's built-in task list displayed in real time (bottom-left, side-by-side with the Agents panel, bottom-aligned)
 - **Round summary bar**: `✓ 2 rounds · 3 tools · 42.6s · 1.5k tokens · 99% cached`
-- **Approval popup**: dangerous operations with embedded y/n approval
+- **Approval popup**: dangerous operations with embedded y/n approval, queued for concurrent requests (`审批(n/m)`, y approves the queue head only)
 - **Welcome view**: two-column layout (logo+model / Tips+sessions)
 
 ### Web Support (v1.3.0)
