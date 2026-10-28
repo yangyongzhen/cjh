@@ -1,5 +1,7 @@
 package cjh
 
+import cjutil.*
+
 import std.collection.*
 import std.env.*
 import std.fs.*
@@ -11,6 +13,7 @@ import cjllm.*
 import cjcfg.*
 import cjutil.*
 import cjh.tools.*
+import cjh.agent.*
 import cjterm.*
 import stdx.crypto.keys.*
 
@@ -24,7 +27,7 @@ import stdx.crypto.keys.*
  */
 
 func coreTestTempDir(name: String): String {
-    let dir = "/tmp/cjh_ut_" + name
+    let dir = tmpPath("cjh_ut_") + name
     removeTreeForTest(dir)
     Directory.create(dir, recursive: true)
     return dir
@@ -35,11 +38,11 @@ func coreWriteTextFile(path: String, content: String): Unit {
 }
 
 func removeTreeForTest(path: String): Unit {
+    // Cangjie 1.2.0 迁移 + 跨平台：原实现 shell 出去调 `/bin/bash -c "rm -rf"`，
+    // Windows 上没有 /bin/bash、异常被吞 → 清理静默失败，下一次 Directory.create
+    // 报 "path is already exists"（skills/trust 等用例因此 ERROR）
     try {
-        var args = Array<String>(2, repeat: "")
-        args[0] = "-c"
-        args[1] = "rm -rf '" + path + "'"
-        let _ = executeWithOutput("/bin/bash", args)
+        removeIfExists(path, recursive: true)
     } catch (e: Exception) {
         // 忽略清理失败
     }
@@ -134,7 +137,7 @@ public class CoreSkillsTest {
     @TestCase
     public func testLoadSkillsNonexistentDir(): Unit {
         var enabled = ArrayList<String>()
-        @Assert(loadSkills("/tmp/cjh_ut_no_such_skills_dir", enabled), "")
+        @Assert(loadSkills(tmpPath("cjh_ut_no_such_skills_dir"), enabled), "")
     }
 
     @TestCase
@@ -203,7 +206,7 @@ public class CoreTaskToolTest {
 
     @TestCase
     public func testTaskToolSpawn(): Unit {
-        let tool = TaskTool({ description, prompt, subagentType =>
+        let tool = TaskTool({ description, prompt, subagentType, _ =>
             TaskSpawnResult("子代理结果: ${prompt}", 3, 100, 50)
         })
         var args = JsonObject()
@@ -212,14 +215,14 @@ public class CoreTaskToolTest {
         args.put("subagent_type", JsonString("worker"))
         let result = tool.execute(args)
         @Assert(result.isError, false)
-        @Assert(result.content.contains("子代理结果"), true)
-        @Assert(result.content.contains("迭代 3"), true)
-        @Assert(result.content.contains("=== 子代理结果结束 ==="), true)
+        @Assert(result.content.contains("├─ [worker] 测试任务 · ok · 迭代 3"), true)
+        @Assert(result.content.contains("↑100 ↓50"), true)
+        @Assert(result.content.contains("└─ (task 结束)"), true)
     }
 
     @TestCase
     public func testTaskToolMissingParams(): Unit {
-        let tool = TaskTool({ _, _, _ => TaskSpawnResult("", 0, 0, 0) })
+        let tool = TaskTool({ _, _, _, _ => TaskSpawnResult("", 0, 0, 0) })
         var args = JsonObject()
         args.put("description", JsonString("只有描述"))
         let result = tool.execute(args)
@@ -228,7 +231,7 @@ public class CoreTaskToolTest {
 
     @TestCase
     public func testTaskToolInvalidSubagentType(): Unit {
-        let tool = TaskTool({ _, _, _ => TaskSpawnResult("", 0, 0, 0) })
+        let tool = TaskTool({ _, _, _, _ => TaskSpawnResult("", 0, 0, 0) })
         var args = JsonObject()
         args.put("description", JsonString("d"))
         args.put("prompt", JsonString("p"))
@@ -240,7 +243,7 @@ public class CoreTaskToolTest {
 
     @TestCase
     public func testTaskToolEmptyPrompt(): Unit {
-        let tool = TaskTool({ _, _, _ => TaskSpawnResult("", 0, 0, 0) })
+        let tool = TaskTool({ _, _, _, _ => TaskSpawnResult("", 0, 0, 0) })
         var args = JsonObject()
         args.put("description", JsonString("d"))
         args.put("prompt", JsonString(""))
@@ -476,7 +479,7 @@ public class CoreTrustTest {
 
     @TestCase
     public func testReadTrustListMissing(): Unit {
-        @Assert(readTrustList("/tmp/cjh_ut_no_such/trusted-publishers").size, 0)
+        @Assert(readTrustList(tmpPath("cjh_ut_no_such/trusted-publishers")).size, 0)
     }
 
     // 端到端：签名插件在开放/严格模式下的加载行为
@@ -544,8 +547,8 @@ public func testRefPanelNeedsConfirmOnlyForNetworkUpdate(): Unit {
     @Assert(refPanelNeedsConfirm(["/ref", "update"]), true)
     @Assert(refPanelNeedsConfirm(["/ref", "update", "--branch", "b"]), true)
     @Assert(refPanelNeedsConfirm(["/ref", "update", "--yes"]), false)
-    @Assert(refPanelNeedsConfirm(["/ref", "update", "--source", "/tmp/x"]), false)
-    @Assert(refPanelNeedsConfirm(["/ref", "update", "--source", "/tmp/x", "--dry-run"]), false)
+    @Assert(refPanelNeedsConfirm(["/ref", "update", "--source", tmpPath("x")]), false)
+    @Assert(refPanelNeedsConfirm(["/ref", "update", "--source", tmpPath("x"), "--dry-run"]), false)
     // 纯本地动作一律不拦
     @Assert(refPanelNeedsConfirm(["/ref", "status"]), false)
     @Assert(refPanelNeedsConfirm(["/ref", "search", "ArrayList"]), false)
@@ -565,8 +568,8 @@ public func testRefPanelOptionOfReadsValueOrDefault(): Unit {
 
 @Test
 public func testRefPanelConfirmTextShowsPlanAndGate(): Unit {
-    let t = refPanelConfirmText(["/ref", "update"], "/tmp/corpus")
-    @Assert(t.contains("/tmp/corpus"), true)
+    let t = refPanelConfirmText(["/ref", "update"], tmpPath("corpus"))
+    @Assert(t.contains(tmpPath("corpus")), true)
     @Assert(t.contains("CangjieSkills"), true)
     @Assert(t.contains("cangjie-1.0.5"), true)
     @Assert(t.contains("--yes"), true)
@@ -616,4 +619,440 @@ public func testCliHelpTextMentionsConfigAndCredentialPaths(): Unit {
     @Assert(help.contains("~/.cjh/config.json"), true)
     @Assert(help.contains("~/.cjh/auth.json"), true)
     @Assert(help.contains("https://github.com/yangyongzhen/cjh"), true)
+}
+
+// ==================== 并行子代理 + 上下文隔离（方案 §5-§7） ====================
+
+/**
+ * 父代理脚本 provider（S2 后父与子不再共享实例）：
+ * call 1 → 派 task 工具调用；call 2+ → 最终答复。
+ * spawnTwice=true 时 call 2 再派一个 task（供"每子代理独立 provider"用例）。
+ */
+class SubagentScriptProvider <: LlmProvider {
+    public var spawnTwice: Bool = false
+    public var callCount: Int64 = 0
+
+    public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
+        onDelta: (String) -> Unit, onReasoning: (String) -> Unit,
+        onTokenEstimate: (Int64) -> Unit, isCancelled: () -> Bool): ModelResponse {
+        callCount += 1
+        if (callCount == 1 || (this.spawnTwice && callCount == 2)) {
+            var calls = ArrayList<ToolCall>()
+            var a = JsonObject()
+            a.put("description", JsonString("调查任务"))
+            a.put("prompt", JsonString("查一下"))
+            a.put("subagent_type", JsonString("explore"))
+            calls.add(ToolCall("t1", "task", a))
+            return ModelResponse("派发子代理", calls)
+        }
+        return ModelResponse("parent done", ArrayList<ToolCall>())
+    }
+}
+
+/**
+ * 子代理脚本 provider（S2：由工厂每次派生新建实例，模拟真实接线）：
+ * 首次调用捕获简报（最后一条 user 消息），按 childBehavior 行动：
+ * 0=正常文本答复；1=调 read_file（配 capability 触发审批）；2=抛异常。
+ */
+class SubChildProvider <: LlmProvider {
+    public var childBehavior: Int64 = 0
+    public var callCount: Int64 = 0
+    public var lastChildUser: String = ""
+    public var aborted: Bool = false
+    public var lastToolObserved: String = ""  // S6：子代理看到的最后一条 tool 结果（越界写拒绝断言）
+
+    public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
+        onDelta: (String) -> Unit, onReasoning: (String) -> Unit,
+        onTokenEstimate: (Int64) -> Unit, isCancelled: () -> Bool): ModelResponse {
+        callCount += 1
+        // S6：捕获子代理看到的最后一条 tool 结果（供"越界写被拒"断言）
+        var i = messages.size - 1
+        while (i >= 0) {
+            if (messages[i].role == "tool") {
+                this.lastToolObserved = messages[i].content
+                break
+            }
+            i -= 1
+        }
+        var j = messages.size - 1
+        while (j >= 0) {
+            if (messages[j].role == "user") {
+                this.lastChildUser = messages[j].content
+                break
+            }
+            j -= 1
+        }
+        match (this.childBehavior) {
+            case 1 =>
+                var calls = ArrayList<ToolCall>()
+                var a = JsonObject()
+                a.put("path", JsonString(tmpPath("cjh_ut_sub/x.cj")))
+                calls.add(ToolCall("s1", "read_file", a))
+                return ModelResponse("读一下", calls)
+            case 2 =>
+                throw LlmException("子代理模拟异常")
+            case 3 =>
+                // S4 超时用例：每轮 300ms（> 测试超时上限 100ms）
+                sleep(Duration.millisecond * 300)
+                return ModelResponse("child done slow", ArrayList<ToolCall>())
+            case 4 =>
+                // S6 越界写用例：call1 写域外文件；call2（收到拒绝结果后）收场
+                if (callCount == 1) {
+                    var calls = ArrayList<ToolCall>()
+                    var w = JsonObject()
+                    w.put("path", JsonString(tmpPath("cjh_ut_scope/outside/x.cj")))
+                    w.put("content", JsonString("boom"))
+                    calls.add(ToolCall("w1", "write_file", w))
+                    return ModelResponse("写一下", calls)
+                }
+                return ModelResponse("child saw denial", ArrayList<ToolCall>())
+            case 5 =>
+                // S7 转录用例：第 1 轮 read_file（制造触碰文件），第 2 轮起正常收场
+                if (callCount == 1) {
+                    var calls = ArrayList<ToolCall>()
+                    var a = JsonObject()
+                    a.put("path", JsonString(tmpPath("cjh_ut_sub/x.cj")))
+                    calls.add(ToolCall("s5", "read_file", a))
+                    return ModelResponse("读一下", calls)
+                }
+                return ModelResponse("child done", ArrayList<ToolCall>())
+            case 6 =>
+                // S3 复核 #8 超时归账用例：第 1 轮带"阶段性结论"文本 + read_file
+                // （文本进 history），第 2 轮拖住 → 墙钟超时后父应拿到"已产出部分"
+                if (callCount == 1) {
+                    var calls = ArrayList<ToolCall>()
+                    var a = JsonObject()
+                    a.put("path", JsonString(tmpPath("cjh_ut_sub/x.cj")))
+                    calls.add(ToolCall("s6", "read_file", a))
+                    return ModelResponse("阶段性结论：已定位问题在 loop.cj", calls)
+                }
+                sleep(Duration.millisecond * 400)
+                return ModelResponse("child done late", ArrayList<ToolCall>())
+            case _ =>
+                return ModelResponse("child done", ArrayList<ToolCall>())
+        }
+    }
+
+    public override func abort(): Unit {
+        this.aborted = true
+    }
+}
+
+/** 子代理 provider 工厂（S2 测试用）：每次派生新建实例并记录，供实例隔离断言 */
+class SubChildFactory {
+    public var childBehavior: Int64 = 0
+    public let created = ArrayList<SubChildProvider>()
+
+    public func make(): LlmProvider {
+        let p = SubChildProvider()
+        p.childBehavior = this.childBehavior
+        this.created.add(p)
+        return p
+    }
+}
+
+@Test
+public class SubagentIsolationTest {
+
+    // 组装父 agent + 全量 registry（含 task / todo_write），TaskTool 已接线 spawnSubagent
+    private func buildParent(provider: LlmProvider, cap: Capability):
+        (Agent, ToolRegistry, AgentConfig) {
+        return this.buildParent(provider, cap, SubChildFactory())
+    }
+
+    // S2 重载：子代理 provider 由工厂每次派生新建（模拟真实接线），created 供隔离断言
+    private func buildParent(provider: LlmProvider, cap: Capability, factory: SubChildFactory):
+        (Agent, ToolRegistry, AgentConfig) {
+        let registry = ToolRegistry()
+        registry.register(ReadTool())
+        registry.register(GrepTool())
+        registry.register(WriteTool())
+        registry.register(BashTool())
+        registry.register(TodoWriteTool(
+            { _ => 1 }, { _ => () }, { _ => () }, { _, _ => () }, { => () }, { => "Tasks:" }))
+        let config = AgentConfig("parent system", 5, cap, 0, 0, 6, 6000,
+            tmpPath("cjh_ut_sub_spill"), "sess-sub")
+        let agent = Agent(provider, registry, config)
+        registry.register(TaskTool({ d, p, t, s =>
+            spawnSubagent(factory.make(), registry, agent, config, d, p, t, s)
+        }))
+        return (agent, registry, config)
+    }
+
+    private func lastToolResult(msgs: ArrayList<ChatMessage>, name: String): String {
+        var found = ""
+        for (m in msgs) {
+            if (m.role == "tool" && m.name == name) {
+                found = m.content
+            }
+        }
+        return found
+    }
+
+    @TestCase
+    public func testSubagentRegistryView(): Unit {
+        // G2/G3/G4：explore 只读视图物理不可达写工具；worker 全量但剥离 task/todo_write
+        let (_, registry, _) = this.buildParent(SubagentScriptProvider(), Capability())
+        let explore = buildSubagentRegistry(registry, "explore")
+        @Assert(explore.has("read_file"), true)
+        @Assert(explore.has("grep"), true)
+        @Assert(explore.has("write_file"), false)
+        @Assert(explore.has("bash"), false)
+        @Assert(explore.has("task"), false)
+        @Assert(explore.has("todo_write"), false)
+        let worker = buildSubagentRegistry(registry, "worker")
+        @Assert(worker.has("read_file"), true)
+        @Assert(worker.has("write_file"), true)
+        @Assert(worker.has("bash"), true)
+        @Assert(worker.has("task"), false)
+        @Assert(worker.has("todo_write"), false)
+    }
+
+    @TestCase
+    public func testSubagentConfigInheritsCapabilityAndIsolatesSpill(): Unit {
+        // G1 capability 继承（子 ⊆ 父）+ G6 spill 落盘按 /sub-<type> 隔离
+        let cap = Capability()
+        cap.enabled = true
+        cap.tools.add("read_file")
+        let (_, _, config) = this.buildParent(SubagentScriptProvider(), cap)
+        let sub = buildSubagentConfig(config, "explore")
+        @Assert(sub.capability.enabled == true, true)
+        @Assert(sub.capability.tools.size == 1, true)
+        @Assert(sub.capability.tools[0] == "read_file", true)
+        // 短生命周期：maxIterations=5，compaction 关闭
+        @Assert(sub.maxIterations == 5, true)
+        @Assert(sub.compactThreshold == 0, true)
+        @Assert(sub.compactTokenThreshold == 0, true)
+        @Assert(sub.sessionId == "sess-sub/sub-explore", true)
+        @Assert(sub.spillDir == tmpPath("cjh_ut_sub_spill"), true)
+        @Assert(sub.toolResultMaxChars == config.toolResultMaxChars, true)
+    }
+
+    @TestCase
+    public func testSpawnSubagentOkStatusAndBrief(): Unit {
+        let provider = SubagentScriptProvider()
+        let factory = SubChildFactory()
+        let (agent, _, _) = this.buildParent(provider, Capability(), factory)
+        // 预置父历史（assistant toolCalls 与 tool 结果配对，否则 repairHistory 会剥孤儿
+        // tool 消息）→ 简报摘要应携带该路径（D1 上下文块）
+        var history = ArrayList<ChatMessage>()
+        history.add(ChatMessage("user", "主任务"))
+        let mainPath = tmpPath("cjh_ut_sub/main.cj")
+        var hc = ArrayList<ToolCall>()
+        var ha = JsonObject()
+        ha.put("path", JsonString(mainPath))
+        hc.add(ToolCall("h1", "read_file", ha))
+        history.add(ChatMessage("assistant", "读主文件", hc))
+        history.add(ChatMessage("tool", "已读取 ${mainPath} 的内容", "h1", "read_file"))
+        agent.loadHistory(history)
+
+        let summary = agent.run("派个子任务")
+        @Assert(summary.reply.contains("parent done"), true)
+        // 简报：子任务 prompt + 父会话上下文块（摘要里的涉及文件）
+        @Assert(factory.created.size, 1)
+        @Assert(factory.created[0].lastChildUser.contains("查一下"), true)
+        @Assert(factory.created[0].lastChildUser.contains("--- 父会话上下文"), true)
+        @Assert(factory.created[0].lastChildUser.contains(mainPath), true)
+        // 树状结果：ok 状态 + 树形头尾（#8）
+        let taskResult = this.lastToolResult(agent.getMessages(), "task")
+        @Assert(taskResult.contains("├─ [explore] 调查任务 · ok · 迭代 1"), true)
+        @Assert(taskResult.contains("└─ (task 结束)"), true)
+        // S5(c) 事后纠偏：1 轮完成 + 结论 10 字符（<200）→ 尾部挂 [路由提示]
+        @Assert(taskResult.contains("[路由提示]"), true)
+        @Assert(taskResult.contains("请直接处理"), true)
+    }
+
+    @TestCase
+    public func testTaskToolRoutingOff(): Unit {
+        // S5(d)：/parallel off → task 派发物理关闭（execute 直接拒绝，不进 spawnFn）
+        let old = SubagentRouting.current()
+        SubagentRouting.set("off")
+        // 仓颉 lambda 不能捕获可变局部变量：ArrayList 包装哨兵
+        let spawned = ArrayList<Bool>()
+        spawned.add(false)
+        let tool = TaskTool({ _, _, _, _ =>
+            spawned[0] = true
+            TaskSpawnResult("不应到达", 0, 0, 0, "ok")
+        })
+        var a = JsonObject()
+        a.put("description", JsonString("x"))
+        a.put("prompt", JsonString("y"))
+        a.put("subagent_type", JsonString("explore"))
+        let r = tool.execute(a)
+        SubagentRouting.set(old)  // 恢复（静态状态，别的用例还要用）
+        @Assert(r.isError, false)
+        @Assert(r.content.contains("并行子代理已关闭"), true)
+        @Assert(spawned[0], false)
+    }
+
+    @TestCase
+    public func testSpawnSubagentFailedStatus(): Unit {
+        // 子代理 LLM 调用抛异常 → 结构化 failed 回传，父回合不受影响继续完成
+        let provider = SubagentScriptProvider()
+        let factory = SubChildFactory()
+        factory.childBehavior = 2
+        let (agent, _, _) = this.buildParent(provider, Capability(), factory)
+        let summary = agent.run("派失败子任务")
+        @Assert(summary.reply.contains("parent done"), true)
+        let taskResult = this.lastToolResult(agent.getMessages(), "task")
+        @Assert(taskResult.contains("· failed"), true)
+        @Assert(taskResult.contains("└─ (task 结束)"), true)
+    }
+
+    @TestCase
+    public func testSpawnSubagentApprovalPropagation(): Unit {
+        // G5：子代理审批经父通道，reason 带 [task:label] 前缀（TUI/WS 展示 reason，协议零变更）
+        let cap = Capability()
+        cap.enabled = true
+        cap.tools.add("task")
+        cap.tools.add("read_file")
+        cap.approval.add("read_file")
+        let provider = SubagentScriptProvider()
+        let factory = SubChildFactory()
+        factory.childBehavior = 1
+        let (agent, _, _) = this.buildParent(provider, cap, factory)
+        let seen = ArrayList<String>()
+        agent.onApproval = { _, _, reason =>
+            seen.add(reason)
+            false
+        }
+        let summary = agent.run("派审批子任务")
+        @Assert(summary.reply.contains("parent done"), true)
+        @Assert(seen.size > 0, true)
+        @Assert(seen[0].contains("[task:调查任务]"), true)
+        @Assert(seen[0].contains("read_file"), true)
+    }
+
+    @TestCase
+    public func testSpawnSubagentProvidersNotShared(): Unit {
+        // S2（评审 P0-2）：每次派生新建 provider 实例——OpenAiProvider.currentTransport
+        // 是单槽，共享实例时并发子代理的 abort() 会关到别人的连接
+        let provider = SubagentScriptProvider()
+        provider.spawnTwice = true
+        let factory = SubChildFactory()
+        let (agent, _, _) = this.buildParent(provider, Capability(), factory)
+        let summary = agent.run("连派两个子任务")
+        @Assert(summary.reply.contains("parent done"), true)
+        // 两次派生 → 工厂创建 2 个实例（互不共享），父 provider 不被子代理调用
+        @Assert(factory.created.size, 2)
+        @Assert(factory.created[0].callCount, 1)
+        @Assert(factory.created[1].callCount, 1)
+        @Assert(provider.callCount, 3)  // 父：task → task → final
+    }
+
+    @TestCase
+    public func testSpawnSubagentBudgetExceeded(): Unit {
+        // S4：本回合派生上限触顶 → 后续派生结构化 budget_exceeded（子代理不运行）
+        let provider = SubagentScriptProvider()
+        provider.spawnTwice = true
+        let factory = SubChildFactory()
+        let (agent, _, _) = this.buildParent(provider, Capability(), factory)
+        agent.subagentScheduler = Some(SubagentScheduler(4, 1, 0, 0))  // 每回合只许派 1 个
+        let summary = agent.run("连派两个子任务")
+        @Assert(summary.reply.contains("parent done"), true)
+        let taskResult = this.lastToolResult(agent.getMessages(), "task")
+        @Assert(taskResult.contains("· budget_exceeded"), true)
+        @Assert(taskResult.contains("请直接处理本任务"), true)
+        // factory.make() 是 spawnSubagent 的实参（求值先于闸门），实例会建但子代理不运行：
+        @Assert(factory.created.size, 2)
+        @Assert(factory.created[1].callCount, 0)  // 第二个派生被闸门拦下，LLM 一次未调
+    }
+
+    @TestCase
+    public func testSpawnSubagentTimeout(): Unit {
+        // S4：墙钟超时 → 结构化 timeout（子代理 300ms/轮 > 100ms 上限）
+        let provider = SubagentScriptProvider()
+        let factory = SubChildFactory()
+        factory.childBehavior = 3
+        let (agent, _, _) = this.buildParent(provider, Capability(), factory)
+        agent.subagentScheduler = Some(SubagentScheduler(4, 0, 0, 100))
+        let summary = agent.run("派慢子任务")
+        @Assert(summary.reply.contains("parent done"), true)
+        let taskResult = this.lastToolResult(agent.getMessages(), "task")
+        @Assert(taskResult.contains("· timeout"), true)
+        @Assert(taskResult.contains("已中断并回收引用"), true)
+    }
+
+    @TestCase
+    public func testSpawnSubagentTimeoutCarriesPartialOutput(): Unit {
+        // S3 复核 #8：方案C §6 要求超时回父文本带上"已产出部分：<最后文本>"——
+        // 此前只回一句"已超时"，子代理已经做出来的半截结论被丢弃（白烧 token），
+        // 且超时路径轮次不归账（面板恒 0）
+        let provider = SubagentScriptProvider()
+        let factory = SubChildFactory()
+        factory.childBehavior = 6  // 第 1 轮：文本+read_file（文本进 history）；第 2 轮拖住
+        let (agent, _, _) = this.buildParent(provider, Capability(), factory)
+        agent.subagentScheduler = Some(SubagentScheduler(4, 0, 0, 150))
+        let summary = agent.run("派一个会超时的子任务")
+        @Assert(summary.reply.contains("parent done"), true)
+        let taskResult = this.lastToolResult(agent.getMessages(), "task")
+        @Assert(taskResult.contains("· timeout"), true)
+        @Assert(taskResult.contains("已产出部分"), true)
+        @Assert(taskResult.contains("阶段性结论"), true)
+    }
+
+    @TestCase
+    public func testSpawnSubagentWriteScopeDenied(): Unit {
+        // S6：task scope 限定写域 → 域外写被拒（AND 收窄，只收窄绝不放宽；
+        // 红线核对：Capability 默认宽松语义未动——本用例未配置 capability）
+        let provider = SubagentScriptProvider()
+        let factory = SubChildFactory()
+        factory.childBehavior = 4
+        let (agent, _, config) = this.buildParent(provider, Capability(), factory)
+        // 父 config 不设 writeScope（父不受限）；scope 仅经 task 参数传给子代理
+        @Assert(config.writeScope.size, 0)
+        var a = JsonObject()
+        a.put("description", JsonString("越界写"))
+        a.put("prompt", JsonString("写文件"))
+        a.put("subagent_type", JsonString("worker"))
+        a.put("scope", JsonString(tmpPath("cjh_ut_scope/allowed/*")))
+        let tool = TaskTool({ d, p, t, s =>
+            spawnSubagent(factory.make(), ToolRegistry(), agent, config, d, p, t, s)
+        })
+        let r = tool.execute(a)
+        @Assert(r.isError, false)
+        // 子代理第二轮应观察到 write_file 被写域拒绝
+        @Assert(factory.created[0].lastToolObserved.contains("超出本子代理写域"), true)
+        @Assert(factory.created[0].lastToolObserved.contains(tmpPath("cjh_ut_scope/outside/x.cj")), true)
+    }
+
+    @TestCase
+    public func testSpawnSubagentTranscriptAndFilesTouched(): Unit {
+        // S7：转录落盘（spillDir/<sid>/sub-<type>/transcript-<agentId>.md，
+        // 含子代理完整过程）+ 触碰文件导出（子代理 read_file → filesTouched）
+        let spillDir = tmpPath("cjh_ut_s7_transcript")
+        try { removeIfExists(spillDir, recursive: true) } catch (e: Exception) { () }
+        let provider = SubagentScriptProvider()
+        let factory = SubChildFactory()
+        factory.childBehavior = 5  // 第 1 轮 read_file（触碰文件），第 2 轮收场
+        let (agent, _, _) = this.buildParent(provider, Capability(), factory)
+        // buildParent 的 spillDir = /tmp/cjh_ut_sub_spill（sess-sub）；清理后断言
+        try { removeIfExists(tmpPath("cjh_ut_sub_spill"), recursive: true) } catch (e: Exception) { () }
+        // 子代理要读的目标文件必须存在——否则它 5 轮耗尽在重试读上，产不出最终结论
+        // （Directory.create 不幂等：已存在目录会抛 FSException，先清再建）
+        try { removeIfExists(tmpPath("cjh_ut_sub"), recursive: true) } catch (e: Exception) { () }
+        Directory.create(tmpPath("cjh_ut_sub"), recursive: true)
+        File.writeTo(tmpPath("cjh_ut_sub/x.cj"), "hello sub".toArray())
+        let summary = agent.run("派转录子任务")
+        @Assert(summary.reply.contains("parent done"), true)
+        let taskResult = this.lastToolResult(agent.getMessages(), "task")
+        // 转录路径在树尾，文件真实存在且含子代理过程
+        // （期望值用 tmpPath 拼并归一成 `/`：转录路径的输出统一正斜杠）
+        let spillExpect = tmpPath("cjh_ut_sub_spill").replace("\\", "/")
+        @Assert(taskResult.contains("转录: " + spillExpect + "/sess-sub/sub-explore/transcript-"), true)
+        @Assert(taskResult.contains("触碰文件: " + tmpPath("cjh_ut_sub/x.cj")), true)
+        let line = taskResult.split("\n", -1)
+        var transcriptPath = ""
+        for (l in line) {
+            if (l.contains("转录: ")) {
+                transcriptPath = l.replace("转录: ", "")
+            }
+        }
+        @Assert(transcriptPath.size > 0, true)
+        @Assert(exists(transcriptPath), true)
+        let content = String.fromUtf8(File.readFrom(transcriptPath))
+        @Assert(content.contains("## user"), true)
+        @Assert(content.contains("child done"), true)
+        try { removeIfExists(tmpPath("cjh_ut_sub_spill"), recursive: true) } catch (e: Exception) { () }
+    }
 }

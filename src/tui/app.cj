@@ -91,6 +91,13 @@ public class TuiApp {
     private let idleTimeoutSecs: Int64
     // 审批/确认弹窗（替代旧的状态行内联审批 UI）
     private var confirmDialog: ConfirmDialog = ConfirmDialog()
+    // Agents 面板（S3：子代理树状态，渲染在 Tasks 面板之上）
+    private var agentsPanel: AgentsPanel = AgentsPanel()
+    // 焦点（Ctrl+G 循环）：0=父，否则子 agentId；聚焦子代理时其行事件进主流（│ 前缀）
+    private var focusAgentId: Int64 = 0
+    private var focusLock: Mutex = Mutex()
+    private var focusCandidates: ArrayList<Int64> = ArrayList<Int64>()  // 可聚焦子代理 id（最近快照）
+    private var focusNames: ArrayList<(Int64, String)> = ArrayList<(Int64, String)>()  // id → kind·label（切换反馈用）
     // provider 配置表单弹窗（/provider 无参数时弹出）
     private var providerDialog: FormDialog = FormDialog()
     // 视图切换标签栏（对话 / 帮助）
@@ -114,15 +121,23 @@ public class TuiApp {
     private var editor: MultiLineEditor = MultiLineEditor()
     private var editMode: Bool = false
 
-    // ── 审批链（危险操作需人工确认）──
-    // agent 线程 requestApproval() 阻塞等待；主循环读 y/n 后写回结果
+    // ── 审批链（危险操作需人工确认；S1 队列化：并发请求排队，y 只批队首）──
+    // agent 线程 requestApproval() 阻塞等待；主循环 y/n 写回队首结果并弹出下一项
     private var approvalLock: Mutex = Mutex()
-    private var pendingApproval: Option<String> = None
-    private var approvalResult: Option<Bool> = None
+    private var approvalQueue: ArrayList<String> = ArrayList<String>()   // 排队中的审批 prompt（队首=当前弹窗）
+    private var approvalIds: ArrayList<String> = ArrayList<String>()     // 与 approvalQueue 平行的请求 id
+    private var approvalLabels: ArrayList<String> = ArrayList<String>()  // 与 approvalQueue 平行的 agent 身份（G-B；父自身审批为空串）
+    private var approvalAnswers: HashMap<String, Bool> = HashMap<String, Bool>()  // 请求 id → 结果（等待方各自读取）
+    private var approvalSeq: AtomicInt64 = AtomicInt64(0)                // 请求 id 发生器（单调，不复用）
+    // G-A：审批等待上限（ms）——到点按拒绝收场（与服务端语义对齐），0=不限。
+    // 用户离开终端时，排队审批不能让父回合永久卡死
+    public var approvalTimeoutMs: Int64 = 300000
+    private var approvalTotal: Int64 = 0                                 // 本批审批总数（队列空→非空时重置）
+    private var approvalAnswered: Int64 = 0                              // 本批已答复数
 
     // 斜杠命令候选（对齐 main.cj handleSlashCommand 支持的命令）
     private static let SLASH_COMMANDS: Array<String> = [
-        "/help", "/new", "/resume", "/model", "/provider", "/skills", "/ref", "/compact", "/tree", "/fork", "/settings", "/task", "/theme", "/quit",
+        "/help", "/new", "/resume", "/model", "/provider", "/skills", "/ref", "/compact", "/tree", "/fork", "/settings", "/task", "/theme", "/parallel", "/quit",
     ]
 
     // 事件回调：提交输入时触发（外部接线）
@@ -181,15 +196,27 @@ public class TuiApp {
         tabs.add("帮助")
         this.tabBar.setTabs(tabs)
         this.tabBar.onSelect = { _ => this.markDirty() }
-        // 审批弹窗回调：把 y/n 结果写回等待中的 agent 线程
+        // 审批弹窗回调：把 y/n 结果写回队首等待线程，队列非空则弹出下一项（S1 队列化）
         this.confirmDialog.onResult = { ok =>
+            var next: Option<(String, String)> = None
             this.approvalLock.lock()
             try {
-                this.approvalResult = Some(ok)
-                // 审批完成：清除待审批状态，后续按键恢复正常分发
-                this.pendingApproval = None
+                if (this.approvalQueue.size > 0) {
+                    let id = this.approvalIds.remove(at: 0)
+                    this.approvalQueue.remove(at: 0)
+                    this.approvalLabels.remove(at: 0)
+                    this.approvalAnswers.add(id, ok)
+                    this.approvalAnswered += 1
+                    if (this.approvalQueue.size > 0) {
+                        next = Some((this.approvalTitle(), this.approvalQueue[0]))
+                    }
+                }
             } finally {
                 this.approvalLock.unlock()
+            }
+            match (next) {
+                case Some((t, p)) => this.confirmDialog.show(t, p, "[y]=同意 [n]/[Esc]=拒绝")
+                case None => ()
             }
             this.markDirty()
         }
@@ -266,7 +293,8 @@ public class TuiApp {
                 // 完整内容随提交进入 agent 会话；历史持久化
                 let echoLine = this.inputBox.lastEchoText()
                 // 行内卡片只用 fg 改色（❯ accent → 正文素白），不用 reset（保整行 bg）
-                this.appendUserLine(Ansi.fg(Ansi.THEME_ACCENT) + "❯ " + Ansi.fg(Ansi.COLOR_TEXT) +
+                // 图标与输入框提示符同判据：conhost 缺 ❯ 字形时回显也用 "> "
+                this.appendUserLine(Ansi.fg(Ansi.THEME_ACCENT) + this.echoIcon() + Ansi.fg(Ansi.COLOR_TEXT) +
                     (if (echoLine.size > 0) { echoLine } else { finalLine }))
                 this.saveHistory()
                 this.appendOutput("")  // 空行：分隔用户输入与 Agent 回复
@@ -300,6 +328,16 @@ public class TuiApp {
         return this.term.isUtf8()
     }
 
+    /**
+     * 用户输入回显前缀（与输入框提示符同一判据）
+     *
+     * conhost（PowerShell 老控制台）字体常缺 U+276F ❯ → 显示成方框，
+     * 与输入框共用 `useFancyPromptGlyphs()`：不可靠时降级成 "> "。
+     */
+    private func echoIcon(): String {
+        return if (this.term.isUtf8() && useFancyPromptGlyphs()) { "❯ " } else { "> " }
+    }
+
     public func run(): Unit {
         this.term.enableRaw()
         // Windows enableRaw 会主动切换控制台代码页（936→65001），晚于组件构造——
@@ -307,9 +345,15 @@ public class TuiApp {
         // 初值可能过时，此处统一重设，消除"logo 已 ASCII、弹窗仍 UTF-8"新混排
         let utf8Now = this.term.isUtf8()
         this.inputBox.setUtf8(utf8Now)
+        // 图标（❯/🔍）与 UTF-8 分开判：conhost 字体缺 U+276F 字形会显示成方框
+        // （Windows Terminal 正常）→ 非现代终端降级成 "> "（CJH_ASCII_ICONS=1 可强制）
+        this.inputBox.setFancyIcons(useFancyPromptGlyphs())
         this.statusBar.setUtf8(utf8Now)
         this.tabBar.setUtf8(utf8Now)
         this.tasksPanel.setUtf8(utf8Now)
+        // S3 复核 #3：Agents 面板此前漏接（构造默认 utf8=true）——其它面板降级成 +-|
+        // 时它仍画 ╭─╮│ 与 ▶ ✓ ✗，正是历史上反复修的"UTF-8 与 ASCII 混排"
+        this.agentsPanel.setUtf8(utf8Now)
         this.spinner.setUtf8(utf8Now)
         this.confirmDialog.setUtf8(utf8Now)
         this.welcomeView.setUtf8(utf8Now)
@@ -527,27 +571,134 @@ public class TuiApp {
      * 返回 true=同意执行，false=拒绝。
      */
     public func requestApproval(prompt: String): Bool {
+        // 父自身审批：无 agent 身份（G-B label 为空）
+        return this.requestApproval(prompt, "")
+    }
+
+    public func requestApproval(prompt: String, label: String): Bool {
+        // S1 队列化：并发审批排队，队首负责弹窗；后来者只排队等待自己的结果
+        let id = "apr-" + this.approvalSeq.fetchAdd(1).toString()
+        var title = "审批"
+        var headPrompt = prompt  // 弹窗始终显示队首（后来者入队只刷新标题）
+        var isHead = false
         this.approvalLock.lock()
         try {
-            this.pendingApproval = Some(prompt)
-            this.approvalResult = None
+            let showIt = this.approvalQueue.size == 0
+            if (showIt) {
+                this.approvalTotal = 1
+                this.approvalAnswered = 0
+            } else {
+                this.approvalTotal += 1
+                headPrompt = this.approvalQueue[0]
+            }
+            this.approvalQueue.add(prompt)
+            this.approvalIds.add(id)
+            this.approvalLabels.add(label)
+            title = this.approvalTitle()
+            // 复核 A/B：show 必须在锁内、且只有"此刻仍是队首"的调用方才弹——
+            // 否则 unlock 与 show 之间若队首被答复/Ctrl+C 清队，弹窗会被回写成
+            // 已答复项的文案（看着 A 的提示按下的却是 B 的决定）或弹出死弹窗。
+            // 非队首只刷新标题（审批(n/m) 计数），不写弹窗内容：标题不改变 y 作用于谁
+            isHead = this.approvalIds.size > 0 && this.approvalIds[0] == id
+            if (isHead) {
+                this.confirmDialog.show(title, headPrompt, "[y]=同意 [n]/[Esc]=拒绝")
+            } else if (this.confirmDialog.isVisible()) {
+                this.confirmDialog.updateTitle(title)
+            }
         } finally {
             this.approvalLock.unlock()
         }
-        // 弹出确认对话框（模态，渲染与按键由 ConfirmDialog 组件负责）
-        this.confirmDialog.show("审批", prompt, "[y]=同意 [n]/[Esc]=拒绝")
-        this.markDirty()
-        // 等待主循环读键写回结果
+        if (isHead) {
+            this.markDirty()
+        }
+        // 等待主循环读键写回自己这份结果
+        var waited: Int64 = 0
         while (true) {
             this.approvalLock.lock()
-            let result = this.approvalResult
+            let answer = this.approvalAnswers.get(id)
+            if (answer.isSome()) {
+                // 复核 D：读后即删，防长会话下 answers 表只增不减
+                this.approvalAnswers.remove(id)
+            }
             this.approvalLock.unlock()
-            if (let Some(r) <- result) {
+            if (let Some(r) <- answer) {
                 return r
             }
+            // G-A：审批超时=拒绝（自愈摘队：自己从队列移除，队首则推进弹窗），
+            // 防止"用户离开终端 → 父回合永久卡死"
+            if (this.approvalTimeoutMs > 0 && waited >= this.approvalTimeoutMs) {
+                this.expireApproval(id)
+                return false
+            }
             sleep(Duration.millisecond * 5)
+            waited += 5
         }
         return false  // 不可达（while true 仅被 return 退出）
+    }
+
+    /** 审批超时自愈（G-A）：把超时项从队列摘除；若自己是队首则推进/关闭弹窗 */
+    private func expireApproval(id: String): Unit {
+        var next: Option<(String, String)> = None
+        this.approvalLock.lock()
+        try {
+            var idx: Int64 = -1
+            var i: Int64 = 0
+            for (x in this.approvalIds) {
+                if (x == id) {
+                    idx = i
+                }
+                i += 1
+            }
+            if (idx >= 0) {
+                this.approvalIds.remove(at: idx)
+                this.approvalQueue.remove(at: idx)
+                this.approvalLabels.remove(at: idx)
+                if (idx == 0) {
+                    // 队首超时：队列非空则推进弹窗，为空则收起（挂着的死弹窗会盖住输出区）
+                    if (this.approvalQueue.size > 0) {
+                        next = Some((this.approvalTitle(), this.approvalQueue[0]))
+                    } else {
+                        this.confirmDialog.hide()
+                    }
+                }
+            }
+        } finally {
+            this.approvalLock.unlock()
+        }
+        match (next) {
+            case Some((t, p)) => this.confirmDialog.show(t, p, "[y]=同意 [n]/[Esc]=拒绝")
+            case None => ()
+        }
+        this.markDirty()
+    }
+
+    /** 审批弹窗标题（调用方需持 approvalLock）：多路排队时显示 审批(n/m) */
+    private func approvalTitle(): String {
+        if (this.approvalTotal <= 1) {
+            return "审批"
+        }
+        return "审批 (${this.approvalAnswered + 1}/${this.approvalTotal})"
+    }
+
+    /**
+     * 整体拒绝全部排队审批（Ctrl+C 调用），返回是否有排队项。
+     * 并发审批下"拒绝一切"比"放行未知操作"安全——后续排队项等待方均解除阻塞。
+     */
+    private func denyAllApprovals(): Bool {
+        this.approvalLock.lock()
+        let hadPending: Bool
+        try {
+            hadPending = this.approvalQueue.size > 0
+            for (id in this.approvalIds) {
+                this.approvalAnswers.add(id, false)
+            }
+            this.approvalIds.clear()
+            this.approvalQueue.clear()
+            this.approvalLabels.clear()
+        } finally {
+            this.approvalLock.unlock()
+        }
+        return hadPending
     }
 
     /**
@@ -558,7 +709,130 @@ public class TuiApp {
         this.markDirty()
     }
 
+    /**
+     * 刷新 Agents 面板（S3）：装配层 scheduler.onChanged → snapshot 深拷贝 → 此处转换推送
+     */
+    public func refreshAgents(nodes: ArrayList<AgentNode>): Unit {
+        let rows = ArrayList<AgentRow>()
+        let ids = ArrayList<Int64>()
+        this.focusLock.lock()
+        for (n in nodes) {
+            rows.add(AgentRow(n.agentId, n.label, n.kind, this.mapRowState(n.state),
+                n.iterations, n.promptTokens, n.completionTokens, n.currentTool, false))
+            ids.add(n.agentId)
+        }
+        this.focusCandidates = ids
+        // 焦点切换反馈用的名称表（id → kind·label）
+        let names = ArrayList<(Int64, String)>()
+        for (n in nodes) {
+            names.add((n.agentId, "${n.kind}·${n.label}"))
+        }
+        this.focusNames = names
+        let focus = this.focusAgentId
+        this.focusLock.unlock()
+        this.agentsPanel.updateRows(rows)
+        this.agentsPanel.setFocus(focus)
+        this.markDirty()
+    }
+
+    private func mapRowState(s: AgentNodeState): AgentRowState {
+        match (s) {
+            case AgentNodeState.Pending => AgentRowState.RowPending
+            case AgentNodeState.Running => AgentRowState.RowRunning
+            case AgentNodeState.Ok => AgentRowState.RowOk
+            case AgentNodeState.Failed => AgentRowState.RowFailed
+            case AgentNodeState.Timeout => AgentRowState.RowTimeout
+            case AgentNodeState.Cancelled => AgentRowState.RowCancelled
+            case AgentNodeState.BudgetExceeded => AgentRowState.RowBudgetExceeded
+        }
+    }
+
+    /** Ctrl+G 焦点循环：父 → 子1 → 子2 → … → 父（0=父） */
+    public func cycleFocus(): Unit {
+        this.focusLock.lock()
+        let candidates = ArrayList<Int64>()
+        candidates.add(0)
+        for (id in this.focusCandidates) {
+            candidates.add(id)
+        }
+        var idx: Int64 = 0
+        var i: Int64 = 0
+        for (c in candidates) {
+            if (c == this.focusAgentId) {
+                idx = i
+            }
+            i += 1
+        }
+        let next = candidates[(idx + 1) % candidates.size]
+        this.focusAgentId = next
+        var nextName = "主对话（父）"
+        for ((id, name) in this.focusNames) {
+            if (id == next) {
+                nextName = name
+            }
+        }
+        this.focusLock.unlock()
+        this.agentsPanel.setFocus(next)
+        // 切换即时反馈（修实测"切了没感觉"）：聚焦子代理时其**后续**工具行才以
+        // │ 前缀进主流（历史不回放、delta 不转发是硬规则），所以切完主动说一声
+        if (next == 0) {
+            this.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "── 焦点回到主对话 ──" + Ansi.reset())
+        } else {
+            this.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "── 焦点: ${nextName}（其后续工具行将带 │ 显示于此）──" + Ansi.reset())
+        }
+        this.markDirty()
+    }
+
+    public func currentFocusAgentId(): Int64 {
+        this.focusLock.lock()
+        let f = this.focusAgentId
+        this.focusLock.unlock()
+        return f
+    }
+
+    /**
+     * 子代理行事件（S3d 焦点转发）：仅焦点子代理的事件进主流（│ 前缀）。
+     * 硬规则：子代理 onDelta 绝不转发（OutputView.appendDelta 共用当前行，多路会撕行），
+     * 本方法只收整行事件（tool_start/tool_result）。
+     */
+    public func appendSubagentEvent(agentId: Int64, text: String): Unit {
+        let focus = this.currentFocusAgentId()
+        if (focus == 0 || focus != agentId) {
+            return  // 非焦点子代理：只在 Agents 面板行里滚动更新
+        }
+        this.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "│ " + text + Ansi.reset())
+    }
+
     // ── 测试观测（TUI 逻辑单测用；不触碰终端渲染）──
+
+    /** 排队中的审批数（含当前弹窗队首） */
+    public func testApprovalQueueSize(): Int64 {
+        this.approvalLock.lock()
+        let n = this.approvalQueue.size
+        this.approvalLock.unlock()
+        return n
+    }
+
+    /** 当前审批弹窗是否可见 */
+    public func testApprovalVisible(): Bool {
+        return this.confirmDialog.isVisible()
+    }
+
+    /** 当前审批弹窗标题（多路排队时应为 审批(n/m)） */
+    public func testApprovalTitle(): String {
+        return this.confirmDialog.currentTitle()
+    }
+
+    /** 排队审批的 agent 身份列表（G-B；与队列平行，父自身审批为空串） */
+    public func testApprovalLabels(): ArrayList<String> {
+        this.approvalLock.lock()
+        let labels = ArrayList<String>()
+        for (l in this.approvalLabels) {
+            labels.add(l)
+        }
+        this.approvalLock.unlock()
+        return labels
+    }
 
     /**
      * 安全日志：日志写入异常绝不带崩主循环。
@@ -1196,22 +1470,20 @@ public class TuiApp {
             this.toggleReasoning()
             return
         }
+        // Ctrl+G（S3）：循环切换焦点（父 → 各子代理 → 父）。
+        // 方案C 原定 Ctrl+T，实测 ch=20 已被思考展开占用 → 改 Ctrl+G（ch=7，控制字节 text 为空）
+        if (key.ch == 7 && !key.isEsc) {
+            this.cycleFocus()
+            return
+        }
         // Ctrl+C（P0-2）：审批等待中→拒绝审批；agent 忙→中断当前轮；
         // 空闲→第一次确认、第二次退出（防误触丢会话）
         if (key.isCtrlC) {
-            // 若有等待中的审批：写回 false 让其解除阻塞（避免 agent 线程悬挂）
-            this.approvalLock.lock()
-            let hasPending: Bool
-            try {
-                hasPending = this.pendingApproval.isSome()
-                if (hasPending) {
-                    this.approvalResult = Some(false)
-                    this.pendingApproval = None
-                }
-            } finally {
-                this.approvalLock.unlock()
-            }
+            // 有等待中的审批：整体拒绝（并发审批下拒绝一切比放行未知操作安全）
+            let hasPending = this.denyAllApprovals()
             if (hasPending) {
+                this.confirmDialog.hide()
+                this.markDirty()
                 return  // 审批拒绝：不退出、不中断任务
             }
             if (this.isAgentBusy()) {
@@ -1238,7 +1510,7 @@ public class TuiApp {
         this.approvalLock.lock()
         let hasPending2: Bool
         try {
-            hasPending2 = this.pendingApproval.isSome()
+            hasPending2 = this.approvalQueue.size > 0
         } finally {
             this.approvalLock.unlock()
         }
@@ -1457,7 +1729,7 @@ public class TuiApp {
         this.inputBox.clear()
         if (text.size > 0) {
             this.safeLog("info", "editor submit: '${text}'")
-            this.appendUserLine(Ansi.fg(Ansi.THEME_ACCENT) + "❯ " + Ansi.fg(Ansi.COLOR_TEXT) + text)
+            this.appendUserLine(Ansi.fg(Ansi.THEME_ACCENT) + this.echoIcon() + Ansi.fg(Ansi.COLOR_TEXT) + text)
             this.onSubmit(text)
         }
         this.markDirty()
@@ -1591,9 +1863,15 @@ public class TuiApp {
             let outH0: Int64 = if (statusRow - 8 > 0) { statusRow - 8 } else { 0 }
             // tasksH：Tasks 面板占用行数（无任务时为 0；maxH 用 outH0 限制，误差≤1 行可接受）
             let tasksH: Int64 = this.tasksPanel.height(outH0)
-            // 动态状态行位置：statusRow - 1(间隔) - tasksH(面板高度) - 1(自身)
+            // agentsH：Agents 面板高度（S3），与 Tasks 面板**同底线左右并排**
+            // （用户要求：Tasks 左 / Agents 右，底沿对齐）；
+            // 传 cols 与 render 同判据（S3 复核 #9：太窄时面板不画就不能预先占布局行）
+            let agentsH: Int64 = this.agentsPanel.height(outH0, cols)
+            // 面板带高度：左右并排取两者较大值（不再垂直相加堆叠）
+            let maxPanelsH: Int64 = if (tasksH > agentsH) { tasksH } else { agentsH }
+            // 动态状态行位置：statusRow - 1(间隔) - maxPanelsH(面板带) - 1(自身)
             // 无 agent 运行时，agentRow 不使用，仅用于 outH 计算
-            let agentRow: Int64 = if (agentBusy) { statusRow - 1 - tasksH - 1 } else { -1 }
+            let agentRow: Int64 = if (agentBusy) { statusRow - 1 - maxPanelsH - 1 } else { -1 }
 
             // 思考块（方案 B）：作为消息流成员由 OutputView 渲染（折叠/展开段），
             // 不再占用独立布局区域——消息区高度恒定，思考随输出滚动回看
@@ -1621,8 +1899,14 @@ public class TuiApp {
                     this.reasoningLock.unlock()
                     this.outputLock.unlock()
                 }
-                // Tasks 面板：有任务时在输出区右下角渲染
+                // Tasks 面板：有任务时在输出区左下角渲染
                 this.tasksPanel.render(this.canvas, statusRow - 1, cols, outH)
+                // Agents 面板（S3）：右下角，与 Tasks **同底线**。overlay 模式：
+                // 两面板共用行带，Agents 按列拼接只写自己列区间（整行替换会抹掉
+                // Tasks 列——实测"任务单显示不全"的根因）
+                this.canvas.setOverlay(true)
+                this.agentsPanel.render(this.canvas, statusRow - 1, cols, outH)
+                this.canvas.setOverlay(false)
                 // 动态状态行：agent 执行中时渲染在 Tasks 面板上方
                 if (agentBusy && agentRow >= 8) {
                     this.spinner.tick()
@@ -1714,6 +1998,13 @@ public class TuiApp {
         if (qLen > 0) {
             line += Ansi.fg(Ansi.THEME_ACCENT) + " · 📥 排队 ${qLen} 条待发送" + Ansi.reset()
         }
+        // S3 修实测"干活时主界面啥也没有"：状态行追加子代理聚合心跳
+        //（如 3 agents (2/5 4/5 1/5) ↑3.2k）；状态行每秒 tick 刷新，零刷屏成本
+        let hb = this.agentsPanel.heartbeat()
+        if (hb.size > 0) {
+            line += Ansi.fg(Ansi.THEME_MUTED) + "  · " + Ansi.reset() +
+                Ansi.fg(Ansi.THEME_ACCENT) + hb + Ansi.reset()
+        }
         canvas.setLine(row, line)
     }
 
@@ -1756,6 +2047,7 @@ public class TuiApp {
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Tab / ←→       切换视图（对话/帮助）" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Ctrl+E         多行输入编辑（Alt+Enter 提交）" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Ctrl+T         思考过程展开/折叠（推理模型），展开后可上滚回看多轮历史" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Ctrl+G         循环切换焦点（父 → 子代理 → 父），焦点子代理的工具行进入主流" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  PageUp/Down    输出区滚动（Ctrl+U/D 亦可）" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Ctrl+C         空闲退出 / 忙时中断，再按强制退出" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Esc            关闭弹窗 / 退出编辑 / 回对话视图 / 忙时中断并立即发送排队消息" + Ansi.reset())

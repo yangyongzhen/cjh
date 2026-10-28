@@ -42,7 +42,8 @@ def strip_ansi(s: str) -> str:
 class PtuSession:
     """伪终端会话：spawn cjh 进程，读写 master 端。"""
 
-    def __init__(self, config_dir: str, mock_verify: bool = True, timeout: float = 30.0):
+    def __init__(self, config_dir: str, mock_verify: bool = True, timeout: float = 30.0,
+                 extra_env: dict | None = None):
         self.timeout = timeout
         self.buf = ""
         env = dict(os.environ)
@@ -51,6 +52,8 @@ class PtuSession:
         env["CJH_TUI_LOG"] = os.path.join(config_dir, "tui.log")
         env["TERM"] = "xterm-256color"
         env.pop("CJH_LOG_LEVEL", None)
+        if extra_env:
+            env.update(extra_env)
         self.pid, self.master = pty.fork()
         if self.pid == 0:
             # 子进程：exec cjh（必须 execve 显式传 env，否则 CJH_MOCK 等不生效）
@@ -152,7 +155,8 @@ def make_config_dir(approval: list[str] | None = None,
     if approval is not None:
         settings["capability"] = {
             "enabled": True,
-            "tools": ["read_file", "grep", "list_dir", "bash"],
+            # task：供 CJH_MOCK_TASKS 门控派子代理用（其余场景 mock 不发 task，无影响）
+            "tools": ["read_file", "grep", "list_dir", "bash", "task"],
             "approval": approval,
         }
     with open(os.path.join(cfg, "settings.json"), "w") as f:
@@ -260,6 +264,64 @@ def test_approval_yes() -> None:
         s.send("y")               # 同意
         s.expect("FINAL-DONE")    # 工具继续执行到最后
         check("同意后继续执行到最终答复", True)
+        s.send_key(3)  # 空闲：一次退出
+        s.wait_exit()
+    finally:
+        s.close()
+
+
+def test_approval_queue() -> None:
+    print("[场景4b] 审批队列化：两路并发审批 → y 只批队首 → 标题 (2/2)")
+    cfg = make_config_dir(approval=["read_file"])
+    # CJH_MOCK_TASKS：父 mock 第 2 轮并发派两个 explore 子代理，
+    # 各自第 1 轮的 read_file 撞审批 → 两路审批同时进 TUI 队列
+    s = PtuSession(cfg, extra_env={"CJH_MOCK_TASKS": "1"})
+    try:
+        s.expect("cjh")
+        s.send("跑审批排队测试\n")
+        s.expect("需人工确认")                 # 队首审批弹窗出现
+        s.expect("审批 (1/2)", timeout=15)     # 第二路入队后标题刷新为 (1/2)
+        check("两路入队：标题刷新为 审批 (1/2)", True)
+        s.send("y")                            # 只批队首
+        s.expect("审批 (2/2)")                 # 应答后自动弹出下一项
+        check("y 只批队首：标题推进 (2/2) 且第二项弹窗可见", True)
+        check("第二项带 [task:label] 身份", "[task:并发审批" in strip_ansi(s.buf))
+        s.send("y")                            # 批第二路
+        s.expect("FINAL-DONE")
+        check("两路审批后 agent 完成回合", True)
+        s.send_key(3)  # 空闲：一次退出
+        s.wait_exit()
+    finally:
+        s.close()
+
+
+def test_agents_panel_focus() -> None:
+    print("[场景4c] Agents 面板：并发子代理行可见 + Ctrl+G 焦点切换（真断言，非框线假绿）")
+    cfg = make_config_dir()  # 无 approval：子代理一路跑完，不弹审批
+    # CJH_MOCK_TASKS：父并发派两个 explore；CJH_MOCK_DELAY_MS 拖慢每轮，
+    # 给面板行渲染与焦点切换留观察窗口
+    s = PtuSession(cfg, extra_env={"CJH_MOCK_TASKS": "1", "CJH_MOCK_DELAY_MS": "300"})
+    try:
+        s.expect("cjh")
+        s.send("跑面板测试\n")
+        s.expect("Agents")            # 面板标题（节点登记即渲染）
+        check("Agents 面板出现", True)
+        s.expect("explore")           # 面板行：子代理类型
+        check("子代理面板行可见", True)
+        # Ctrl+G：焦点 父 → 子。断言"── 焦点: <kind>·<label> ──"这条即时反馈行——
+        # 此前断 expect("│") 是假绿：面板左右边框本身就输出 │，Ctrl+G 完全失效也会命中。
+        # 注：两个子代理同批并发派发，注册顺序不确定 → 只断"反馈行出现 N 次"，不断具体是哪个
+        s.send_key(7)
+        s.expect("── 焦点: ")
+        check("Ctrl+G 焦点切到子代理（即时反馈行，不再靠框线假绿）", True)
+        s.send_key(7)                 # 子1 → 子2
+        s.expect_count("── 焦点: ", 2)
+        check("Ctrl+G 焦点循环到另一个子代理", True)
+        s.send_key(7)                 # 子2 → 父
+        s.expect("焦点回到主对话")
+        check("Ctrl+G 循环回父", True)
+        s.expect("FINAL-DONE")
+        check("回合完成", True)
         s.send_key(3)  # 空闲：一次退出
         s.wait_exit()
     finally:
@@ -693,6 +755,8 @@ def main() -> None:
     test_slash_completion()
     test_help_view()
     test_approval_yes()
+    test_approval_queue()
+    test_agents_panel_focus()
     test_approval_no()
     test_provider_dialog()
     test_provider_dialog_aggregator()

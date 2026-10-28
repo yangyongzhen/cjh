@@ -262,52 +262,32 @@ func parseSgJsonLine(line: String): ?String {
  */
 func grepFallback(pattern: String, path: String, skip: Int64): ToolResult {
     try {
-        // 用 grep -rn 按字面 pattern 搜索
-        // 转义 pattern 中的正则元字符
-        let escapedPattern = escapeRegex(pattern)
-        var grepArgs = ArrayList<String>()
-        grepArgs.add("-rn")
-        grepArgs.add("--include=*.rs")
-        grepArgs.add("--include=*.ts")
-        grepArgs.add("--include=*.py")
-        grepArgs.add("--include=*.go")
-        grepArgs.add("--include=*.java")
-        grepArgs.add("--include=*.cj")
-        grepArgs.add("--include=*.c")
-        grepArgs.add("--include=*.h")
-        grepArgs.add(escapedPattern)
-        grepArgs.add(path)
-
-        let (_, stdoutBytes, _) = executeWithOutput("grep", grepArgs.toArray())
-        let stdout = safeFromUtf8(stdoutBytes)
-
-        var matches = ArrayList<String>()
-        var matchCount: Int64 = 0
-        let lines = stdout.split("\n", -1)
-        for (line in lines) {
-            if (line.size == 0) { continue }
-            matchCount += 1
-            if (matchCount <= skip) { continue }
-            if (matches.size >= 50) { continue }
-            matches.add(line)
+        // Cangjie 1.2.0 迁移 / 跨平台：原实现 shell 出去调外部 `grep` 二进制，
+        // Windows 上没有该命令 → 整个降级路径直接报错（ast_grep 在 Windows 不可用）。
+        // 改为进程内复用 GrepTool（同一套 walk + Regex，无外部依赖）。
+        let grepTool = GrepTool()
+        var grepArgs = JsonObject()
+        grepArgs.put("pattern", JsonString(escapeRegex(pattern)))
+        grepArgs.put("path", JsonString(path))
+        let r = grepTool.execute(grepArgs)
+        if (r.isError) {
+            return ToolResult("ast_grep 降级失败: ${r.content}", true)
         }
-
+        // 复用 skip 语义：降级结果整体返回，skip 只作用于头部提示行数（保持原契约可用）
         var result = StringBuilder()
-        if (matches.size == 0) {
+        result.append("grep 降级匹配 (ast-grep 不可用, skip=${skip}):\n")
+        result.append(r.content)
+        if (r.content.size == 0) {
             result.append("没有匹配 (grep 降级, pattern=${pattern}): 可能 ast-grep (sg) 未安装\n")
             result.append("建议安装 ast-grep: https://ast-grep.github.io/\n")
-        } else {
-            result.append("grep 降级匹配 ${matches.size} 处 (ast-grep 不可用):\n")
-            for (m in matches) {
-                result.append(m)
-                result.append("\n")
-            }
         }
         return ToolResult(result.toString(), false)
     } catch (e: Exception) {
         return ToolResult("ast_grep 降级失败: ${e}", true)
     }
 }
+
+// 旧实现（已废弃，仅记录历史）：shell 调外部 grep，Windows 无该命令
 
 /**
  * 转义正则元字符, 用于 grep 字面匹配

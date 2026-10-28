@@ -486,12 +486,31 @@ public enum MockResp {
 /**
  * 启动 mock server：主线程 bind（监听就绪后返回），spawn 线程 accept + 发响应。
  * 避免 spawn 调度延迟导致 client connect 被拒（Connection refused 竞态）。
+ *
+ * 跨平台（Cangjie 1.2.0 迁移实测）：**必须先读走客户端请求再回写并关闭**。
+ * Windows 上「带着未读的入站数据 close」会发 RST（WSAECONNRESET 10054），内核把已写
+ * 但未确认的响应一并丢弃 → 客户端读到空/截断（chunked 3 例失败、连接关闭定界实例
+ * 读到 ""）；Linux 只发 FIN 所以一直没暴露。drain 后再写再关 = 优雅关闭。
  */
 public func startMockServer(port: UInt16, resp: MockResp): TcpServerSocket {
     let server = TcpServerSocket(bindAt: port)
     server.bind()
     spawn {
         let conn = server.accept()
+        // KeepAliveServer 自己循环读请求头；其余 mock 不读 —— 后者必须由我们先读走，
+        // 否则 Windows 上「带未读入站数据 close」会发 RST（10054），响应被内核丢弃
+        var selfReads = false
+        match (resp) {
+            case KeepAliveServer(_) => selfReads = true
+            case _ => ()
+        }
+        if (!selfReads) {
+            try {
+                drainRequest(conn)
+            } catch (e: Exception) {
+                // 客户端未发请求/提前关闭：忽略，继续尝试回写
+            }
+        }
         try {
             handleMockResp(conn, resp)
         } catch (e: Exception) {
@@ -505,6 +524,19 @@ public func startMockServer(port: UInt16, resp: MockResp): TcpServerSocket {
         }
     }
     return server
+}
+
+/**
+ * 读掉客户端的请求，避免 Windows 上 close 触发 RST 丢响应。
+ *
+ * 只读一次（这些用例的请求都很小，首包即完整请求头+body），并设短 readTimeout：
+ * 万一客户端没发数据也不会把整个用例挂死（超时异常由调用方 catch 后继续回写）。
+ * 不用"读到 \r\n\r\n 为止"——请求带 body 时结尾是 `{}` 而非空行，会等成死锁。
+ */
+func drainRequest(conn: StreamingSocket): Unit {
+    conn.readTimeout = Duration.millisecond * 200
+    let buf = Array<Byte>(4096, repeat: 0)
+    let _ = conn.read(buf)
 }
 
 public func handleMockResp(conn: StreamingSocket, resp: MockResp): Unit {

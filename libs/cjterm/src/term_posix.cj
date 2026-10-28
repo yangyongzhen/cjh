@@ -11,8 +11,8 @@ package cjterm
  * tcgetattr 等符号会失败）。
  */
 
+@When[os != "Windows"]
 import std.collection.*
-import cjutil.*
 
 // ===== termios FFI（直接调 libc，无外部 .so 依赖）=====
 // Linux termios 结构体布局（x86_64，60 字节）：
@@ -25,15 +25,21 @@ import cjutil.*
 //   speed_t  c_ispeed;  // offset 48 (padding)
 //   speed_t  c_ospeed;  // offset 52
 //   // padding to 60
+// 逐条 @When：本文件顶部注释声称"Windows 构建不编译本文件"，但实际上只有类被
+// 挡住，文件级 foreign 声明与常量照样编译——mingw 没有 tcgetattr/tcsetattr/ioctl，
+// 链接期会报 undefined symbol（实测 Windows 原生 cjpm test 直接失败）。
+@When[os != "Windows"]
 @C
 foreign func tcgetattr(fd: Int32, termios: CPointer<UInt8>): Int32
 
+@When[os != "Windows"]
 @C
 foreign func tcsetattr(fd: Int32, optionalActions: Int32, termios: CPointer<UInt8>): Int32
 
 @C
 foreign func read(fd: Int32, buf: CPointer<UInt8>, count: UInt64): Int64
 
+@When[os != "Windows"]
 @C
 foreign func ioctl(fd: Int32, request: UInt64, arg: CPointer<UInt8>): Int32
 
@@ -42,36 +48,55 @@ foreign func select(nfds: Int32, readfds: CPointer<UInt8>, writefds: CPointer<UI
 
 // termios 标志（Linux）
 // 本地模式 c_lflag
+@When[os != "Windows"]
 private let ICANON: UInt32 = 0x2
+@When[os != "Windows"]
 private let ECHO: UInt32 = 0x8
+@When[os != "Windows"]
 private let ISIG: UInt32 = 0x1
+@When[os != "Windows"]
 private let IEXTEN: UInt32 = 0x8000
 // 输入模式 c_iflag
+@When[os != "Windows"]
 private let IXON: UInt32 = 0x400
+@When[os != "Windows"]
 private let ICRNL: UInt32 = 0x100
+@When[os != "Windows"]
 private let BRKINT: UInt32 = 0x2
+@When[os != "Windows"]
 private let INPCK: UInt32 = 0x10
+@When[os != "Windows"]
 private let ISTRIP: UInt32 = 0x20
 // 输出模式 c_oflag
+@When[os != "Windows"]
 private let OPOST: UInt32 = 0x1
 // 控制模式 c_cflag
+@When[os != "Windows"]
 private let CS8: UInt32 = 0x30
 
 // tcsetattr actions
+@When[os != "Windows"]
 private let TCSAFLUSH: Int32 = 2
 
 // 标准文件描述符
+@When[os != "Windows"]
 private let STDIN: Int32 = 0
+@When[os != "Windows"]
 private let STDOUT: Int32 = 1
+@When[os != "Windows"]
 private let STDERR: Int32 = 2
 
 // ioctl TIOCGWINSZ = 0x5413
+@When[os != "Windows"]
 private let TIOCGWINSZ: UInt64 = 0x5413
 // FIONREAD：查询输入缓冲区待读字节数（Linux/macOS 值一致）
+@When[os != "Windows"]
 private let FIONREAD: UInt64 = 0x541B
 
 // 缓冲区常量
+@When[os != "Windows"]
 private let TERMIOS_SIZE: Int64 = 60
+@When[os != "Windows"]
 private let TIMEVAL_SIZE: Int64 = 16
 
 /**

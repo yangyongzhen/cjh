@@ -10,6 +10,7 @@
 1. `./scripts/test.sh` 全绿（536 用例，`FAILED: 0`、`ERROR: 0`）——**唯一交付凭证**，禁止以"改动小/时间紧/测试环境问题"为由跳过。脚本自动切动态链接配置跑测试（cjpm.toml 默认静态链接，静态下测试框架 double free 崩溃，见 docs/开发文档与踩坑记录.md §3.10），结束后恢复静态。
    - **库包测试另跑：`./scripts/test_libs.sh`**（`scripts/test.sh` 不覆盖 `libs/`）。该脚本遍历 `libs/*/cjpm.toml` 逐个 `cd libs/<lib> && cjpm test` 并在末尾汇总，当前 6 库 **175 例**全绿（cjcfg 11 / cjconfig 7 / cjllm 47 / cjlog 1 / cjterm 96 / cjutil 13）；可只跑一个：`./scripts/test_libs.sh cjcfg`。**改动涉及 libs/ 下任何库必须跑**——历史上 cjcfg 的 `capability_test` 红了数周无人发现，根因就是只跑根包。
    - TUI 改动另加：`python3 scripts/tui_pty_test.py` 全过（61 场景，伪终端驱动真实 TUI：启动/输入/补全/帮助/审批同意与拒绝/思考展开与回看）。
+   - **Windows 开发机（原生，非交叉编译）**：`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test_win.ps1`。它把根包 `cjpm.toml` **临时派生**成 Windows 版（清 `--static`、link-option 换 `-lcrypt32 -lws2_32`、补 `[target.x86_64-w64-mingw32.bin-dependencies]` 的 stdx 路径）→ `cjpm build` + `cjpm test` → 逐包 `libs/*` → 结束自动恢复基线。缺 windows stdx 的包显式 `SKIP` 并以 **exit 2** 报告"未验证"，绝不假装绿。**它不替代**上面三道门禁：pty/TUI 场景、`--mock` 端到端、发布二进制体积/`ldd` 核对仍须 Linux。
 2. **新增行为必须有对应测试**：
    - 新工具/新纯函数 → 至少覆盖主路径 + 错误路径 + 一个边界
    - bug 修复 → 先写复现该 bug 的测试（失败）再修复（转绿），防止回归
@@ -60,6 +61,7 @@
 
 - [ ] `./scripts/test.sh` 全绿（含新增测试）——跑前先 `source /opt/cangjie/cangjie/envsetup.sh`（`cjpm` 不在默认 PATH，否则脚本直接 exit 127）
 - [ ] `./scripts/test_libs.sh` 全绿（6 库 175 例；**改动涉及 libs/ 时必跑**）
+- [ ] Windows 侧：`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test_win.ps1` 里 PASS 的项保持 PASS；SKIP 项（缺 windows stdx）必须在 Linux 侧被覆盖——SKIP ≠ 通过
 - [ ] `cjpm build` 通过且**零代码告警**（唯一例外：`--static` 驱动提示 ×5，见门禁第 4 条；核对 `cjpm build 2>&1 | sed -e 's/\x1b\[[0-9;]*m//g' | grep -c 'warning:'` == 5）
 - [ ] `--mock` 端到端通过
 - [ ] 行为变更同步更新 docs/（进度记录、踩坑记录）

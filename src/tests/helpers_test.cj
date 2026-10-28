@@ -1,5 +1,7 @@
 package cjh.tests
 
+import cjutil.*
+
 import std.fs.*
 import std.process.*
 
@@ -14,7 +16,7 @@ import std.process.*
  * 创建并返回测试目录（已清理旧目录，保证从空目录开始）
  */
 func testTempDir(name: String): String {
-    let dir = "/tmp/cjh_ut_" + name
+    let dir = tmpPath("cjh_ut_") + name
     removeTree(dir)
     Directory.create(dir, recursive: true)
     return dir
@@ -46,15 +48,35 @@ func readTextFile(path: String): String {
 }
 
 /**
- * 递归删除文件/目录（bash rm -rf，仓颉无递归删除 API）
+ * 递归删除文件/目录
+ *
+ * Cangjie 1.2.0 迁移：改用 `std.fs.removeIfExists(path, recursive: true)`。
+ * 原实现 shell 出去调 `/bin/bash -c "rm -rf"`——Windows 上 `/bin/bash` 不存在（异常被
+ * catch 吞掉），清理静默失败 → 下一次 `Directory.create` 报 "path is already exists"，
+ * 于是 skills/trust/ast_grep 等用例在重复运行/Windows 上直接 ERROR。
  */
 func removeTree(path: String): Unit {
     try {
-        var args = Array<String>(2, repeat: "")
-        args[0] = "-c"
-        args[1] = "rm -rf '" + path + "'"
-        let _ = executeWithOutput("/bin/bash", args)
+        removeIfExists(path, recursive: true)
     } catch (e: Exception) {
         // 清理失败不影响测试结果
     }
+}
+
+/**
+ * POSIX shell（/bin/bash）是否可用
+ *
+ * 供「整类没法整体守卫、只有单个用例依赖 bash 管道」的场景用（如 agent_flow 的
+ * `yes x | tr -d '\n' | head -c 5000`）：Windows 上 BashTool 回落 PowerShell，
+ * 该类管道不成立 → 用例开头 `if (!posixShellAvailable()) { return }` 跳过。
+ * （`@When` 不能加在 `@TestCase` 方法上，只能下沉到文件级函数。）
+ */
+@When[os != "Windows"]
+func posixShellAvailable(): Bool {
+    return true
+}
+
+@When[os == "Windows"]
+func posixShellAvailable(): Bool {
+    return false
 }

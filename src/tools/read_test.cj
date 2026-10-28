@@ -1,5 +1,7 @@
 package cjh.tools
 
+import cjutil.*
+
 import std.collection.*
 import stdx.encoding.json.*
 import std.fs.*
@@ -27,7 +29,7 @@ public class ReadToolTest {
     @TestCase
     public func testSmallFileFullContent(): Unit {
         // 创建小文件（< 200 行）
-        let path = "/tmp/cjh_read_test_small.txt"
+        let path = tmpPath("cjh_read_test_small.txt")
         let content = "line1\nline2\nline3\n"
         File.writeTo(path, content.toArray())
 
@@ -49,7 +51,7 @@ public class ReadToolTest {
     @TestCase
     public func testLargeFileDefaultLimit(): Unit {
         // 创建大文件（> 500 行，触发默认 limit=500）
-        let path = "/tmp/cjh_read_test_large.txt"
+        let path = tmpPath("cjh_read_test_large.txt")
         let sb = StringBuilder()
         for (i in 0..600) {
             sb.append("line${i}\n")
@@ -75,7 +77,7 @@ public class ReadToolTest {
     @TestCase
     public func testSmallFileNoTruncationHint(): Unit {
         // 小文件（< 500 行）不应有截断提示
-        let path = "/tmp/cjh_read_test_smallhint.txt"
+        let path = tmpPath("cjh_read_test_smallhint.txt")
         let sb = StringBuilder()
         for (i in 0..100) {
             sb.append("line${i}\n")
@@ -98,7 +100,7 @@ public class ReadToolTest {
     @TestCase
     public func testOffsetLimitRange(): Unit {
         // 创建测试文件（300 行）
-        let path = "/tmp/cjh_read_test_range.txt"
+        let path = tmpPath("cjh_read_test_range.txt")
         let sb = StringBuilder()
         for (i in 0..300) {
             sb.append("line${i}\n")
@@ -127,7 +129,7 @@ public class ReadToolTest {
     @TestCase
     public func testRepeatReadHint(): Unit {
         // 测试重复读提示（读同一文件 ≥3 次）
-        let path = "/tmp/cjh_read_test_repeat.txt"
+        let path = tmpPath("cjh_read_test_repeat.txt")
         File.writeTo(path, "hello\n".toArray())
 
         let tool = ReadTool()

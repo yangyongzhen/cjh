@@ -143,6 +143,9 @@ public class ThinkingIncrementalTest {
      */
     @TestCase
     public func testActiveIncrementalMatchesFrozenFullFold(): Unit {
+        // 折叠行内容含 ANSI 颜色；NO_COLOR 环境变量会把 Ansi 降级为空串（本机设了、
+        // Linux CI 通常不设）→ 显式打开，别把环境差异当回归
+        Ansi.noColor = false
         let chunks = ArrayList<String>()
         chunks.add(paddedChunk("第一段"))
         chunks.add(paddedChunk("第二段带 `代码` 与 *强调* 标记"))

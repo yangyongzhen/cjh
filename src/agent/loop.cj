@@ -75,6 +75,9 @@ public class AgentConfig {
     public let maxIterations: Int64
     // 三域 capability 安全模型（未配置=宽松模式，全部允许）
     public let capability: Capability
+    // S6 写域收窄（task scope 传入；空=不限）：executeGuarded 在 capability 之后
+    // 追加 AND 判定——只收窄、绝不放宽；红线：不触碰 Capability 默认宽松语义
+    public var writeScope: ArrayList<String> = ArrayList<String>()
     // Compaction 阈值：消息条数超过该值触发历史摘要压缩（0=禁用，对齐 pi）
     public let compactThreshold: Int64
     // Compaction token 阈值：估算 prompt token 超过该值也触发压缩（0=禁用）
@@ -230,10 +233,30 @@ public class RunSummary {
  * 3. 若响应为纯文本：作为最终答复返回
  */
 public class Agent {
+    // 实例 ID（fork 树语义）：注销子代理按 ID 匹配（仓颉无 === 引用相等），
+    // 后续 Web 协议树状呈现（agent_id）也用它
+    private static var agentIdCounter: Int64 = 0
+    private static let agentIdLock: Mutex = Mutex()
+    public let agentId: Int64
     private var provider: LlmProvider
     private let tools: ToolRegistry
     private let config: AgentConfig
     private var messages: ArrayList<ChatMessage>
+
+    public init(provider: LlmProvider, tools: ToolRegistry, config: AgentConfig) {
+        Agent.agentIdLock.lock()
+        try {
+            Agent.agentIdCounter += 1
+            this.agentId = Agent.agentIdCounter
+        } finally {
+            Agent.agentIdLock.unlock()
+        }
+        this.provider = provider
+        this.tools = tools
+        this.config = config
+        this.messages = ArrayList<ChatMessage>()
+        this.messages.add(ChatMessage("system", config.systemPrompt))
+    }
     // 上一轮 LLM 响应的真实 prompt token（usage.promptTokens）。
     // 压缩触发用它而非字符估算——估算对中文/JSON 开销严重低估（实测 6.5x 偏差），
     // 真实用量是 provider 已返回的精确值。0=尚未有测量（首轮前）。
@@ -263,6 +286,14 @@ public class Agent {
     private var nextTodoId: Int64 = 1
     // 插件管理器（V2b Step 2：事件钩子；None 时跳过钩子调用）
     private var pluginManager: ?PluginManager = None
+    // 任务简报上下文（方案 §5）：本会话触碰过的文件路径（工具调用时提取），
+    // 供 task 子代理简报使用；touchedLock 保护（并发子代理线程读取）
+    private var touchedFiles: HashSet<String> = HashSet<String>()
+    private var touchedLock: Mutex = Mutex()
+    // 子代理登记（中断传播，方案 §7）：父 interrupt() 下传所有登记中的子代理，
+    // spawnSubagent fork 时登记、finally 注销；childLock 保护（并发 task 线程读写）
+    private var childAgents: ArrayList<Agent> = ArrayList<Agent>()
+    private var childLock: Mutex = Mutex()
 
     // 事件回调（供 TUI/CLI 展示）
     public var onDelta: (String) -> Unit = { _ => }
@@ -279,6 +310,15 @@ public class Agent {
     public var onApproval: (String, JsonObject, String) -> Bool = { _, _, _ => false }
     // 任务变更回调（TUI Tasks 面板实时刷新）
     public var onTodosChanged: () -> Unit = { => }
+    // 子代理调度器（S3：TUI Agents 面板数据源；S4 并发/预算闸门载体）——
+    // 由装配层（entries）创建后注入；None = 无调度（测试直连场景）
+    public var subagentScheduler: Option<SubagentScheduler> = None
+    // 子代理行事件回调（S3d 焦点转发用）：(agentId, kind: tool_start|tool_result, text)
+    // 硬规则：子代理 onDelta 绝不转发（OutputView 单流会撕行），只转发整行事件
+    public var onSubagentEvent: (Int64, String, String) -> Unit = { _, _, _ => }
+    // 每轮一次的轮次/用量回调（S3 修实测卡死）：(rounds, promptTokens, completionTokens)。
+    // 面板刷新必须挂这里（每轮一次、provider 无关），不能挂 onTokenEstimate（每 SSE chunk 一次）
+    public var onRoundTick: (Int64, Int64, Int64) -> Unit = { _, _, _ => }
     // 回合结束回调（渲染回合总结条：轮数/工具数/耗时/token用量/缓存命中率）
     public var onRunComplete: (RunSummary) -> Unit = { _ => }
     // 排队输入拉取回调（atomcode 式"steer"：TUI 忙时提交只入队不打断，
@@ -328,14 +368,6 @@ public class Agent {
         }
     }
 
-    public init(provider: LlmProvider, tools: ToolRegistry, config: AgentConfig) {
-        this.provider = provider
-        this.tools = tools
-        this.config = config
-        this.messages = ArrayList<ChatMessage>()
-        this.messages.add(ChatMessage("system", config.systemPrompt))
-    }
-
     /**
      * 请求中断当前任务（P0-2）：设置中断标志，agent 在轮次间/工具执行后
      * 检查并停止循环，保留已完成的工作。线程安全。
@@ -361,6 +393,20 @@ public class Agent {
         }
         // 诊断：确认中断请求到达 agent 层（排查"中断发出但回合不结束"）
         Log.warn("Agent.interrupt 已请求：interruptFlag=true + abort() 已调用")
+        // 中断传播（方案 §7）：Ctrl+C / Web cancel 杀整棵树——
+        // 登记中的子代理同置中断标志并 abort（异常隔离：单个子代理失败不影响其余）
+        this.childLock.lock()
+        try {
+            for (c in this.childAgents) {
+                try {
+                    c.interrupt()
+                } catch (e: Exception) {
+                    Log.warn("子代理中断传播异常: ${e}")
+                }
+            }
+        } finally {
+            this.childLock.unlock()
+        }
     }
 
     /**
@@ -375,6 +421,19 @@ public class Agent {
         } finally {
             this.interruptLock.unlock()
         }
+        // S4：回合级 token 归账清零（预算闸门按回合计）
+        match (this.subagentScheduler) {
+            case Some(s) => s.resetTurn()
+            case None => ()
+        }
+    }
+
+    /**
+     * 当前已完成轮次（只读展示用；面板按轮刷新数据源）。
+     * 故意不加锁：轮次是单调计数，展示竞态无害（最多旧一轮）。
+     */
+    public func currentRounds(): Int64 {
+        return this.roundsCompleted
     }
 
     /**
@@ -416,6 +475,36 @@ public class Agent {
             return this.interruptFlag
         } finally {
             this.interruptLock.unlock()
+        }
+    }
+
+    /**
+     * 登记在跑子代理（中断传播用；spawnSubagent fork 时登记，finally 注销）
+     */
+    public func registerChild(child: Agent): Unit {
+        this.childLock.lock()
+        try {
+            this.childAgents.add(child)
+        } finally {
+            this.childLock.unlock()
+        }
+    }
+
+    /**
+     * 注销子代理（按 agentId 匹配；重建列表避免依赖 ArrayList.remove 的重载差异）
+     */
+    public func unregisterChild(child: Agent): Unit {
+        this.childLock.lock()
+        try {
+            var kept = ArrayList<Agent>()
+            for (c in this.childAgents) {
+                if (c.agentId != child.agentId) {
+                    kept.add(c)
+                }
+            }
+            this.childAgents = kept
+        } finally {
+            this.childLock.unlock()
         }
     }
 
@@ -463,6 +552,19 @@ public class Agent {
      */
     public func getMessages(): ArrayList<ChatMessage> {
         return this.messages
+    }
+
+    /**
+     * 触碰文件快照（S7 归账：子代理结束时经 filesTouched 导出给父）
+     */
+    public func getTouchedFiles(): ArrayList<String> {
+        this.touchedLock.lock()
+        let out = ArrayList<String>()
+        for (f in this.touchedFiles) {
+            out.add(f)
+        }
+        this.touchedLock.unlock()
+        return out
     }
 
     /**
@@ -724,6 +826,10 @@ public class Agent {
             // 下一轮请求前 checkPendingCompact 换装或顺延）
             this.maybeTriggerBackgroundCompact()
             this.onTokens(response.usage.promptTokens + response.usage.completionTokens)
+            // S3 修实测卡死：每轮一次的轮次/用量回调（provider 无关）。此前面板刷新接在
+            // onTokenEstimate 上——anthropic 每 SSE chunk 回调一次，长流式下每秒成百次
+            // 锁+快照拷贝+全帧置脏，主循环被淹没（界面静止、输入无响应）
+            this.onRoundTick(iterations, summary.promptTokens, summary.completionTokens)
             Log.info("第 ${iterations} 轮完成 | 耗时 ${roundMs}ms | prompt ${response.usage.promptTokens} completion ${response.usage.completionTokens} cached ${response.usage.cachedTokens} | toolCalls ${response.toolCalls.size} | textLen ${response.text.size} | truncated ${response.truncated} | timedOut ${response.timedOut}")
 
             // SSE 空闲超时：网络长时间无新数据，已收文本/tool_calls 保留。
@@ -758,6 +864,7 @@ public class Agent {
                 // - 无依赖关系的 read-only → 全并发
                 // 组内 spawn 并发，组间串行；结果按 LLM 原始顺序回填
                 let toolCalls = response.toolCalls
+                this.recordTouchedPaths(toolCalls)
                 let n = Int64(toolCalls.size)
                 let deps = this.buildDependencyGraph(toolCalls)
                 let groups = this.topologicalGroups(deps, n)
@@ -1299,25 +1406,68 @@ public class Agent {
      * @return (resourcePath, isWrite)；path 为空表示无文件资源
      */
     private func extractResourceAccess(tc: ToolCall): (String, Bool) {
+        let accesses = this.extractResourceAccesses(tc)
+        if (accesses.size == 0) {
+            return ("", false)  // explore task：无边无资源
+        }
+        return accesses[0]
+    }
+
+    /**
+     * S6：多资源版资源提取。task 工具的 scope（逗号分隔 glob）每项一条写边；
+     * 无 scope 的 worker 返回哨兵 ("**", true)——与所有 writer 串行（保守，防静默覆盖）。
+     */
+    internal func extractResourceAccesses(tc: ToolCall): ArrayList<(String, Bool)> {
+        let out = ArrayList<(String, Bool)>()
+        if (tc.name == "task") {
+            // explore 只读：不产生写冲突，不建边（否则两路 explore 会被写哨兵串行化，
+            // 并发审批/并发调查全部失效——pty 4b 回归根因）
+            var isWorker = true
+            match (tc.arguments.get("subagent_type")) {
+                case Some(t) => isWorker = t.asString().getValue() == "worker"
+                case None => ()
+            }
+            if (!isWorker) {
+                return out
+            }
+            match (tc.arguments.get("scope")) {
+                case Some(s) =>
+                    let scopeStr = s.asString().getValue()
+                    var hasScope = false
+                    for (raw in scopeStr.split(",", -1)) {
+                        let g = raw.trimAscii()
+                        if (g.size > 0) {
+                            out.add((g, true))
+                            hasScope = true
+                        }
+                    }
+                    if (!hasScope) {
+                        out.add(("**", true))
+                    }
+                case None => out.add(("**", true))
+            }
+            return out
+        }
         match (tc.name) {
             case "read_file" | "grep" | "list_dir" | "glob" =>
                 match (tc.arguments.get("path")) {
-                    case Some(p) => return (p.asString().getValue(), false)
-                    case None => return ("", false)
+                    case Some(p) => out.add((p.asString().getValue(), false))
+                    case None => out.add(("", false))
                 }
             case "write_file" | "append_file" | "edit_file" | "hashline_edit" =>
                 match (tc.arguments.get("path")) {
-                    case Some(p) => return (p.asString().getValue(), true)
-                    case None => return ("", true)
+                    case Some(p) => out.add((p.asString().getValue(), true))
+                    case None => out.add(("", true))
                 }
             case "bash" =>
                 match (tc.arguments.get("command")) {
-                    case Some(c) => return (c.asString().getValue(), true)
-                    case None => return ("", true)
+                    case Some(c) => out.add((c.asString().getValue(), true))
+                    case None => out.add(("", true))
                 }
             case _ =>
-                return ("", true)
+                out.add(("", true))
         }
+        return out
     }
 
     /**
@@ -1330,7 +1480,7 @@ public class Agent {
      *
      * @return deps[i] = 依赖 i 的工具调用索引列表（i 必须在 deps[i] 之后执行）
      */
-    private func buildDependencyGraph(toolCalls: ArrayList<ToolCall>): ArrayList<ArrayList<Int64>> {
+    internal func buildDependencyGraph(toolCalls: ArrayList<ToolCall>): ArrayList<ArrayList<Int64>> {
         let n = toolCalls.size
         // deps[i] = i 依赖的工具调用索引列表（这些必须先完成，i 才能开始）
         var deps = ArrayList<ArrayList<Int64>>()
@@ -1338,35 +1488,54 @@ public class Agent {
             deps.add(ArrayList<Int64>())
         }
 
-        // 提取每个工具调用的资源访问
-        var accesses = ArrayList<(String, Bool)>()
+        // 提取每个工具调用的资源访问（S6：多资源——task 的 scope 每项一条）
+        var accesses = ArrayList<ArrayList<(String, Bool)>>()
         for (_ in 0..n) {
-            accesses.add(("", false))
+            accesses.add(ArrayList<(String, Bool)>())
         }
         for (i in 0..n) {
-            accesses[i] = this.extractResourceAccess(toolCalls[i])
+            accesses[i] = this.extractResourceAccesses(toolCalls[i])
         }
 
-        // 构建依赖边：同 path 且至少一个 write → 串行依赖
+        // 构建依赖边：i/j 存在共同资源键且至少一方是写 → 串行依赖。
+        // task 无 scope 的哨兵 "**" 使无写域 worker 与所有 writer 串行（保守防静默覆盖）
         for (i in 0..n) {
-            let (pathI, writeI) = accesses[i]
-            if (pathI.size == 0) {
-                continue  // 无资源路径，不建依赖
+            if (accesses[i].size == 0) {
+                continue
             }
             for (j in 0..n) {
                 if (i == j) {
                     continue
                 }
-                let (pathJ, writeJ) = accesses[j]
-                if (pathJ.size == 0) {
+                if (accesses[j].size == 0) {
                     continue
                 }
-                // 同一路径 + 至少一个写 → 串行依赖
-                if (pathI == pathJ && (writeI || writeJ)) {
-                    // 保留 LLM 原始顺序：j < i 时 i 依赖 j
-                    if (j < i) {
-                        deps[i].add(Int64(j))
+                var conflict = false
+                for ((pathI, writeI) in accesses[i]) {
+                    if (pathI.size == 0) {
+                        continue
                     }
+                    for ((pathJ, writeJ) in accesses[j]) {
+                        if (pathJ.size == 0) {
+                            continue
+                        }
+                        // 哨兵 "**"：无 scope 的写任务与任何带资源的调用串行（保守防静默覆盖）
+                        if ((pathI == "**" && writeI) || (pathJ == "**" && writeJ)) {
+                            conflict = true
+                            break
+                        }
+                        if (pathI == pathJ && (writeI || writeJ)) {
+                            conflict = true
+                            break
+                        }
+                    }
+                    if (conflict) {
+                        break
+                    }
+                }
+                if (conflict && j < i) {
+                    // 保留 LLM 原始顺序：j < i 时 i 依赖 j
+                    deps[i].add(Int64(j))
                 }
             }
         }
@@ -1479,6 +1648,30 @@ public class Agent {
                         return ToolResult("操作被用户拒绝（${reason}）", true)
                     }
             }
+            // S6：writeScope 收窄（AND 语义：capability 放行后仍须落在写域内；空=不限）。
+            // 只收窄、绝不放宽——红线：不触碰 Capability 默认宽松语义
+            if (isWrite) {
+                let ws = this.config.writeScope
+                if (ws.size > 0) {
+                    var inScope = false
+                    for (g in ws) {
+                        if (Capability.globMatch(g, p)) {
+                            inScope = true
+                            break
+                        }
+                    }
+                    if (!inScope) {
+                        var scopeStr = StringBuilder()
+                        for (g in ws) {
+                            scopeStr.append(g)
+                            scopeStr.append(" ")
+                        }
+                        return ToolResult(
+                            "超出本子代理写域 (scope: ${scopeStr.toString()}): ${p}。请只在给定写域内修改。",
+                            true)
+                    }
+                }
+            }
         }
         // 全部通过：正常执行（兜底异常，避免单工具崩溃带垮整个 Agent 循环）
         try {
@@ -1494,11 +1687,80 @@ public class Agent {
      * 无 LLM 调用（快），供跨会话注入。
      */
     public func summarizeForMemory(): String {
+        return this.summarizeFrom(this.messages)
+    }
+
+    /**
+     * 任务简报上下文块（方案 §5 / 决策 D1）：触碰文件表 + 会话摘要。
+     * spawnSubagent fork 子代理时调用——子代理不共享父历史，靠此块显式传递上下文。
+     */
+    public func taskBriefContext(): String {
+        // 后台摘要任务可能正在换装 messages（compactLock 保护）：锁内重取引用，
+        // 保证拿到的是换装前/后完整列表之一（旧列表换装后冻结不再追加）
+        var msgs = this.messages
+        this.compactLock.lock()
+        try {
+            msgs = this.messages
+        } finally {
+            this.compactLock.unlock()
+        }
+        var sb = StringBuilder()
+        sb.append("--- 父会话上下文（父代理自动附带）---\n")
+        this.touchedLock.lock()
+        try {
+            if (this.touchedFiles.size > 0) {
+                sb.append("- 本会话已触碰文件:")
+                var first = true
+                var n: Int64 = 0
+                for (f in this.touchedFiles) {
+                    if (n >= 8) {
+                        break
+                    }
+                    if (!first) {
+                        sb.append(",")
+                    }
+                    sb.append(" ${f}")
+                    first = false
+                    n += 1
+                }
+                sb.append("\n")
+            }
+        } finally {
+            this.touchedLock.unlock()
+        }
+        sb.append("- 会话摘要:\n")
+        let mem = this.summarizeFrom(msgs)
+        // 简报整体上限 ~1500 字符：防止上下文块本身成为新的 token 爆点（方案 §5）
+        sb.append(if (mem.size > 1500) { truncateUtf8(mem, 1500) + "…" } else { mem })
+        return sb.toString()
+    }
+
+    /**
+     * 记录本会话触碰的文件路径（复用 V2d DAG 资源提取；供子代理简报）
+     */
+    private func recordTouchedPaths(toolCalls: ArrayList<ToolCall>): Unit {
+        this.touchedLock.lock()
+        try {
+            for (tc in toolCalls) {
+                let (path, _) = this.extractResourceAccess(tc)
+                if (path.size > 0) {
+                    this.touchedFiles.add(path)
+                }
+            }
+        } finally {
+            this.touchedLock.unlock()
+        }
+    }
+
+    /**
+     * 摘要主体（对传入快照提取；summarizeForMemory 与子代理简报共用）
+     */
+    private func summarizeFrom(msgs: ArrayList<ChatMessage>): String {
         var task = ""
         var files = HashSet<String>()
         var toolCount: Int64 = 0
         var lastReply = ""
-        for (m in this.messages) {
+        for (m in msgs) {
             if (m.role == "user" && task.size == 0) {
                 task = m.content
             }
@@ -1508,25 +1770,47 @@ public class Agent {
                 if (m.name == "read_file" || m.name == "write_file" || m.name == "edit_file" ||
                     m.name == "append_file" || m.name == "hashline_edit" || m.name == "grep" || m.name == "glob") {
                     // 常见格式："Written <path> ..." / "<path>:<line>: ..." / "=== <path> ==="
+                    // 跨平台（Cangjie 1.2.0 迁移）：POSIX `/` 与 Windows `\` 都要认，
+                    // 且 Windows 路径要带上盘符（C:\...）——原实现只找 '/'，Windows 上
+                    // 一个路径都提取不到（子代理简报因此丢上下文）
                     let c = m.content
                     var i: Int64 = 0
                     while (i < c.size) {
-                        // 提取 / 开头的路径片段（简化启发式）
-                        if (c[i] == 47u8) {  // '/'
-                            var j = i
-                            var path = StringBuilder()
-                            while (j < c.size && c[j] != 32u8 && c[j] != 10u8 && c[j] != 58u8 && c[j] != 41u8 && path.toString().size < 120) {
-                                path.append(String(Rune(c[j])))
-                                j += 1
-                            }
-                            let p = path.toString()
-                            if (p.size > 4 && (p.contains(".") || p.contains("/"))) {
-                                files.add(p)
-                            }
-                            i = j
-                        } else {
+                        let b = c[i]
+                        if (b != 47u8 && b != 92u8) {  // 非 '/' 也非 '\'
                             i += 1
+                            continue
                         }
+                        // 起点回退到 token 边界（空白/换行/括号/引号/冒号即停）
+                        var s = i
+                        while (s > 0) {
+                            let pb = c[s - 1]
+                            if (pb == 32u8 || pb == 10u8 || pb == 13u8 || pb == 9u8 ||
+                                pb == 40u8 || pb == 34u8 || pb == 39u8 || pb == 58u8) {
+                                break
+                            }
+                            s -= 1
+                        }
+                        // 冒号前一位是盘符字母（C:）时把「C:」两字节一起补进来
+                        if (s >= 1 && c[s - 1] == 58u8) {
+                            s -= 1
+                            if (s >= 1 &&
+                                ((c[s - 1] >= 65u8 && c[s - 1] <= 90u8) ||
+                                (c[s - 1] >= 97u8 && c[s - 1] <= 122u8))) {
+                                s -= 1
+                            }
+                        }
+                        // 终点：空白/换行/右括号
+                        var j = i
+                        while (j < c.size && c[j] != 32u8 && c[j] != 10u8 && c[j] != 13u8 &&
+                            c[j] != 9u8 && c[j] != 41u8 && (j - s) < 200) {
+                            j += 1
+                        }
+                        let p = c[s..j]
+                        if (p.size > 4 && (p.contains(".") || p.contains("/") || p.contains("\\"))) {
+                            files.add(p)
+                        }
+                        i = j
                     }
                 }
             }

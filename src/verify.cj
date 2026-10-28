@@ -21,7 +21,8 @@ class VerifyState {
  * --mock 模式：离线验证 agent 工具调用链（无 API Key 环境）
  */
 func runMockVerify(): Int64 {
-    let testPath = "/tmp/cjh_verify.txt"
+    // 跨平台：POSIX /tmp/cjh_verify.txt，Windows %TEMP%\cjh_verify.txt
+    let testPath = tmpPath("cjh_verify.txt")
     File.writeTo(testPath, "line1\nline2\nline3\n".toArray())
 
     let registry = ToolRegistry()
@@ -55,7 +56,7 @@ func runMockVerify(): Int64 {
     }
 
     println("=== cjh agent 工具调用链验证（4 段）===")
-    let summary = agent.run("请读取 /tmp/cjh_verify.txt 并统计行数")
+    let summary = agent.run("请读取 ${testPath} 并统计行数")
     println("=== 最终答复 ===")
     println(summary.reply)
 

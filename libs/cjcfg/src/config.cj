@@ -75,6 +75,13 @@ public class CjhConfig {
     // 直接赋值（加载 auth.json / 环境变量注入）不置位——避免把 env 里的 Key 顺手落盘。
     private var apiKeyPersistPending: Bool = false
     public var maxIterations: Int64 = 100
+    // S4 子代理边界（方案C D9 默认值；0 = 对应项不限）
+    public var maxSubagents: Int64 = 4            // 并发上限（超出排队）
+    public var maxTasksPerTurn: Int64 = 6         // 每回合派生上限
+    public var subagentTokenBudget: Int64 = 200000  // 子代理回合 token 预算
+    public var subagentTimeoutMs: Int64 = 300000  // 子代理墙钟超时（G-A TUI 审批超时同源）
+    // S5 路由模式：auto（判定表自主）/ on / off（task 派发物理关闭；运行时 /parallel 切换）
+    public var subagentMode: String = "auto"
     public var systemPrompt: String = ""
     // 采样参数（对齐 pi：/settings 可调）
     public var temperature: Float64 = 0.7
@@ -253,6 +260,11 @@ public class CjhConfig {
   "summary_base_url": "",
   "summary_api_key": "",
   "max_iterations": 10,
+  "max_subagents": 4,
+  "max_tasks_per_turn": 6,
+  "subagent_token_budget": 200000,
+  "subagent_timeout_ms": 300000,
+  "subagent_mode": "auto",
   "temperature": 0.7,
   "max_tokens": 16384,
   "system_prompt": "",
@@ -451,6 +463,11 @@ public class CjhConfig {
         root.put("model", JsonString(this.model))
         root.put("provider_protocol", JsonString(this.providerProtocol))
         root.put("max_iterations", JsonInt(this.maxIterations))
+        root.put("max_subagents", JsonInt(this.maxSubagents))
+        root.put("max_tasks_per_turn", JsonInt(this.maxTasksPerTurn))
+        root.put("subagent_token_budget", JsonInt(this.subagentTokenBudget))
+        root.put("subagent_timeout_ms", JsonInt(this.subagentTimeoutMs))
+        root.put("subagent_mode", JsonString(this.subagentMode))
         root.put("system_prompt", JsonString(this.systemPrompt))
         root.put("temperature", JsonFloat(this.temperature))
         root.put("max_tokens", JsonInt(this.maxTokens))
@@ -544,6 +561,9 @@ public class CjhConfig {
                 " read_file and bash return plain text. If you see normal source code (HTML/JS/CSS), it IS the file content — do NOT run python3/awk/od to 'decode' it. Only use od/hexdump on genuinely binary files." +
                 "\n\n## Work loop (read → edit → verify)\n" +
                 " For each task: (1) READ the relevant files first to understand current state; (2) make targeted edits (edit_file/hashline_edit, or write_file for new files); (3) VERIFY with bash (run build/tests or inspect output). Do not modify blind — read before write." +
+                "\n\n## Task list (todo_write)\n" +
+                " For multi-step work (>=3 steps, multiple sub-goals, or anything spanning many tool rounds), FIRST decompose it with todo_write: add one item per step, each a concrete actionable outcome. Then keep the list LIVE: mark an item doing when you start it, done the moment it finishes — never batch-done at the end. The user watches the Tasks panel to track progress; a stale list is worse than none.\n" +
+                " Skip the list for single-step questions or tasks done in <=2 tool calls. Subagent dispatches (task) are todo items too — add them before spawning, done when results are collected." +
                 "\n\n## Batch tool calls\n" +
                 " When you need to do several independent things (read 3 files, run 2 commands), issue ALL the tool calls in ONE turn — do not do them one at a time. This saves round-trips and is much faster.\n" +
                 " Example: to understand 3 files, call read_file 3 times in one turn; to run tests after a change, one bash call.\n" +
@@ -553,7 +573,14 @@ public class CjhConfig {
                 "\n\n## Context budget\n" +
                 " bash output is truncated to 2000 chars; long file reads are paginated with offset/limit. If you need the middle of a truncated bash output, read the spill file path shown in the truncation marker. Prefer targeted reads over dumping whole files." +
                 "\n\n## Writing files\n" +
-                " Write the complete file in one write_file call. If the file is large (>150 lines) and write_file gets truncated, continue with append_file — never rewrite a truncated file with write_file."
+                " Write the complete file in one write_file call. If the file is large (>150 lines) and write_file gets truncated, continue with append_file — never rewrite a truncated file with write_file." +
+                "\n\n## Subagent routing (task tool)\n" +
+                " Decide by this table; do NOT spawn for looks — each subagent costs ~3-5k tokens of fixed overhead (its system prompt + tool schemas).\n" +
+                " - Single-file change, clear answer, or <=3 tool calls expected: do it YOURSELF (default path).\n" +
+                " - Repo-wide scan / >=5-file investigation whose answer fits one sentence you will act on: spawn 1 explore.\n" +
+                " - >=2 independent changes touching DIFFERENT files, each needing >=3 tool rounds: spawn N workers in ONE turn (they run concurrently).\n" +
+                " - Forbidden: spawning to 'double-check' yourself, one worker for one small file, splitting one task into think-then-write agents.\n" +
+                " Limits: <=3 concurrent spawns, <=6 per turn; excess is rejected with budget_exceeded. After a spawn, read the result header: a wasteful spawn is flagged with a routing hint — adapt."
         }
     }
 
@@ -627,6 +654,37 @@ public class CjhConfig {
                     if (let Some(v) <- obj.get("max_iterations")) {
                         match (v.kind()) {
                             case JsonKind.JsInt => this.maxIterations = v.asInt().getValue()
+                            case _ => ()
+                        }
+                    }
+                    // S4 子代理边界四键（0 = 对应项不限）
+                    if (let Some(v) <- obj.get("max_subagents")) {
+                        match (v.kind()) {
+                            case JsonKind.JsInt => this.maxSubagents = v.asInt().getValue()
+                            case _ => ()
+                        }
+                    }
+                    if (let Some(v) <- obj.get("max_tasks_per_turn")) {
+                        match (v.kind()) {
+                            case JsonKind.JsInt => this.maxTasksPerTurn = v.asInt().getValue()
+                            case _ => ()
+                        }
+                    }
+                    if (let Some(v) <- obj.get("subagent_token_budget")) {
+                        match (v.kind()) {
+                            case JsonKind.JsInt => this.subagentTokenBudget = v.asInt().getValue()
+                            case _ => ()
+                        }
+                    }
+                    if (let Some(v) <- obj.get("subagent_timeout_ms")) {
+                        match (v.kind()) {
+                            case JsonKind.JsInt => this.subagentTimeoutMs = v.asInt().getValue()
+                            case _ => ()
+                        }
+                    }
+                    if (let Some(v) <- obj.get("subagent_mode")) {
+                        match (v.kind()) {
+                            case JsonKind.JsString => this.subagentMode = v.asString().getValue()
                             case _ => ()
                         }
                     }

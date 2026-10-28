@@ -1,5 +1,7 @@
 package cjh.tests
 
+import cjutil.*
+
 import std.collection.*
 import stdx.encoding.json.*
 import std.fs.*
@@ -216,7 +218,7 @@ public class CangjieRefToolTest {
 
     @TestCase
     public func testExecuteCorpusMissing(): Unit {
-        let tool = CangjieRefTool("/tmp/cjh_ut_cangjie_ref_absent")
+        let tool = CangjieRefTool(tmpPath("cjh_ut_cangjie_ref_absent"))
         var args = JsonObject()
         args.put("query", JsonString("ArrayList"))
         let result = tool.execute(args)

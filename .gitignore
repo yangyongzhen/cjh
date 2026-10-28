@@ -29,6 +29,7 @@ __pycache__/
 # 不写死版本号；已纳管的文件不受忽略规则影响，需要纳管某个包时用 git add -f。
 dist/windows-*/
 dist/linux/
+dist/win-x64-test/
 dist/cjh-v*-x64*.zip
 
 # npm 平台包里的二进制由 scripts/npm_publish.sh 从 dist/ 拷入，不入版本库

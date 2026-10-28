@@ -24,6 +24,9 @@ public class InputBox <: Component {
     // 终端 UTF-8 能力（决定提示符/搜索图标是否走 ASCII 降级）：
     // v1.3.16 前硬编码 UTF-8，Windows 非 65001 代码页下与 logo/状态栏 ASCII 混排
     private var utf8: Bool = true
+    // 是否用"花体图标"（❯ / 🔍）：与 utf8 分开判定——conhost 字体常缺 U+276F 字形，
+    // 此时即使 UTF-8 编码可用也要降级成 "> "（见 useFancyPromptGlyphs）
+    private var fancyIcons: Bool = true
     // 提示符可见文本（不含 ANSI）与其着色渲染文本（omp 风格：╰─ 底边框 + ❯）
     private var promptText: String = "╰─ ❯ "
     private var promptRendered: String = Ansi.fg(Ansi.THEME_BORDER) + "╰─ " + Ansi.reset() + Ansi.fg(Ansi.THEME_ACCENT) + "❯ " + Ansi.reset()
@@ -78,20 +81,39 @@ public class InputBox <: Component {
     }
 
     /**
-     * 按 utf8 能力 + 搜索模式重建提示符文本/着色文本
+     * 设置是否用"花体图标"（❯ / 🔍）而非 ASCII（> / ?）
+     *
+     * 与 UTF-8 能力分开：conhost 字体常缺 U+276F 字形（显示成方框），
+     * 具体判据见 `useFancyPromptGlyphs()`（TuiApp 启动时接线）。
+     */
+    public func setFancyIcons(v: Bool): Unit {
+        this.fancyIcons = v
+        this.rebuildPrompt()
+    }
+
+    /** 当前提示符可见文本（观测/单测用；不含 ANSI、不含行内着色） */
+    public func currentPrompt(): String {
+        return this.promptText
+    }
+
+    /**
+     * 按 utf8 能力 + 图标能力 + 搜索模式重建提示符文本/着色文本
      */
     private func rebuildPrompt(): Unit {
+        // 图标（❯/🔍）比框线（╰─）更容易缺字形：两者分别判定
+        let fancy = this.utf8 && this.fancyIcons
         if (this.searchMode) {
-            let icon = if (this.utf8) { "🔍 " } else { "? " }
+            let icon = if (fancy) { "🔍 " } else { "? " }
             let head = if (this.utf8) { "╰─ " } else { "+-- " }
             this.promptText = head + icon
             this.promptRendered = Ansi.fg(Ansi.THEME_BORDER) + head + Ansi.reset() +
                 Ansi.fg(Ansi.THEME_WARN) + icon + Ansi.reset()
         } else {
             let head = if (this.utf8) { "╰─ " } else { "+-- " }
-            this.promptText = head + "❯ "
+            let icon = if (fancy) { "❯ " } else { "> " }
+            this.promptText = head + icon
             this.promptRendered = Ansi.fg(Ansi.THEME_BORDER) + head + Ansi.reset() +
-                Ansi.fg(Ansi.THEME_ACCENT) + "❯ " + Ansi.reset()
+                Ansi.fg(Ansi.THEME_ACCENT) + icon + Ansi.reset()
         }
     }
 
@@ -586,7 +608,11 @@ public class InputBox <: Component {
             }
         }
         let baseCols = if (curRowOff == 0) { TuiCanvas.displayWidth(this.promptText) } else { 2 }
-        canvas.setCursor(row + curRowOff + 1, baseCols + col)
+        // +1：setCursor/Ansi.moveTo 是 **1-based**（`ESC[row;colH`），而上面累计的
+        // baseCols/col 是"宽度和"（0 基）。此前少了这个 +1——ASCII 下光标压在最后一个字符上
+        // 不易察觉，中文下正好落在"汉字的第二格"＝看起来光标在字中间（Windows/终端实测）。
+        // 实测校准："ab" → 列 8、"你好"(各 2 列) → 列 10（提示符 "╰─ ❯ " 占 1..5）。
+        canvas.setCursor(row + curRowOff + 1, baseCols + col + 1)
         return viewH
     }
 

@@ -1,8 +1,6 @@
 package cjllm
 
 import stdx.encoding.json.*
-import stdx.net.tls.*
-import stdx.crypto.x509.X509Certificate
 import std.collection.*
 import std.sync.*
 import cjutil.*
@@ -200,9 +198,8 @@ public class AnthropicProvider <: LlmProvider {
         }
 
         // 传输层：std.net 直连 + stdx.net.tls（per-read 60s 空闲超时）
-        var tlsConfig = TlsClientConfig()
-        tlsConfig.verifyMode = CertificateVerifyMode.CustomCA(X509Certificate.systemRootCerts())
-        tlsConfig.domain = Some(this.sniHost())
+        // Cangjie 1.2.0 迁移：构造细节统一收进 cjutil.buildTlsClientConfig
+        let tlsConfig = buildTlsClientConfig(this.sniHost())
         let (host, port, path, useTls) = splitEndpoint(this.endpointUrl())
         let transport = HttpStreamClient(host, port, useTls, tlsConfig)
         transport.idleTimeout = defaultIdleTimeout()

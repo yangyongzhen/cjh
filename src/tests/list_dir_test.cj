@@ -1,5 +1,7 @@
 package cjh.tests
 
+import cjutil.*
+
 import std.fs.*
 import stdx.encoding.json.*
 import cjh.tools.*
@@ -30,7 +32,7 @@ public class ListDirToolTest {
     public func testNonexistentPath(): Unit {
         let tool = ListDirTool()
         var args = JsonObject()
-        args.put("path", JsonString("/tmp/cjh_ut_nonexistent_dir_xyz"))
+        args.put("path", JsonString(tmpPath("cjh_ut_nonexistent_dir_xyz")))
         let result = tool.execute(args)
         @Assert(result.isError, true)
     }

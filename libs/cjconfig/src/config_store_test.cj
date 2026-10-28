@@ -12,7 +12,8 @@ public class ConfigStoreTest {
 
     private func newStore(name: String): ConfigStore {
         // 独立测试目录（固定名：roundtrip 用例靠 save 覆盖）
-        return ConfigStore(name, "/tmp/cjconfig_test_" + name)
+        // 路径跨平台：POSIX /tmp/cjconfig_test_<name>，Windows %TEMP%\cjconfig_test_<name>
+        return ConfigStore(name, testTmpPath("cjconfig_test_" + name))
     }
 
 
@@ -33,16 +34,18 @@ public class ConfigStoreTest {
     public func testEnvOverrides(): Unit {
         let cfg = newStore("env")
         cfg.defineStr("model", "gpt-4o-mini", "CJCONFIG_TEST_MODEL", "模型")
-        cfg.load()
-        // 无 env：默认值
-        @Assert(cfg.getStr("model"), "gpt-4o-mini")
-        // 设置 env → 覆盖
-        setEnvForTest("CJCONFIG_TEST_MODEL", "deepseek-chat")
-        @Assert(cfg.getStr("model"), "deepseek-chat")
-        // 类型转换：int env
         cfg.defineInt("max_iters", 10, "CJCONFIG_TEST_ITERS", "")
-        setEnvForTest("CJCONFIG_TEST_ITERS", "42")
-        @Assert(cfg.getInt("max_iters"), 42)
+        cfg.load()
+        // 无 env：默认值（两端都成立）
+        @Assert(cfg.getStr("model"), "gpt-4o-mini")
+        // 设置 env → 覆盖 + 类型转换（POSIX 真设环境变量；Windows 无 setenv 返回哨兵，
+        // 此时跳过 env 段——该路径由 Linux 侧门禁覆盖，见 env_override_helper.cj）
+        let (wantModel, wantIters) = envOverrideValues()
+        if (wantIters < 0) {
+            return
+        }
+        @Assert(cfg.getStr("model"), wantModel)
+        @Assert(cfg.getInt("max_iters"), wantIters)
     }
 
     @TestCase

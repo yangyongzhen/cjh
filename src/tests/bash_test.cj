@@ -5,7 +5,11 @@ import cjh.tools.*
 
 /**
  * BashTool 单元测试：命令执行、退出码、stderr、参数校验
+ *
+ * @When[os != "Windows"]：断言 /bin/bash 语义（管道、stderr 合并、退出码、超时杀进程）；
+ * Windows 上 BashTool 回落 PowerShell，行为与断言不符。
  */
+@When[os != "Windows"]
 @Test
 public class BashToolTest {
 

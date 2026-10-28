@@ -156,14 +156,12 @@ public class TasksPanel {
             return 0  // 空间不足，不显示
         }
 
-        // 渲染起始列：右对齐
-        let startCol: Int64 = cols - panelW
-        if (startCol < 0) {
-            return 0
-        }
-
-        // 渲染边框和任务行
-        this.renderBox(canvas, startRow, startCol, panelW, actualH, items, doneCount, inProgressCount, openCount)
+        // 列定位（左右分栏，用户要求）：Tasks 面板固定左侧（startCol=0），Agents
+        // 面板保持右侧——同屏时左右分栏不堆叠。renderBox 内部按显示宽度补齐
+        // 右边框的对齐逻辑不变
+        canvas.setOffset(0)
+        this.renderBox(canvas, startRow, 0, panelW, actualH, items, doneCount, inProgressCount, openCount)
+        canvas.setOffset(0)
         return actualH
     }
 
@@ -181,10 +179,12 @@ public class TasksPanel {
         let bx = BoxChars(this.utf8)
 
         // 顶边框：╭─ Tasks (1 done, 1 in progress, 2 open) ───╮（ascii：+-- ... +）
+        // 显示宽度算填充（与 Agents 面板同款修复）：title.size 是字节数，
+        // 多字节标题会把横线补短；且原公式总数差 1 列（顶 panelW-1 vs 底 panelW）
         let title: String = "Tasks (${doneCount} done, ${inProgressCount} in progress, ${openCount} open)"
+        let titleW: Int64 = TuiCanvas.displayWidth(title)
         var topLine: String = muted + bx.tl + bx.hc + " " + reset + accent + title + reset + muted + " "
-        let used: Int64 = 4 + Int64(title.size) + 1  // tl+hc + title + 空格
-        var dashCount: Int64 = panelW - used - 1  // -1 for tr
+        var dashCount: Int64 = panelW - titleW - 5  // tl+hc+空格 + 空格+tr
         if (dashCount < 0) { dashCount = 0 }
         var i: Int64 = 0
         while (i < dashCount) {
@@ -212,14 +212,26 @@ public class TasksPanel {
                     marker = if (this.utf8) { "☐" } else { "o" }
                     markerColor = muted
             }
-            // 截断 content 到面板宽度（UTF-8 安全：避免落在多字节字符中间）
-            let maxContentW: Int64 = panelW - 12
+            // 截断 content（按显示宽度，避免落在多字节字符中间或宽度虚高）
+            let idStr: String = "#${item.id}"
+            let prefixW: Int64 = 2 + TuiCanvas.displayWidth(marker) + 1 +
+                TuiCanvas.displayWidth(idStr) + 2
+            let contentBudget: Int64 = (panelW - 2) - prefixW
             var content: String = item.content
-            if (Int64(content.size) > maxContentW) {
-                content = truncateUtf8(content, maxContentW)
+            if (TuiCanvas.displayWidth(content) > contentBudget) {
+                content = canvas.truncate(content, contentBudget)
+            }
+            // 行内容按显示宽度补齐到 panelW-2 再补右边框（与 Agents 面板同款，右端对齐）
+            var pad: Int64 = contentBudget - TuiCanvas.displayWidth(content)
+            if (pad < 0) { pad = 0 }
+            var padStr: String = ""
+            var pi: Int64 = 0
+            while (pi < pad) {
+                padStr += " "
+                pi += 1
             }
             let line: String = muted + bx.vc + reset + "  " + markerColor + marker + reset + " " +
-                muted + "#${item.id}" + reset + "  " + content +
+                muted + idStr + reset + "  " + content + padStr +
                 muted + bx.vc + reset
             canvas.setLine(row, line)
             row += 1

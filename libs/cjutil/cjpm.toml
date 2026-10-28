@@ -1,5 +1,5 @@
 [package]
-  cjc-version = "1.0.5"
+  cjc-version = "1.2.0"
   name = "cjutil"
   description = "cjutil：仓颉通用工具库（日志、UTF-8 安全解码等基础设施），可独立贡献给仓颉生态"
   version = "0.1.0"
@@ -13,4 +13,4 @@
 [dependencies]
 
 [target.x86_64-unknown-linux-gnu.bin-dependencies]
-    path-option = ["/root/.cangjie/stdx/cangjie-stdx-linux-x64-1.0.5.1/dynamic/stdx"]
+    path-option = ["/root/.cangjie/stdx/cangjie-stdx-linux-x64-1.2.0.1/dynamic/stdx"]

@@ -88,6 +88,11 @@ func makeFixture(dir: String): Unit {
     makeSymlink(dir + "/does-not-exist", dir + "/dangle_link")
 }
 
+/**
+ * @When[os != "Windows"]：grep/glob 快慢路径一致性与 symlink 语义——
+ * symlink 在 Windows 需开发者模式/管理员权限，且路径分隔符与 glob 语义不同。
+ */
+@When[os != "Windows"]
 @Test
 public class FastPathParityTest {
     private var dir: String = testTempDir("fastpath")
