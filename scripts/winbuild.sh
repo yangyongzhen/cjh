@@ -36,4 +36,12 @@ trap restore EXIT
 
 echo "[winbuild.sh] 交叉构建 Windows（stdx: $WINDOWS_STDX）..."
 cjpm build --target x86_64-pc-windows-gnu "$@"
-echo "[winbuild.sh] 产物: target/x86_64-pc-windows-gnu/release/bin/main.exe"
+# strip PE：cjpm 产物带调试 section（38MB），裁剪后 ~13MB；PE 用 mingw strip
+EXE=target/x86_64-pc-windows-gnu/release/bin/main.exe
+if command -v x86_64-w64-mingw32-strip > /dev/null; then
+    x86_64-w64-mingw32-strip "$EXE"
+    echo "[winbuild.sh] 已 strip: $(stat -c%s "$EXE") bytes"
+else
+    echo "[winbuild.sh] 警告: 未找到 x86_64-w64-mingw32-strip，产物未裁剪"
+fi
+echo "[winbuild.sh] 产物: $EXE"
