@@ -61,11 +61,16 @@
 | **bash** | 执行 shell 命令，捕获 stdout/stderr |
 | **read_file** | 读取文件，大文件返回符号摘要，offset/limit 按需展开 |
 | **write_file** | 写入文件（创建/覆盖） |
+| **append_file** | 追加写入文件，OpenMode.Append 增量写 |
+| **edit** | str_replace 精确替换，old_string 必须唯一（或 replace_all=true） |
 | **hashline_edit** | 行号锚点 `@@N` + 内容验证编辑，`@@{hash}` 哈希锚点向后兼容 |
 | **grep** | 目录树递归搜索，gitignore 感知，上下文行参数 |
+| **glob** | 文件名模式匹配，支持 `**` 跨目录（借鉴 OMP） |
+| **ast_grep** | AST 结构搜索，调 ast-grep CLI（sg），降级 grep |
 | **list_dir** | 列出目录树 |
 | **cangjie_ref** | 仓颉知识层离线检索：对 `~/.cjh/cangjie-ref/` 语料做 CJK 2-gram + ASCII 词混合分词、行级打分，命中带绝对 `路径:行号` 供精读；纯离线不联网，语料目录不存在则**不注册**（零开销） |
 | **todo_write** | LLM 通过工具调用管理任务列表（add/doing/done/update/clear/list） |
+| **task** | 派发子代理执行独立任务，explore（只读）/ worker（可写）——并行子代理编排的基础原语 |
 | **web_search** | 联网搜索，多后端路由（Tavily/Exa/SearXNG/DDG）+ per-engine key rotation，snippet 截断 500 字符 |
 | **web_fetch** | 抓取网页，三级降级链（仓颉 HTTP GET → curl → Firecrawl）+ SSRF 防护 + HTML 清洗 → Markdown，截断 ~32KB |
 
@@ -247,8 +252,6 @@
 
 | 版本 | 主要功能 |
 |------|----------|
-| v1.6.1 | 默认系统提示词补 todo_write 任务列表规范（修 Tasks 面板不弹出）；双平台二进制包重打（SDK 1.2.0） |
-| v1.6.0 | **并行子代理阶段 C 全量落地（S1-S8）**：task 派发 explore/worker + DAG 资源依赖调度 + Agents 面板可观测（Ctrl+G 焦点/转录）+ 四键边界管控 + 审批队列化 + 路由策略（/parallel）；实测修复系列：限流退避重试（可中断）/流式 usage 接线/父回合失败显式提示/错峰派发/面板左右分栏（overlay 按列拼接）/歧义宽度 1 列；SDK 1.2.0 迁移 + setup_paths.sh；README/官网双语同步 |
 | v1.0.0 | 初始版本：TUI + Agent 循环 + 基础工具 |
 | v1.1.0 | V2c 记忆分层 + V2b 插件系统 + 树形会话 + V3b Ollama 支持 |
 | v1.2.0 | V2d 并发执行引擎 + P0-P2 工具效率提升 + 输入队列方案 B + Tasks 面板 + TodoWriteTool |
@@ -272,8 +275,12 @@
 | v1.3.14 | V3 信任链 Step 3 信任管理 CLI（`cjh trust/untrust/trust-list` + `~/.cjh/trusted-publishers`，空列表开放/非空严格）+ 第三方风格插件示例（git-status / tool-result-banner）+ libs 生态冷启动发布（cjterm/cjlog/cjconfig/cjutil/cjllm 独立仓库 v0.1.0） |
 | v1.3.15 | 回合统计缓存率统计缺口修复：解析 OpenAI 标准/智谱 GLM 嵌套字段 `prompt_tokens_details.cached_tokens`（此前 GLM/OpenAI 兼容接口恒显示 0% cached） |
 | v1.4.0 | 仓颉内置知识层一 + 二期：技能「入口 / 全文分离」（`~/.cjh/skills/<name>.md` 只留描述 + 指向全文的绝对路径，9 篇常驻 20,086 → 6,588 B），`scripts/install-cangjie-knowledge.sh` 投影安装 + `--with-cangjie-skills` 分级收录；只读工具 `cangjie_ref` 对 `~/.cjh/cangjie-ref/` 语料纯离线检索（CJK 2-gram + ASCII 词分词、行级打分、命中带 `路径:行号`） |
-| v1.5.1 | Web 通道对外契约补齐 + 失败 / 截断信号：WS 控制帧不再静默（`switch_model`/`compact` 回 `ack`、`cancel`/`abort` 回 `cancelled`，`was_running` 如实）+ `capabilities` 能力自述（如实枚举入站/出站帧面）+ `FrameMeta` 消息身份随帧贯穿 + WS 审批通道（`approval_request`/`approval_response`）+ 工具结果结构化 diff（`textdiff.cj`）+ `GET/PUT /api/mcp`、`POST /api/workspace`；回合失败回结构化 `error` 帧（4 码 + `retryable`）不再只回空 `done`；done 帧新增**可选** `truncated` 透传上游 `max_tokens` 截断（`finish_reason` 三值不变） |
 | v1.5.0 | 仓颉内置知识层三期 + TUI `/ref` 面板：`cjh ref status / verify / rebuild / update` 子命令（前三者纯本地；`update` 唯一联网入口、只能人显式触发，`--source` 离线刷新、`--repo`/`--branch` 换源、`--dry-run` 只预演、`--restore` 快照回滚）+ 覆盖前快照与自检失败自动回滚 + **同名技能只对齐 `.md`**（保留上游非 md 资产、来源没有的技能目录不动）+ `cjh ref search` 复用二期检索；TUI `/ref [status\|verify\|rebuild\|search <词>\|update]`（联网动作需 `--yes` 二次确认） |
+| v1.5.1 | Web 通道对外契约补齐 + 失败 / 截断信号：WS 控制帧不再静默（`switch_model`/`compact` 回 `ack`、`cancel`/`abort` 回 `cancelled`，`was_running` 如实）+ `capabilities` 能力自述（如实枚举入站/出站帧面）+ `FrameMeta` 消息身份随帧贯穿 + WS 审批通道（`approval_request`/`approval_response`）+ 工具结果结构化 diff（`textdiff.cj`）+ `GET/PUT /api/mcp`、`POST /api/workspace`；回合失败回结构化 `error` 帧（4 码 + `retryable`）不再只回空 `done`；done 帧新增**可选** `truncated` 透传上游 `max_tokens` 截断（`finish_reason` 三值不变） |
+| v1.5.2 | Web 鉴权回归修复 + 版本自述纠正：401 走真状态码；版本自述与实际能力对齐 |
+| v1.5.3 | issue #6 修复：`POST /api/settings` 的 apiKey 落 auth.json（此前重启即丢），响应补 note，判定与写入条件严格一致；新增 ApiKeyPersistTest 3 例 |
+| v1.6.0 | **并行子代理阶段 C 全量落地（S1-S8）**：task 派发 explore/worker + DAG 资源依赖调度 + Agents 面板可观测（Ctrl+G 焦点/转录）+ 四键边界管控 + 审批队列化 + 路由策略（/parallel）；实测修复系列：限流退避重试（可中断）/流式 usage 接线/父回合失败显式提示/错峰派发/面板左右分栏（overlay 按列拼接）/歧义宽度 1 列；SDK 1.2.0 迁移 + setup_paths.sh；README/官网双语同步 |
+| v1.6.1 | 默认系统提示词补 todo_write 任务列表规范（修 Tasks 面板不弹出）；双平台二进制包重打（SDK 1.2.0）；发布流程补 release 附件 |
 
 ## 十七、代码组织原则
 
