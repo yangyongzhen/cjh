@@ -83,7 +83,7 @@
     'start.note':
       '想从源码构建？看 <a href="https://atomgit.com/qq8864/cjh/blob/main/README.md" target="_blank" rel="noopener">README</a>：仓颉 SDK 1.0.5+，<code>cjpm build</code> 出静态单文件，<code>./scripts/test.sh</code> 跑全量单测。',
 
-    'dl.h': '下载 v1.5.3',
+    'dl.h': '下载 v1.6.1',
     'dl.p':
       'Linux 与 Windows 预编译包，直接取用。<a href="https://atomgit.com/qq8864/cjh/releases" target="_blank" rel="noopener">全部发布记录 →</a>',
     'dl1.desc': '静态单文件，<code>chmod +x</code> 即可运行。需 glibc ≥ 2.34。',
@@ -136,7 +136,7 @@
 
     'footer.tag': '仓颉语言实现的 Coding Agent Harness',
     'footer.note':
-      'v1.5.3 · 本站为纯静态页面（无外部依赖），源码见仓库 <code>site/</code> · QQ 技术交流群 <strong>92381027</strong> · 开源许可 <a href="https://atomgit.com/qq8864/cjh/blob/main/LICENSE" target="_blank" rel="noopener">MIT</a>',
+      'v1.6.1 · 本站为纯静态页面（无外部依赖），源码见仓库 <code>site/</code> · QQ 技术交流群 <strong>92381027</strong> · 开源许可 <a href="https://atomgit.com/qq8864/cjh/blob/main/LICENSE" target="_blank" rel="noopener">MIT</a>',
   };
 
   const nodes = Array.from(document.querySelectorAll('[data-i18n]'));
