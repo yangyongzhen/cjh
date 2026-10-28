@@ -28,7 +28,7 @@
 **先不花钱跑起来**（Mock 模式：不联网、不用 API Key）：
 
 ```bash
-curl -LO https://atomgit.com/qq8864/cjh/releases/download/v1.6.1/cjh-v1.6.1-linux-x64
+curl -LO https://api.atomgit.com/api/v5/repos/qq8864/cjh/releases/v1.6.1/attach_files/cjh-v1.6.1-linux-x64
 chmod +x cjh-v1.6.1-linux-x64
 CJH_MOCK=1 ./cjh-v1.6.1-linux-x64
 ```
@@ -40,7 +40,7 @@ export DEEPSEEK_API_KEY=sk-xxx     # 或 OPENAI_API_KEY / DASHSCOPE_API_KEY / CJ
 ./cjh-v1.6.1-linux-x64             # 默认 TUI；--cli 纯文本，--mode json 无头，web 子命令拉 Web 界面
 ```
 
-Windows：下载 [`cjh-v1.6.1-windows-x64-selfcontained.zip`](https://atomgit.com/qq8864/cjh/releases/download/v1.6.1/cjh-v1.6.1-windows-x64-selfcontained.zip) 解压即用（exe 与 4 个 DLL 必须同目录）。从源码构建见[快速开始](#-快速开始)。
+Windows：下载 [`cjh-v1.6.1-windows-x64-selfcontained.zip`](https://api.atomgit.com/api/v5/repos/qq8864/cjh/releases/v1.6.1/attach_files/cjh-v1.6.1-windows-x64-selfcontained.zip) 解压即用（exe 与 4 个 DLL 必须同目录）。从源码构建见[快速开始](#-快速开始)。
 
 ![cjh 会话演示（Mock 模式实录）](docs/imgs/cjh-demo.gif)
 
