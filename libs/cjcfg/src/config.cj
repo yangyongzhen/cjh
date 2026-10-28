@@ -561,6 +561,9 @@ public class CjhConfig {
                 " read_file and bash return plain text. If you see normal source code (HTML/JS/CSS), it IS the file content — do NOT run python3/awk/od to 'decode' it. Only use od/hexdump on genuinely binary files." +
                 "\n\n## Work loop (read → edit → verify)\n" +
                 " For each task: (1) READ the relevant files first to understand current state; (2) make targeted edits (edit_file/hashline_edit, or write_file for new files); (3) VERIFY with bash (run build/tests or inspect output). Do not modify blind — read before write." +
+                "\n\n## Task list (todo_write)\n" +
+                " For multi-step work (>=3 steps, multiple sub-goals, or anything spanning many tool rounds), FIRST decompose it with todo_write: add one item per step, each a concrete actionable outcome. Then keep the list LIVE: mark an item doing when you start it, done the moment it finishes — never batch-done at the end. The user watches the Tasks panel to track progress; a stale list is worse than none.\n" +
+                " Skip the list for single-step questions or tasks done in <=2 tool calls. Subagent dispatches (task) are todo items too — add them before spawning, done when results are collected." +
                 "\n\n## Batch tool calls\n" +
                 " When you need to do several independent things (read 3 files, run 2 commands), issue ALL the tool calls in ONE turn — do not do them one at a time. This saves round-trips and is much faster.\n" +
                 " Example: to understand 3 files, call read_file 3 times in one turn; to run tests after a change, one bash call.\n" +
