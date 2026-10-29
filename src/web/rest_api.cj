@@ -48,6 +48,22 @@ public class RestApi <: HttpRequestHandler {
         if (!Auth.check(ctx, this.config)) {
             return
         }
+        // 全局兜底：任何 handler 未捕获的异常都返回 JSON 错误体。stdx 框架默认对
+        // 逃逸异常回纯文本 "Internal Server Error"，调用方（前端/集成方）无法解析
+        // 出真实原因（issue #10）
+        try {
+            this.dispatch(ctx)
+        } catch (e: Exception) {
+            let res = ctx.responseBuilder
+            res.header("Content-Type", "application/json; charset=utf-8")
+            var err = JsonObject()
+            err.put("ok", JsonBool(false))
+            err.put("error", JsonString("internal error: ${e}"))
+            res.body(err.toJsonString().toArray())
+        }
+    }
+
+    private func dispatch(ctx: HttpContext): Unit {
         let path = ctx.request.url.path
         // 会话项路由：/api/sessions/{id}（重命名 / 删除 / 健康详情）
         if (path.startsWith("/api/sessions/")) {
@@ -744,18 +760,10 @@ public class RestApi <: HttpRequestHandler {
     private func handleFsList(ctx: HttpContext): Unit {
         let res = ctx.responseBuilder
         res.header("Content-Type", "application/json; charset=utf-8")
-        // 解析 query 参数 path（默认当前 cwd）
-        var dirPath = getWorkingDirectory().toString()
-        let queryOpt = ctx.request.url.query
-        if (queryOpt.isSome()) {
-            let query = queryOpt.getOrThrow()
-            if (query.contains("path=")) {
-                let idx = query.indexOf("path=")
-                if (idx.isSome()) {
-                    dirPath = query[(idx.getOrThrow() + 5)..query.size]
-                }
-            }
-        }
+        // 解析 query 参数 path（默认当前 cwd）。按 & 切分后取 path 参数的值，
+        // 空值/缺省回退 cwd——此前直接在整段 query 上做范围切片，
+        // "path=" 位于末尾时切片越界抛异常，逃逸为 500 纯文本（issue #10）
+        var dirPath = fsListDirFromQuery(ctx.request.url.query, getWorkingDirectory().toString())
         if (!exists(dirPath) || FileInfo(dirPath).isDirectory() == false) {
             var err = JsonObject()
             err.put("ok", JsonBool(false))
@@ -930,6 +938,25 @@ public func isSkillEnabled(name: String, enabled: ArrayList<String>): Bool {
         }
     }
     return false
+}
+
+/**
+ * 解析 /api/fs/list 的 query，返回目标目录：
+ * 按 & 切分取 path 参数的值；缺省/空值回退 cwd。
+ * 独立成纯函数便于单测（issue #10：此前在整段 query 上做范围切片，
+ * "path=" 位于末尾时越界抛异常，逃逸为 500 纯文本）
+ */
+public func fsListDirFromQuery(query: Option<String>, cwd: String): String {
+    if (query.isNone()) {
+        return cwd
+    }
+    let q = query.getOrThrow()
+    for (part in q.split("&")) {
+        if (part.startsWith("path=") && part.size > 5) {
+            return part[5..]
+        }
+    }
+    return cwd
 }
 
 /**

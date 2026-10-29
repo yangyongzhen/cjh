@@ -56,3 +56,37 @@ public class WebApiUtilTest {
         @Assert(empty.size(), 0)
     }
 }
+
+/**
+ * /api/fs/list 的 query→目录解析回归（issue #10）：
+ * 此前在整段 query 上做范围切片，"path=" 位于末尾时越界抛异常，
+ * 逃逸为 500 纯文本 Internal Server Error。
+ */
+@Test
+public class FsListQueryTest {
+
+    private static let cwd = "/default/cwd"
+
+    @TestCase
+    public func testNoQueryFallsBackToCwd(): Unit {
+        @Assert(fsListDirFromQuery(None, cwd), cwd)
+        @Assert(fsListDirFromQuery(Some(""), cwd), cwd)
+    }
+
+    @TestCase
+    public func testEmptyPathValueFallsBackToCwd(): Unit {
+        // 回归主用例：?path=（空值）此前触发切片越界 → 500 纯文本
+        @Assert(fsListDirFromQuery(Some("path="), cwd), cwd)
+        // 多参数时 path 为空值
+        @Assert(fsListDirFromQuery(Some("a=1&path="), cwd), cwd)
+    }
+
+    @TestCase
+    public func testPathParamExtracted(): Unit {
+        @Assert(fsListDirFromQuery(Some("path=/tmp/x"), cwd), "/tmp/x")
+        // path 不在首位
+        @Assert(fsListDirFromQuery(Some("a=1&path=/tmp/y"), cwd), "/tmp/y")
+        // path= 是其他参数值的一部分，不算 path 参数
+        @Assert(fsListDirFromQuery(Some("filter=path=1"), cwd), cwd)
+    }
+}
