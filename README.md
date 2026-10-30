@@ -264,6 +264,13 @@ The screenshot above is the cjh GUI client built with **cj-tauri** (a Tauri-like
 - **Stable concurrency (field-tested)**: staggered dispatch (concurrent starts spread 1s apart to flatten request bursts) + throttle backoff retry (400-Throttling/429/5xx retried on same key up to 3 times, Ctrl+C-interruptible) + streaming usage wiring (panel tokens go live) + explicit parent-turn failure lines (`⚠ 本回合执行失败（错误码）` — no more silent hangs)
 - **Routing policy**: `/parallel on|off|auto` toggles dispatch; thin 1-round subagent conclusions get a post-hoc `[路由提示]` nudge, teaching the model to handle small tasks directly
 
+### Embedded Integration (out-of-process web mode)
+
+- **One command to a service**: `cjh web --port 8765 --token xxx` — REST + WebSocket channels; the host app needs zero Cangjie knowledge
+- **Crash isolation + independent upgrades**: an agent crash never takes the host down; upgrade cjh without recompiling the host
+- **Verified integrations**: cj-tauri `examples/ai-chat` (the **ai-chat notebook** — a chat-style notes UI whose 33KB host code you can copy directly), cjnote, and lingqu
+- **Integration guide**: [docs/集成指南.md](docs/集成指南.md) — protocol frame order, field-tested pitfalls, binary distribution checklist
+
 ### LLM Provider Layer
 
 | Provider | Protocol | Notes |
