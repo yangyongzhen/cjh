@@ -270,7 +270,7 @@ coding agent 的执行效率直接决定用户等待时间。cjh 从三个维度
 
 - **一条命令变服务**：`cjh web --port 8765 --token xxx`，REST + WebSocket 双通道，宿主应用无需理解仓颉
 - **崩溃隔离 + 独立升级**：agent 崩溃不拖垮宿主应用；升级 cjh 无需重编宿主
-- **已验证的集成实现**：cj-tauri `examples/ai-chat`（**ai-chat 笔记本**——对话式笔记界面，托管代码 33KB 可直接抄）、cjnote、lingqu 三个应用
+- **已验证的集成实现**：cj-tauri `examples/ai-chat`（**AI 客户端**，托管代码 33KB 可直接抄）、**cjnote 笔记本应用**、lingqu 三个应用（介绍见 cj-tauri 仓）
 - **对接文档**：[docs/集成指南.md](docs/集成指南.md)——协议帧序、实测坑、二进制分发清单全覆盖
 
 ### LLM Provider 层

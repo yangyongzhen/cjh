@@ -268,7 +268,7 @@ The screenshot above is the cjh GUI client built with **cj-tauri** (a Tauri-like
 
 - **One command to a service**: `cjh web --port 8765 --token xxx` — REST + WebSocket channels; the host app needs zero Cangjie knowledge
 - **Crash isolation + independent upgrades**: an agent crash never takes the host down; upgrade cjh without recompiling the host
-- **Verified integrations**: cj-tauri `examples/ai-chat` (the **ai-chat notebook** — a chat-style notes UI whose 33KB host code you can copy directly), cjnote, and lingqu
+- **Verified integrations**: cj-tauri `examples/ai-chat` (an **AI client**; 33KB host code you can copy directly), **cjnote notebook app**, and lingqu (introduced in the cj-tauri repo)
 - **Integration guide**: [docs/集成指南.md](docs/集成指南.md) — protocol frame order, field-tested pitfalls, binary distribution checklist
 
 ### LLM Provider Layer

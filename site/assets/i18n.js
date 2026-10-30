@@ -63,7 +63,7 @@
 
     'c8.h': '应用内嵌 AI，玩出花样',
     'c8.p':
-      '一条命令把 cjh 变成 REST + WebSocket 服务：崩溃隔离、独立升级，宿主无需理解仓颉——<strong>ai-chat 笔记本</strong>等三个应用已验证对接；协议帧序与实测坑见仓库<a href="https://atomgit.com/qq8864/cjh/blob/main/docs/%E9%9B%86%E6%88%90%E6%8C%87%E5%8D%97.md" target="_blank" rel="noopener">《集成指南》</a>。',
+      '一条命令把 cjh 变成 REST + WebSocket 服务：崩溃隔离、独立升级，宿主无需理解仓颉——<strong>ai-chat 客户端</strong>、<strong>cjnote 笔记本</strong>等三个应用已验证对接；协议帧序与实测坑见仓库<a href="https://atomgit.com/qq8864/cjh/blob/main/docs/%E9%9B%86%E6%88%90%E6%8C%87%E5%8D%97.md" target="_blank" rel="noopener">《集成指南》</a>。',
     'c7.h': '并行子代理，可控可观测',
     'c7.p':
       '<code>task</code> 工具并发派发 <code>explore</code>/<code>worker</code> 子代理，右下 Agents 面板实时呈现轮次 / token / 当前工具；并发数、token 预算、超时四键管控，错峰起跑 + 限流退避重试 —— 5 路并发实测扛得住真实服务商限流。',
