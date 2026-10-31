@@ -6,6 +6,7 @@ import std.sync.*
 import stdx.encoding.json.*
 import cjllm.ToolSpec
 import cjutil.*
+import cjterm.*
 
 /**
  * 工具执行结果
@@ -237,9 +238,17 @@ public class DeclarativeTool <: CjhTool {
         }
         try {
             var argv = Array<String>(2, repeat: "")
-            argv[0] = "-c"
-            argv[1] = cmd
-            let (code, stdoutBytes, stderrBytes) = executeWithOutput("/bin/bash", argv)
+            // 平台感知 shell（v1.3.17 起 bash_session / builtin 都走 ShellProvider；
+            // 这里原先硬编码 /bin/bash，Windows 上声明式技能工具一调就抛异常，见 issue #1）
+            let provider = ShellProvider()
+            if (provider.isBash) {
+                argv[0] = "-c"
+                argv[1] = cmd
+            } else {
+                argv[0] = "-Command"
+                argv[1] = cmd
+            }
+            let (code, stdoutBytes, stderrBytes) = executeWithOutput(provider.shellPath, argv)
             var out = safeFromUtf8(stdoutBytes)
             var err = safeFromUtf8(stderrBytes)
             var result = "exit code: ${code}\n"
