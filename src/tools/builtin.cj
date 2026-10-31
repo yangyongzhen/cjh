@@ -85,8 +85,7 @@ public class BashTool <: CjhTool {
             "Run a shell command (git, build, test, package manager). Current shell mode: ${mode}. " +
             "Do NOT use bash to read files — use read_file instead. bash is for executing commands, " +
             "not for file content extraction (sed/awk/head/tail are slower and less reliable than read_file). " +
-            "Working directory and env persist across commands — EXCEPT heredoc commands (any command " +
-            "containing <<), which run in a fresh shell: pass absolute paths and re-export env inline there. " +
+            "Working directory and env persist across commands (heredocs included). " +
             "NEVER pipe a long-running command through `| tail` / `| head`: descendants left behind keep the " +
             "pipe open, the right-hand side waits for EOF, and the call hangs until timeout. " +
             "Redirect instead — `<cmd> > build.log 2>&1` returns at once — then read build.log with read_file. " +
@@ -135,24 +134,22 @@ public class BashTool <: CjhTool {
             secs = 3600
         }
         try {
-            // heredoc（<<EOF … EOF）与持久会话包装**不兼容**：会话侧把命令包成
-            // { <cmd>; } 2>&1; echo <code>; echo <marker>，而 heredoc 的终止符必须**独占一行** ——
-            // 包装后最后一行变成 EOF; } 2>&1; echo …，heredoc 永远收不到终止，会话一直读 stdin，
-            // marker 永不出现 → 命令挂到超时才回来（0.39.4 实测：python - <<'EOF' 后静默 4 分钟）。
-            // 这类命令改走非会话路径（bash -c + base64，换行原样保留），代价是不共享 cwd/env。
+            // **不再按命令内容自动分流**（0.39.7 删掉 `needsFreshShell`）。三次修补的结论：
             //
-            // **只有 heredoc 需要分流。别按"含 | 或 > 就分流"来判**（曾这么改过，0.39.6 已回退）：
-            // 实测探针 `{ printf 'a\nb\n' | tail -1; } 2>&1; echo MARKER` 里 MARKER **正常到达** ——
-            // echo 本来就在管道外面，管道/重定向吞不掉它。那次真正卡住的是另一族问题：
-            //   `main.exe build … 2>&1 | tail -50` 的右端 `tail` 要等 **stdin EOF** 才输出，
-            //   而左端命令留下的**后代进程**握着同一个写端（实测：6 秒的 sleep 让 tail 多等 6 秒），
-            //   于是 tail 不退出 → `}` 不返回 → 排在后面的 marker 永远不来。
-            //   它跟"走会话还是走新进程"无关（两条路都得等整条管道结束），分流治不了；
-            //   `> file` 这种重定向则是立即返回的（实测 0s），本来也不需要分流。
-            //   治法：纪律 + 兜底 —— 长命令写 `<cmd> > build.log 2>&1` 再 read_file 看日志，
-            //   并显式传 timeout（本题见 §spec 的工具描述与 BashSession 的超时存证）。
-            let needsFreshShell = cmd.contains("<<")
-            if (this.useSession && !needsFreshShell) {
+            // a) 0.39.5 曾把「含 | 或 >」判成要走非会话路径 —— 误判。实测
+            //    `{ printf 'a\nb\n'; } 2>&1 | tail -1; echo MARKER` 的 MARKER **正常到达**：
+            //    包装里的 echo 在管道外面，管道/重定向吞不掉它；`> file` 更是立即返回。
+            //    那次真凶是「右端 tail 等 stdin EOF，而左端命令留下的后代握着写端」
+            //    （实测 6 秒的 sleep 让 tail 多等 6 秒）——与走哪条路径无关，分流治不了。
+            // b) 0.39.4 的 heredoc 分流同样治的是症状：根因是收尾 `}` 与终止符挤在一行，
+            //    0.39.7 把 `}` 挪到独占一行后，heredoc 在会话里就能正常跑（见 BashSession）。
+            // c) 因此现在**只有显式 `useSession=false`** 才走下面这条非会话路径，
+            //    它保留的是另一套语义：stderr 与 stdout 分开返回、不共享会话状态
+            //    （`src/tests/bash_test.cj` 覆盖）。它不是"某种命令的逃生口"。
+            //
+            // 卡死的正解在纪律 + 兜底：长命令写 `<cmd> > build.log 2>&1` 再 read_file 看日志，
+            // 并显式传 timeout（见 spec 的工具描述、BashSession 的超时现场快照）。
+            if (this.useSession) {
                 // 持久会话（P1-3）：跨命令保留 cwd/env
                 let (code, output) = this.session.execute(cmd, secs)
                 if (code < 0) {
@@ -171,7 +168,7 @@ public class BashTool <: CjhTool {
                 }
                 return ToolResult("exit code: ${code}\nstdout:\n${output}", code != 0)
             }
-            // 非会话路径（useSession=false 或 heredoc）：timeout 命令包装，base64 传命令
+            // 非会话路径（仅 useSession=false）：timeout 命令包装，base64 传命令
             // v1.3.17：shell 路径由 ShellProvider 按平台选择（Windows Git Bash / Linux /bin/bash）
             let provider = ShellProvider()
             let shellPath = provider.shellPath
@@ -188,7 +185,9 @@ public class BashTool <: CjhTool {
             argv[0] = "-c"
             var effective = cmd
             if (secs > 0) {
-                let b64 = toBase64String(cmd.toArray())
+                // 非会话路径同样补一次 PATH（幂等片段）；否则 `cat`/`sed` 一样是 127
+                let payload = shellPathFix(shellPath, provider.isBash) + cmd
+                let b64 = toBase64String(payload.toArray())
                 // bash 路径：GNU timeout + bash -c base64 解码（换行/引号原样保留）
                 effective = "timeout --kill-after=2s ${secs}s bash -c \"\$(echo ${b64} | base64 -d)\""
             }
