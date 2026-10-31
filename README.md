@@ -5,7 +5,7 @@
 **A terminal coding agent built from scratch in Huawei's Cangjie language — one static binary, zero runtime dependencies: one file is one agent.**
 
 [![Website](https://img.shields.io/badge/website-yangyongzhen.github.io%2Fcjh-00868B)](https://yangyongzhen.github.io/cjh/)
-[![Release](https://img.shields.io/badge/release-v1.6.1-00868B)](https://atomgit.com/qq8864/cjh/releases)
+[![Release](https://img.shields.io/badge/release-v1.6.2-00868B)](https://atomgit.com/qq8864/cjh/releases)
 [![AtomGitStars](https://atomgit.com/qq8864/cjh/star/badge.svg)](https://atomgit.com/qq8864/cjh)
 [![Cangjie](https://img.shields.io/badge/language-Cangjie-00868B)](https://cangjie-lang.cn)
 [![Tests](https://img.shields.io/badge/tests-536%20passed-2ea44f)](./scripts/test.sh)
@@ -29,19 +29,19 @@ Say one sentence in the terminal: the agent plans, calls tools, reads results, a
 **Try it without spending a cent** (Mock mode: no network, no API key needed):
 
 ```bash
-curl -LO https://api.atomgit.com/api/v5/repos/qq8864/cjh/releases/v1.6.1/attach_files/cjh-v1.6.1-linux-x64
-chmod +x cjh-v1.6.1-linux-x64
-CJH_MOCK=1 ./cjh-v1.6.1-linux-x64
+curl -LO https://api.atomgit.com/api/v5/repos/qq8864/cjh/releases/v1.6.2/attach_files/cjh-v1.6.2-linux-x64
+chmod +x cjh-v1.6.2-linux-x64
+CJH_MOCK=1 ./cjh-v1.6.2-linux-x64
 ```
 
 **Connect a real model** (any one provider key works):
 
 ```bash
 export DEEPSEEK_API_KEY=sk-xxx     # or OPENAI_API_KEY / DASHSCOPE_API_KEY / CJH_API_KEY
-./cjh-v1.6.1-linux-x64             # TUI by default; --cli for plain text, --mode json for headless
+./cjh-v1.6.2-linux-x64             # TUI by default; --cli for plain text, --mode json for headless
 ```
 
-Windows: grab [`cjh-v1.6.1-windows-x64-selfcontained.zip`](https://api.atomgit.com/api/v5/repos/qq8864/cjh/releases/v1.6.1/attach_files/cjh-v1.6.1-windows-x64-selfcontained.zip) and unzip — keep the exe next to its 4 runtime DLLs. Building from source: see [Quick Start](#-quick-start).
+Windows: grab [`cjh-v1.6.2-windows-x64-selfcontained.zip`](https://api.atomgit.com/api/v5/repos/qq8864/cjh/releases/v1.6.2/attach_files/cjh-v1.6.2-windows-x64-selfcontained.zip) and unzip — keep the exe next to its 4 runtime DLLs. Building from source: see [Quick Start](#-quick-start).
 
 ![cjh session demo (real CLI output, mock mode)](docs/imgs/cjh-demo.gif)
 
@@ -56,7 +56,7 @@ Windows: grab [`cjh-v1.6.1-windows-x64-selfcontained.zip`](https://api.atomgit.c
 | **What** | A terminal coding agent harness written from scratch in Cangjie: agent loop (message state machine + tool-call protocol) + tool system + diff-rendered TUI + remote web UI + plugin trust chain |
 | **Who** | ① people who want AI to edit code in the terminal without installing a Node/Python toolchain; ② Cangjie learners looking for a runnable, readable AI-application reference; ③ regulated / domestic-stack teams that require "no foreign runtime dependencies" |
 | **Why** | One static binary (Linux 17.1 MB / Windows exe 14.1 MB) with zero runtime dependencies; token efficiency and execution speed are measured, not claimed; plugins carry SHA256 checksums + SM2 signatures |
-| **Status** | v1.6.1, 1150 unit tests green (plus 203 across the 6 publishable libraries), Linux / Windows builds published; parallel multi-agent orchestration on the roadmap (the `task` tool already ships explore / worker primitives) |
+| **Status** | v1.6.2, 1150 unit tests green (plus 203 across the 6 publishable libraries), Linux / Windows builds published; parallel multi-agent orchestration shipped (task dispatch + Agents panel + boundary keys) |
 
 ---
 
