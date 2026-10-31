@@ -65,6 +65,13 @@ public class BashTool <: CjhTool {
     public func spec(): ToolSpec {
         var props = HashMap<String, JsonValue>()
         props.add("command", JsonSchema.str("Shell command to execute"))
+        // 可选超时（秒）：cargo build / hvigor 这类分钟级命令必须能自己调大，
+        // 否则单条命令一超时，回合就停在"已发起、结果没回"，agent 既改不动也推不下去
+        // （灵渠迁移台 0.39.2 实测：发起 lingqu-cli build 后卡死，aiPortPolls=127 但落档不动）。
+        props.add("timeout", JsonSchema.str(
+            "Optional per-command timeout in SECONDS (default ${this.timeoutSecs}, max 3600). " +
+            "Pass it for minutes-long commands (cargo build, hvigor, npm install), e.g. timeout=\"600\". " +
+            "Precedence: this arg > env CJH_BASH_TIMEOUT > default."))
         let schema = JsonSchema.object(props, ArrayList<String>(["command"]))
         // 把**当前 shell 模式**写进工具描述：没装 Git Bash 的机器会降级成 PowerShell，
         // 模型不知道这件事就会继续写 bash 语法然后全失败（`&&`、`$VAR`、重定向、`{ cmd; }`）。
@@ -74,7 +81,7 @@ public class BashTool <: CjhTool {
         } else {
             "Windows PowerShell (Git Bash not detected — use PowerShell syntax; avoid && / $VAR / bash redirects)"
         }
-        return ToolSpec("bash", "Run a shell command (git, build, test, package manager). Current shell mode: ${mode}. Do NOT use bash to read files — use read_file instead. bash is for executing commands, not for file content extraction (sed/awk/head/tail are slower and less reliable than read_file). Working directory and env persist across commands. Commands are killed after ${this.timeoutSecs}s by default.", schema)
+        return ToolSpec("bash", "Run a shell command (git, build, test, package manager). Current shell mode: ${mode}. Do NOT use bash to read files — use read_file instead. bash is for executing commands, not for file content extraction (sed/awk/head/tail are slower and less reliable than read_file). Working directory and env persist across commands. Commands are killed after ${this.timeoutSecs}s by default — for minutes-long commands (cargo build, hvigor) pass the timeout parameter (e.g. timeout=\"600\", max 3600).", schema)
     }
 
     public func execute(args: JsonObject): ToolResult {
@@ -82,7 +89,7 @@ public class BashTool <: CjhTool {
             return ToolResult("Missing parameter: command", true)
         }
         let cmd = args.get("command").getOrThrow().asString().getValue()
-        // 超时配置：构造默认 > env CJH_BASH_TIMEOUT 覆盖
+        // 超时配置：参数 > env CJH_BASH_TIMEOUT > 构造默认
         var secs = this.timeoutSecs
         let envTimeout = getVariable("CJH_BASH_TIMEOUT")
         if (envTimeout.isSome() && envTimeout.getOrThrow().size > 0) {
@@ -92,12 +99,45 @@ public class BashTool <: CjhTool {
                 ()  // 非法值忽略，用默认
             }
         }
+        // 单次调用覆盖（字符串或数字都认，和 read_file 的 offset/limit 一样宽松）
+        match (args.get("timeout")) {
+            case Some(v) => match (v.kind()) {
+                case JsonKind.JsString =>
+                    let s = v.asString().getValue().trimAscii()
+                    if (s.size > 0) {
+                        try {
+                            secs = Int64.parse(s)
+                        } catch (e: Exception) {
+                            ()
+                        }
+                    }
+                case JsonKind.JsInt =>
+                    secs = v.asInt().getValue()
+                case _ => ()
+            }
+            case None => ()
+        }
+        // 夹住范围：太小没意义，太大等于把回合挂死
+        if (secs < 1) {
+            secs = 1
+        }
+        if (secs > 3600) {
+            secs = 3600
+        }
         try {
             if (this.useSession) {
                 // 持久会话（P1-3）：跨命令保留 cwd/env
                 let (code, output) = this.session.execute(cmd, secs)
                 if (code < 0) {
-                    return ToolResult(output, true)  // 超时提示
+                    // 超时不再只是一个"⚠ 命令超时"：要告诉模型**下一步怎么自救**——
+                    // 否则它会原样重试同一条命令，再等一个同样的超时（0.39.2 实测就是这样卡死的）
+                    var msg = output
+                    if (output.contains("超时")) {
+                        msg = output + "\n提示：这是分钟级命令吗（cargo build / hvigor / npm install）？" +
+                            "重试时请显式传 timeout（秒，本次用了 ${secs}s，上限 3600），例如 " +
+                            "{\"command\":\"…\",\"timeout\":\"600\"}；或者把长任务改成后台执行，再用读落档/日志的方式轮询。"
+                    }
+                    return ToolResult(msg, true)
                 }
                 return ToolResult("exit code: ${code}\nstdout:\n${output}", code != 0)
             }
