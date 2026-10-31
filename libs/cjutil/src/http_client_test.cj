@@ -23,6 +23,8 @@ class MockProbe {
     private let m = Mutex()
     private var eofSeen = false
     private var reqHeaders = ""
+    // startFetchMock 绑定成功后回写实际端口（固定端口可能被宿主内嵌的 cjh web 占用）
+    var boundPort: UInt16 = 0
 
     func markEof(): Unit {
         m.lock()
@@ -70,8 +72,22 @@ class MockProbe {
  *   - "stall" 读到头后不发任何字节（响应头停滞）
  */
 func startFetchMock(port: UInt16, mode: String, bodyText: String, probe: MockProbe): TcpServerSocket {
-    let server = TcpServerSocket(bindAt: port)
-    server.bind()
+    // 固定端口可能被宿主内嵌的 cjh web 实例占用（实测：ai-chat 拉起 --port 18923 恰撞测试段），
+    // 绑定失败自动换下一端口重试；真实端口经 probe.boundPort 回传，用例据此拼 URL
+    var candidate = port
+    var bound: ?TcpServerSocket = None
+    for (_ in 0..20) {
+        let s = TcpServerSocket(bindAt: candidate)
+        try {
+            s.bind()
+            probe.boundPort = candidate
+            bound = Some(s)
+            break
+        } catch (e: Exception) {
+            candidate = candidate + 1
+        }
+    }
+    let server = bound.getOrThrow()
     spawn {
         try {
             let conn = server.accept()
@@ -157,7 +173,7 @@ public class HttpClientFetchTest {
         let body = "{\"msg\":\"中文内容\"}"
         let _ = startFetchMock(port, "ok", body, probe)
 
-        let r = httpClientFetch("GET", "http://127.0.0.1:${port}/ok", 5, 65536, "cjh-test", "en-US", None, None)
+        let r = httpClientFetch("GET", "http://127.0.0.1:${probe.boundPort}/ok", 5, 65536, "cjh-test", "en-US", None, None)
         @Assert(r.status, 200)
         @Assert(r.isOk(), true)
         @Assert(r.body, body)
@@ -172,7 +188,7 @@ public class HttpClientFetchTest {
         let probe = MockProbe()
         let _ = startFetchMock(port, "500", "server-error", probe)
 
-        let r = httpClientFetch("GET", "http://127.0.0.1:${port}/err", 5, 65536, "cjh-test", "en-US", None, None)
+        let r = httpClientFetch("GET", "http://127.0.0.1:${probe.boundPort}/err", 5, 65536, "cjh-test", "en-US", None, None)
         @Assert(r.status, 500)
         @Assert(r.isOk(), false)
         @Assert(r.body, "")
@@ -187,7 +203,7 @@ public class HttpClientFetchTest {
         let probe = MockProbe()
         let _ = startFetchMock(port, "500", "server-error", probe)
 
-        let body = httpClientRequest("GET", "http://127.0.0.1:${port}/err", 5, 65536, "cjh-test", "en-US", None, None)
+        let body = httpClientRequest("GET", "http://127.0.0.1:${probe.boundPort}/err", 5, 65536, "cjh-test", "en-US", None, None)
         @Assert(body, "")
         @Assert(waitUntilTrue({ => probe.eof() }, 3000), true)
     }
@@ -202,7 +218,7 @@ public class HttpClientFetchTest {
         var timedOut = false
         let t0 = DateTime.now()
         try {
-            let _ = httpClientFetch("GET", "http://127.0.0.1:${port}/stall", 2, 65536, "cjh-test", "en-US", None, None)
+            let _ = httpClientFetch("GET", "http://127.0.0.1:${probe.boundPort}/stall", 2, 65536, "cjh-test", "en-US", None, None)
         } catch (e: TimeoutException) {
             timedOut = true
         }
@@ -234,7 +250,7 @@ public class HttpClientFetchTest {
         let hdrs = HashMap<String, String>()
         hdrs["Accept"] = "application/json"
         hdrs["Content-Type"] = "application/json"
-        let r = httpClientFetch("POST", "http://127.0.0.1:${port}/api", 5, 65536, "cjh-test", "en-US", Some("{}"), Some(hdrs))
+        let r = httpClientFetch("POST", "http://127.0.0.1:${probe.boundPort}/api", 5, 65536, "cjh-test", "en-US", Some("{}"), Some(hdrs))
         @Assert(r.status, 200)
 
         @Assert(waitUntilTrue({ => probe.headers().size > 0 }, 3000), true)
@@ -262,7 +278,7 @@ public class HttpClientFetchTest {
         var timedOut = false
         let t0 = DateTime.now()
         try {
-            let _ = httpClientFetch("GET", "http://127.0.0.1:${port}/stall", 0, 65536, "cjh-test", "en-US", None, None)
+            let _ = httpClientFetch("GET", "http://127.0.0.1:${probe.boundPort}/stall", 0, 65536, "cjh-test", "en-US", None, None)
         } catch (e: TimeoutException) {
             timedOut = true
         }
