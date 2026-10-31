@@ -6,6 +6,31 @@ cjh 版本变更记录。依据 git tag 史 + 提交史整理；版本号规则�
 
 ## [Unreleased]
 
+### 修复（WS 断开不再"无条件打断本轮"：加 `web.keep_running_on_disconnect`）
+
+上一轮给 WS 写失败加了容错（`WsSendGuard`），但端到端复跑发现**还有一层**：
+cjh 的断连处理本身就会打断 agent 回合 ——
+
+```
+[2026-10-31T23:54:12] [WARN] Agent.interrupt 已请求：interruptFlag=true + abort() 已调用
+[2026-10-31T23:56:21] [WARN] WebChannel 发送失败，连接判定为断开，后续帧跳过（guard 生效）
+[2026-10-31T23:56:21] [WARN] Agent.run 被用户中断（24 轮后）
+```
+
+触发点 `gateway/channel.cj` 的 `interruptSession()`（WS 断连时调用，原注释：
+"连接已断：本轮按 cancelled 收尾（不是故障，是用户那头没了）"）。
+对交互式使用这是合理的；对**无人值守的长任务**是灾难：灵渠迁移台实测 WebView 只重连一次，
+整轮 AI 迁移（40 次工具调用、已经把交叉编译跑到 `exitCode=0`）当场作废。
+
+- `settings.json` 新增 `web.keep_running_on_disconnect`（默认 `false`，**保持老行为**）：
+  打开后断开只记一条日志，本轮**继续跑完**、结果落会话文件，客户端重连靠
+  `history_messages` 补看；待审批的请求仍然立刻按拒绝收场（避免空等到超时）。
+- 新增纯函数 `disconnectAction(running, keepRunning)` → `none` / `keep` / `cancel`，
+  测试 `src/tests/disconnect_policy_test.cj`（3 例：空闲不动 / 默认打断 / opted-in 不打断）。
+- `cjcfg` 的 `CjhConfig` 增加 `webKeepRunningOnDisconnect`，`web` 段解析与序列化同步。
+
+**给调用方的建议**：驱动长任务（迁移/批处理）时把它设为 `true`；纯交互式前端保持默认。
+
 ### 修复（WS 写失败不再打死整轮 run）
 
 灵渠迁移台 0.39.7 端到端实测（`m3u8dl-tauri` 全自动迁移，Windows + Git Bash）：
