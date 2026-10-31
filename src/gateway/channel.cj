@@ -38,6 +38,7 @@ import std.sync.*
 import stdx.encoding.json.*
 import cjllm.*
 import cjcfg.*
+import cjlog.*
 import cjh.agent.*
 import cjh.tools.*
 
@@ -690,11 +691,24 @@ public class ChannelGateway {
     }
 
     /**
-     * 中断指定会话的执行（WS 断连时调用：连接没了就不该留孤儿回合继续跑）
+     * 中断指定会话的执行（WS 断连时调用）
+     *
+     * 两种策略，由 `web.keep_running_on_disconnect` 决定（见 disconnectAction）：
+     *  - 默认（false）：连接没了就不该留孤儿回合继续跑 → 标记 cancelled + interrupt；
+     *  - true：**不断**。无人值守的长任务（灵渠 AI 自动迁移）里，页面只重连一次
+     *    就把整轮 40 次工具调用的活打死，代价太大；本轮跑完、结果落会话文件，
+     *    客户端重连靠 history_messages 补看。
      */
     public func interruptSession(channelId: String, chatId: String): Unit {
         let key = this.sessionKey(channelId, chatId)
-        if (this.isRunning(key)) {
+        let action = disconnectAction(this.isRunning(key), this.config.webKeepRunningOnDisconnect)
+        if (action == "keep") {
+            // 不断：审批仍然要立刻按拒绝收场（否则空等到超时），但回合本身继续
+            this.denyApprovals(channelId, chatId)
+            Log.warn("客户端断开，本轮继续执行（web.keep_running_on_disconnect=true）")
+            return
+        }
+        if (action == "cancel") {
             // 连接已断：本轮按 cancelled 收尾（不是故障，是用户那头没了）
             this.markCancelled(key)
         }
@@ -1183,4 +1197,21 @@ public class ChannelGateway {
     private func sessionKey(channelId: String, chatId: String): String {
         return channelId + ":" + chatId
     }
+}
+
+/**
+ * WS 断开时对本轮做什么（纯函数，可单测）
+ *
+ * @param running      该会话当前有没有在跑的回合
+ * @param keepRunning  `web.keep_running_on_disconnect` 配置
+ * @return `"none"`（没在跑）/ `"keep"`（继续跑完）/ `"cancel"`（标记 cancelled 并打断）
+ */
+public func disconnectAction(running: Bool, keepRunning: Bool): String {
+    if (!running) {
+        return "none"
+    }
+    if (keepRunning) {
+        return "keep"
+    }
+    return "cancel"
 }
