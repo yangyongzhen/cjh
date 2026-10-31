@@ -81,7 +81,17 @@ public class BashTool <: CjhTool {
         } else {
             "Windows PowerShell (Git Bash not detected — use PowerShell syntax; avoid && / $VAR / bash redirects)"
         }
-        return ToolSpec("bash", "Run a shell command (git, build, test, package manager). Current shell mode: ${mode}. Do NOT use bash to read files — use read_file instead. bash is for executing commands, not for file content extraction (sed/awk/head/tail are slower and less reliable than read_file). Working directory and env persist across commands. Commands are killed after ${this.timeoutSecs}s by default — for minutes-long commands (cargo build, hvigor) pass the timeout parameter (e.g. timeout=\"600\", max 3600).", schema)
+        return ToolSpec("bash",
+            "Run a shell command (git, build, test, package manager). Current shell mode: ${mode}. " +
+            "Do NOT use bash to read files — use read_file instead. bash is for executing commands, " +
+            "not for file content extraction (sed/awk/head/tail are slower and less reliable than read_file). " +
+            "Working directory and env persist across commands — EXCEPT heredoc commands (any command " +
+            "containing <<), which run in a fresh shell: pass absolute paths and re-export env inline there. " +
+            "NEVER pipe a long-running command through `| tail` / `| head`: descendants left behind keep the " +
+            "pipe open, the right-hand side waits for EOF, and the call hangs until timeout. " +
+            "Redirect instead — `<cmd> > build.log 2>&1` returns at once — then read build.log with read_file. " +
+            "Commands are killed after ${this.timeoutSecs}s by default — for minutes-long commands " +
+            "(cargo build, hvigor) pass the timeout parameter (e.g. timeout=\"600\", max 3600).", schema)
     }
 
     public func execute(args: JsonObject): ToolResult {
@@ -126,12 +136,23 @@ public class BashTool <: CjhTool {
         }
         try {
             // heredoc（<<EOF … EOF）与持久会话包装**不兼容**：会话侧把命令包成
-            // { <cmd>; } 2>&1; echo <marker>，而 heredoc 的终止符必须**独占一行** ——
+            // { <cmd>; } 2>&1; echo <code>; echo <marker>，而 heredoc 的终止符必须**独占一行** ——
             // 包装后最后一行变成 EOF; } 2>&1; echo …，heredoc 永远收不到终止，会话一直读 stdin，
             // marker 永不出现 → 命令挂到超时才回来（0.39.4 实测：python - <<'EOF' 后静默 4 分钟）。
-            // 这类命令改走非会话路径（bash -c + base64，换行原样保留）。
-            let hasHeredoc = cmd.contains("<<")
-            if (this.useSession && !hasHeredoc) {
+            // 这类命令改走非会话路径（bash -c + base64，换行原样保留），代价是不共享 cwd/env。
+            //
+            // **只有 heredoc 需要分流。别按"含 | 或 > 就分流"来判**（曾这么改过，0.39.6 已回退）：
+            // 实测探针 `{ printf 'a\nb\n' | tail -1; } 2>&1; echo MARKER` 里 MARKER **正常到达** ——
+            // echo 本来就在管道外面，管道/重定向吞不掉它。那次真正卡住的是另一族问题：
+            //   `main.exe build … 2>&1 | tail -50` 的右端 `tail` 要等 **stdin EOF** 才输出，
+            //   而左端命令留下的**后代进程**握着同一个写端（实测：6 秒的 sleep 让 tail 多等 6 秒），
+            //   于是 tail 不退出 → `}` 不返回 → 排在后面的 marker 永远不来。
+            //   它跟"走会话还是走新进程"无关（两条路都得等整条管道结束），分流治不了；
+            //   `> file` 这种重定向则是立即返回的（实测 0s），本来也不需要分流。
+            //   治法：纪律 + 兜底 —— 长命令写 `<cmd> > build.log 2>&1` 再 read_file 看日志，
+            //   并显式传 timeout（本题见 §spec 的工具描述与 BashSession 的超时存证）。
+            let needsFreshShell = cmd.contains("<<")
+            if (this.useSession && !needsFreshShell) {
                 // 持久会话（P1-3）：跨命令保留 cwd/env
                 let (code, output) = this.session.execute(cmd, secs)
                 if (code < 0) {
@@ -141,28 +162,35 @@ public class BashTool <: CjhTool {
                     if (output.contains("超时")) {
                         msg = output + "\n提示：这是分钟级命令吗（cargo build / hvigor / npm install）？" +
                             "重试时请显式传 timeout（秒，本次用了 ${secs}s，上限 3600），例如 " +
-                            "{\"command\":\"…\",\"timeout\":\"600\"}；或者把长任务改成后台执行，再用读落档/日志的方式轮询。"
+                            "{\"command\":\"…\",\"timeout\":\"600\"}；或者把长任务改成后台执行，再用读落档/日志的方式轮询。" +
+                            "\n若命令里用了 `| tail` / `| head` 之类的管道，请改成 `<cmd> > build.log 2>&1`" +
+                            "（重定向立即返回），再用 read_file 看 build.log —— 管道右端要等 stdin EOF，" +
+                            "左端命令留下的子进程会握着管道让它一直等，这类卡住跟超时设多大无关。"
                     }
                     return ToolResult(msg, true)
                 }
                 return ToolResult("exit code: ${code}\nstdout:\n${output}", code != 0)
             }
-            // 非会话路径（useSession=false）：timeout 命令包装，base64 传命令
-            var argv = Array<String>(2, repeat: "")
-            argv[0] = "-c"
-            var effective = cmd
+            // 非会话路径（useSession=false 或 heredoc）：timeout 命令包装，base64 传命令
             // v1.3.17：shell 路径由 ShellProvider 按平台选择（Windows Git Bash / Linux /bin/bash）
             let provider = ShellProvider()
             let shellPath = provider.shellPath
+            if (!provider.isBash) {
+                // PowerShell 模式：历史实现算出 b64 却**没用**，effective 被换成了
+                // "cmd /c timeout /t N & taskkill & echo __CJH_TIMEOUT__" —— 命令本体被丢掉，
+                // 调用方只会「静默等到超时、拿不到任何输出」（0.39.6 修正）。
+                // 宁可明确失败，也不要假装在跑：模型看得懂这句，会自己改写法或改用别的手段。
+                return ToolResult(
+                    "⚠ 当前 shell 模式为 PowerShell（未检测到 Git Bash），暂不支持非会话路径（heredoc 命令）。" +
+                    "请安装 Git Bash（推荐），或把命令改写成不含 << 的单行形式。", true)
+            }
+            var argv = Array<String>(2, repeat: "")
+            argv[0] = "-c"
+            var effective = cmd
             if (secs > 0) {
                 let b64 = toBase64String(cmd.toArray())
-                if (provider.isBash) {
-                    // bash 路径：GNU timeout + bash -c base64 解码
-                    effective = "timeout --kill-after=2s ${secs}s bash -c \"\$(echo ${b64} | base64 -d)\""
-                } else {
-                    // PowerShell 路径：Start-Process 包装 + cmd /c 超时兜底
-                    effective = "cmd.exe /c \"timeout /t ${secs} /nobreak >nul & taskkill /f /im cmd.exe /t 2>nul & echo __CJH_TIMEOUT__\""
-                }
+                // bash 路径：GNU timeout + bash -c base64 解码（换行/引号原样保留）
+                effective = "timeout --kill-after=2s ${secs}s bash -c \"\$(echo ${b64} | base64 -d)\""
             }
             argv[1] = effective
             let (code, stdoutBytes, stderrBytes) = executeWithOutput(shellPath, argv)

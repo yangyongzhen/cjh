@@ -2,6 +2,7 @@ package cjh.tests
 
 import stdx.encoding.json.*
 import cjh.tools.*
+import cjterm.*
 
 /**
  * BashSession 持久会话测试（P1-3）：
@@ -185,5 +186,40 @@ public class BashSessionTest {
         let r2 = tool.execute(args2)
         @Assert(r2.isError, false)
         @Assert(r2.content.contains("/tmp"), true)
+    }
+}
+
+/**
+ * 结束标记写**独立 fd 3**（0.39.6 回归用例）
+ *
+ * 老包装：`{ cmd; } 2>&1; echo CODE; echo marker`。
+ * 命令若把 shell 的 fd1 永久改道（`{ exec 1>/dev/null; echo hi; }`），
+ * CODE 与 marker 会一起被带进 /dev/null → 读线程永远等不到标记 →
+ * 只能耗到超时（本用例 5 秒超时，断言 c1==0 会红）。
+ * 新包装：`exec 3>&1; { cmd; } 2>&1; echo CODE 1>&3; echo marker 1>&3; exec 1>&3`。
+ *
+ * 不加 `@When[os != "Windows"]`：Git Bash 同样有 fd3 语义，
+ * Windows 上没有 Git Bash 时用运行时 ShellProvider 判定跳过。
+ */
+@Test
+public class BashMarkerFdTest {
+
+    @TestCase
+    public func testMarkerSurvivesExecRedirect(): Unit {
+        if (!ShellProvider().isBash) {
+            return  // PowerShell 模式没有 fd3，这条契约不成立（见 BashTool 的 PS 分支）
+        }
+        let s = BashSession()
+        try {
+            let (c1, o1) = s.execute("{ exec 1>/dev/null; echo hi; } 2>&1", 5)
+            @Assert(c1, 0)                        // 老包装在此超时返回 -1
+            @Assert(o1.contains("__CJH_"), false)  // CODE/marker 不该留在正文
+            // 会话仍可用：fd1 已复位回管道（否则后续命令输出全部进 /dev/null）
+            let (c2, o2) = s.execute("echo after-fd3", 5)
+            @Assert(c2, 0)
+            @Assert(o2.contains("after-fd3"), true)
+        } finally {
+            s.close()
+        }
     }
 }

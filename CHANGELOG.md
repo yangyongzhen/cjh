@@ -6,6 +6,38 @@ cjh 版本变更记录。依据 git tag 史 + 提交史整理；版本号规则�
 
 ## [Unreleased]
 
+### 修复（bash 会话完成判据：标记走 fd 3 + 修正分流误判）
+
+灵渠迁移台 0.39.5 全自动迁移实测：agent 跑 `main.exe build --path . 2>&1 | tail -50`，
+命令 **27 秒就跑完**、落档也写了，但 **tool_done 永远不来**，回合挂到超时。
+
+- **根因（两族，探针实测区分）**
+  1. **标记被命令改道吞掉**：会话靠 stdout 上的标记行判结束
+     （`{ cmd; } 2>&1; echo CODE; echo marker`）。命令若把 shell 的 fd1 永久改掉
+     （`{ exec 1>/dev/null; echo hi; }`），CODE 与 marker 会一起被带走 → 读线程永远等不到。
+     实测该形态下 stdout 只剩 `hi`，CODE/marker 全在目标文件里。
+  2. **右端等 EOF、左端后代握着写端**：`cmd | tail` 的 `tail` 要等 stdin EOF 才输出，
+     命令留下的后代进程握着同一个写端就不退（实测：6 秒的 `sleep` 让 `tail` 多等 6 秒）→
+     `}` 不返回 → 排在后面的 marker 永不到来。这一族**与走会话还是走新进程无关**，分流治不了。
+- **修 1（fd 3）**：退出码与标记改写到**独立 fd 3**
+  （`exec 3>&1; { cmd; } 2>&1; echo CODE 1>&3; echo marker 1>&3; exec 1>&3`），
+  命令怎么折腾 fd1 都影响不到结束信号；命令之后再把 fd1 复位回管道，
+  避免"一条命令把会话输出永久改道"污染后续所有命令。回归用例 `BashMarkerFdTest`
+  （`{ exec 1>/dev/null; echo hi; }`，老包装必红；Windows+Git Bash 与 Linux 均可跑）。
+- **修 2（回退错误分流 + 口径）**：0.39.5 曾把"含 `|` 或 `>`"也判为需走非会话路径。
+  实测证明 marker 本来就在管道外面、吞不掉（`> file` 更是 0s 返回），
+  该分流**没有收益、只白丢 cwd/env**，已回退为**仅 heredoc（`<<`）**分流。
+  真正的治法写进工具描述与超时提示：长命令用 `<cmd> > build.log 2>&1` 再 `read_file` 看日志，
+  不要 `| tail`。
+- **超时当场存证**：新增 `src/tools/shell_diag.cj`（`procSnapshotOf` / `clipProcSnapshot`，含单测），
+  在杀会话**之前**抓一份进程快照（去 ps 表头、逐行裁长、15 行 / 900 字符封顶）塞进超时 ToolResult。
+  它会随 tool_done 进灵渠的 `<工程>/.lingqu/agent/trace.jsonl`，下次不必靠推理猜"谁握着管道"。
+- **PowerShell 非会话路径不再静默丢命令**：历史实现算了 base64 却没用，`effective` 被换成
+  `cmd /c timeout /t N & taskkill & echo __CJH_TIMEOUT__`，命令本体被丢掉、调用方只能"静默等到超时"。
+  现改为明确失败并给出改法（装 Git Bash / 去掉 heredoc）。
+- **未验证**：Linux 侧门禁（`scripts/test.sh`）与 PowerShell 模式下的快照采集本机无法执行；
+  fd 3 与分流回归已在 Windows + Git Bash 跑通。
+
 ### 破坏性变更：工具链迁移到 Cangjie 1.2.0
 
 - **目标 SDK：Cangjie 1.0.5 + stdx 1.0.5.1 → Cangjie 1.2.0 + stdx 1.2.0.1**。7 个 `cjpm.toml` 的 `cjc-version` 全部改为 `1.2.0`；代码已实质依赖 1.2.0 的 stdx 路径，**Linux 开发机/CI 必须同步升级 SDK 与 stdx**（`cjpm.toml` 的 Linux target 段 `path-option` 仍指向 `cangjie-stdx-linux-x64-1.0.5.1`，升级时一并改）。
