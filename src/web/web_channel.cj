@@ -17,11 +17,14 @@ import cjh.tools.*
 import std.sync.*
 import stdx.encoding.json.*
 import stdx.net.http.*
+import cjlog.*
 import cjh.gateway.*
 
 public class WebChannel <: Channel {
     private let ws: WebSocket
     private let wsMutex: Mutex
+    // 发送守护：连接断开后不再每帧抛异常（见 sendWs 注释与 WsSendGuard）
+    private let guard: WsSendGuard = WsSendGuard()
 
     public init(ws: WebSocket, wsMutex: Mutex) {
         this.ws = ws
@@ -130,18 +133,34 @@ public class WebChannel <: Channel {
 
     /**
      * 线程安全发送 WebSocket 文本帧
+     *
+     * **写失败绝不能抛穿**：客户端断开后继续写会抛 SocketException(10053)，
+     * 而它的调用方是 agent 的事件回调 —— 异常一路抛到 `Agent.run` 顶层，
+     * 整轮 run 当场结束，正在跑的 tool_result 永久丢失（灵渠 0.39.7 实测：
+     * 页面永远停在 tool_start:24 / tool_result:23）。这里改成"记一次日志 +
+     * 判死连接 + 后续帧直接跳过"，让这一轮把活干完。
      */
     private func sendWs(json: String): Unit {
+        if (!this.guard.allowsSend()) {
+            return
+        }
         try {
             this.wsMutex.lock()
-            let data = json.toArray()
-            var byteArr = Array<UInt8>(data.size, repeat: 0)
-            for (i in 0..data.size) {
-                byteArr[i] = UInt8(data[i])
+            try {
+                let data = json.toArray()
+                var byteArr = Array<UInt8>(data.size, repeat: 0)
+                for (i in 0..data.size) {
+                    byteArr[i] = UInt8(data[i])
+                }
+                this.ws.write(WebSocketFrameType.TextWebFrame, byteArr)
+                this.guard.onSent()
+            } finally {
+                this.wsMutex.unlock()
             }
-            this.ws.write(WebSocketFrameType.TextWebFrame, byteArr)
-        } finally {
-            this.wsMutex.unlock()
+        } catch (e: Exception) {
+            if (this.guard.onFailed("${e}")) {
+                Log.warn("WebChannel 发送失败，连接判定为断开，后续帧跳过（${this.guard.summary()}）")
+            }
         }
     }
 

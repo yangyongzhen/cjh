@@ -66,6 +66,7 @@
 - **偶发卡死必须当场存证**：超时/异常处理里先抓进程快照（`procSnapshotOf`，见 `src/tools/shell_diag.cj`）**再**杀会话，快照随 ToolResult 进 trace；否则进程树一没，事后只能靠推理猜"谁握着管道"
 - **会话 shell 的 PATH 要自己补齐**：cjh 用绝对路径找 bash，但 `<git>/usr/bin` 未必在继承来的 PATH 上 —— 缺了 `cat`/`sed`/`grep` 全是 `command not found`（127），看着像模型写错命令，其实环境缺件。`shellPathFix()`（`src/tools/shell_path.cj`）幂等追加、**追加不覆盖**；回归用例 `testSessionShellHasCoreutilsOnPath`
 - **shell 用例尽量只用内建**：`while read` / `echo` / `command -v` / `pwd` 都是内建，用它们测"heredoc 能不能跑"这类行为，才不会被"外部命令是否存在"干扰（实测：`cat` 缺失让 heredoc 用例在 `cjpm test` 下假红，查了一轮才发现是 PATH 问题）
+- **写客户端帧失败绝不能抛穿 agent 循环**：客户端断开后继续写会抛 `SocketException(10053)`，而它的调用方是 agent 的事件回调 —— 异常一路抛到 `Agent.run` 顶层，**整轮 run 当场结束**，正在跑的 `tool_result` 永久丢失（灵渠 0.39.7 实测：页面永远停在 `tool_start:24 / tool_result:23`）。正确做法：`sendWs` 自己吞掉异常、判死连接、后续帧跳过（`WsSendGuard`），让这一轮把活干完，客户端重连后靠 `history_messages` 补看
 - **诊断分支不能"假装在跑"**：非会话路径的 PowerShell 分支曾算出 base64 却没用、把命令本体丢掉，调用方只看到"静默等到超时"。做不到就明确报错 + 给改法，不要静默降级
 
 ## 交付检查清单

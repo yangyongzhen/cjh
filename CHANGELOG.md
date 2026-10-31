@@ -6,6 +6,30 @@ cjh 版本变更记录。依据 git tag 史 + 提交史整理；版本号规则�
 
 ## [Unreleased]
 
+### 修复（WS 写失败不再打死整轮 run）
+
+灵渠迁移台 0.39.7 端到端实测（`m3u8dl-tauri` 全自动迁移，Windows + Git Bash）：
+WebView 侧断开并重连两次后，cjh 仍往**旧连接**写帧，抛出
+
+```
+23:18:32 [ERROR] Agent.run 顶层异常: SocketException: Failed to write data 10053 …
+     at web_channel.cj:142（WS 写） ← agent/loop.cj:723
+```
+
+后果不是"少收几帧"：**整轮 agent run 当场结束**，正在跑的 build 工具的 `tool_result`
+永久丢失，页面永远停在 `tool_start:24 / tool_result:23`，落档监管随后误报"AI 在绕圈"。
+一次网络抖动就把整轮迁移打水漂。
+
+- `WebChannel.sendWs` 现在自己吃掉写异常：记一次日志 + 把连接判死，后续帧直接跳过，
+  **不再抛穿调用栈**；agent 照常把这一轮跑完（结果仍落会话文件与 `.lingqu/` 落档），
+  客户端重连后靠 `history_messages` 补看。
+- 新增 `src/web/ws_send_guard.cj`（`WsSendGuard`，纯状态机，可单测）：
+  `allowsSend` / `onSent` / `onFailed`（**只有第一次失败回报 true**，据此只打一条日志，
+  不刷屏）/ `summary`（`ws sent=N failed=M dead=… err=…`，排障一眼可用）。
+- 测试 `src/tests/ws_send_guard_test.cj`：初始可写、失败后跳过、重复失败只上报一次、
+  摘要带计数、无失败时不带 `err=`。socket 本身的行为不造假（按 AGENTS 门禁第 5 条，
+  网络/进程行为以实机为准）。
+
 ### 修复（heredoc 回归持久会话 + 会话 shell 补 PATH）
 
 **1. heredoc 不必再分流。** 0.39.4 曾把它判成"会话装不下"而分流到非会话路径
