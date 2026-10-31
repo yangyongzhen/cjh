@@ -50,7 +50,18 @@ public class BashSession {
             // PowerShell 不支持 { cmd; } 语法——用原生命令拼接替代
             let full: String
             if (this.shell.isBash) {
-                full = "{ " + cmd + "; } 2>&1; echo \"__CJH_CODE_$?__\"; echo " + marker + "\n"
+                // 结束判据写在**独立 fd 3** 上（0.39.6）：命令若把 shell 的 fd1 永久改道
+                // （`exec 1>file`、`{ exec 1>/tmp/x; …; }`），老包装把 `echo CODE`/`echo marker`
+                // 一起带进那个文件，读线程永远等不到标记 → 只能耗到超时。
+                // 实测（0.39.6 探针）：`{ exec 1>/tmp/e.log; echo hi; } 2>&1; echo CODE; echo marker`
+                // → stdout 里只剩 hi，CODE 与 marker 全在文件里；换成 `exec 3>&1` + `1>&3` 后
+                // marker 正常回到管道、文件里只剩 hi。
+                // 每条命令前重新 `exec 3>&1`（幂等），命令之后再把 fd1 复位回管道，
+                // 免得"一条命令把会话输出永久改道"污染后面所有命令。
+                // 已知残留：命令若显式 `exec 3>&-` / `exec 3>file`，标记仍会丢 —— 少见，
+                // 由超时兜底 + 现场快照负责留证据。
+                full = "exec 3>&1; { " + cmd + "; } 2>&1; echo \"__CJH_CODE_$?__\" 1>&3; echo " +
+                    marker + " 1>&3; exec 1>&3\n"
             } else {
                 full = cmd + " 2>&1; echo \"__CJH_CODE_$LASTEXITCODE__\"; echo " + marker + "\n"
             }
@@ -88,9 +99,18 @@ public class BashSession {
                 sleep(Duration.millisecond * 50)
             }
             if (!done) {
+                // 超时：**先存证再杀会话**。典型现场是"命令早就跑完了、标记永远不来"
+                // （右端 `| tail` 等 stdin EOF，左端命令留下的后代握着写端），
+                // 一 killSession 进程树就没了，事后只能靠猜。快照随 ToolResult 回到模型，
+                // 同时被灵渠记进 <工程>/.lingqu/agent/trace.jsonl。
+                let snap = procSnapshotOf(this.shell)
                 // 超时：杀会话（命令可能挂死），读线程随 EOF 结束
                 this.killSession()
-                return (-1, "⚠ 命令超时（${timeoutSecs}s 未完成，已终止会话）")
+                var msg = "⚠ 命令超时（${timeoutSecs}s 未完成，已终止会话）"
+                if (snap.size > 0) {
+                    msg = msg + "\n" + snap
+                }
+                return (-1, msg)
             }
             // 完成：取输出；EOF 提前（如 exit N，未遇到 marker）→ wait() 拿退出码
             state.lock.lock()
