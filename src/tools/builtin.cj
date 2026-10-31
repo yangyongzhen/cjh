@@ -66,7 +66,15 @@ public class BashTool <: CjhTool {
         var props = HashMap<String, JsonValue>()
         props.add("command", JsonSchema.str("Shell command to execute"))
         let schema = JsonSchema.object(props, ArrayList<String>(["command"]))
-        return ToolSpec("bash", "Run a shell command (git, build, test, package manager). Do NOT use bash to read files — use read_file instead. bash is for executing commands, not for file content extraction (sed/awk/head/tail are slower and less reliable than read_file). Working directory and env persist across commands. Commands are killed after ${this.timeoutSecs}s by default.", schema)
+        // 把**当前 shell 模式**写进工具描述：没装 Git Bash 的机器会降级成 PowerShell，
+        // 模型不知道这件事就会继续写 bash 语法然后全失败（`&&`、`$VAR`、重定向、`{ cmd; }`）。
+        // 工具描述是模型唯一能看到的"环境自述"，这一句比任何事后错误提示都值钱。
+        let mode = if (ShellProvider().isBash) {
+            "bash (POSIX shell)"
+        } else {
+            "Windows PowerShell (Git Bash not detected — use PowerShell syntax; avoid && / $VAR / bash redirects)"
+        }
+        return ToolSpec("bash", "Run a shell command (git, build, test, package manager). Current shell mode: ${mode}. Do NOT use bash to read files — use read_file instead. bash is for executing commands, not for file content extraction (sed/awk/head/tail are slower and less reliable than read_file). Working directory and env persist across commands. Commands are killed after ${this.timeoutSecs}s by default.", schema)
     }
 
     public func execute(args: JsonObject): ToolResult {
