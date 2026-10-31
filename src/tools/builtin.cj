@@ -125,7 +125,13 @@ public class BashTool <: CjhTool {
             secs = 3600
         }
         try {
-            if (this.useSession) {
+            // heredoc（<<EOF … EOF）与持久会话包装**不兼容**：会话侧把命令包成
+            // { <cmd>; } 2>&1; echo <marker>，而 heredoc 的终止符必须**独占一行** ——
+            // 包装后最后一行变成 EOF; } 2>&1; echo …，heredoc 永远收不到终止，会话一直读 stdin，
+            // marker 永不出现 → 命令挂到超时才回来（0.39.4 实测：python - <<'EOF' 后静默 4 分钟）。
+            // 这类命令改走非会话路径（bash -c + base64，换行原样保留）。
+            let hasHeredoc = cmd.contains("<<")
+            if (this.useSession && !hasHeredoc) {
                 // 持久会话（P1-3）：跨命令保留 cwd/env
                 let (code, output) = this.session.execute(cmd, secs)
                 if (code < 0) {
