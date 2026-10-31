@@ -19,6 +19,8 @@
    - **改安全/权限语义（capability、审批、门禁）必须同批改 `libs/cjcfg/src/capability_test.cj`**：`enabled` 闸门那次（4c56f55）只改实现没改测试，换来 4 例红被埋数周。注意 `capability` 段**默认为宽松**（配了段落 ≠ 启用严格模式，须显式 `"enabled": true`），写相关测试要自己显式打开闸门，别"顺手"改成配置即严格（那会重现"用户配了 capability 段后 bash 被拒"的投诉）。
 3. `cjpm build` 通过 + `--mock` 端到端通过（工具调用链验证）。
 4. **编译零警告（强制）**：`cjpm build` 输出除下方唯一例外外，**不得出现任何 `warning:`**（unused 函数/变量/导入/常量、deprecated、`unsecure character`、`confusing line terminator` 等一律清零），禁止"先交付后清理"。清理手法（均已实测）：
+   - **改完代码必回头查"旧调用方"**：删函数/改签名/换实现后，原来被它用的辅助函数、导入、常量会立刻变成 unused。实测踩过：`ShellProvider` 改用环境变量拼路径后，私有 `getHomeUser()` 没人调了，门禁只报「warning: 2 条」、看不到明细，白查一轮
+   - **门禁的 warning 必须可见明细，不只是条数**：`scripts/test_win.ps1` 已改为打印去重后的 warning 行（最多 10 条）；`scripts/test.sh` 侧对 `grep 'warning:' | sort -u` 同样要求逐条可见。**只报数字的检查等于没检查**
    - 未用导入/常量/死函数直接删；**接口契约、公开 API 类 unused 须甄别保留**，不可盲删
    - 测试专用辅助文件按 cjpm 约定改名 `*_test.cj` 即被发布构建排除（如 `src/tests/helpers_test.cj`）；**不要**逐函数加 `@When[test]`（会连带其依赖的导入变成"未用导入"，治标不治本源）
    - 通配 `_` 可用于形参、`let _ = ...`、`let (_, _) = ...`、`{ _ => }`；`Mutex` 实测可重入，无需 `ReentrantMutex`
