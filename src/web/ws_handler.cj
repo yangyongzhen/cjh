@@ -18,6 +18,18 @@ import cjh.gateway.*
 import cjcfg.*
 
 /**
+ * 入站 WebSocket 帧的上限（字节）。
+ *
+ * 为什么需要它：单帧超过底层实现的上限时，读侧会抛异常，旧代码把异常吞成
+ * `running = false` —— 连接看着还在，之后发的消息再没人处理，客户端只能靠"没有回帧"猜。
+ * 灵渠迁移台就栽在这上面：4.4 KB 的任务书整段发过来，cjh 静默丢弃，排查了三轮。
+ *
+ * 现在的语义：超过这个值 → **显式回 error 帧**（code=frame_too_large），并把这个值
+ * 通过 `/api/capabilities` 的 `ws.max_frame_bytes` 公告出去，客户端可以提前分段。
+ */
+public let WS_MAX_INBOUND_BYTES: Int64 = 256 * 1024
+
+/**
  * WebSocket 处理器
  *
  * 每个 WebSocket 连接创建一个 WsSession，负责：
@@ -87,6 +99,13 @@ public class WsHandler <: HttpRequestHandler {
                 match (frame.frameType) {
                     case WebSocketFrameType.TextWebFrame =>
                         let text = this.frameToText(frame)
+                        // 超限帧**必须显式回 error**：以前超长帧会让读循环静默结束——连接看着还在，
+                        // 客户端发的消息再没人处理，只能靠"没有回帧"猜（灵渠 4.4KB 任务书踩了这坑）。
+                        if (Int64(text.size) > WS_MAX_INBOUND_BYTES) {
+                            this.replyErrorFrame(ws, wsMutex, "frame_too_large",
+                                "入站帧 ${text.size} 字节超过上限 ${WS_MAX_INBOUND_BYTES}（见 /api/capabilities 的 ws.max_frame_bytes）；请分段发送或改写为让 agent 读文件")
+                            continue
+                        }
                         this.handleWsMessage(wsId, wsMutex, text)
                     case WebSocketFrameType.BinaryWebFrame =>
                         ()
@@ -100,8 +119,34 @@ public class WsHandler <: HttpRequestHandler {
                         ()
                 }
             } catch (e: Exception) {
+                // 读失败不再静默退出：先把原因回给对端，再收尾
+                this.replyErrorFrame(ws, wsMutex, "ws_read_failed",
+                    "读取 WebSocket 帧失败（多半是单帧超过实现上限）：${e}")
                 running = false
             }
+        }
+    }
+
+    /** 直接回一个 error 帧（不经过 gateway：这条路径上会话可能已经不可用） */
+    private func replyErrorFrame(ws: WebSocket, wsMutex: Mutex, code: String, message: String): Unit {
+        var o = JsonObject()
+        o.put("type", JsonString("error"))
+        o.put("code", JsonString(code))
+        o.put("message", JsonString(message))
+        o.put("retryable", JsonBool(false))
+        let json = o.toJsonString()
+        try {
+            wsMutex.lock()
+            let data = json.toArray()
+            var byteArr = Array<UInt8>(data.size, repeat: 0)
+            for (i in 0..data.size) {
+                byteArr[i] = UInt8(data[i])
+            }
+            ws.write(WebSocketFrameType.TextWebFrame, byteArr)
+        } catch (e: Exception) {
+            let _ = e
+        } finally {
+            wsMutex.unlock()
         }
     }
 

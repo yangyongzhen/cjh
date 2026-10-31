@@ -145,6 +145,11 @@ public func capabilitiesJson(): JsonObject {
     features.put("session_model_switch", JsonBool(true))        // switch_model 帧（会话级）
     features.put("diff_in_tool_result", JsonBool(true))         // tool_result.diff（文件改动类工具）
     features.put("tool_result_truncation", JsonInt(2000))       // bash 结果截断阈值
+    // ws 段的硬限制要公告：客户端据此发送前分段，而不是发出去被丢
+    // （超限帧现在会显式回 error.code=frame_too_large，但提前知道上限才最省事）
+    var wsLimits = JsonObject()
+    wsLimits.put("max_frame_bytes", JsonInt(WS_MAX_INBOUND_BYTES))
+    features.put("ws", wsLimits)
 
     var obj = JsonObject()
     obj.put("protocol", JsonInt(capabilityProtocolVersion()))
