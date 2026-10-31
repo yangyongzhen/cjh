@@ -1,5 +1,8 @@
 package cjterm
 
+import std.collection.*
+import std.fs.*
+
 /**
  * UTF-8 安全解码：非法字节序列用替换字符（U+FFFD）代替，不抛异常。
  *
@@ -187,12 +190,20 @@ public class BoxChars {
  * Claude Code 的方案：Git Bash 优先 → PowerShell 兜底 → 环境变量覆盖。
  * 本类提供同样的三级降级，BashSession/BashTool 根据 isBash 选择命令语法。
  *
- * 文件存在性不在此处校验——若路径无效，BashSession 的 launch 会抛异常
- * 并由上层（BashTool）捕获返回错误提示，避免 std.fs 依赖。
+ * **v1.6.2 修（Git 装在非 C 盘时 bash 工具整条死掉）**：原实现只试三个写死的
+ * `C:\Program Files\...` 候选、且**不做存在性校验**，于是 Git 装在 `D:\Program Files\Git`
+ * 这类机器的 `shellPath` 指向不存在的文件，任何 spawn 都报 Windows error 2
+ * （"The system cannot find the file specified"），bash 工具一次都跑不起来。
+ * 现在：① 候选由**环境变量**（%ProgramFiles% / %ProgramW6432% / %ProgramFiles(x86)% /
+ * %LOCALAPPDATA%）与 **PATH 里的 git.exe** 推导；② 逐个做存在性校验；
+ * ③ 一个都不存在就降级 `powershell.exe`（isBash=false，永远存在），**绝不返回死路径**。
+ * 依赖：只用到 `std.fs.File.exists`（核心 std，不引 stdx，符合本包零依赖策略）。
  */
 public class ShellProvider {
     public let shellPath: String
     public let isBash: Bool  // true = POSIX bash 语法（{ cmd; } 2>&1）；false = PowerShell
+    /** 这个 shell 是怎么找到的（`CJH_SHELL` / Git Bash 命中 / `POWERSHELL_SYSROOT` / `POWERSHELL_PATH`）——排障一句话说清 */
+    public let source: String
 
     public init() {
         // 1. CJH_SHELL 环境变量覆盖（用户强制指定任意 shell）
@@ -200,24 +211,150 @@ public class ShellProvider {
         if (custom.size > 0) {
             this.shellPath = custom
             this.isBash = true  // 假定用户指定的是 bash 兼容 shell
+            this.source = "CJH_SHELL"
             return
         }
         // 2. 平台检测 → 自动降级
         if (ShellProvider.isWindows()) {
-            // Git Bash 路径候选（按优先级）：优先系统级 → 用户级
-            let home = ShellProvider.getHomeUser()
-            let gitCandidates = [
-                "C:\\Program Files\\Git\\bin\\bash.exe",
-                "C:\\Program Files (x86)\\Git\\bin\\bash.exe",
-                "C:\\Users\\${home}\\AppData\\Local\\Programs\\Git\\bin\\bash.exe",
-            ]
-            // 不做 exists 校验——launch 失败由 BashTool 捕获并给出明确提示
-            this.shellPath = gitCandidates[0]  // 默认选第一个候选
-            this.isBash = true
+            // Git Bash 候选：由**环境变量 + PATH 里的 git.exe** 推导（不再写死 C 盘），
+            // 并逐个做存在性校验；一个都没有就降级 PowerShell（见下方 else 分支）。
+            let cands = ShellProvider.windowsBashCandidates(
+                TermEnv.getenv("ProgramFiles") ?? "",
+                TermEnv.getenv("ProgramW6432") ?? "",
+                TermEnv.getenv("ProgramFiles(x86)") ?? "",
+                TermEnv.getenv("LOCALAPPDATA") ?? "",
+                TermEnv.getenv("PATH") ?? "",
+                ["C", "D", "E", "F", "G", "H"])
+            for (c in cands) {
+                if (ShellProvider.fileExists(c)) {
+                    this.shellPath = c
+                    this.isBash = true
+                    this.source = "GIT_BASH"
+                    return
+                }
+            }
+            // 三级降级：没有任何 Git Bash 就退 PowerShell。**优先用 SystemRoot 的绝对路径**
+            // （PATH 被改坏的机器上 `powershell.exe` 这名字也可能起不来），再退裸命令名。
+            let sysRoot = TermEnv.getenv("SystemRoot") ?? ""
+            let psAbs = if (sysRoot.size > 0) {
+                sysRoot + "\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+            } else {
+                ""
+            }
+            if (psAbs.size > 0 && ShellProvider.fileExists(psAbs)) {
+                this.shellPath = psAbs
+                this.source = "POWERSHELL_SYSROOT"
+            } else {
+                this.shellPath = "powershell.exe"
+                this.source = "POWERSHELL_PATH"
+            }
+            this.isBash = false
         } else {
             // Unix：/bin/bash 标准路径（POSIX 系统必有，不存在则 launch 报错）
             this.shellPath = "/bin/bash"
             this.isBash = true
+            this.source = "UNIX_DEFAULT"
+        }
+    }
+
+    /**
+     * Windows 上的 Git Bash 候选（**纯函数**，供单测）：环境变量目录 + PATH 里的 git.exe 推导。
+     *
+     * 顺序：%ProgramFiles% → %ProgramW6432% → %ProgramFiles(x86)% → %LOCALAPPDATA%\Programs
+     *      → PATH 里每个含 `\Git\cmd` 或 `\Git\mingw64\bin` 的目录（推导到 `<Git>\bin\bash.exe`）。
+     * 去重，保持发现顺序。
+     */
+    public static func windowsBashCandidates(programFiles: String, programW6432: String,
+        programFilesX86: String, localAppData: String, pathEnv: String,
+        driveLetters: Array<String>): ArrayList<String> {
+        let out = ArrayList<String>()
+        let dirs = ArrayList<String>()
+        if (programFiles.size > 0) {
+            dirs.add(programFiles)
+        }
+        if (programW6432.size > 0) {
+            dirs.add(programW6432)
+        }
+        if (programFilesX86.size > 0) {
+            dirs.add(programFilesX86)
+        }
+        for (d in dirs) {
+            out.add(d + "\\Git\\bin\\bash.exe")
+        }
+        if (localAppData.size > 0) {
+            out.add(localAppData + "\\Programs\\Git\\bin\\bash.exe")
+        }
+        // PATH 里的 git.exe：`...\Git\cmd\git.exe` / `...\Git\mingw64\bin\git.exe`
+        for (seg in pathEnv.split(";", -1)) {
+            let p = seg.trimAscii()
+            if (p.size == 0) {
+                continue
+            }
+            let derived = bashPathFromGitExe(p + "\\git.exe")
+            if (derived.size > 0) {
+                out.add(derived)
+            }
+            let derived2 = bashPathFromGitExe(p + "\\bash.exe")
+            if (derived2.size > 0) {
+                out.add(derived2)
+            }
+        }
+        // 兜底扫描：任何盘符的 Program Files，以及常见自定义安装根
+        // （Git 装在 D:/E: 且不在 PATH 时全靠这一层；更冷门的路径用 CJH_SHELL）
+        for (letter in driveLetters) {
+            for (root in ["Program Files", "Program Files (x86)"]) {
+                out.add("${letter}:\\${root}\\Git\\bin\\bash.exe")
+            }
+            for (root in ["Git", "tools\\Git", "dev\\Git"]) {
+                out.add("${letter}:\\${root}\\bin\\bash.exe")
+            }
+        }
+        // 去重（保持发现顺序；放在最后，避免各层重复命中同一路径）
+        let uniq = ArrayList<String>()
+        for (c in out) {
+            var seen = false
+            for (u in uniq) {
+                if (u == c) {
+                    seen = true
+                }
+            }
+            if (!seen) {
+                uniq.add(c)
+            }
+        }
+        return uniq
+    }
+
+    /**
+     * 从一个可执行文件路径推导同装 Git 目录下的 `bin\bash.exe`（**纯函数**）。
+     *
+     * `D:\Program Files\Git\cmd\git.exe`        → `D:\Program Files\Git\bin\bash.exe`
+     * `D:\Program Files\Git\mingw64\bin\git.exe` → `D:\Program Files\Git\bin\bash.exe`
+     * 其它（不含 git 段）→ 空串（不瞎猜）。
+     */
+    public static func bashPathFromGitExe(exe: String): String {
+        let p = exe.trimAscii()
+        let lower = p.toAsciiLower()
+        let marker = "\\git\\"
+        let idx = lower.lastIndexOf(marker)
+        match (idx) {
+            case Some(i) => return p[0..(i + marker.size - 1)] + "\\bin\\bash.exe"
+            case None =>
+                // `...\git\cmd\git.exe` 之外，也认 `...\Git\bin\bash.exe` 这类直接给的 bash
+                let marker2 = "\\git\\bin\\bash.exe"
+                match (lower.lastIndexOf(marker2)) {
+                    case Some(_) => return p
+                    case None => return ""
+                }
+        }
+    }
+
+    /** 文件是否存在（std.fs 的顶层 `exists(Path)`；不存在/异常一律 false，调用方据此跳过） */
+    private static func fileExists(p: String): Bool {
+        try {
+            return exists(Path(p))
+        } catch (e: Exception) {
+            return false
         }
     }
 

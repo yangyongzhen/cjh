@@ -2,6 +2,7 @@ package cjh.web
 
 import std.collection.*
 import stdx.encoding.json.*
+import cjterm.*
 
 /**
  * 服务端能力自述（GET /api/capabilities）
@@ -150,6 +151,15 @@ public func capabilitiesJson(): JsonObject {
     var wsLimits = JsonObject()
     wsLimits.put("max_frame_bytes", JsonInt(WS_MAX_INBOUND_BYTES))
     features.put("ws", wsLimits)
+
+    // shell 自述（v1.6.2）：没装 Git Bash 的机器会降级 PowerShell，而模型的命令语法
+    // 必须跟着变。客户端据此提示用户、或调整它自己发的命令；排障时也能一眼看到用的是哪个 shell。
+    let shell = ShellProvider()
+    var shellInfo = JsonObject()
+    shellInfo.put("path", JsonString(shell.shellPath))
+    shellInfo.put("mode", JsonString(if (shell.isBash) { "bash" } else { "powershell" }))
+    shellInfo.put("source", JsonString(shell.source))
+    features.put("shell", shellInfo)
 
     var obj = JsonObject()
     obj.put("protocol", JsonInt(capabilityProtocolVersion()))
