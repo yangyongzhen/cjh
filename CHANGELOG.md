@@ -31,6 +31,17 @@ cjh 的断连处理本身就会打断 agent 回合 ——
 
 **给调用方的建议**：驱动长任务（迁移/批处理）时把它设为 `true`；纯交互式前端保持默认。
 
+**实机验证**（灵渠迁移台 0.39.7，`~/.cjh/settings.json` 置 `web.keep_running_on_disconnect=true`）：
+
+```
+[00:08:53] 客户端断开，本轮继续执行（web.keep_running_on_disconnect=true）
+[00:11:01] build 落档 exitCode=0
+[00:13:03] Agent.run 正常结束: 41 rounds, 49 tools, 328028ms
+页面侧：wsReconnects=13（断连 13 次）  回合照常跑完
+```
+
+对照：上一轮没有这个开关，同样的重连下 `Agent.run 被用户中断（24 轮后）`，整轮作废。
+
 ### 修复（WS 写失败不再打死整轮 run）
 
 灵渠迁移台 0.39.7 端到端实测（`m3u8dl-tauri` 全自动迁移，Windows + Git Bash）：
