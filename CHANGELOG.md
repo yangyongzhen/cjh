@@ -6,6 +6,39 @@ cjh 版本变更记录。依据 git tag 史 + 提交史整理；版本号规则�
 
 ## [Unreleased]
 
+### 修复（heredoc 回归持久会话 + 会话 shell 补 PATH）
+
+**1. heredoc 不必再分流。** 0.39.4 曾把它判成"会话装不下"而分流到非会话路径
+（`bash -c` + base64），代价是不共享 cwd/env。真因是包装把收尾 `}` 与 heredoc 终止符
+挤在同一行（`… EOF; } 2>&1; echo …`），终止符不独占一行 → bash 继续从 stdin 读正文 →
+标记永不出现 → 卡到超时。把收尾 `}` 挪到**独占一行**（`{ <cmd>\n} 2>&1; …`）后，
+heredoc 在会话里就能正常跑（探针：同一条 heredoc，旧包装卡住、新包装输出齐全），
+`needsFreshShell` 整段删除。
+
+- 回归用例 `BashHeredocInSessionTest`：① heredoc 在会话里跑通（旧包装实测 5.1 s 超时 FAIL）；
+  ② heredoc 里的 `$(pwd)` 读到的是**会话 cwd**（旧分流读到 cjh 进程 cwd，FAIL）。
+- 非会话路径（`BashTool(secs, useSession: false)`）保留：语义是 stderr 分离 + 不共享会话状态，
+  由显式构造使用，不再当"某种命令的逃生口"。
+- 已知残留：命令以续行 `\` 结尾时，收尾的 `}` 会被拼进续行（极端罕见）。
+
+**2. 会话 shell 的 PATH 补齐**（新文件 `src/tools/shell_path.cj` + `src/tests/shell_path_test.cj`）。
+cjh 用**绝对路径**找到 Git Bash，但那个 bash 的 `/usr/bin` 未必在继承来的 PATH 上 ——
+此时 agent 跑 `cat`/`sed`/`grep` 全是 `command not found`（退出码 127），
+看起来像"命令写错了"，其实是 shell 环境缺件。实测现场（隔离测试暴露）：
+
+```
+会话内 PATH = …/cangjie-stdx/…:…/Cangjie/bin:…   ← 一个 Git/MSYS 目录都没有
+/usr/bin/bash: line 3: cat: command not found
+```
+
+修法：命令前追加一次（幂等，`__CJH_PATH_FIXED` 守位）`<shell 目录>`、
+`<shell 上级>/usr/bin`、`<shell 上级>/mingw64/bin`；**追加不覆盖**，不改变用户已装同名命令的
+优先级；非会话路径同样补。回归用例 `testSessionShellHasCoreutilsOnPath`
+（`command -v cat` / `command -v grep`，`command` 本身是内建，所以不依赖 coreutils）。
+
+实测：Windows + Git Bash 下 `export PATH="/c/Windows/system32:/c/Windows"` →
+`command -v cat` MISSING；补丁后 → `/D/Program Files/Git/usr/bin/cat`（GNU coreutils 8.32）。
+
 ### 修复（bash 会话完成判据：标记走 fd 3 + 修正分流误判）
 
 灵渠迁移台 0.39.5 全自动迁移实测：agent 跑 `main.exe build --path . 2>&1 | tail -50`，

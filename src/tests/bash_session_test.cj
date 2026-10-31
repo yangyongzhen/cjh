@@ -223,3 +223,83 @@ public class BashMarkerFdTest {
         }
     }
 }
+
+/**
+ * heredoc 回归持久会话（0.39.7）
+ *
+ * 旧包装把收尾的 `}` 与 heredoc 终止符挤在同一行（`… EOF; } 2>&1; echo …`），
+ * 而终止符必须**独占一行** → bash 继续从 stdin 读 heredoc 正文，标记永不出现 → 卡到超时。
+ * 于是 heredoc 曾被分流到非会话路径（`bash -c` + base64），代价是不共享 cwd/env。
+ * 现在收尾 `}` 独占一行，heredoc 在会话里正常工作，分流判定整段删除。
+ *
+ * 不加 `@When[os != "Windows"]`：Git Bash 吃同一套语法，
+ * Windows 上没有 Git Bash 时用运行时 ShellProvider 判定跳过。
+ */
+@Test
+public class BashHeredocInSessionTest {
+
+    @TestCase
+    public func testHeredocRunsInsideSession(): Unit {
+        if (!ShellProvider().isBash) {
+            return  // PowerShell 模式不支持 heredoc
+        }
+        let s = BashSession()
+        try {
+            // 全用 shell 内建（while read / echo），不依赖 cat 等 coreutils：
+            // 用例只该验证"heredoc 能不能在会话里跑通"，不该顺带验证外部命令是否存在
+            let cmd = "while read -r l; do echo \"got:$l\"; done <<'CJH_EOF'\nline-one\nline-two\nCJH_EOF"
+            let (c1, o1) = s.execute(cmd, 5)
+            @Assert(c1, 0)                            // 旧包装在此超时返回 -1
+            @Assert(o1.contains("got:line-one"), true)
+            @Assert(o1.contains("got:line-two"), true)
+            @Assert(o1.contains("CJH_EOF"), false)    // 终止符不该混进正文
+        } finally {
+            s.close()
+        }
+    }
+
+    @TestCase
+    public func testHeredocSeesSessionCwd(): Unit {
+        // 旧实现把 heredoc 分流到非会话路径（`bash -c`），那条命令的 cwd 是
+        // **cjh 进程的 cwd**，不是会话里 `cd` 过的目录 → 相对路径、`$(pwd)` 全跑偏。
+        // 用未加引号的 heredoc 分隔符让 `$(pwd)` 在命令执行时展开，直接读出真实 cwd。
+        if (!ShellProvider().isBash) {
+            return
+        }
+        let tool = BashTool()  // useSession=true
+        try {
+            var a1 = JsonObject()
+            a1.put("command", JsonString("cd /tmp && pwd"))
+            @Assert(tool.execute(a1).isError, false)
+            var a2 = JsonObject()
+            a2.put("command", JsonString("while read -r l; do echo \"$l\"; done <<CJH_EOF\ncwd-is: $(pwd)\nCJH_EOF"))
+            let r2 = tool.execute(a2)
+            @Assert(r2.isError, false)
+            @Assert(r2.content.contains("cwd-is: /tmp"), true)  // 旧分流在此读到进程 cwd
+            var a3 = JsonObject()
+            a3.put("command", JsonString("pwd"))
+            @Assert(tool.execute(a3).content.contains("/tmp"), true)  // 会话 cwd 不被 heredoc 带走
+        } finally {
+            tool.close()
+        }
+    }
+
+    @TestCase
+    public func testSessionShellHasCoreutilsOnPath(): Unit {
+        // PATH 回归（shell_path.cj）：cjh 用绝对路径找到 Git Bash，但它的 /usr/bin
+        // 未必在继承的 PATH 上 —— 缺了连 `cat` 都是 `command not found`（127）。
+        // `command -v` 本身是内建，所以这条断言不依赖 coreutils，正好二分。
+        if (!ShellProvider().isBash) {
+            return
+        }
+        let s = BashSession()
+        try {
+            let (c1, _) = s.execute("command -v cat", 5)
+            @Assert(c1, 0)
+            let (c2, _) = s.execute("command -v grep", 5)
+            @Assert(c2, 0)
+        } finally {
+            s.close()
+        }
+    }
+}

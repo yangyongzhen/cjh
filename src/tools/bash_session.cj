@@ -50,17 +50,22 @@ public class BashSession {
             // PowerShell 不支持 { cmd; } 语法——用原生命令拼接替代
             let full: String
             if (this.shell.isBash) {
-                // 结束判据写在**独立 fd 3** 上（0.39.6）：命令若把 shell 的 fd1 永久改道
-                // （`exec 1>file`、`{ exec 1>/tmp/x; …; }`），老包装把 `echo CODE`/`echo marker`
-                // 一起带进那个文件，读线程永远等不到标记 → 只能耗到超时。
-                // 实测（0.39.6 探针）：`{ exec 1>/tmp/e.log; echo hi; } 2>&1; echo CODE; echo marker`
-                // → stdout 里只剩 hi，CODE 与 marker 全在文件里；换成 `exec 3>&1` + `1>&3` 后
-                // marker 正常回到管道、文件里只剩 hi。
-                // 每条命令前重新 `exec 3>&1`（幂等），命令之后再把 fd1 复位回管道，
-                // 免得"一条命令把会话输出永久改道"污染后面所有命令。
-                // 已知残留：命令若显式 `exec 3>&-` / `exec 3>file`，标记仍会丢 —— 少见，
-                // 由超时兜底 + 现场快照负责留证据。
-                full = "exec 3>&1; { " + cmd + "; } 2>&1; echo \"__CJH_CODE_$?__\" 1>&3; echo " +
+                // 两点约定，别改坏：
+                // 1) 收尾的 `}` 必须**独占一行**（0.39.7）。旧写法 `{ <cmd>; } 2>&1` 把 `}` 和
+                //    heredoc 终止符挤在同一行，终止符不独占一行 → bash 继续从 stdin 读正文，
+                //    标记永不出现 → 卡到超时。探针实证：`{ … \nEOF; } 2>&1; echo MARKER` 卡住，
+                //    改成 `… \nEOF\n} 2>&1; echo MARKER` 后正常。这也是 heredoc 能留在会话里的原因
+                //    （此前它被分流到非会话路径，代价是不共享 cwd/env）。
+                // 2) 结束标记与退出码写**独立 fd 3**（0.39.6）：命令若把 shell 的 fd1 永久改道
+                //    （`exec 1>file`、`{ exec 1>/dev/null; …; }`），写 fd1 的标记会被一起带走。
+                //    每条命令前重新 `exec 3>&1`（幂等），命令之后再把 fd1 复位回管道，
+                //    免得"一条命令把会话输出永久改道"污染后面所有命令。
+                // 已知残留：命令若显式 `exec 3>&-` / `exec 3>file`，标记仍会丢（少见，由超时 +
+                // 现场快照兜底）；命令若以续行 `\` 结尾，收尾的 `}` 会被拼进续行（极端罕见）。
+                // 3) 命令前先补一次 PATH（shellPathFix，幂等）：cjh 用绝对路径找 bash，
+                //    但它的 /usr/bin 未必在继承的 PATH 上，缺了连 `cat` 都是 127。
+                full = shellPathFix(this.shell.shellPath, true) +
+                    "exec 3>&1; { " + cmd + "\n} 2>&1; echo \"__CJH_CODE_$?__\" 1>&3; echo " +
                     marker + " 1>&3; exec 1>&3\n"
             } else {
                 full = cmd + " 2>&1; echo \"__CJH_CODE_$LASTEXITCODE__\"; echo " + marker + "\n"
