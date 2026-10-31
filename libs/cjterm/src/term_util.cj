@@ -364,17 +364,6 @@ public class ShellProvider {
         let windir = TermEnv.getenv("windir") ?? ""
         return (os == "Windows_NT" || windir.size > 0)
     }
-
-    /** 取 Windows HOME 用户名（拼 Git portable 路径用） */
-    private static func getHomeUser(): String {
-        let home = TermEnv.getenv("USERPROFILE") ?? ""
-        // USERPROFILE = C:\Users\username → 取最后一路段
-        let parts = home.split("\\", -1)
-        if (parts.size >= 2) {
-            return parts[parts.size - 1]
-        }
-        return ""
-    }
 }
 
 public func isModernTerminalEnv(): Bool {
