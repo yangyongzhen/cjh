@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Windows 原生测试门禁（尽力而为 + 明确报告缺件，绝不假装绿）。
 
@@ -305,9 +305,19 @@ try {
         } else {
             New-PackageConfig "cjpm.toml" $winStdx $true
             $b = Run-Native "cjpm" @("build") $repo
-            $warn = ([regex]::Matches($b.Out, "warning:")).Count
+            # warning **明细必须可见**：以前只报条数，改完代码看到「warning: 2 条」却不知道是
+            # 哪两条（实测就栽过一次：删了调用方留下的 unused 私有函数，只显示条数无从定位）。
+            # 现在把去重后的 warning 行打出来，交给人和 CI 一起看。
+            $warnLines = [regex]::Matches($b.Out, "(?m)^[^\r\n]*warning:[^\r\n]*") |
+                ForEach-Object { $_.Value.Trim() } | Select-Object -Unique
+            $warn = $warnLines.Count
             if ($b.Code -eq 0) {
                 Say ("  [PASS] build（warning: " + $warn + " 条）") "Green"
+                if ($warn -gt 0) {
+                    foreach ($wl in ($warnLines | Select-Object -First 10)) {
+                        Say ("         · " + $wl) "Yellow"
+                    }
+                }
                 $rc = Invoke-CjpmTest $repo "cjh (root)"
                 if ($rc -eq 1) { $exitCode = 1 } elseif ($rc -eq 2) { $exitCode = 2 }
             } else {
