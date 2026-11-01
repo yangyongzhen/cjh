@@ -5,7 +5,7 @@
 **用华为仓颉语言从零实现的终端编码代理 —— 单二进制零依赖，一个文件就是一个 agent。**
 
 [![Website](https://img.shields.io/badge/website-yangyongzhen.github.io%2Fcjh-00868B)](https://yangyongzhen.github.io/cjh/)
-[![Release](https://img.shields.io/badge/release-v1.6.2-00868B)](https://atomgit.com/qq8864/cjh/releases)
+[![Release](https://img.shields.io/badge/release-v1.6.4-00868B)](https://atomgit.com/qq8864/cjh/releases)
 [![AtomGitStars](https://atomgit.com/qq8864/cjh/star/badge.svg)](https://atomgit.com/qq8864/cjh)
 [![Cangjie](https://img.shields.io/badge/language-Cangjie-00868B)](https://cangjie-lang.cn)
 [![Tests](https://img.shields.io/badge/tests-536%20passed-2ea44f)](./scripts/test.sh)
@@ -29,19 +29,19 @@
 **先不花钱跑起来**（Mock 模式：不联网、不用 API Key）：
 
 ```bash
-curl -LO https://api.atomgit.com/api/v5/repos/qq8864/cjh/releases/v1.6.2/attach_files/cjh-v1.6.2-linux-x64
-chmod +x cjh-v1.6.2-linux-x64
-CJH_MOCK=1 ./cjh-v1.6.2-linux-x64
+curl -LO https://api.atomgit.com/api/v5/repos/qq8864/cjh/releases/v1.6.4/attach_files/cjh-v1.6.4-linux-x64
+chmod +x cjh-v1.6.4-linux-x64
+CJH_MOCK=1 ./cjh-v1.6.4-linux-x64
 ```
 
 **接真模型**（任选一个 Provider 的 Key）：
 
 ```bash
 export DEEPSEEK_API_KEY=sk-xxx     # 或 OPENAI_API_KEY / DASHSCOPE_API_KEY / CJH_API_KEY
-./cjh-v1.6.2-linux-x64             # 默认 TUI；--cli 纯文本，--mode json 无头，web 子命令拉 Web 界面
+./cjh-v1.6.4-linux-x64             # 默认 TUI；--cli 纯文本，--mode json 无头，web 子命令拉 Web 界面
 ```
 
-Windows：下载 [`cjh-v1.6.2-windows-x64-selfcontained.zip`](https://api.atomgit.com/api/v5/repos/qq8864/cjh/releases/v1.6.2/attach_files/cjh-v1.6.2-windows-x64-selfcontained.zip) 解压即用（exe 与 4 个 DLL 必须同目录）。从源码构建见[快速开始](#-快速开始)。
+Windows：下载 [`cjh-v1.6.4-windows-x64-selfcontained.zip`](https://api.atomgit.com/api/v5/repos/qq8864/cjh/releases/v1.6.4/attach_files/cjh-v1.6.4-windows-x64-selfcontained.zip) 解压即用（exe 与 4 个 DLL 必须同目录）。从源码构建见[快速开始](#-快速开始)。
 
 ![cjh 会话演示（Mock 模式实录）](docs/imgs/cjh-demo.gif)
 
@@ -56,7 +56,7 @@ Windows：下载 [`cjh-v1.6.2-windows-x64-selfcontained.zip`](https://api.atomgi
 | **是什么** | 仓颉语言从零实现的终端 coding agent harness：Agent 主循环（消息状态机 + 工具调用协议）+ 工具系统 + TUI 差分渲染 + Web 远程驱动 + 插件信任链 |
 | **给谁用** | ① 想在终端里让 AI 直接改代码、又不想先装 Node/Python 工具链的人；② 学仓颉、想找一份能跑能读的 AI 应用参考实现的开发者；③ 信创 / 政企场景要求「无涉外运行时依赖」的团队 |
 | **凭什么** | 一个静态二进制跑起来（Linux 17.1 MB / Windows exe 14.1 MB），无运行时依赖；「省 token + 高执行效率」是两条可实测的硬性指标；插件 SHA256 校验 + SM2 国密签名 |
-| **现在** | v1.6.2，测试 1150+203 全绿，Linux / Windows 预编译包已发布；多 agent 并行编排已落地（task 派发 explore/worker + Agents 面板 + 四键边界管控） |
+| **现在** | v1.6.4，测试 600+208 全绿，Linux / Windows 预编译包已发布；多 agent 并行编排已落地（task 派发 explore/worker + Agents 面板 + 四键边界管控） |
 
 ---
 
@@ -114,7 +114,7 @@ cjh 的取向是**并行子代理 + 上下文隔离**（类 Linux fork）：子�
 
 **省 token 是分工并行的核心目标，而非副产品。** 一个任务全程交给单个 agent，等同于一个人从头到尾全知——每一步都背负全局上下文，token 随任务规模持续膨胀；而团队协作的常识是：每个人只需知道与自己职责相关的部分，信息的"按需分配"理应让总消耗更低。cjh 的并行子代理正是按任务隔离上下文——子代理只携带任务相关的局部记忆，目标是**同样的任务、更少的 token**。这与 swarm 的 handoff 串行（对话整体接力、历史持续累积）形成本质区别：后者提升的是吞吐，前者同时优化成本。
 
-> 📋 **完整功能清单**（持续更新至 v1.6.2）→ [docs/cjh功能清单.md](docs/cjh功能清单.md) —— Agent 主循环 / 15 内置工具 / 10 主题 / 插件系统与信任链 / MCP / 双平台 / 版本历史的完整盘点，随版本持续更新。
+> 📋 **完整功能清单**（持续更新至 v1.6.4）→ [docs/cjh功能清单.md](docs/cjh功能清单.md) —— Agent 主循环 / 15 内置工具 / 10 主题 / 插件系统与信任链 / MCP / 双平台 / 版本历史的完整盘点，随版本持续更新。
 
 ## 🌟 为什么是 cjh
 
@@ -594,6 +594,9 @@ cjh 内置 MCP 客户端，支持 stdio 传输 + JSON-RPC 2.0。配置 `mcp_serv
 
 | 版本 | 主要功能 |
 |---|---|
+| **v1.6.4** | 压缩提示收敛到状态栏（Compacting…，聊天流不再打扰）；bash 工具单次调用 timeout 参数（长命令不再卡回合）；管道命令非会话执行修复 |
+| **v1.6.3** | ShellProvider 分层探测（Git 装在非 C 盘时 bash 工具失效修复）|
+| **v1.6.2** | WS 帧超限防护（error 帧 + capabilities 公告 max_frame_bytes）；Windows 技能工具改用 ShellProvider；产物 strip（38.4MB→13.4MB）|
 | **v1.6.1** | 默认系统提示词补 todo_write 任务列表规范（修 Tasks 面板不弹出）；Windows 产物 strip（38.4MB→13.4MB）；双平台二进制包重打（SDK 1.2.0）；release 附件发布 |
 | **v1.6.0** | **并行子代理阶段 C 全量落地（S1-S8）**：task 派发 explore/worker + DAG 资源依赖调度 + Agents 面板可观测（Ctrl+G 焦点/转录落盘）+ 四键边界管控 + 审批队列化 + 路由策略（/parallel）；实测修复系列：限流退避重试（可中断）/流式 usage 接线/父回合失败显式提示/错峰派发/面板左右分栏（overlay 按列拼接）/歧义宽度 1 列；SDK 1.2.0 迁移 + setup_paths.sh；README/官网双语同步 |
 | **v1.5.3** | **issue #6 修复：`POST /api/settings` 的 `apiKey` 落盘**。此前该接口只把 Key 写进内存（`saveAll()` 从不写 `api_key`，加载侧 `loadAuth()` 只读 `auth.json`），改完 `baseUrl` / `model` 立即生效、Key 却重启即丢，而响应同样回 `{"ok":true}`；`/provider` 改 Key 走 `saveApiKey()` 写 `auth.json` 是持久的，两条路行为不一致且调用方无从分辨。修复沿用「凭据只进 `auth.json`」分工：新增 `setApiKeyPendingPersist()` 打脏标记，`saveAll()` 写完 `settings.json` 后按标记落 `auth.json`（**不无条件写**——Key 也可能来自 `OPENAI_API_KEY` 等环境变量，无条件落盘等于把 env 凭据泄漏到磁盘）；响应补 `note`「API Key 已写入 auth.json，重启后仍生效」，判定条件与写入条件严格一致。新增 `ApiKeyPersistTest` 3 例（落盘 / 重启读回 / 非脏 Key 不落盘），并给 `CjhConfig` 加 `init(dir:)` 重载以便测试隔离配置目录 |
