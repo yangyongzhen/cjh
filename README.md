@@ -271,6 +271,10 @@ The screenshot above is the cjh GUI client built with **cj-tauri** (a Tauri-like
 - **Verified integrations**: cj-tauri `examples/ai-chat` (an **AI client**; 33KB host code you can copy directly), **cjnote notebook app**, and lingqu (introduced in the cj-tauri repo)
 - **Integration guide**: [docs/集成指南.md](docs/集成指南.md) — protocol frame order, field-tested pitfalls, binary distribution checklist
 
+![cjh embedded as the AI brain (Lingqu migration workbench · AI assistant panel)](docs/imgs/cjh_brain.png)
+
+*A real case: the desktop app "Lingqu migration workbench" embeds cjh over WS as its AI brain — the assistant panel on the right shows the agent calling tools (env checks), reasoning over context and composing replies, all running locally inside the host.*
+
 ### LLM Provider Layer
 
 | Provider | Protocol | Notes |

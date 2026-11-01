@@ -16,12 +16,12 @@
     'nav.download': '下载',
     'nav.ecosystem': '生态',
     'nav.docs': '文档',
-    'nav.cta': '下载 v1.6.2',
+    'nav.cta': '下载 v1.6.3',
 
     'hero.title': '用仓颉语言<br><span class="grad">从零实现的终端编码代理</span>',
     'hero.lede':
       '说一句话，Agent 自己规划、调工具、读结果、迭代到完成；全过程在 TUI 里实时可见，也能用内置 Web 界面远程驱动。<strong>单二进制零依赖</strong> —— 一个文件就是一个 agent。',
-    'hero.download': '下载 v1.6.2',
+    'hero.download': '下载 v1.6.3',
     'hero.start': '30 秒上手',
     'hero.repo': 'AtomGit 仓库 →',
 
@@ -76,6 +76,8 @@
       '<strong>TUI</strong>：彩色 logo + 对话 / 帮助视图 + 可滚动输出区（Markdown、流式增量、工具调用提示）+ 状态栏 + 输入框',
     shot3:
       '<strong>Web</strong>：内置 HTTP Server + WebSocket 流式对话，浏览器远程驱动同一个 Agent',
+    shot4:
+      '<strong>内嵌集成</strong>：真实桌面应用「灵渠迁移台」通过 WS 把 cjh 接成 AI 大脑——工具调用与流式回复，全程本地',
 
     'start.h': '30 秒上手',
     'start.p': '先不花钱跑起来：Mock 模式不联网、不用 API Key，全链路照样走一遍。',
@@ -86,7 +88,7 @@
     'start.note':
       '想从源码构建？看 <a href="https://atomgit.com/qq8864/cjh/blob/main/README.md" target="_blank" rel="noopener">README</a>：仓颉 SDK 1.0.5+，<code>cjpm build</code> 出静态单文件，<code>./scripts/test.sh</code> 跑全量单测。',
 
-    'dl.h': '下载 v1.6.2',
+    'dl.h': '下载 v1.6.3',
     'dl.p':
       'Linux 与 Windows 预编译包，直接取用。<a href="https://atomgit.com/qq8864/cjh/releases" target="_blank" rel="noopener">全部发布记录 →</a>',
     'dl1.desc': '静态单文件，<code>chmod +x</code> 即可运行。需 glibc ≥ 2.34。',
@@ -139,7 +141,7 @@
 
     'footer.tag': '仓颉语言实现的 Coding Agent Harness',
     'footer.note':
-      'v1.6.2 · 本站为纯静态页面（无外部依赖），源码见仓库 <code>site/</code> · QQ 技术交流群 <strong>92381027</strong> · 开源许可 <a href="https://atomgit.com/qq8864/cjh/blob/main/LICENSE" target="_blank" rel="noopener">MIT</a> · <a href="https://atomgit.com/qq8864/cjh" target="_blank" rel="noopener">AtomGit 仓库</a>',
+      'v1.6.3 · 本站为纯静态页面（无外部依赖），源码见仓库 <code>site/</code> · QQ 技术交流群 <strong>92381027</strong> · 开源许可 <a href="https://atomgit.com/qq8864/cjh/blob/main/LICENSE" target="_blank" rel="noopener">MIT</a> · <a href="https://atomgit.com/qq8864/cjh" target="_blank" rel="noopener">AtomGit 仓库</a>',
   };
 
   const nodes = Array.from(document.querySelectorAll('[data-i18n]'));
