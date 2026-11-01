@@ -273,6 +273,10 @@ coding agent 的执行效率直接决定用户等待时间。cjh 从三个维度
 - **已验证的集成实现**：cj-tauri `examples/ai-chat`（**AI 客户端**，托管代码 33KB 可直接抄）、**cjnote 笔记本应用**、lingqu 三个应用（介绍见 cj-tauri 仓）
 - **对接文档**：[docs/集成指南.md](docs/集成指南.md)——协议帧序、实测坑、二进制分发清单全覆盖
 
+![cjh 嵌入应用作为 AI 大脑（灵渠迁移台 · AI 助手面板）](docs/imgs/cjh_brain.png)
+
+*真实案例：桌面应用「灵渠迁移台」通过 WS 内嵌 cjh 作 AI 大脑——右侧 AI 助手面板里，agent 自动调工具（环境体检）、理解上下文并回复合成，全程运行在宿主本地。*
+
 ### LLM Provider 层
 
 | Provider | 协议 | 说明 |
