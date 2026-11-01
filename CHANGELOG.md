@@ -6,6 +6,131 @@ cjh 版本变更记录。依据 git tag 史 + 提交史整理；版本号规则�
 
 ## [Unreleased]
 
+### 修复（WS 断开不再"无条件打断本轮"：加 `web.keep_running_on_disconnect`）
+
+上一轮给 WS 写失败加了容错（`WsSendGuard`），但端到端复跑发现**还有一层**：
+cjh 的断连处理本身就会打断 agent 回合 ——
+
+```
+[2026-10-31T23:54:12] [WARN] Agent.interrupt 已请求：interruptFlag=true + abort() 已调用
+[2026-10-31T23:56:21] [WARN] WebChannel 发送失败，连接判定为断开，后续帧跳过（guard 生效）
+[2026-10-31T23:56:21] [WARN] Agent.run 被用户中断（24 轮后）
+```
+
+触发点 `gateway/channel.cj` 的 `interruptSession()`（WS 断连时调用，原注释：
+"连接已断：本轮按 cancelled 收尾（不是故障，是用户那头没了）"）。
+对交互式使用这是合理的；对**无人值守的长任务**是灾难：灵渠迁移台实测 WebView 只重连一次，
+整轮 AI 迁移（40 次工具调用、已经把交叉编译跑到 `exitCode=0`）当场作废。
+
+- `settings.json` 新增 `web.keep_running_on_disconnect`（默认 `false`，**保持老行为**）：
+  打开后断开只记一条日志，本轮**继续跑完**、结果落会话文件，客户端重连靠
+  `history_messages` 补看；待审批的请求仍然立刻按拒绝收场（避免空等到超时）。
+- 新增纯函数 `disconnectAction(running, keepRunning)` → `none` / `keep` / `cancel`，
+  测试 `src/tests/disconnect_policy_test.cj`（3 例：空闲不动 / 默认打断 / opted-in 不打断）。
+- `cjcfg` 的 `CjhConfig` 增加 `webKeepRunningOnDisconnect`，`web` 段解析与序列化同步。
+
+**给调用方的建议**：驱动长任务（迁移/批处理）时把它设为 `true`；纯交互式前端保持默认。
+
+**实机验证**（灵渠迁移台 0.39.7，`~/.cjh/settings.json` 置 `web.keep_running_on_disconnect=true`）：
+
+```
+[00:08:53] 客户端断开，本轮继续执行（web.keep_running_on_disconnect=true）
+[00:11:01] build 落档 exitCode=0
+[00:13:03] Agent.run 正常结束: 41 rounds, 49 tools, 328028ms
+页面侧：wsReconnects=13（断连 13 次）  回合照常跑完
+```
+
+对照：上一轮没有这个开关，同样的重连下 `Agent.run 被用户中断（24 轮后）`，整轮作废。
+
+### 修复（WS 写失败不再打死整轮 run）
+
+灵渠迁移台 0.39.7 端到端实测（`m3u8dl-tauri` 全自动迁移，Windows + Git Bash）：
+WebView 侧断开并重连两次后，cjh 仍往**旧连接**写帧，抛出
+
+```
+23:18:32 [ERROR] Agent.run 顶层异常: SocketException: Failed to write data 10053 …
+     at web_channel.cj:142（WS 写） ← agent/loop.cj:723
+```
+
+后果不是"少收几帧"：**整轮 agent run 当场结束**，正在跑的 build 工具的 `tool_result`
+永久丢失，页面永远停在 `tool_start:24 / tool_result:23`，落档监管随后误报"AI 在绕圈"。
+一次网络抖动就把整轮迁移打水漂。
+
+- `WebChannel.sendWs` 现在自己吃掉写异常：记一次日志 + 把连接判死，后续帧直接跳过，
+  **不再抛穿调用栈**；agent 照常把这一轮跑完（结果仍落会话文件与 `.lingqu/` 落档），
+  客户端重连后靠 `history_messages` 补看。
+- 新增 `src/web/ws_send_guard.cj`（`WsSendGuard`，纯状态机，可单测）：
+  `allowsSend` / `onSent` / `onFailed`（**只有第一次失败回报 true**，据此只打一条日志，
+  不刷屏）/ `summary`（`ws sent=N failed=M dead=… err=…`，排障一眼可用）。
+- 测试 `src/tests/ws_send_guard_test.cj`：初始可写、失败后跳过、重复失败只上报一次、
+  摘要带计数、无失败时不带 `err=`。socket 本身的行为不造假（按 AGENTS 门禁第 5 条，
+  网络/进程行为以实机为准）。
+
+### 修复（heredoc 回归持久会话 + 会话 shell 补 PATH）
+
+**1. heredoc 不必再分流。** 0.39.4 曾把它判成"会话装不下"而分流到非会话路径
+（`bash -c` + base64），代价是不共享 cwd/env。真因是包装把收尾 `}` 与 heredoc 终止符
+挤在同一行（`… EOF; } 2>&1; echo …`），终止符不独占一行 → bash 继续从 stdin 读正文 →
+标记永不出现 → 卡到超时。把收尾 `}` 挪到**独占一行**（`{ <cmd>\n} 2>&1; …`）后，
+heredoc 在会话里就能正常跑（探针：同一条 heredoc，旧包装卡住、新包装输出齐全），
+`needsFreshShell` 整段删除。
+
+- 回归用例 `BashHeredocInSessionTest`：① heredoc 在会话里跑通（旧包装实测 5.1 s 超时 FAIL）；
+  ② heredoc 里的 `$(pwd)` 读到的是**会话 cwd**（旧分流读到 cjh 进程 cwd，FAIL）。
+- 非会话路径（`BashTool(secs, useSession: false)`）保留：语义是 stderr 分离 + 不共享会话状态，
+  由显式构造使用，不再当"某种命令的逃生口"。
+- 已知残留：命令以续行 `\` 结尾时，收尾的 `}` 会被拼进续行（极端罕见）。
+
+**2. 会话 shell 的 PATH 补齐**（新文件 `src/tools/shell_path.cj` + `src/tests/shell_path_test.cj`）。
+cjh 用**绝对路径**找到 Git Bash，但那个 bash 的 `/usr/bin` 未必在继承来的 PATH 上 ——
+此时 agent 跑 `cat`/`sed`/`grep` 全是 `command not found`（退出码 127），
+看起来像"命令写错了"，其实是 shell 环境缺件。实测现场（隔离测试暴露）：
+
+```
+会话内 PATH = …/cangjie-stdx/…:…/Cangjie/bin:…   ← 一个 Git/MSYS 目录都没有
+/usr/bin/bash: line 3: cat: command not found
+```
+
+修法：命令前追加一次（幂等，`__CJH_PATH_FIXED` 守位）`<shell 目录>`、
+`<shell 上级>/usr/bin`、`<shell 上级>/mingw64/bin`；**追加不覆盖**，不改变用户已装同名命令的
+优先级；非会话路径同样补。回归用例 `testSessionShellHasCoreutilsOnPath`
+（`command -v cat` / `command -v grep`，`command` 本身是内建，所以不依赖 coreutils）。
+
+实测：Windows + Git Bash 下 `export PATH="/c/Windows/system32:/c/Windows"` →
+`command -v cat` MISSING；补丁后 → `/D/Program Files/Git/usr/bin/cat`（GNU coreutils 8.32）。
+
+### 修复（bash 会话完成判据：标记走 fd 3 + 修正分流误判）
+
+灵渠迁移台 0.39.5 全自动迁移实测：agent 跑 `main.exe build --path . 2>&1 | tail -50`，
+命令 **27 秒就跑完**、落档也写了，但 **tool_done 永远不来**，回合挂到超时。
+
+- **根因（两族，探针实测区分）**
+  1. **标记被命令改道吞掉**：会话靠 stdout 上的标记行判结束
+     （`{ cmd; } 2>&1; echo CODE; echo marker`）。命令若把 shell 的 fd1 永久改掉
+     （`{ exec 1>/dev/null; echo hi; }`），CODE 与 marker 会一起被带走 → 读线程永远等不到。
+     实测该形态下 stdout 只剩 `hi`，CODE/marker 全在目标文件里。
+  2. **右端等 EOF、左端后代握着写端**：`cmd | tail` 的 `tail` 要等 stdin EOF 才输出，
+     命令留下的后代进程握着同一个写端就不退（实测：6 秒的 `sleep` 让 `tail` 多等 6 秒）→
+     `}` 不返回 → 排在后面的 marker 永不到来。这一族**与走会话还是走新进程无关**，分流治不了。
+- **修 1（fd 3）**：退出码与标记改写到**独立 fd 3**
+  （`exec 3>&1; { cmd; } 2>&1; echo CODE 1>&3; echo marker 1>&3; exec 1>&3`），
+  命令怎么折腾 fd1 都影响不到结束信号；命令之后再把 fd1 复位回管道，
+  避免"一条命令把会话输出永久改道"污染后续所有命令。回归用例 `BashMarkerFdTest`
+  （`{ exec 1>/dev/null; echo hi; }`，老包装必红；Windows+Git Bash 与 Linux 均可跑）。
+- **修 2（回退错误分流 + 口径）**：0.39.5 曾把"含 `|` 或 `>`"也判为需走非会话路径。
+  实测证明 marker 本来就在管道外面、吞不掉（`> file` 更是 0s 返回），
+  该分流**没有收益、只白丢 cwd/env**，已回退为**仅 heredoc（`<<`）**分流。
+  真正的治法写进工具描述与超时提示：长命令用 `<cmd> > build.log 2>&1` 再 `read_file` 看日志，
+  不要 `| tail`。
+- **超时当场存证**：新增 `src/tools/shell_diag.cj`（`procSnapshotOf` / `clipProcSnapshot`，含单测），
+  在杀会话**之前**抓一份进程快照（去 ps 表头、逐行裁长、15 行 / 900 字符封顶）塞进超时 ToolResult。
+  它会随 tool_done 进灵渠的 `<工程>/.lingqu/agent/trace.jsonl`，下次不必靠推理猜"谁握着管道"。
+- **PowerShell 非会话路径不再静默丢命令**：历史实现算了 base64 却没用，`effective` 被换成
+  `cmd /c timeout /t N & taskkill & echo __CJH_TIMEOUT__`，命令本体被丢掉、调用方只能"静默等到超时"。
+  现改为明确失败并给出改法（装 Git Bash / 去掉 heredoc）。
+- **未验证**：Linux 侧门禁（`scripts/test.sh`）与 PowerShell 模式下的快照采集本机无法执行；
+  fd 3 与分流回归已在 Windows + Git Bash 跑通。
+
 ### 破坏性变更：工具链迁移到 Cangjie 1.2.0
 
 - **目标 SDK：Cangjie 1.0.5 + stdx 1.0.5.1 → Cangjie 1.2.0 + stdx 1.2.0.1**。7 个 `cjpm.toml` 的 `cjc-version` 全部改为 `1.2.0`；代码已实质依赖 1.2.0 的 stdx 路径，**Linux 开发机/CI 必须同步升级 SDK 与 stdx**（`cjpm.toml` 的 Linux target 段 `path-option` 仍指向 `cangjie-stdx-linux-x64-1.0.5.1`，升级时一并改）。

@@ -142,6 +142,19 @@ public class CjhConfig {
     public var webPort: UInt16 = 8765
     // Web 服务器绑定地址（默认 127.0.0.1 仅本机访问；0.0.0.0 局域网访问）
     public var webBindAddr: String = "127.0.0.1"
+    /**
+     * WS 断开时是否**保持本轮继续跑**（`settings.json` 的 `web.keep_running_on_disconnect`）
+     *
+     * 默认 false = 老行为：连接一断就把本轮按 cancelled 收尾并打断 agent
+     * （交互式场景合理——用户那头没了，别留孤儿回合继续烧 token）。
+     *
+     * 但对**无人值守的长任务**这是灾难级的：灵渠迁移台 0.39.7 端到端实测，
+     * WebView 只重连了一次，整轮 AI 迁移就被打断（`Agent.interrupt` 来自
+     * `gateway/channel.cj` 的 disconnect 处理），40 次工具调用的活全废。
+     * 打开这个开关后：断开只记一条日志，本轮跑完、结果落会话文件，
+     * 客户端重连靠 `history_messages` 补看。
+     */
+    public var webKeepRunningOnDisconnect: Bool = false
     // Web 服务器鉴权 token（空=不鉴权；远程访问强烈建议设置）
     public var webAuthToken: String = ""
     // HTTP 请求体最大字节数（防大请求 OOM）
@@ -493,6 +506,7 @@ public class CjhConfig {
         // web 配置
         root.put("web_port", JsonInt(Int64(this.webPort)))
         root.put("web_bind_addr", JsonString(this.webBindAddr))
+        root.put("web_keep_running_on_disconnect", JsonBool(this.webKeepRunningOnDisconnect))
         root.put("web_auth_token", JsonString(this.webAuthToken))
         // web search
         root.put("web_search_enabled", JsonBool(this.webSearchEnabled))
@@ -891,6 +905,15 @@ public class CjhConfig {
                                     case Some(b) =>
                                         match (b.kind()) {
                                             case JsonKind.JsString => this.webBindAddr = b.asString().getValue()
+                                            case _ => ()
+                                        }
+                                    case _ => ()
+                                }
+                                // keep_running_on_disconnect（0.39.8）
+                                match (webObj.get("keep_running_on_disconnect")) {
+                                    case Some(k) =>
+                                        match (k.kind()) {
+                                            case JsonKind.JsBool => this.webKeepRunningOnDisconnect = k.asBool().getValue()
                                             case _ => ()
                                         }
                                     case _ => ()

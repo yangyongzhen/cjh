@@ -50,7 +50,23 @@ public class BashSession {
             // PowerShell 不支持 { cmd; } 语法——用原生命令拼接替代
             let full: String
             if (this.shell.isBash) {
-                full = "{ " + cmd + "; } 2>&1; echo \"__CJH_CODE_$?__\"; echo " + marker + "\n"
+                // 两点约定，别改坏：
+                // 1) 收尾的 `}` 必须**独占一行**（0.39.7）。旧写法 `{ <cmd>; } 2>&1` 把 `}` 和
+                //    heredoc 终止符挤在同一行，终止符不独占一行 → bash 继续从 stdin 读正文，
+                //    标记永不出现 → 卡到超时。探针实证：`{ … \nEOF; } 2>&1; echo MARKER` 卡住，
+                //    改成 `… \nEOF\n} 2>&1; echo MARKER` 后正常。这也是 heredoc 能留在会话里的原因
+                //    （此前它被分流到非会话路径，代价是不共享 cwd/env）。
+                // 2) 结束标记与退出码写**独立 fd 3**（0.39.6）：命令若把 shell 的 fd1 永久改道
+                //    （`exec 1>file`、`{ exec 1>/dev/null; …; }`），写 fd1 的标记会被一起带走。
+                //    每条命令前重新 `exec 3>&1`（幂等），命令之后再把 fd1 复位回管道，
+                //    免得"一条命令把会话输出永久改道"污染后面所有命令。
+                // 已知残留：命令若显式 `exec 3>&-` / `exec 3>file`，标记仍会丢（少见，由超时 +
+                // 现场快照兜底）；命令若以续行 `\` 结尾，收尾的 `}` 会被拼进续行（极端罕见）。
+                // 3) 命令前先补一次 PATH（shellPathFix，幂等）：cjh 用绝对路径找 bash，
+                //    但它的 /usr/bin 未必在继承的 PATH 上，缺了连 `cat` 都是 127。
+                full = shellPathFix(this.shell.shellPath, true) +
+                    "exec 3>&1; { " + cmd + "\n} 2>&1; echo \"__CJH_CODE_$?__\" 1>&3; echo " +
+                    marker + " 1>&3; exec 1>&3\n"
             } else {
                 full = cmd + " 2>&1; echo \"__CJH_CODE_$LASTEXITCODE__\"; echo " + marker + "\n"
             }
@@ -88,9 +104,18 @@ public class BashSession {
                 sleep(Duration.millisecond * 50)
             }
             if (!done) {
+                // 超时：**先存证再杀会话**。典型现场是"命令早就跑完了、标记永远不来"
+                // （右端 `| tail` 等 stdin EOF，左端命令留下的后代握着写端），
+                // 一 killSession 进程树就没了，事后只能靠猜。快照随 ToolResult 回到模型，
+                // 同时被灵渠记进 <工程>/.lingqu/agent/trace.jsonl。
+                let snap = procSnapshotOf(this.shell)
                 // 超时：杀会话（命令可能挂死），读线程随 EOF 结束
                 this.killSession()
-                return (-1, "⚠ 命令超时（${timeoutSecs}s 未完成，已终止会话）")
+                var msg = "⚠ 命令超时（${timeoutSecs}s 未完成，已终止会话）"
+                if (snap.size > 0) {
+                    msg = msg + "\n" + snap
+                }
+                return (-1, msg)
             }
             // 完成：取输出；EOF 提前（如 exit N，未遇到 marker）→ wait() 拿退出码
             state.lock.lock()
