@@ -268,9 +268,11 @@ coding agent 的执行效率直接决定用户等待时间。cjh 从三个维度
 
 ### 内嵌集成（进程外 web 模式）
 
+得益于 cjh 的小巧（单文件 13–18MB、零运行时依赖），内嵌集成非常轻量——把一个完整的 Agent 变成宿主应用里的"本地大脑"，做出各种智能应用。
+
 - **一条命令变服务**：`cjh web --port 8765 --token xxx`，REST + WebSocket 双通道，宿主应用无需理解仓颉
 - **崩溃隔离 + 独立升级**：agent 崩溃不拖垮宿主应用；升级 cjh 无需重编宿主
-- **已验证的集成实现**：cj-tauri `examples/ai-chat`（**AI 客户端**，托管代码 33KB 可直接抄）、**cjnote 笔记本应用**、lingqu 三个应用（介绍见 cj-tauri 仓）
+- **已验证的集成实现**：[ai-chat](https://atomgit.com/qq8864/cj-tauri/tree/main/examples/ai-chat)（**AI 客户端**，33KB 托管代码可直接抄）、[cjnote](https://atomgit.com/qq8864/cj-tauri)（**笔记本应用**）、lingqu（灵渠迁移台）——均出自 [cj-tauri 仓](https://atomgit.com/qq8864/cj-tauri)
 - **对接文档**：[docs/集成指南.md](docs/集成指南.md)——协议帧序、实测坑、二进制分发清单全覆盖
 
 ![cjh 嵌入应用作为 AI 大脑（灵渠迁移台 · AI 助手面板）](docs/imgs/cjh_brain.png)

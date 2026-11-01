@@ -266,9 +266,11 @@ The screenshot above is the cjh GUI client built with **cj-tauri** (a Tauri-like
 
 ### Embedded Integration (out-of-process web mode)
 
+Thanks to cjh's tiny footprint (a single 13–18MB file, zero runtime dependencies), embedding is effortless — drop a full agent into your host app as a "local brain" and build all kinds of smart applications.
+
 - **One command to a service**: `cjh web --port 8765 --token xxx` — REST + WebSocket channels; the host app needs zero Cangjie knowledge
 - **Crash isolation + independent upgrades**: an agent crash never takes the host down; upgrade cjh without recompiling the host
-- **Verified integrations**: cj-tauri `examples/ai-chat` (an **AI client**; 33KB host code you can copy directly), **cjnote notebook app**, and lingqu (introduced in the cj-tauri repo)
+- **Verified integrations**: [ai-chat](https://atomgit.com/qq8864/cj-tauri/tree/main/examples/ai-chat) (an **AI client**; 33KB host code you can copy directly), [cjnote](https://atomgit.com/qq8864/cj-tauri) (a **notebook app**), and lingqu (Lingqu migration workbench) — all from the [cj-tauri repo](https://atomgit.com/qq8864/cj-tauri)
 - **Integration guide**: [docs/集成指南.md](docs/集成指南.md) — protocol frame order, field-tested pitfalls, binary distribution checklist
 
 ![cjh embedded as the AI brain (Lingqu migration workbench · AI assistant panel)](docs/imgs/cjh_brain.png)
