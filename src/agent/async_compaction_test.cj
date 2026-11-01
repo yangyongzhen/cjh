@@ -252,6 +252,34 @@ public class AsyncCompactionTest {
     }
 
     /**
+     * 压缩通知收敛到状态栏回调（用户反馈：聊天流插"会话历史已压缩"提示干扰）：
+     * onCompact 配对触发（true=开始/false=结束，首事件为 true），聊天流 delta
+     * 不再出现压缩提示文本——状态展示收敛到状态栏（Compacting…）。
+     */
+    @TestCase
+    public func testCompactNotifiesStatusNotChat(): Unit {
+        let mainProvider = ScriptedMainProvider(1, 500, 1)
+        let gate = ReleaseGateSummaryProvider(tmpPath("cjh_ac_notify_f5"), false)
+        let tool = NoOpTool(1, tmpPath("cjh_ac_notify_f5"))
+        let agent = acBuildAgent(mainProvider, tool, 3, 5, 5, 50, Some(gate))
+        let deltas = ArrayList<String>()
+        agent.onDelta = { d => deltas.add(d) }
+        let events = ArrayList<Bool>()
+        agent.onCompact = { running => events.add(running) }
+        let s = agent.run("ac 通知")
+        @Assert(s.reply.contains("FINAL-DONE"), true)
+        @Assert(agent.getCompactionMode(), "AsyncApplied")
+        // 配对：首事件 true（spawn 时开始），末事件 false（应用完成）
+        @Assert(events.size >= 2, true)
+        @Assert(events[0], true)
+        @Assert(events[events.size - 1], false)
+        // 聊天流不再出现压缩提示（旧行为：onDelta 插入"[会话历史已...压缩]"）
+        for (d in deltas) {
+            @Assert(d.contains("压缩"), false)
+        }
+    }
+
+    /**
      * 未完成顺延：neverRelease 摘要 provider 阻塞 350ms → run（~0ms）返回时
      * pending 恒未完成（各轮 checkPending tryGet=None → 顺延）。
      * 断言：mode=Async（pending 在）、未换装（无摘要）、主循环未被摘要阻塞。
