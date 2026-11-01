@@ -5,7 +5,7 @@
 **A terminal coding agent built from scratch in Huawei's Cangjie language — one static binary, zero runtime dependencies: one file is one agent.**
 
 [![Website](https://img.shields.io/badge/website-yangyongzhen.github.io%2Fcjh-00868B)](https://yangyongzhen.github.io/cjh/)
-[![Release](https://img.shields.io/badge/release-v1.6.3-00868B)](https://atomgit.com/qq8864/cjh/releases)
+[![Release](https://img.shields.io/badge/release-v1.6.4-00868B)](https://atomgit.com/qq8864/cjh/releases)
 [![AtomGitStars](https://atomgit.com/qq8864/cjh/star/badge.svg)](https://atomgit.com/qq8864/cjh)
 [![Cangjie](https://img.shields.io/badge/language-Cangjie-00868B)](https://cangjie-lang.cn)
 [![Tests](https://img.shields.io/badge/tests-536%20passed-2ea44f)](./scripts/test.sh)
@@ -29,19 +29,19 @@ Say one sentence in the terminal: the agent plans, calls tools, reads results, a
 **Try it without spending a cent** (Mock mode: no network, no API key needed):
 
 ```bash
-curl -LO https://api.atomgit.com/api/v5/repos/qq8864/cjh/releases/v1.6.3/attach_files/cjh-v1.6.3-linux-x64
-chmod +x cjh-v1.6.3-linux-x64
-CJH_MOCK=1 ./cjh-v1.6.3-linux-x64
+curl -LO https://api.atomgit.com/api/v5/repos/qq8864/cjh/releases/v1.6.4/attach_files/cjh-v1.6.4-linux-x64
+chmod +x cjh-v1.6.4-linux-x64
+CJH_MOCK=1 ./cjh-v1.6.4-linux-x64
 ```
 
 **Connect a real model** (any one provider key works):
 
 ```bash
 export DEEPSEEK_API_KEY=sk-xxx     # or OPENAI_API_KEY / DASHSCOPE_API_KEY / CJH_API_KEY
-./cjh-v1.6.3-linux-x64             # TUI by default; --cli for plain text, --mode json for headless
+./cjh-v1.6.4-linux-x64             # TUI by default; --cli for plain text, --mode json for headless
 ```
 
-Windows: grab [`cjh-v1.6.3-windows-x64-selfcontained.zip`](https://api.atomgit.com/api/v5/repos/qq8864/cjh/releases/v1.6.3/attach_files/cjh-v1.6.3-windows-x64-selfcontained.zip) and unzip — keep the exe next to its 4 runtime DLLs. Building from source: see [Quick Start](#-quick-start).
+Windows: grab [`cjh-v1.6.4-windows-x64-selfcontained.zip`](https://api.atomgit.com/api/v5/repos/qq8864/cjh/releases/v1.6.4/attach_files/cjh-v1.6.4-windows-x64-selfcontained.zip) and unzip — keep the exe next to its 4 runtime DLLs. Building from source: see [Quick Start](#-quick-start).
 
 ![cjh session demo (real CLI output, mock mode)](docs/imgs/cjh-demo.gif)
 
@@ -56,7 +56,7 @@ Windows: grab [`cjh-v1.6.3-windows-x64-selfcontained.zip`](https://api.atomgit.c
 | **What** | A terminal coding agent harness written from scratch in Cangjie: agent loop (message state machine + tool-call protocol) + tool system + diff-rendered TUI + remote web UI + plugin trust chain |
 | **Who** | ① people who want AI to edit code in the terminal without installing a Node/Python toolchain; ② Cangjie learners looking for a runnable, readable AI-application reference; ③ regulated / domestic-stack teams that require "no foreign runtime dependencies" |
 | **Why** | One static binary (Linux 17.1 MB / Windows exe 14.1 MB) with zero runtime dependencies; token efficiency and execution speed are measured, not claimed; plugins carry SHA256 checksums + SM2 signatures |
-| **Status** | v1.6.3, 1150 unit tests green (plus 203 across the 6 publishable libraries), Linux / Windows builds published; parallel multi-agent orchestration shipped (task dispatch + Agents panel + boundary keys) |
+| **Status** | v1.6.4, 600 unit tests green (plus 208 across the 6 publishable libraries), Linux / Windows builds published; parallel multi-agent orchestration shipped (task dispatch + Agents panel + boundary keys) |
 
 ---
 
@@ -592,6 +592,9 @@ cjh has a built-in MCP client supporting stdio transport + JSON-RPC 2.0. After c
 
 | Version | Main Features |
 |---|---|
+| **v1.6.4** | Compaction notices moved to the status bar (Compacting… — no more chat interruptions); bash tool per-call timeout (long commands no longer stall a turn); piped-command non-session fix |
+| **v1.6.3** | ShellProvider layered probing (fixes bash tool dying when Git is installed outside C:) |
+| **v1.6.2** | WS frame-size guard (error frame + capabilities announcement); Windows skill tools switched to ShellProvider; binaries stripped (38.4MB→13.4MB) |
 | **v1.6.1** | Default system prompt gains a `todo_write` task-list section (fixes the Tasks panel rarely appearing); Windows binaries stripped (38.4MB→13.4MB); dual-platform packages rebuilt (SDK 1.2.0); release assets published |
 | **v1.6.0** | **Parallel subagents Phase C fully landed (S1-S8)**: `task` dispatching explore/worker + DAG dependency scheduling + Agents panel observability (Ctrl+G focus / transcripts) + four boundary keys + queued approvals + routing policy (`/parallel`); field-tested fixes: throttle backoff retry (interruptible) / streaming usage wiring / explicit parent-turn failure lines / staggered dispatch / side-by-side Tasks+Agents panels (overlay column splicing) / ambiguous-width 1-col; SDK 1.2.0 migration + `setup_paths.sh`; bilingual README/site sync |
 | **v1.5.3** | **issue #6 fix: `POST /api/settings` now persists `apiKey`**. The endpoint used to write the key into memory only (`saveAll()` never wrote `api_key`, and the loader's `loadAuth()` reads `auth.json` alone), so a changed `baseUrl` / `model` took effect immediately while the key vanished on restart — yet the response still said `{"ok":true}`. The `/provider` path, which calls `saveApiKey()` to write `auth.json`, *was* persistent, so the two paths disagreed and a caller had no way to tell them apart. The fix keeps the "credentials live only in `auth.json`" split: a new `setApiKeyPendingPersist()` marks the key dirty and `saveAll()` flushes it to `auth.json` **after** writing `settings.json` — deliberately not unconditional, because keys may also come from `OPENAI_API_KEY` and friends and unconditional persistence would leak env credentials to disk. The response gains a `note` ("API key written to auth.json; still in effect after restart") whose condition matches the write exactly. Adds 3 `ApiKeyPersistTest` cases (persist / read back after restart / non-dirty key not persisted) plus a `CjhConfig.init(dir:)` overload so tests can isolate the config directory |
