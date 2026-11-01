@@ -58,6 +58,17 @@
 - compaction：token 触发用真实 `usage.promptTokens`（`lastPromptTokens`），非字符估算
 - LLM 生成 write_file 超长 content 时 tool_call JSON 会被 max_tokens 截断：`repairTruncatedJson` 必须**优先处理"字符串被截断"**（inString==true）——补 `"` 闭合被截断的 content 字符串再补 `}` 闭合 JSON；否则会截断到前一个完整字段、丢弃整个 content
 - `StringBuilder.append(Byte)` 按十进制整数输出——替换/拼接字节必须整段 String 切片，禁止逐字节 append
+- **bash 会话的结束标记要打在命令改不动的地方**：会话靠 stdout 上的标记行判结束，命令一旦把 shell 的 fd1 永久改道（`exec 1>file`、`{ exec 1>/dev/null; …; }`），标记跟着被带走 → 读线程永远等不到 → 挂到超时。**标记与退出码写独立 fd 3**（`exec 3>&1; { cmd; } 2>&1; echo CODE 1>&3; echo marker 1>&3; exec 1>&3`），命令之后再复位 fd1。回归用例 `BashMarkerFdTest`
+- **"命令含 `|` 或 `>` 就换执行路径"是错误判据**（0.39.5 误判，0.39.6 回退）：包装里的 `echo marker` 本来就在管道**外面**，管道/重定向吞不掉它；`> file` 更是立即返回。按它分流只会白丢持久会话的 cwd/env
+- **heredoc 也不需要分流**（0.39.7）：它曾经"必须换路径"只是因为收尾 `}` 与终止符挤在一行（`… EOF; } 2>&1`），终止符不独占一行 → bash 继续读 stdin。**把收尾 `}` 挪到独占一行**即可在会话里正常跑（`{ <cmd>\n} 2>&1; …`），`needsFreshShell` 整段删掉。回归用例 `BashHeredocInSessionTest`（含 `$(pwd)` 读到会话 cwd 的断言）
+- **逃生口要有理由，且只有一条**：非会话路径现在只由显式 `useSession=false` 使用（语义是 stderr 分离、不共享会话状态），不再按命令内容自动触发；"看到某种写法就换路"这类判据每加一条，就多一份丢失上下文的风险
+- **`cmd | tail` 卡死的真因是「右端等 stdin EOF」**：`tail` 要把输入读完才输出，左端命令留下的**后代进程**握着同一个写端就不退（实测 6 秒 sleep 让 tail 多等 6 秒）→ 整条命令不结束。这与会话/新进程无关，**分流治不了**；治法是口径 + 兜底：长命令写 `<cmd> > build.log 2>&1` 再 `read_file` 看日志，并显式传 `timeout`
+- **偶发卡死必须当场存证**：超时/异常处理里先抓进程快照（`procSnapshotOf`，见 `src/tools/shell_diag.cj`）**再**杀会话，快照随 ToolResult 进 trace；否则进程树一没，事后只能靠推理猜"谁握着管道"
+- **会话 shell 的 PATH 要自己补齐**：cjh 用绝对路径找 bash，但 `<git>/usr/bin` 未必在继承来的 PATH 上 —— 缺了 `cat`/`sed`/`grep` 全是 `command not found`（127），看着像模型写错命令，其实环境缺件。`shellPathFix()`（`src/tools/shell_path.cj`）幂等追加、**追加不覆盖**；回归用例 `testSessionShellHasCoreutilsOnPath`
+- **shell 用例尽量只用内建**：`while read` / `echo` / `command -v` / `pwd` 都是内建，用它们测"heredoc 能不能跑"这类行为，才不会被"外部命令是否存在"干扰（实测：`cat` 缺失让 heredoc 用例在 `cjpm test` 下假红，查了一轮才发现是 PATH 问题）
+- **写客户端帧失败绝不能抛穿 agent 循环**：客户端断开后继续写会抛 `SocketException(10053)`，而它的调用方是 agent 的事件回调 —— 异常一路抛到 `Agent.run` 顶层，**整轮 run 当场结束**，正在跑的 `tool_result` 永久丢失（灵渠 0.39.7 实测：页面永远停在 `tool_start:24 / tool_result:23`）。正确做法：`sendWs` 自己吞掉异常、判死连接、后续帧跳过（`WsSendGuard`），让这一轮把活干完，客户端重连后靠 `history_messages` 补看
+- **"客户端断开"与"用户要停"是两件事**：`interruptSession()` 原先在 WS 断连时无条件打断本轮。交互式没事，**无人值守的长任务是灾难**（灵渠实测：页面重连一次，40 次工具调用的迁移当场作废）。现由 `web.keep_running_on_disconnect` 决定（默认 false 保持老行为），开着的调用方断开后本轮继续跑完、结果落会话，重连靠 `history_messages` 补看；待审批请求仍然立刻拒绝收场。判据收在纯函数 `disconnectAction(running, keepRunning)`
+- **诊断分支不能"假装在跑"**：非会话路径的 PowerShell 分支曾算出 base64 却没用、把命令本体丢掉，调用方只看到"静默等到超时"。做不到就明确报错 + 给改法，不要静默降级
 
 ## 交付检查清单
 
