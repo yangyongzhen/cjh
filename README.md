@@ -5,12 +5,15 @@
 **A terminal coding agent built from scratch in Huawei's Cangjie language — one static binary, zero runtime dependencies: one file is one agent.**
 
 [![Website](https://img.shields.io/badge/website-yangyongzhen.github.io%2Fcjh-00868B)](https://yangyongzhen.github.io/cjh/)
+[![CI](https://github.com/yangyongzhen/cjh/actions/workflows/ci.yml/badge.svg)](https://github.com/yangyongzhen/cjh/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/badge/release-v1.6.4-00868B)](https://atomgit.com/qq8864/cjh/releases)
 [![AtomGitStars](https://atomgit.com/qq8864/cjh/star/badge.svg)](https://atomgit.com/qq8864/cjh)
 [![Cangjie](https://img.shields.io/badge/language-Cangjie-00868B)](https://cangjie-lang.cn)
-[![Tests](https://img.shields.io/badge/tests-536%20passed-2ea44f)](./scripts/test.sh)
+[![Tests](https://img.shields.io/badge/tests-600%20passed-2ea44f)](./scripts/test.sh)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-lightgrey)](https://atomgit.com/qq8864/cjh/releases)
 [![License](https://img.shields.io/badge/license-MIT-2ea44f)](./LICENSE)
+
+![cjh demo](docs/imgs/cjh-demo.gif)
 
 Say one sentence in the terminal: the agent plans, calls tools, reads results, and iterates until the task is done — rendered live in the TUI, or driven remotely from the built-in web UI.
 
@@ -25,6 +28,12 @@ Say one sentence in the terminal: the agent plans, calls tools, reads results, a
 **English** | [简体中文](README.zh-CN.md)
 
 ## 30-second start
+
+**One-line install** (Linux; auto-resolves the latest release, installs to `~/.local/bin`):
+
+```bash
+curl -fsSL https://yangyongzhen.github.io/cjh/install.sh | bash
+```
 
 **Try it without spending a cent** (Mock mode: no network, no API key needed):
 
@@ -286,6 +295,8 @@ Thanks to cjh's tiny footprint (a single 13–18MB file, zero runtime dependenci
 | **GLM** | OpenAI compatible | glm-4-flash, Zhipu AI |
 | **Ollama** | OpenAI compatible (no TLS) | Local model, apiKey can be empty |
 | **Anthropic** | Anthropic API | Claude series, supports cache_read_input_tokens |
+
+Works with **any OpenAI-compatible endpoint** — including fully local setups (Ollama, vLLM, llama.cpp server): your code and context never leave the machine.
 | **MCP Server** | MCP protocol (stdio) | Configured via `mcp_servers`, tools auto-registered |
 
 - **SSE streaming parsing**: chunk-by-chunk reading, UTF-8 safe splitting, event frame callback

@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Build & test (linux-x64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Cangjie toolchain (1.2.0 + stdx)
+        uses: Zxilly/setup-cangjie@v3
+        with:
+          channel: sts
+          version: 1.2.0
+          components: stdx
+
+      - name: Locate stdx root
+        id: stdx
+        run: |
+          set -e
+          ROOT="${CANGJIE_STDX_PATH:-}"
+          if [ -z "$ROOT" ] || [ ! -d "$ROOT" ]; then
+            # setup-cangjie may install stdx under the toolchain or ~/.cangjie
+            ROOT=$(find "$HOME" /opt /usr/local "$CANGJIE_HOME" -maxdepth 7 -type d -name "cangjie-stdx-linux-x64-*" 2>/dev/null | head -1 || true)
+          fi
+          echo "stdx root: ${ROOT:-<not found>}"
+          [ -n "$ROOT" ] || { echo "::error::stdx not found on runner"; exit 1; }
+          echo "STDX_ROOT=$ROOT" >> "$GITHUB_ENV"
+
+      - name: Rewrite cjpm paths for this runner
+        run: |
+          set -e
+          SDK="${CANGJIE_HOME:-$(dirname "$(dirname "$(command -v cjc)")")}"
+          echo "SDK root: $SDK"
+          find . -name cjpm.toml -not -path "./target/*" | while read -r f; do
+            sed -i "s|/root/.cangjie/stdx/cangjie-stdx-linux-x64-[0-9.]*/|$STDX_ROOT/|g" "$f"
+            sed -i "s|/opt/cangjie/cangjie[^/\" ]*/|$SDK/|g" "$f"
+          done
+
+      - name: Build (zero code warnings)
+        run: |
+          cjpm build
+          # the 5 known --static driver notices are the only allowed warnings
+          WARN=$(cjpm build 2>&1 | sed -e 's/\x1b\[[0-9;]*m//g' | grep -c 'warning:' || true)
+          [ "$WARN" = "5" ] || { echo "::warning::expected 5 --static notices, got $WARN"; }
+
+      - name: Main package tests (~600 cases)
+        run: ./scripts/test.sh
+
+      - name: Library tests (6 libs)
+        run: ./scripts/test_libs.sh

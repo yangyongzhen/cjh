@@ -5,12 +5,15 @@
 **用华为仓颉语言从零实现的终端编码代理 —— 单二进制零依赖，一个文件就是一个 agent。**
 
 [![Website](https://img.shields.io/badge/website-yangyongzhen.github.io%2Fcjh-00868B)](https://yangyongzhen.github.io/cjh/)
+[![CI](https://github.com/yangyongzhen/cjh/actions/workflows/ci.yml/badge.svg)](https://github.com/yangyongzhen/cjh/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/badge/release-v1.6.4-00868B)](https://atomgit.com/qq8864/cjh/releases)
 [![AtomGitStars](https://atomgit.com/qq8864/cjh/star/badge.svg)](https://atomgit.com/qq8864/cjh)
 [![Cangjie](https://img.shields.io/badge/language-Cangjie-00868B)](https://cangjie-lang.cn)
-[![Tests](https://img.shields.io/badge/tests-536%20passed-2ea44f)](./scripts/test.sh)
+[![Tests](https://img.shields.io/badge/tests-600%20passed-2ea44f)](./scripts/test.sh)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-lightgrey)](https://atomgit.com/qq8864/cjh/releases)
 [![License](https://img.shields.io/badge/license-MIT-2ea44f)](./LICENSE)
+
+![cjh 演示](docs/imgs/cjh-demo.gif)
 
 终端里说一句话，Agent 自己规划、调工具、读结果、迭代到完成；全过程在 TUI 里实时可见，也能用内置 Web 界面远程驱动。
 
@@ -25,6 +28,12 @@
 [English](README.md) | **简体中文**
 
 ## 30 秒上手
+
+**一行安装**（Linux；自动解析最新 release，装到 `~/.local/bin`）：
+
+```bash
+curl -fsSL https://yangyongzhen.github.io/cjh/install.sh | bash
+```
 
 **先不花钱跑起来**（Mock 模式：不联网、不用 API Key）：
 
@@ -288,6 +297,8 @@ coding agent 的执行效率直接决定用户等待时间。cjh 从三个维度
 | **GLM** | OpenAI 兼容 | glm-4-flash，智谱 AI |
 | **Ollama** | OpenAI 兼容（无 TLS） | 本地模型，apiKey 可空 |
 | **Anthropic** | Anthropic API | Claude 系列，支持 cache_read_input_tokens |
+
+支持**任意 OpenAI 兼容端点**——包括纯本地方案（Ollama、vLLM、llama.cpp server）：代码与上下文不出本机。
 | **MCP 服务器** | MCP 协议（stdio） | 通过 `mcp_servers` 配置接入，工具自动注册 |
 
 - **SSE 流式解析**：逐块读取、UTF-8 安全切分、事件帧回调
