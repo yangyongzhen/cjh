@@ -310,6 +310,10 @@ public class Agent {
     public var onApproval: (String, JsonObject, String) -> Bool = { _, _, _ => false }
     // 任务变更回调（TUI Tasks 面板实时刷新）
     public var onTodosChanged: () -> Unit = { => }
+    // Compaction 状态通知：true=后台/同步压缩开始（状态栏显示 Compacting…），
+    // false=结束（应用成功、放弃或回退完成）。聊天流不再插压缩提示（用户反馈干扰），
+    // 状态展示收敛到状态栏
+    public var onCompact: (Bool) -> Unit = { _ => }
     // 子代理调度器（S3：TUI Agents 面板数据源；S4 并发/预算闸门载体）——
     // 由装配层（entries）创建后注入；None = 无调度（测试直连场景）
     public var subagentScheduler: Option<SubagentScheduler> = None
@@ -1043,12 +1047,14 @@ public class Agent {
      */
     public func compact(force: Bool): (Bool, Int64, Int64) {
         let before: Int64 = this.messages.size
+        this.onCompact(true)
         if (force) {
             // 强制压缩：跳过阈值判断，但仍保留 system + 最近 keep 条
             this.doCompact()
         } else {
             this.maybeCompact()
         }
+        this.onCompact(false)
         let after: Int64 = this.messages.size
         return (after < before, before, after)
     }
@@ -1107,7 +1113,6 @@ public class Agent {
         } finally {
             this.compactLock.unlock()
         }
-        this.onDelta("\n\n_[会话历史已手动压缩：${compactEnd - 1} 条早期消息 → 摘要]_")
     }
 
     /**
@@ -1240,7 +1245,7 @@ public class Agent {
         } finally {
             this.compactLock.unlock()
         }
-        this.onDelta("\n\n_[会话历史已自动压缩：${compactEnd - 1} 条早期消息 → 摘要]_")
+
     }
 
     // ==================== P1b：compaction 后台异步化 ====================
@@ -1308,6 +1313,7 @@ public class Agent {
         let snapSummaryMsgs = snapMsgs
         // spawn 摘要任务：读快照生成摘要（失败静默重试一次，返回 ""=失败）
         this.compactTriggeredOnce = true
+        this.onCompact(true)
         this.pendingCompact = Some(spawn {
             let sp = if (this.summaryProvider.isSome()) { this.summaryProvider.getOrThrow() } else { this.provider }
             var result = ""
@@ -1351,6 +1357,7 @@ public class Agent {
             Log.warn("compaction 后台摘要失败，本 run 回退同步压缩")
             this.autoCompactMode = "SyncFallback"
             this.maybeCompact()
+            this.onCompact(false)
             return
         }
         // 成功 → 换装（主线程独占写，锁守护快照/换装互斥）
@@ -1358,6 +1365,7 @@ public class Agent {
         let compactEnd = this.messages.size - keep
         if (compactEnd <= 1) {
             // 当前历史不足（极端：run 期间被清空），丢弃摘要
+            this.onCompact(false)
             return
         }
         this.compactLock.lock()
@@ -1385,7 +1393,9 @@ public class Agent {
             this.compactLock.unlock()
         }
         this.compactAppliedOnce = true
-        this.onDelta("\n\n_[会话历史已后台自动压缩：${compactEnd - 1} 条早期消息 → 摘要]_")
+        // 压缩结束：状态栏恢复（聊天流不再插提示）
+        this.onCompact(false)
+
         Log.info("compaction 后台摘要完成，已换装（${compactEnd} 条 → 摘要）")
     }
 

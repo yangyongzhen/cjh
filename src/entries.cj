@@ -831,6 +831,10 @@ func runTui(sessionId: String): Int64 {
         agent.onTodosChanged = { =>
             tui.updateTasks(agent.getTodos())
         }
+        // 压缩状态：状态栏显示 Compacting…（聊天流不再插压缩提示，结束后恢复默认徽章）
+        agent.onCompact = { running =>
+            tui.setStatus(if (running) { "Compacting…" } else { "" })
+        }
         // 回合总结条：Agent.run 结束后渲染统计
         agent.onRunComplete = { s =>
             let rate = s.cacheHitRate()
