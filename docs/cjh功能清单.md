@@ -1,7 +1,7 @@
 # cjh 功能清单
 
 > 最后更新：2026-10-28
-> 版本：v1.6.4
+> 版本：v1.6.5
 > 性质：cjh 已具备和支持的功能完整列表
 
 ---
@@ -282,6 +282,7 @@
 | v1.6.0 | **并行子代理阶段 C 全量落地（S1-S8）**：task 派发 explore/worker + DAG 资源依赖调度 + Agents 面板可观测（Ctrl+G 焦点/转录）+ 四键边界管控 + 审批队列化 + 路由策略（/parallel）；实测修复系列：限流退避重试（可中断）/流式 usage 接线/父回合失败显式提示/错峰派发/面板左右分栏（overlay 按列拼接）/歧义宽度 1 列；SDK 1.2.0 迁移 + setup_paths.sh；README/官网双语同步 |
 | v1.6.1 | 默认系统提示词补 todo_write 任务列表规范（修 Tasks 面板不弹出）；双平台二进制包重打（SDK 1.2.0）；发布流程补 release 附件 |
 | v1.6.4 | 压缩提示收敛到状态栏（Compacting…）；bash 工具单次调用 timeout；管道命令非会话执行修复 |
+| v1.6.5 | 默认提示词新增 Intellectual honesty 反迎合/证据链节 + 一键安装/CI/贡献指南 |
 | v1.6.3 | ShellProvider 分层探测（Git 装在非 C 盘时 bash 工具失效修复） |
 | v1.6.2 | WS 帧超限防护 + Windows 技能工具改用 ShellProvider + 产物 strip |
 
