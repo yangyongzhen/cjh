@@ -40,6 +40,28 @@ public class DefaultSystemPromptTest {
         cleanDir(dir)
     }
 
+    /**
+     * 反迎合/证据链规范（修"模型迎合用户、无证据宣称完成"问题）。
+     * 锁死 Intellectual honesty 节存在与关键纪律：先质疑后执行、
+     * 无工具证据不得宣称完成、失败如实上报、未验证事项明说。
+     */
+    @TestCase
+    public func testDefaultPromptHasHonestyGuidance(): Unit {
+        let dir = testTmpPath("cjh_ut_default_prompt_honesty")
+        cleanDir(dir)
+        Directory.create(dir)
+        File.writeTo("${dir}/settings.json", "{\"model\": \"m\", \"base_url\": \"https://x/v1\"}".toArray())
+        let cfg = CjhConfig(dir)
+        @Assert(cfg.systemPrompt.contains("## Intellectual honesty"), true)
+        // 先质疑后执行（防迎合式照做）
+        @Assert(cfg.systemPrompt.contains("say so plainly with evidence BEFORE executing"), true)
+        // 完成宣称必须有本会话工具证据（防"测试都过了"嘴瓢）
+        @Assert(cfg.systemPrompt.contains("must come from a command you just ran"), true)
+        // 失败如实上报（防静默绕过）
+        @Assert(cfg.systemPrompt.contains("a silent workaround is worse than an honest error"), true)
+        cleanDir(dir)
+    }
+
     @TestCase
     public func testCustomPromptOverridesDefault(): Unit {
         // 用户显式配置 system_prompt 时不被默认段污染
