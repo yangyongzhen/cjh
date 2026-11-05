@@ -82,6 +82,11 @@ public class CjhConfig {
     public var subagentTimeoutMs: Int64 = 300000  // 子代理墙钟超时（G-A TUI 审批超时同源）
     // S5 路由模式：auto（判定表自主）/ on / off（task 派发物理关闭；运行时 /parallel 切换）
     public var subagentMode: String = "auto"
+    // 后台任务（B-1 bash_start/poll/kill）：槽位满直接拒绝，不排队
+    public var maxBackgroundTasks: Int64 = 8            // 并发后台任务上限
+    public var backgroundTaskTimeoutMs: Int64 = 1800000 // 单任务墙钟上限（30 分钟；0=不限）
+    public var backgroundOutputMaxKb: Int64 = 256       // 单任务输出落盘上限（KB）
+    public var backgroundPollMaxChars: Int64 = 6000     // 单次 poll 交付上限（字节）
     public var systemPrompt: String = ""
     // 采样参数（对齐 pi：/settings 可调）
     public var temperature: Float64 = 0.7
@@ -278,6 +283,10 @@ public class CjhConfig {
   "subagent_token_budget": 200000,
   "subagent_timeout_ms": 300000,
   "subagent_mode": "auto",
+  "max_background_tasks": 8,
+  "background_task_timeout_ms": 1800000,
+  "background_output_max_kb": 256,
+  "background_poll_max_chars": 6000,
   "temperature": 0.7,
   "max_tokens": 16384,
   "system_prompt": "",
@@ -481,6 +490,10 @@ public class CjhConfig {
         root.put("subagent_token_budget", JsonInt(this.subagentTokenBudget))
         root.put("subagent_timeout_ms", JsonInt(this.subagentTimeoutMs))
         root.put("subagent_mode", JsonString(this.subagentMode))
+        root.put("max_background_tasks", JsonInt(this.maxBackgroundTasks))
+        root.put("background_task_timeout_ms", JsonInt(this.backgroundTaskTimeoutMs))
+        root.put("background_output_max_kb", JsonInt(this.backgroundOutputMaxKb))
+        root.put("background_poll_max_chars", JsonInt(this.backgroundPollMaxChars))
         root.put("system_prompt", JsonString(this.systemPrompt))
         root.put("temperature", JsonFloat(this.temperature))
         root.put("max_tokens", JsonInt(this.maxTokens))
@@ -701,6 +714,31 @@ public class CjhConfig {
                     if (let Some(v) <- obj.get("subagent_mode")) {
                         match (v.kind()) {
                             case JsonKind.JsString => this.subagentMode = v.asString().getValue()
+                            case _ => ()
+                        }
+                    }
+                    // 后台任务四键（B-1）：非整数一律忽略，保留默认值
+                    if (let Some(v) <- obj.get("max_background_tasks")) {
+                        match (v.kind()) {
+                            case JsonKind.JsInt => this.maxBackgroundTasks = v.asInt().getValue()
+                            case _ => ()
+                        }
+                    }
+                    if (let Some(v) <- obj.get("background_task_timeout_ms")) {
+                        match (v.kind()) {
+                            case JsonKind.JsInt => this.backgroundTaskTimeoutMs = v.asInt().getValue()
+                            case _ => ()
+                        }
+                    }
+                    if (let Some(v) <- obj.get("background_output_max_kb")) {
+                        match (v.kind()) {
+                            case JsonKind.JsInt => this.backgroundOutputMaxKb = v.asInt().getValue()
+                            case _ => ()
+                        }
+                    }
+                    if (let Some(v) <- obj.get("background_poll_max_chars")) {
+                        match (v.kind()) {
+                            case JsonKind.JsInt => this.backgroundPollMaxChars = v.asInt().getValue()
                             case _ => ()
                         }
                     }

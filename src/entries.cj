@@ -173,6 +173,8 @@ func runWeb(args: Array<String>): Int64 {
     registry.register(EditTool())
     registry.register(AstGrepTool())
     registerWebTools(cjhCfg, registry)
+    // 后台任务三件套（B-1 bash_start/poll/kill）：与 web 工具一样按配置注册
+    registerBackgroundTools(registry, cjhCfg)
     registerKnowledgeTools(cjhCfg, registry)
     loadSkillTools(cjhCfg.skillsDir, registry, cjhCfg.enabledSkills)
     let _ = loadPlugins(cjhCfg.pluginsDir, cjhCfg.configDir, registry, cjhCfg.enabledPlugins, cjhCfg.requireSignature)
@@ -238,6 +240,8 @@ func runCli(sessionId: String): Int64 {
     Theme.apply(cjhCfg.theme)
     // 注册 web_search + web_fetch 工具
     registerWebTools(cjhCfg, registry)
+    // 后台任务三件套（B-1 bash_start/poll/kill）：与 web 工具一样按配置注册
+    registerBackgroundTools(registry, cjhCfg)
     // 注册仓颉知识层检索（语料未安装时自动不注册）
     registerKnowledgeTools(cjhCfg, registry)
     // 注册技能携带的声明式工具（Skill 自定义工具）
@@ -355,6 +359,8 @@ func runCli(sessionId: String): Int64 {
                 println("错误: ${e}")
             }
         }
+        // 收尾回收后台任务：一次性入口退出后子进程不该继续跑
+        shutdownBackgroundTasks()
         println("再见")
         return 0
     } catch (e: Exception) {
@@ -394,6 +400,8 @@ func runJson(prompt: String, sessionId: String): Int64 {
     Theme.apply(cjhCfg.theme)
     // 注册 web_search + web_fetch 工具
     registerWebTools(cjhCfg, registry)
+    // 后台任务三件套（B-1 bash_start/poll/kill）：与 web 工具一样按配置注册
+    registerBackgroundTools(registry, cjhCfg)
     // 注册仓颉知识层检索（语料未安装时自动不注册）
     registerKnowledgeTools(cjhCfg, registry)
     loadSkillTools(cjhCfg.skillsDir, registry, cjhCfg.enabledSkills)
@@ -526,6 +534,8 @@ func runJson(prompt: String, sessionId: String): Int64 {
             tcArr.add(t)
         }
         out.put("tool_calls", JsonArray(tcArr))
+        // 收尾回收后台任务（无头模式同样不该留下孤儿进程），再打印结果
+        shutdownBackgroundTasks()
         println(out.toJsonString())
         return 0
     } catch (e: Exception) {
@@ -589,6 +599,8 @@ func runTui(sessionId: String): Int64 {
     mark("theme applied")
     // 注册 web_search + web_fetch 工具
     registerWebTools(cjhCfg, registry)
+    // 后台任务三件套（B-1 bash_start/poll/kill）：与 web 工具一样按配置注册
+    registerBackgroundTools(registry, cjhCfg)
     // 注册仓颉知识层检索（语料未安装时自动不注册）
     registerKnowledgeTools(cjhCfg, registry)
     // 注册技能携带的声明式工具（Skill 自定义工具）
@@ -1047,6 +1059,13 @@ func runTui(sessionId: String): Int64 {
         } catch (e: Exception) {
             ()
         }
+        // 后台任务回收（B-1）：bash_start 起的进程独立于会话 shell，
+        // 不走这一步就是"父进程已退、命令还在跑"的孤儿进程
+        try {
+            shutdownBackgroundTasks()
+        } catch (e: Exception) {
+            ()
+        }
         try {
             Log.shutdown()
         } catch (e: Exception) {
@@ -1132,10 +1151,50 @@ func listSessions(): Int64 {
  *
  * 工具实例与父共享（工具层每调用独立状态，无静态踩踏，见 GlobCallState 等）。
  */
+/**
+ * 后台任务表：进程内单例（一次只有一个入口在跑，故各入口共用一份）。
+ *
+ * 放静态变量而非逐入口传递的理由：进程退出前要统一 killAll 回收子进程，
+ * 单例让 main() 的收尾一处就能兜住——漏掉一处就是孤儿进程。
+ */
+var bgTaskRegistry: ?BackgroundTaskRegistry = None
+
+/**
+ * 注册 bash 后台三件套（B-1）：bash_start / bash_poll / bash_kill。
+ *
+ * 三件套必须共享同一个 BackgroundTaskRegistry——槽位、字节游标、任务 ID 全在它里面，
+ * 拆成多个实例会让 bash_poll 找不到 bash_start 起的任务。
+ */
+func registerBackgroundTools(registry: ToolRegistry, cfg: CjhConfig): Unit {
+    let bg = BackgroundTaskRegistry(BgTaskConfig(cfg.maxBackgroundTasks,
+        cfg.backgroundTaskTimeoutMs, cfg.backgroundOutputMaxKb, cfg.backgroundPollMaxChars))
+    bgTaskRegistry = Some(bg)
+    registry.register(BashStartTool(bg))
+    registry.register(BashPollTool(bg))
+    registry.register(BashKillTool(bg))
+}
+
+/** 进程退出前回收后台任务：不回收就是孤儿进程（父进程没了，命令还在跑） */
+func shutdownBackgroundTasks(): Unit {
+    match (bgTaskRegistry) {
+        case Some(bg) =>
+            let n = bg.killAll()
+            if (n > 0) {
+                Log.warn("[bg] 退出前结束 ${n} 个后台任务")
+            }
+        case None => ()
+    }
+}
+
 func buildSubagentRegistry(parent: ToolRegistry, subagentType: String): ToolRegistry {
     let reg = ToolRegistry()
     for (spec in parent.specs()) {
         if (spec.name == "task" || spec.name == "todo_write") {
+            continue
+        }
+        // 后台任务三件套不下放子代理：槽位是进程级资源，子代理生命周期短（5 轮/墙钟预算），
+        // 让它抓槽位会把主代理的并发额度占死；回收也由主代理退出时统一兜底
+        if (spec.name == "bash_start" || spec.name == "bash_poll" || spec.name == "bash_kill") {
             continue
         }
         if (subagentType == "explore" && !parent.isReadOnly(spec.name)) {

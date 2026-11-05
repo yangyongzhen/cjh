@@ -293,6 +293,102 @@ npm install -g @ast-grep/cli
 
 ---
 
+## bash_start — 后台启动命令（不阻塞）
+
+### 功能
+
+把一条命令交给后台任务表去跑，**启动后立即返回**，不占住 agent 循环。适合构建、测试、
+长时间下载、dev server 这类"要等但不必占着回合"的工作。
+
+### 参数
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `command` | string | 是 | 要执行的命令 |
+| `label` | string | 否 | 任务名（给人看的面板标签），缺省取命令行首行 |
+| `cwd` | string | 否 | 工作目录；**不传则用 cjh 进程 cwd**（不是 bash 会话的 cwd，见下"限制"） |
+| `timeout_secs` | int | 否 | 单任务墙钟上限，覆盖全局 `background_task_timeout_ms`；dev server 这类常驻命令必须显式放宽 |
+
+### 使用示例
+
+```
+bash_start { "command": "cjpm build > build.log 2>&1", "label": "构建" }
+→ 后台任务 bg-1 已启动：构建
+     pid：12345
+     timeout：30m
+     日志：/tmp/cjh_bg/bg-1.log
+  下一步：bash_poll(task_id="bg-1") 收割输出；不需要了用 bash_kill 取消。
+```
+
+**抢跑窗口**：起进程后最多等 ≤200ms 看它是否立刻结束。短命令（`echo`、真值查询、
+`git status`）因此在这一次调用里就把结果返回了，不必"start 完再 poll"多一轮往返；
+长命令到此立即返回。
+
+### 限制（必须正面知道）
+
+- **不共享 bash 会话的 cwd/env**：会话 shell 只有一个 stdin，无法并发喂命令，所以后台任务
+  跑在**独立进程**里。要复用会话状态（`cd` 过的目录、`export` 的变量）就用同步 `bash`。
+  这条同样写在工具的返回文本里，避免模型自己撞墙。
+- **槽位满直接拒绝、不排队**：默认 8 个槽位（`max_background_tasks`）。满了会明确告诉你
+  当前几个/上限几个、在跑什么、怎么腾——排队会让模型以为任务已启动却永远等不到输出。
+
+---
+
+## bash_poll — 收割增量输出
+
+### 功能
+
+按**字节游标**读走该任务自上次 poll 之后的新增输出：读过的不会再吐一遍，终态后可反复 poll
+直到无新增。
+
+### 参数
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `task_id` | string | 是 | `bash_start` 返回的 ID（`bg-N`） |
+| `max_chars` | int | 否 | 本次最多交付多少字节，缺省 `background_poll_max_chars` |
+
+### 使用示例
+
+```
+bash_poll { "task_id": "bg-1", "max_chars": 4000 }
+→ bg-1 [bash] 构建｜running｜已运行 12.3s
+  --- 新增输出（512 字节）---
+  ...
+  进度：已落盘 2048 字节 / 已交付 1536 字节；任务未结束，可继续 bash_poll
+```
+
+### 设计细节
+
+- 非终态只交到**最后一个完整行**，且切点做 UTF-8 边界回退（`utf8BoundaryCut`），
+  所以中文不会半截乱码；终态则残尾一并交出。
+- 无完整行时若没占满预算就等下一批，占满了才硬切——超长单行（打包日志）不会永远交不出去。
+- 日志超过落盘上限（`background_output_max_kb`）后停写但**继续抽管道**，避免子进程写阻塞卡死；
+  超限会在返回里明确提示后续内容已丢弃。
+
+---
+
+## bash_kill — 取消任务
+
+### 功能
+
+取消一个后台任务：先杀**进程组**（`kill -9 -<pgid>`）再杀本体，等读线程定终态后返回，
+避免命令派生的后代进程变成孤儿。
+
+### 参数
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `task_id` | string | 是 | 要取消的 `bg-N` |
+
+### 错误处理
+
+- 未知 ID → 明确报"未找到后台任务 bg-N"，不静默。
+- **已结束的任务再 kill 不算错误**：返回"已经结束（状态，exit N），无需取消"，
+  方便模型随手清理。
+
+---
+
 ## 工具注册点
 
 4 个移植工具在以下 4 个入口注册：
@@ -303,6 +399,10 @@ npm install -g @ast-grep/cli
 | TUI 模式 | `src/entries.cj` | `runTui()` 函数 |
 | Web 模式 | `src/entries.cj` | `runWeb()` 函数 |
 | JSON 模式 | `src/entries.cj` | `runJson()` 函数 |
+
+`bash_start` / `bash_poll` / `bash_kill` 也在这 4 个入口注册（位于 `registerWebTools()` 之后，
+须在 `CjhConfig` 构造完成后，配置才能传进任务表），并在 `buildSubagentRegistry()` 里**显式排除**
+——子代理不参与后台任务槽位竞争；进程退出时统一 `killAll()` 回收。
 
 `task` 工具通过回调注入解耦：
 - `TaskTool` 持有 `spawnFn: (String, String, String) -> TaskSpawnResult` 回调
@@ -316,6 +416,9 @@ npm install -g @ast-grep/cli
 | 工具 | 来源 | 只读 | 说明 |
 |------|------|------|------|
 | `bash` | cjh 原有 | 否 | 执行 shell 命令 |
+| **`bash_start`** | cjh 新增 | 否 | 后台启动命令**不阻塞**，≤200ms 抢跑窗口，短命令当场出结果 |
+| **`bash_poll`** | cjh 新增 | 否 | 收割增量输出（字节游标，不重复；非终态只交完整行） |
+| **`bash_kill`** | cjh 新增 | 否 | 取消任务（杀进程组并回收，防孤儿进程） |
 | `read_file` | cjh 原有 | 是 | 读取文件，大文件流式读取 |
 | `write_file` | cjh 原有 | 否 | 写入文件（创建/覆盖） |
 | `append_file` | cjh 原有 | 否 | 追加写入文件，OpenMode.Append 增量写 |

@@ -1615,8 +1615,11 @@ public class Agent {
      */
     private func executeGuarded(name: String, args: JsonObject): ToolResult {
         let cap = this.config.capability
+        // 后台任务三件套并到 bash 单一授权面（B-1）：用户配 tools: ["bash"] 即涵盖后台执行，
+        // 无需为新工具补白名单条目；审批 reason 里出现的也是 bash（同一授权面才好解释）
+        let capName = capabilityToolAlias(name)
         // 1. 工具域
-        match (cap.checkTool(name)) {
+        match (cap.checkTool(capName)) {
             case CapDecision.Allow => ()
             case CapDecision.Deny(reason) =>
                 return ToolResult("被安全策略拒绝: ${reason}", true)
@@ -1627,7 +1630,8 @@ public class Agent {
         }
         // 2/3. 命令域 + 资源域（按工具类型检查参数）
         let cmd = args.get("command")
-        if (cmd.isSome() && name == "bash") {
+        // bash_start 的 command 与 bash 同等受命令域约束——黑名单不能靠"换个工具"绕过
+        if (cmd.isSome() && (name == "bash" || name == "bash_start")) {
             let c = cmd.getOrThrow().asString().getValue()
             match (cap.checkCommand(c)) {
                 case CapDecision.Allow => ()
