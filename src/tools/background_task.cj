@@ -59,6 +59,36 @@ public enum BgKillReason {
 }
 
 /**
+ * 任务状态事件（工具层 → 上层 UI 的唯一通道）
+ *
+ * 为什么不直接拼 JSON：任务层属于 cjh.tools，不该知道 Web 帧长什么样，
+ * 也不该依赖 JSON 库。这里只给"事实"（哪个任务、什么状态、多久、这批新增多少字节），
+ * 由 Web 层（`BgTaskEvent`）或 TUI 面板各自决定怎么呈现。
+ *
+ * 触发时机（设计文档 §6.4）：启动成功、状态转终态、取消生效。
+ */
+public class BgTaskEventInfo {
+    public let taskId: String
+    public let kind: String
+    public let label: String
+    public let state: BgTaskState
+    public let exitCode: Int64
+    public let elapsedMs: Int64
+    public let newOutputChars: Int64
+
+    public init(taskId: String, kind: String, label: String, state: BgTaskState,
+        exitCode: Int64, elapsedMs: Int64, newOutputChars: Int64) {
+        this.taskId = taskId
+        this.kind = kind
+        this.label = label
+        this.state = state
+        this.exitCode = exitCode
+        this.elapsedMs = elapsedMs
+        this.newOutputChars = newOutputChars
+    }
+}
+
+/**
  * 回退到完整 UTF-8 字符边界：返回 ≤ n 的最大切点，使 buf[0..ret) 不含半截多字节字符。
  *
  * 非终态交付时尾部的半截字符必须留到下一批（否则 poll 输出中文乱码，
@@ -254,6 +284,8 @@ public class BackgroundTask {
     private var killReasonValue: BgKillReason = BgKillNone
     private var logFile: Option<File> = None
     private var procValue: Option<SubProcess> = None
+    // 终态回调：由注册表注入（向 UI 层推送事件）；无人监听时为 None
+    public var onFinish: ?(BgTaskState, Int64) -> Unit = None
 
     public init(id: String, kind: String, label: String, command: String, cwd: String,
         logPath: String, timeoutMs: Int64, outputMaxBytes: Int64) {
@@ -458,7 +490,10 @@ public class BackgroundTask {
     private func finish(code: Int64): Unit {
         this.lock.lock()
         var reason = BgKillNone
+        var wasTerminal = false
+        var newState = BgRunning
         try {
+            wasTerminal = this.stateValue.isTerminal()
             this.exitValue = code
             this.endedAtValue = Some(DateTime.now())
             reason = this.killReasonValue
@@ -468,6 +503,7 @@ public class BackgroundTask {
                 case BgKillNone =>
                     this.stateValue = if (code == 0) { BgSucceeded } else { BgFailed }
             }
+            newState = this.stateValue
         } finally {
             this.lock.unlock()
         }
@@ -483,6 +519,18 @@ public class BackgroundTask {
                     ()
                 }
             case None => ()
+        }
+        // 只在"首次转终态"时通知：重复 finish 不重复推事件（客户端不闪两次）
+        if (!wasTerminal) {
+            match (this.onFinish) {
+                case Some(cb) =>
+                    try {
+                        cb(newState, code)
+                    } catch (e: Exception) {
+                        Log.warn("[bg] ${this.id} 终态回调失败: ${e}")
+                    }
+                case None => ()
+            }
         }
     }
 
@@ -734,6 +782,8 @@ public class BackgroundTaskRegistry {
     private var seq: Int64 = 0
     // 完成的任务最多保留这么多条（供 poll 回看终态后仍可查询，又不无限增长）
     private let keepFinished: Int64 = 32
+    // 状态事件监听：Web 面板订阅后转成 bg_task 帧；None = 无人订阅，emit 直接跳过
+    public var onEvent: ?(BgTaskEventInfo) -> Unit = None
 
     public init(cfg: BgTaskConfig) {
         this.cfg = cfg
@@ -747,6 +797,27 @@ public class BackgroundTaskRegistry {
 
     public func config(): BgTaskConfig {
         return this.cfg
+    }
+
+    /**
+     * 推送任务状态事件（工具层 → UI 层）
+     *
+     * 回调异常一律吞掉并记日志：事件是给面板看的旁路，绝不能因为面板写失败
+     * 打断任务状态机或读线程（同 WsSendGuard 的教训——写通道失败不该掀翻主流程）。
+     */
+    private func emitEvent(task: BackgroundTask, state: BgTaskState, exitCode: Int64,
+        newChars: Int64): Unit {
+        let sink = this.onEvent
+        match (sink) {
+            case Some(cb) =>
+                try {
+                    cb(BgTaskEventInfo(task.id, task.kind, task.label, state, exitCode,
+                        task.elapsedMs(), newChars))
+                } catch (e: Exception) {
+                    Log.warn("[bg] ${task.id} 状态事件投递失败: ${e}")
+                }
+            case None => ()
+        }
     }
 
     public func logDirectory(): String {
@@ -835,6 +906,9 @@ public class BackgroundTaskRegistry {
             return BgStart(false, "", "启动后台任务失败（进程未能创建）：${e}")
         }
         // 先登记再 attach：attach 会立刻起读线程，登记晚了 poll 可能查不到
+        task.onFinish = { st: BgTaskState, code: Int64 =>
+            this.emitEvent(task, st, code, 0)
+        }
         this.lock.lock()
         try {
             this.tasks.add(task)
@@ -842,6 +916,8 @@ public class BackgroundTaskRegistry {
         } finally {
             this.lock.unlock()
         }
+        // running 事件先于读线程启动发出：客户端先看到"起了一个任务"，再接收终态
+        this.emitEvent(task, BgRunning, -1, 0)
         task.attach(proc)
         // 抢跑窗口：短命令当场收尾，长命令到此立即返回
         var waited: Int64 = 0
@@ -990,6 +1066,22 @@ func ensureDirExists(path: String): Bool {
     } catch (e: Exception) {
         return false
     }
+}
+
+/**
+ * 进程内当前后台任务注册表（Web 面板订阅事件用）
+ *
+ * 用全局访问器而不是层层传参：任务表本来就是进程级全局的（槽位与 ID 全局唯一），
+ * 而建表（entries.cj）与建 Web 服务分属两层。TUI / CLI 不订阅时恒为 None，零开销。
+ */
+private var currentBgRegistry: ?BackgroundTaskRegistry = None
+
+public func setCurrentBackgroundRegistry(reg: BackgroundTaskRegistry): Unit {
+    currentBgRegistry = Some(reg)
+}
+
+public func currentBackgroundRegistry(): Option<BackgroundTaskRegistry> {
+    return currentBgRegistry
 }
 
 /** 命令首行（label 未给时充当任务名，避免面板只有 ID） */

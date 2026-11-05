@@ -649,3 +649,25 @@ public func tasksFrameJson(tasks: JsonArray): String {
     obj.put("tasks", tasks)
     return obj.toJsonString()
 }
+
+/**
+ * 后台任务状态帧（协议 v6 新增，服务端 → 浏览器）
+ * { "type": "bg_task", "task_id": "bg-3", "kind": "bash", "label": "npm run dev",
+ *   "state": "running", "exit_code": -1, "elapsed_ms": 12400, "new_output_chars": 0 }
+ *
+ * 触发时机：bash_start 成功、任务转终态、bash_kill 生效。
+ * 与 tasks 帧分开成两帧而不是塞进 tasks：语义不同（一个是待办清单、一个是进程），
+ * 客户端面板也要分开渲染；旧客户端不认这个 type 直接忽略，不会误渲染。
+ */
+public func bgTaskFrameJson(info: BgTaskEventInfo): String {
+    var obj = JsonObject()
+    obj.put("type", JsonString("bg_task"))
+    obj.put("task_id", JsonString(info.taskId))
+    obj.put("kind", JsonString(info.kind))
+    obj.put("label", JsonString(info.label))
+    obj.put("state", JsonString(info.state.wire()))
+    obj.put("exit_code", JsonInt(info.exitCode))
+    obj.put("elapsed_ms", JsonInt(info.elapsedMs))
+    obj.put("new_output_chars", JsonInt(info.newOutputChars))
+    return obj.toJsonString()
+}

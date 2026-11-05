@@ -132,6 +132,15 @@ public class StaticAssets {
                     <div id="task-list" class="task-list"></div>
                 </div>
 
+                <!-- 后台任务面板（协议 v6 bg_task 帧；与待办任务列表语义不同，独立呈现） -->
+                <div id="bg-panel" class="task-panel collapsed">
+                    <div class="task-panel-header" onclick="toggleBgPanel()">
+                        <span>后台任务</span>
+                        <span id="bg-count">0</span>
+                    </div>
+                    <div id="bg-list" class="task-list"></div>
+                </div>
+
                 <!-- 输入区 -->
                 <div class="input-area">
                     <textarea id="message-input"
@@ -1319,6 +1328,10 @@ function handleServerMessage(msg) {
         case 'tasks':
             renderTaskList(msg.tasks);
             break;
+        case 'bg_task':
+            // 后台任务状态（协议 v6）：属于进程级全局面板，与待办任务列表互不影响
+            handleBgTask(msg);
+            break;
         case 'history_messages':
             renderHistoryMessages(msg.messages, msg.session_id);
             break;
@@ -1659,6 +1672,106 @@ function renderTaskList(tasks) {
 
 function toggleTaskPanel() {
     document.getElementById('task-panel').classList.toggle('collapsed');
+}
+
+// ====== 后台任务面板（协议 v6 bg_task 帧） ======
+// 服务端按「启动成功 / 转终态 / kill 生效」推帧，这里只做 upsert + 重绘。
+// 键是 task_id：同一任务多次推帧只更新那一行，不会出现重复行。
+let bgTasks = {};
+// 与后端 keepFinished=32 对齐：终态行最多留这么多，运行中的永远保留
+const BG_MAX_FINISHED = 32;
+
+function handleBgTask(msg) {
+    if (!msg || !msg.task_id) {
+        return;
+    }
+    bgTasks[msg.task_id] = msg;
+    renderBgTasks();
+}
+
+function bgStateIcon(state) {
+    switch (state) {
+        case 'running': return '▶';
+        case 'succeeded': return '✓';
+        case 'failed': return '✗';
+        case 'killed': return '⏹';
+        case 'timeout': return '⏱';
+        default: return '○';
+    }
+}
+
+function bgIsRunning(state) {
+    return state === 'running';
+}
+
+function formatBgElapsed(ms) {
+    let n = Number(ms);
+    if (!isFinite(n) || n < 0) {
+        n = 0;
+    }
+    let sec = Math.floor(n / 1000);
+    if (sec < 60) {
+        return sec + 's';
+    }
+    let min = Math.floor(sec / 60);
+    if (min < 60) {
+        return min + 'm' + String(sec % 60).padStart(2, '0') + 's';
+    }
+    return Math.floor(min / 60) + 'h' + String(min % 60).padStart(2, '0') + 'm';
+}
+
+// bg-9 < bg-10：按 ID 数字后缀排序，字符串排序会把 10 排到 2 前面
+function bgIdOrder(id) {
+    let m = /(\d+)/.exec(String(id));
+    return m ? parseInt(m[1], 10) : 0;
+}
+
+function renderBgTasks() {
+    let listEl = document.getElementById('bg-list');
+    let countEl = document.getElementById('bg-count');
+    let panelEl = document.getElementById('bg-panel');
+    if (!listEl || !countEl || !panelEl) {
+        return;
+    }
+
+    let items = Object.keys(bgTasks).map(function(id) { return bgTasks[id]; });
+    items.sort(function(a, b) { return bgIdOrder(a.task_id) - bgIdOrder(b.task_id); });
+
+    // 只保留最近的终态行（运行中的全留）：面板不该无限长
+    let finished = items.filter(function(it) { return !bgIsRunning(it.state); });
+    let excess = finished.length - BG_MAX_FINISHED;
+    if (excess > 0) {
+        let drop = {};
+        finished.slice(0, excess).forEach(function(it) { drop[it.task_id] = true; });
+        Object.keys(drop).forEach(function(id) { delete bgTasks[id]; });
+        items = items.filter(function(it) { return !drop[it.task_id]; });
+    }
+
+    listEl.innerHTML = '';
+    items.forEach(function(it) {
+        let row = document.createElement('div');
+        row.className = 'bg-item bg-' + (it.state || 'running');
+        let meta = formatBgElapsed(it.elapsed_ms);
+        if (!bgIsRunning(it.state) && it.exit_code >= 0) {
+            meta += ' · exit ' + it.exit_code;
+        }
+        row.innerHTML = '<span class=\"task-icon\">' + bgStateIcon(it.state) + '</span>' +
+                        '<span class=\"bg-id\">' + escapeHtml(it.task_id) + '</span>' +
+                        '<span class=\"bg-label\" title=\"' + escapeHtml(it.label || '') + '\">' +
+                            escapeHtml(it.label || '') + '</span>' +
+                        '<span class=\"bg-meta\">' + escapeHtml(meta) + '</span>';
+        listEl.appendChild(row);
+    });
+
+    countEl.textContent = items.length;
+    // 有任务就展开（与待办面板同一约定：collapsed 是可折叠状态，不是永久关闭）
+    if (items.length > 0) {
+        panelEl.classList.remove('collapsed');
+    }
+}
+
+function toggleBgPanel() {
+    document.getElementById('bg-panel').classList.toggle('collapsed');
 }
 
 // ====== 事件绑定 ======
@@ -2545,6 +2658,56 @@ body {
     font-size: 14px;
     width: 16px;
     flex-shrink: 0;
+}
+
+/* ====== 后台任务面板（bg_task 帧） ====== */
+/* 与待办任务共用 .task-panel 折叠外壳，行样式单独一套：这里显示的是进程状态， */
+/* 需要 ID / 标签 / 状态 / 耗时 / 退出码，且终态行不该被划掉（那是待办语义） */
+.bg-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.bg-item .bg-id {
+    font-family: monospace;
+    color: var(--text-muted, var(--text-secondary));
+    flex-shrink: 0;
+}
+
+.bg-item .bg-label {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.bg-item .bg-meta {
+    font-family: monospace;
+    font-size: 12px;
+    flex-shrink: 0;
+}
+
+/* 状态色：running 强调、成功绿、失败/超时红、被取消灰 */
+.bg-item.bg-running {
+    color: var(--accent);
+}
+
+.bg-item.bg-succeeded {
+    color: var(--success);
+}
+
+.bg-item.bg-failed,
+.bg-item.bg-timeout {
+    color: var(--danger, var(--error, #e5534b));
+}
+
+.bg-item.bg-killed {
+    color: var(--text-secondary);
+    opacity: 0.7;
 }
 
 /* ====== 轻提示条（控制帧回执 ack / 切换中 / 取消回执） ====== */

@@ -2,6 +2,7 @@ package cjh.tests
 
 import std.collection.*
 import stdx.encoding.json.*
+import cjh.tools.*
 import cjh.web.*
 
 /**
@@ -31,6 +32,11 @@ func sampleEventObj(name: String): JsonObject {
             return JsonValue.fromStr(
                 ApprovalRequestEvent("r1", "bash", JsonObject(), "危险命令").toJson()).asObject()
         case "tasks" => return JsonValue.fromStr(tasksFrameJson(JsonArray())).asObject()
+        case "bg_task" =>
+            // v6 出站帧：必须能真实构造，否则清单就是虚报
+            return JsonValue.fromStr(
+                bgTaskFrameJson(BgTaskEventInfo("bg-1", "bash", "npm run dev",
+                    BgTaskState.BgRunning, -1, 0, 0))).asObject()
         case "history_messages" =>
             return JsonValue.fromStr(historyMessagesJson("s", JsonArray())).asObject()
         case _ => return JsonObject()

@@ -40,12 +40,15 @@ public let WS_MAX_INBOUND_BYTES: Int64 = 256 * 1024
 public class WsHandler <: HttpRequestHandler {
     private let config: CjhConfig
     private let gateway: ChannelGateway
+    // 后台任务广播器（v6 bg_task 帧）：连接建立时登记、断开时摘除
+    private let bgBroadcaster: BgTaskBroadcaster
     // WS 连接 ID 自增计数器
     static var nextId: Int64 = 1
 
-    public init(config: CjhConfig, gateway: ChannelGateway) {
+    public init(config: CjhConfig, gateway: ChannelGateway, bgBroadcaster: BgTaskBroadcaster) {
         this.config = config
         this.gateway = gateway
+        this.bgBroadcaster = bgBroadcaster
     }
 
     /**
@@ -76,6 +79,8 @@ public class WsHandler <: HttpRequestHandler {
 
         // 注册到 ChannelGateway：gateway 负责会话路由 + Agent 生命周期
         this.gateway.registerChannel(wsId, channel)
+        // 后台任务帧（v6）：这条连接也要能收到 bg_task 广播
+        this.bgBroadcaster.attach(wsId, channel)
 
         // 消息接收循环：阻塞读取 WebSocket 帧，解析 JSON 消息，分发到 Gateway
         this.messageLoop(ws, wsId, wsMutex)
@@ -85,6 +90,8 @@ public class WsHandler <: HttpRequestHandler {
         this.gateway.interruptSession(wsId, wsId)
         this.gateway.unregisterChannel(wsId)
         this.gateway.destroySession(wsId, wsId)
+        // 广播表同样要摘：留着就是对死 socket 白推帧
+        this.bgBroadcaster.detach(wsId)
     }
 
     /**

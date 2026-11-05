@@ -30,10 +30,13 @@ import cjterm.*
  *     before_sha / after_sha，客户端据此渲染 diff 视图）
  * v5：tool_start / tool_result 增可选 agent_id / agent_label（子代理身份；
  *     缺省不序列化 = 父回合，字段不虚报）
+ * v6：新增出站帧 bg_task（后台任务状态：task_id / kind / label / state /
+ *     exit_code / elapsed_ms / new_output_chars；bash_start 成功、转终态、
+ *     bash_kill 生效时推送）。旧客户端不认该 type 即忽略，其余帧形状不变。
  *     （每次帧形状或帧集合变化都递增，客户端按版本决定要不要读新字段）
  */
 public func capabilityProtocolVersion(): Int64 {
-    return 5
+    return 6
 }
 
 /**
@@ -66,6 +69,7 @@ public func outboundEventNames(): ArrayList<String> {
     names.add("cancelled")
     names.add("approval_request")  // 危险操作需人工确认（回合阻塞等 approval_response）
     names.add("tasks")
+    names.add("bg_task")           // 后台任务状态（v6；bash_start/终态/kill 时推）
     names.add("history_messages")
     return names
 }

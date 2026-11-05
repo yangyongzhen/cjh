@@ -97,6 +97,8 @@ public class WebDistributor <: HttpRequestDistributor {
     private let wsHandler: WsHandler
     private let webHandler: WebHandler
     private let restApi: RestApi
+    // 后台任务广播器（v6 bg_task 帧）：装配一次，WsHandler 与任务表共用
+    private let bgBroadcaster: BgTaskBroadcaster
 
     public init(config: CjhConfig, provider: LlmProvider, registry: ToolRegistry) {
         this.config = config
@@ -104,8 +106,11 @@ public class WebDistributor <: HttpRequestDistributor {
         this.registry = registry
         // ChannelGateway：渠道网关，负责会话路由 + Agent 生命周期 + 事件分发
         this.gateway = ChannelGateway(this.config, this.provider, this.registry)
+        // 后台任务事件 → bg_task 帧广播（订阅进程级任务表；无表时静默）
+        this.bgBroadcaster = BgTaskBroadcaster()
+        this.bgBroadcaster.subscribe()
         // WsHandler 实例（WebSocket 端点，只负责帧读写 + JSON 解析）
-        this.wsHandler = WsHandler(this.config, this.gateway)
+        this.wsHandler = WsHandler(this.config, this.gateway, this.bgBroadcaster)
         // WebHandler 实例（统一 HTTP 处理）
         this.webHandler = WebHandler(this.config)
         // RestApi 实例（/api/* 路由）；registry 供工作区切换重置 bash 会话
@@ -122,8 +127,11 @@ public class WebDistributor <: HttpRequestDistributor {
         this.registry = registry
         // ChannelGateway：渠道网关，负责会话路由 + Agent 生命周期 + 事件分发
         this.gateway = ChannelGateway(this.config, this.provider, this.registry, providerFactory)
+        // 后台任务事件 → bg_task 帧广播（订阅进程级任务表；无表时静默）
+        this.bgBroadcaster = BgTaskBroadcaster()
+        this.bgBroadcaster.subscribe()
         // WsHandler 实例（WebSocket 端点，只负责帧读写 + JSON 解析）
-        this.wsHandler = WsHandler(this.config, this.gateway)
+        this.wsHandler = WsHandler(this.config, this.gateway, this.bgBroadcaster)
         // WebHandler 实例（统一 HTTP 处理）
         this.webHandler = WebHandler(this.config)
         // RestApi 实例（/api/* 路由）；registry 供工作区切换重置 bash 会话

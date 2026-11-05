@@ -124,6 +124,17 @@ public class WebChannel <: Channel {
         this.sendWs(tasksFrameJson(tasks))
     }
 
+    /**
+     * 后台任务状态帧（v6）
+     *
+     * 不进 Channel 接口：后台任务表是进程级全局的，不属于任何一次回合/会话，
+     * 而 Channel 的每个方法都以 chatId 为路由键。由 BgTaskBroadcaster 直接广播到
+     * 各条存活连接即可，避免为一个全局面板改动整个渠道接口（及其全部实现）。
+     */
+    public func sendBgTask(info: BgTaskEventInfo): Unit {
+        this.sendWs(bgTaskFrameJson(info))
+    }
+
     public func sendApprovalRequest(_: String, info: ApprovalRequestInfo): Unit {
         let ev = ApprovalRequestEvent(info.requestId, info.toolName, info.args, info.reason)
         ev.meta = info.meta
