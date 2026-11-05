@@ -1169,6 +1169,8 @@ func registerBackgroundTools(registry: ToolRegistry, cfg: CjhConfig): Unit {
     let bg = BackgroundTaskRegistry(BgTaskConfig(cfg.maxBackgroundTasks,
         cfg.backgroundTaskTimeoutMs, cfg.backgroundOutputMaxKb, cfg.backgroundPollMaxChars))
     bgTaskRegistry = Some(bg)
+    // 同一份表登记为进程级"当前表"：Web 面板据此订阅 bg_task 事件（TUI/CLI 不订阅）
+    setCurrentBackgroundRegistry(bg)
     registry.register(BashStartTool(bg))
     registry.register(BashPollTool(bg))
     registry.register(BashKillTool(bg))

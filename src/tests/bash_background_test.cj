@@ -200,6 +200,136 @@ public class BashBackgroundTest {
     }
 
     /**
+     * 事件源（协议 v6 的底座）：bash_start 成功必须推一条 running 事件
+     *
+     * Web 面板的第一行完全靠这条事件出现——没有它，任务跑起来了浏览器却一片空白。
+     */
+    @TestCase
+    public func testStartEmitsRunningEvent(): Unit {
+        let reg = this.newRegistry("bg_event_start", 4)
+        let (events, guard) = this.collectEvents(reg)
+        let r = reg.start("sleep 5", "event-sleeper", "", "/bin/bash", true, 0, 0)
+        try {
+            @Assert(r.ok, true)
+            guard.lock()
+            var seen: Option<BgTaskEventInfo> = None
+            try {
+                for (e in events) {
+                    if (e.state.wire() == "running") {
+                        seen = Some(e)
+                    }
+                }
+            } finally {
+                guard.unlock()
+            }
+            match (seen) {
+                case Some(e) =>
+                    @Assert(e.taskId, r.taskId)
+                    @Assert(e.kind, "bash")
+                    @Assert(e.label, "event-sleeper")
+                    // running 时退出码是 -1：面板据此决定"还没结束，不显示 exit"
+                    @Assert(e.exitCode, -1)
+                case None => @Assert("收到 running 事件", "missing")
+            }
+        } finally {
+            let _ = reg.kill(r.taskId)
+        }
+    }
+
+    /**
+     * 终态事件只推一次：重复 finish 不能让面板闪两次 / 客户端统计翻倍
+     */
+    @TestCase
+    public func testTerminalEventEmittedOnce(): Unit {
+        let reg = this.newRegistry("bg_event_done", 4)
+        let (events, guard) = this.collectEvents(reg)
+        let r = reg.start("echo done", "", "", "/bin/bash", true, 0, 3000)
+        @Assert(r.ok, true)
+        @Assert(this.waitTerminal(reg, r.taskId, 10000), "succeeded")
+        // 给读线程收尾留出余量（机器满载时 sleep 会膨胀）
+        sleep(Duration.millisecond * 300)
+        guard.lock()
+        var terminal: Int64 = 0
+        var exit = -2
+        try {
+            for (e in events) {
+                match (e.state) {
+                    case BgRunning => ()
+                    case _ =>
+                        terminal += 1
+                        exit = e.exitCode
+                }
+            }
+        } finally {
+            guard.unlock()
+        }
+        @Assert(terminal, 1)
+        @Assert(exit, 0)
+    }
+
+    /**
+     * kill 生效也要推终态事件：状态必须是 killed（不是 failed），退出码按真实回收值
+     */
+    @TestCase
+    public func testKillEmitsKilledEvent(): Unit {
+        let reg = this.newRegistry("bg_event_kill", 4)
+        let (events, guard) = this.collectEvents(reg)
+        let r = reg.start("sleep 5", "kill-me", "", "/bin/bash", true, 0, 0)
+        @Assert(r.ok, true)
+        let _ = reg.kill(r.taskId)
+        sleep(Duration.millisecond * 300)
+        guard.lock()
+        var killed: Option<BgTaskEventInfo> = None
+        try {
+            for (e in events) {
+                if (e.state.wire() == "killed") {
+                    killed = Some(e)
+                }
+            }
+        } finally {
+            guard.unlock()
+        }
+        match (killed) {
+            case Some(e) => @Assert(e.taskId, r.taskId)
+            case None => @Assert("收到 killed 事件", "missing")
+        }
+        @Assert(this.waitTerminal(reg, r.taskId, 10000), "killed")
+    }
+
+    /**
+     * 监听方（面板/广播器）抛异常绝不能掀翻任务状态机
+     *
+     * 同 WsSendGuard 的教训：旁路写失败只该丢一条事件，不该让任务永久卡在 running。
+     */
+    @TestCase
+    public func testListenerExceptionDoesNotBreakTask(): Unit {
+        let reg = this.newRegistry("bg_event_throw", 4)
+        reg.onEvent = { _: BgTaskEventInfo =>
+            throw Exception("面板写失败")
+        }
+        let r = reg.start("echo survived", "", "", "/bin/bash", true, 0, 3000)
+        @Assert(r.ok, true)
+        // 抢跑窗口内结束：输出已由 start 早交付（字节游标已推进），后续 poll 不再重复
+        @Assert(r.text.contains("survived"), true)
+        @Assert(this.waitTerminal(reg, r.taskId, 10000), "succeeded")
+    }
+
+    /** 挂事件收集器：返回事件表与其互斥锁（读线程会并发写入） */
+    private func collectEvents(reg: BackgroundTaskRegistry): (ArrayList<BgTaskEventInfo>, Mutex) {
+        let events = ArrayList<BgTaskEventInfo>()
+        let guard = Mutex()
+        reg.onEvent = { info: BgTaskEventInfo =>
+            guard.lock()
+            try {
+                events.add(info)
+            } finally {
+                guard.unlock()
+            }
+        }
+        return (events, guard)
+    }
+
+    /**
      * 增量交付：两次 poll 不重复吐同一段输出（字节游标语义），
      * 且第一次 poll 拿到的是完整行。
      */

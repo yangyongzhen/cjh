@@ -239,8 +239,52 @@ public class WebProtocolFrameTest {
         let resultObj = parseObj(result.toJson())
         @Assert(getInt(resultObj, "agent_id"), 42)
         @Assert(getStr(resultObj, "agent_label"), "并发审批一号")
-        // 协议版本随帧形状变化递增到 v5
-        @Assert(capabilityProtocolVersion(), 5)
+        // 协议版本随帧形状变化递增到 v6（v6 = 新增出站帧 bg_task）
+        @Assert(capabilityProtocolVersion(), 6)
+    }
+
+    /**
+     * v6：bg_task 帧字段完整（缺少任一字段，面板就画不出那一行）
+     *
+     * 同时锁住 running 的 exit_code 约定：-1 = 还没结束，面板据此决定不显示 exit。
+     */
+    @TestCase
+    public func testBgTaskFrameFields(): Unit {
+        let running = BgTaskEventInfo("bg-3", "bash", "npm run dev", BgTaskState.BgRunning,
+            -1, 12400, 0)
+        let obj = parseObj(bgTaskFrameJson(running))
+        @Assert(getStr(obj, "type"), "bg_task")
+        @Assert(getStr(obj, "task_id"), "bg-3")
+        @Assert(getStr(obj, "kind"), "bash")
+        @Assert(getStr(obj, "label"), "npm run dev")
+        @Assert(getStr(obj, "state"), "running")
+        @Assert(getInt(obj, "exit_code"), -1)
+        @Assert(getInt(obj, "elapsed_ms"), 12400)
+        @Assert(getInt(obj, "new_output_chars"), 0)
+        // 帧类型必须被 parseMsgType 认得（能力清单与解析器不能各说各话）
+        @Assert(frameTypeOf(bgTaskFrameJson(running)), "bg_task")
+    }
+
+    /**
+     * v6：终态帧带真实退出码，状态词与 state.wire() 一致
+     */
+    @TestCase
+    public func testBgTaskTerminalStates(): Unit {
+        let cases = [(BgTaskState.BgSucceeded, "succeeded", 0),
+            (BgTaskState.BgFailed, "failed", 2),
+            (BgTaskState.BgKilled, "killed", 137),
+            (BgTaskState.BgTimedOut, "timeout", -1)]
+        for ((st, wire, code) in cases) {
+            let obj = parseObj(bgTaskFrameJson(BgTaskEventInfo("bg-1", "bash", "x", st, code, 900, 12)))
+            @Assert(getStr(obj, "state"), wire)
+            @Assert(getInt(obj, "exit_code"), code)
+            @Assert(getInt(obj, "new_output_chars"), 12)
+        }
+    }
+
+    /** 取帧的 type 字段（解析器认不认这个帧，用 parseMsgType 之外的方式独立验证） */
+    private func frameTypeOf(json: String): String {
+        return getStr(parseObj(json), "type")
     }
 
     private func parseObj(json: String): JsonObject {

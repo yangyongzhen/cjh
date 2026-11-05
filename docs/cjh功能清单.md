@@ -1,7 +1,7 @@
 # cjh 功能清单
 
 > 最后更新：2026-11-06
-> 版本：v1.6.6
+> 版本：v1.6.7
 > 性质：cjh 已具备和支持的功能完整列表
 
 ---
@@ -92,6 +92,11 @@
 - **权限**：三件套并入 `bash` 单一授权面（配 `tools: ["bash"]` 即涵盖），`bash_start` 的命令
   同等受命令白名单/黑名单约束。
 - **回收**：TUI 的 `finally` 与 CLI/JSON 模式尾部统一 `killAll()`，退出不留孤儿进程。
+- **可观测（Web）**：协议 v6 新增 `bg_task` 帧，服务端在「`bash_start` 成功 / 转终态 /
+  `bash_kill` 生效」三处推送；浏览器端 `#bg-panel` 按 `task_id` 更新行（`bg-3 · npm run dev
+  · running 42s`），终态行显示 `exit N`。事件从任务层 `BgTaskEventInfo` 出发（工具层不碰
+  JSON），由 `cjh.web` 的 `BgTaskBroadcaster` 转帧广播给各自存活连接，与 `tasks`（待办清单）
+  语义分离、互不影响。
 
 ### web_search + web_fetch 详细设计
 
@@ -302,6 +307,7 @@
 | v1.6.1 | 默认系统提示词补 todo_write 任务列表规范（修 Tasks 面板不弹出）；双平台二进制包重打（SDK 1.2.0）；发布流程补 release 附件 |
 | v1.6.4 | 压缩提示收敛到状态栏（Compacting…）；bash 工具单次调用 timeout；管道命令非会话执行修复 |
 | v1.6.6 | **后台任务层（B-1）**：`bash_start` / `bash_poll` / `bash_kill` 三件套——非阻塞派发（独立进程组 + `setsid`，超时/取消按 pgid 连根杀）、≤200ms 抢跑窗口、字节游标增量收割（非终态只交完整行 + UTF-8 边界回退）、8 槽位上限（满了拒绝不排队）、三件套并入 `bash` 单一授权面、四键配置；测试 +23（根包 17 / cjcfg 3 / capability 3）；顺手修 `formatElapsedMs` 小时档未补零 |
+| v1.6.7 | **后台任务 Web 视图（B-2）**：协议 v5→**v6**，新增服务端→浏览器 `bg_task` 帧（`task_id`/`kind`/`label`/`state`/`exit_code`/`elapsed_ms`/`new_output_chars`，启动成功、转终态、kill 生效时推送）；前端新增并列 `#bg-panel` 面板（按 `task_id` upsert，不复用 TodoWrite 的 `.task-panel` 语义）；事件源由任务层 `BgTaskEventInfo` 提供（`cjh.tools` 不感知 JSON/Web），Web 侧 `BgTaskBroadcaster` 持存活连接广播、断连即摘；旧客户端不认该帧即忽略 |
 | v1.6.5 | 默认提示词新增 Intellectual honesty 反迎合/证据链节 + 一键安装/CI/贡献指南 |
 | v1.6.3 | ShellProvider 分层探测（Git 装在非 C 盘时 bash 工具失效修复） |
 | v1.6.2 | WS 帧超限防护 + Windows 技能工具改用 ShellProvider + 产物 strip |
