@@ -1,7 +1,7 @@
 # cjh 功能清单
 
-> 最后更新：2026-10-28
-> 版本：v1.6.5
+> 最后更新：2026-11-06
+> 版本：v1.6.6
 > 性质：cjh 已具备和支持的功能完整列表
 
 ---
@@ -58,7 +58,10 @@
 
 | 工具 | 说明 |
 |------|------|
-| **bash** | 执行 shell 命令，捕获 stdout/stderr |
+| **bash** | 执行 shell 命令，捕获 stdout/stderr（同步阻塞） |
+| **bash_start** | 后台启动命令**不阻塞** agent 循环：独立进程 + 独立进程组（`setsid`，超时/取消 `kill -9 -<pgid>` 带走后代），≤200ms 抢跑窗口让短命令当场出结果；**不共享 bash 会话的 cwd/env**（会话只有一个 stdin），槽位满直接拒绝不排队 |
+| **bash_poll** | 收割后台任务增量输出：字节游标不重复交付，非终态只交完整行 + UTF-8 边界回退（中文不乱码），全量落盘 `OpenMode.Append`、超上限停写但继续抽管道防子进程阻塞 |
+| **bash_kill** | 取消后台任务：杀进程组 + 等读线程定终态后返回，防孤儿进程；已结束的任务再 kill 属幂等（报状态不报错） |
 | **read_file** | 读取文件，大文件返回符号摘要，offset/limit 按需展开 |
 | **write_file** | 写入文件（创建/覆盖） |
 | **append_file** | 追加写入文件，OpenMode.Append 增量写 |
@@ -73,6 +76,22 @@
 | **task** | 派发子代理执行独立任务，explore（只读）/ worker（可写）——并行子代理编排的基础原语 |
 | **web_search** | 联网搜索，多后端路由（Tavily/Exa/SearXNG/DDG）+ per-engine key rotation，snippet 截断 500 字符 |
 | **web_fetch** | 抓取网页，三级降级链（仓颉 HTTP GET → curl → Firecrawl）+ SSRF 防护 + HTML 清洗 → Markdown，截断 ~32KB |
+
+### 后台任务层（bash_start / bash_poll / bash_kill）
+
+详见 [后台任务与槽位设计](后台任务与槽位设计.md)。
+
+- **不阻塞**：后台任务跑在独立进程，`bash_start` 起完就返回；agent 循环可以继续调工具、
+  发子代理、继续对话，长命令不会把整轮卡住。
+- **进程隔离要点**：`setsid` 起独立进程组（超时/取消 `kill -9 -<pgid>` 带走后代进程，
+  防僵尸）+ `} < /dev/null`（后台任务没有 stdin，不接会让 `cat`/`read` 永久挂住）。
+- **代价（必须知道）**：**不共享 bash 会话的 cwd/env**。会话 shell 只有一个 stdin，无法
+  并发喂命令；需要会话状态（`cd` 过的目录、`export` 的变量）就用同步 `bash`。
+- **槽位**：默认 8（`max_background_tasks`），满了直接拒绝并给出「在跑什么 + 怎么腾」，
+  不排队；终态自动释放。
+- **权限**：三件套并入 `bash` 单一授权面（配 `tools: ["bash"]` 即涵盖），`bash_start` 的命令
+  同等受命令白名单/黑名单约束。
+- **回收**：TUI 的 `finally` 与 CLI/JSON 模式尾部统一 `killAll()`，退出不留孤儿进程。
 
 ### web_search + web_fetch 详细设计
 
@@ -282,6 +301,7 @@
 | v1.6.0 | **并行子代理阶段 C 全量落地（S1-S8）**：task 派发 explore/worker + DAG 资源依赖调度 + Agents 面板可观测（Ctrl+G 焦点/转录）+ 四键边界管控 + 审批队列化 + 路由策略（/parallel）；实测修复系列：限流退避重试（可中断）/流式 usage 接线/父回合失败显式提示/错峰派发/面板左右分栏（overlay 按列拼接）/歧义宽度 1 列；SDK 1.2.0 迁移 + setup_paths.sh；README/官网双语同步 |
 | v1.6.1 | 默认系统提示词补 todo_write 任务列表规范（修 Tasks 面板不弹出）；双平台二进制包重打（SDK 1.2.0）；发布流程补 release 附件 |
 | v1.6.4 | 压缩提示收敛到状态栏（Compacting…）；bash 工具单次调用 timeout；管道命令非会话执行修复 |
+| v1.6.6 | **后台任务层（B-1）**：`bash_start` / `bash_poll` / `bash_kill` 三件套——非阻塞派发（独立进程组 + `setsid`，超时/取消按 pgid 连根杀）、≤200ms 抢跑窗口、字节游标增量收割（非终态只交完整行 + UTF-8 边界回退）、8 槽位上限（满了拒绝不排队）、三件套并入 `bash` 单一授权面、四键配置；测试 +23（根包 17 / cjcfg 3 / capability 3）；顺手修 `formatElapsedMs` 小时档未补零 |
 | v1.6.5 | 默认提示词新增 Intellectual honesty 反迎合/证据链节 + 一键安装/CI/贡献指南 |
 | v1.6.3 | ShellProvider 分层探测（Git 装在非 C 盘时 bash 工具失效修复） |
 | v1.6.2 | WS 帧超限防护 + Windows 技能工具改用 ShellProvider + 产物 strip |

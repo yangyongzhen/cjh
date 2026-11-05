@@ -234,4 +234,53 @@ public class CapabilityTest {
             case _ => @Assert("enabled true", "not strict")
         }
     }
+
+    /**
+     * B-1 授权面合并契约：后台任务三件套 → bash 单一授权面。
+     *
+     * 严格模式下用户只配了 tools: ["bash"]（buildCapability 的配置），
+     * bash_start/poll/kill 必须落到 bash 上被放行——否则"要不要做后台执行"
+     * 这件同一件事被拆成四个白名单条目，严格模式用户直接不可用。
+     */
+    @TestCase
+    public func testBackgroundToolsAliasToBashWhitelist(): Unit {
+        let cap = this.buildCapability()
+        for (name in ["bash_start", "bash_poll", "bash_kill"]) {
+            let alias = capabilityToolAlias(name)
+            @Assert(alias, "bash")
+            // 并入 bash 后继承 bash 的待遇：白名单放行，或因 approval proc:* 转人工确认——
+            // 两种都不是"未列入白名单"拒绝。断言"未被拒"而非"必放行"，才不把审批轴卷进来。
+            match (cap.checkTool(alias)) {
+                case CapDecision.Deny(_) => @Assert("后台工具 ${name} 不应被白名单拒绝", "denied")
+                case _ => ()
+            }
+        }
+    }
+
+    /**
+     * 反向契约：bash 不在白名单时，别名同样救不了——授权面合并只做"等价"，
+     * 不做"提权"。否则三件套会变成绕开 bash 白名单的后门。
+     */
+    @TestCase
+    public func testBackgroundToolsDeniedWhenBashNotWhitelisted(): Unit {
+        var obj = JsonObject()
+        obj.put("enabled", JsonBool(true))
+        var tools = ArrayList<JsonValue>()
+        tools.add(JsonString("read_file"))
+        obj.put("tools", JsonArray(tools))
+        let cap = Capability.fromJson(Some(obj))
+        match (cap.checkTool(capabilityToolAlias("bash_start"))) {
+            case CapDecision.Deny(reason) => @Assert(reason.size > 0, true)
+            case _ => @Assert("bash 不在白名单时 bash_start 必须被拒", "allowed")
+        }
+    }
+
+    /** 别名只认这三个：其余工具名原样返回，不得误伤其他授权面 */
+    @TestCase
+    public func testToolAliasPassthrough(): Unit {
+        @Assert(capabilityToolAlias("bash"), "bash")
+        @Assert(capabilityToolAlias("read_file"), "read_file")
+        @Assert(capabilityToolAlias("write_file"), "write_file")
+        @Assert(capabilityToolAlias("bash_start_typo"), "bash_start_typo")
+    }
 }

@@ -420,3 +420,18 @@ public class Capability {
         return false
     }
 }
+
+/**
+ * 工具名 → 授权面别名（B-1 后台任务三件套并到 bash）。
+ *
+ * bash_start / bash_poll / bash_kill 在语义上就是 bash 的另外三个动词，
+ * 用户配 `tools: ["bash"]` 表达的是"允许执行命令"，不该因为拆了工具就要再补三条
+ * 白名单（那会把严格模式用户直接挡在门外，而实际暴露面一点没变小）。
+ * 其余工具名原样返回——别名表只有这一处，避免各调用点各写一份。
+ */
+public func capabilityToolAlias(name: String): String {
+    if (name == "bash_start" || name == "bash_poll" || name == "bash_kill") {
+        return "bash"
+    }
+    return name
+}
