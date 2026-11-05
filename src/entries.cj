@@ -693,6 +693,16 @@ func runTui(sessionId: String): Int64 {
         agent.onSubagentEvent = { id, _, text =>
             tui.appendSubagentEvent(id, text)
         }
+        // B-2：后台任务面板数据源——任务状态事件（启动/转终态/kill）→ 快照 → TUI。
+        // 事件只在状态变化时来，运行中的耗时由面板按单调时钟实时算，不必定时推送
+        // （否则就是每秒一次快照 + 全量重绘）。
+        // 注：与 Web 侧订阅同一个 onEvent 槽位，但 TUI/Web 是互斥入口（一次只跑一个）
+        match (currentBackgroundRegistry()) {
+            case Some(bg) =>
+                bg.onEvent = { _: BgTaskEventInfo => tui.refreshBgTasks(bgPanelRows(bg)) }
+                tui.refreshBgTasks(bgPanelRows(bg))
+            case None => ()
+        }
         // G-A：TUI 审批超时与服务端同源（subagent_timeout_ms；0=不限）——
         // 用户离开终端时审批到点按拒绝收场，父回合不永久卡死
         tui.approvalTimeoutMs = cjhCfg.subagentTimeoutMs
@@ -879,6 +889,13 @@ func runTui(sessionId: String): Int64 {
                 if (wasted > 0) {
                     stat = stat + " · ⚠${wasted} 低效派生"
                 }
+            }
+            // B-2：后台任务存活提示——回合结束了但后台还在跑，必须让用户看见
+            //（否则以为任务随回合一起没了，实际进程还在写日志、还占着槽位）
+            match (currentBackgroundRegistry()) {
+                case Some(bg) =>
+                    stat = stat + bgSurvivalSuffix(bg.runningTasks().size)
+                case None => ()
             }
             // 整行统一灰色（THEME_MUTED），居中：左右横线等分
             let (_, cols) = TermSize.get()
@@ -1169,11 +1186,46 @@ func registerBackgroundTools(registry: ToolRegistry, cfg: CjhConfig): Unit {
     let bg = BackgroundTaskRegistry(BgTaskConfig(cfg.maxBackgroundTasks,
         cfg.backgroundTaskTimeoutMs, cfg.backgroundOutputMaxKb, cfg.backgroundPollMaxChars))
     bgTaskRegistry = Some(bg)
-    // 同一份表登记为进程级"当前表"：Web 面板据此订阅 bg_task 事件（TUI/CLI 不订阅）
+    // 同一份表登记为进程级"当前表"：Web 的 `BgTaskBroadcaster` 与 TUI 面板各自订阅
+    // bg_task 事件（两个入口互斥，一次只跑其中一个；CLI/JSON 模式不订阅）
     setCurrentBackgroundRegistry(bg)
     registry.register(BashStartTool(bg))
     registry.register(BashPollTool(bg))
     registry.register(BashKillTool(bg))
+}
+
+/**
+ * 回合总结条的后台任务存活后缀（B-2）
+ *
+ * 抽成纯函数便于断言文案：0 个返回空串（不污染总结条），>0 才追加。
+ */
+func bgSurvivalSuffix(n: Int64): String {
+    if (n <= 0) {
+        return ""
+    }
+    return " · ${n} 个后台任务仍在跑"
+}
+
+/**
+ * 任务表快照 → TUI 面板行（轻量副本；TUI 层不持有任务引用，同 Agents 面板约定）
+ *
+ * startedAt 直接透传任务的启动时刻：面板渲染时按 now - startedAt 实时算耗时，
+ * 口径与任务层 elapsedMs() 一致。
+ */
+func bgPanelRows(bg: BackgroundTaskRegistry): ArrayList<BgTaskRow> {
+    let rows = ArrayList<BgTaskRow>()
+    for (t in bg.allTasks()) {
+        var st = BgRowRunning
+        match (t.state()) {
+            case BgSucceeded => st = BgRowSucceeded
+            case BgFailed => st = BgRowFailed
+            case BgTimedOut => st = BgRowTimeout
+            case BgKilled => st = BgRowKilled
+            case BgRunning => st = BgRowRunning
+        }
+        rows.add(BgTaskRow(t.id, t.label, st, t.elapsedMs(), t.written(), t.startedAt))
+    }
+    return rows
 }
 
 /** 进程退出前回收后台任务：不回收就是孤儿进程（父进程没了，命令还在跑） */

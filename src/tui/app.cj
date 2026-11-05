@@ -93,6 +93,8 @@ public class TuiApp {
     private var confirmDialog: ConfirmDialog = ConfirmDialog()
     // Agents 面板（S3：子代理树状态，渲染在 Tasks 面板之上）
     private var agentsPanel: AgentsPanel = AgentsPanel()
+    // 后台任务面板（B-2）：全宽渲染在 Tasks/Agents 面板带之上，只在有任务时占行
+    private var bgPanel: BgTaskPanel = BgTaskPanel()
     // 焦点（Ctrl+G 循环）：0=父，否则子 agentId；聚焦子代理时其行事件进主流（│ 前缀）
     private var focusAgentId: Int64 = 0
     private var focusLock: Mutex = Mutex()
@@ -354,6 +356,7 @@ public class TuiApp {
         // S3 复核 #3：Agents 面板此前漏接（构造默认 utf8=true）——其它面板降级成 +-|
         // 时它仍画 ╭─╮│ 与 ▶ ✓ ✗，正是历史上反复修的"UTF-8 与 ASCII 混排"
         this.agentsPanel.setUtf8(utf8Now)
+        this.bgPanel.setUtf8(utf8Now)
         this.spinner.setUtf8(utf8Now)
         this.confirmDialog.setUtf8(utf8Now)
         this.welcomeView.setUtf8(utf8Now)
@@ -418,6 +421,15 @@ public class TuiApp {
                             // 中断直到回合结束——不依赖单次中断成功率
                             this.agentLastActivity = now
                             this.idleWarned = false
+                        }
+                    }
+                    // B-2：后台任务运行中同样每秒重绘——耗时列按单调时钟实时算，
+                    // agent 空闲（任务在后台跑）时也要看得到时间在走
+                    if (this.bgPanel.runningCount() > 0) {
+                        let nowBg = DateTime.now()
+                        if ((nowBg - lastTick).toSeconds() >= 1) {
+                            lastTick = nowBg
+                            this.markDirty()
                         }
                     }
                     if (this.takeDirty()) {
@@ -733,6 +745,18 @@ public class TuiApp {
         this.agentsPanel.updateRows(rows)
         this.agentsPanel.setFocus(focus)
         this.markDirty()
+    }
+
+    /**
+     * 刷新后台任务面板（B-2）：装配层从任务表快照转换后推送
+     *
+     * **变更检测在面板内做**（BgTaskPanel.updateRows 按签名比对，耗时按秒取整）：
+     * 任务频繁回调时无变化不重绘——照 scheduler.cj:225「高频回调淹没主循环」的教训。
+     */
+    public func refreshBgTasks(rows: ArrayList<BgTaskRow>): Unit {
+        if (this.bgPanel.updateRows(rows)) {
+            this.markDirty()
+        }
     }
 
     private func mapRowState(s: AgentNodeState): AgentRowState {
@@ -1868,7 +1892,10 @@ public class TuiApp {
             // 传 cols 与 render 同判据（S3 复核 #9：太窄时面板不画就不能预先占布局行）
             let agentsH: Int64 = this.agentsPanel.height(outH0, cols)
             // 面板带高度：左右并排取两者较大值（不再垂直相加堆叠）
-            let maxPanelsH: Int64 = if (tasksH > agentsH) { tasksH } else { agentsH }
+            let maxBaseH: Int64 = if (tasksH > agentsH) { tasksH } else { agentsH }
+            // bgH：后台任务面板高度（B-2）——全宽独占一行带，垂直叠在 Tasks/Agents 之上
+            let bgH: Int64 = this.bgPanel.height(outH0, cols)
+            let maxPanelsH: Int64 = maxBaseH + bgH
             // 动态状态行位置：statusRow - 1(间隔) - maxPanelsH(面板带) - 1(自身)
             // 无 agent 运行时，agentRow 不使用，仅用于 outH 计算
             let agentRow: Int64 = if (agentBusy) { statusRow - 1 - maxPanelsH - 1 } else { -1 }
@@ -1899,6 +1926,10 @@ public class TuiApp {
                     this.reasoningLock.unlock()
                     this.outputLock.unlock()
                 }
+                // 后台任务面板（B-2）：全宽独占一行带，叠在 Tasks/Agents 面板带**之上**，
+                // 故 availRow 取面板带上沿。outH 传 outH0 与 height() 同参数——
+                // 两边若用不同上限会在 agent 运行时差出 1 行，多占行把输出区顶掉
+                let _ = this.bgPanel.render(this.canvas, statusRow - 1 - maxBaseH, cols, outH0)
                 // Tasks 面板：有任务时在输出区左下角渲染
                 this.tasksPanel.render(this.canvas, statusRow - 1, cols, outH)
                 // Agents 面板（S3）：右下角，与 Tasks **同底线**。overlay 模式：
