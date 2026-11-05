@@ -1056,3 +1056,31 @@ public class SubagentIsolationTest {
         try { removeIfExists(tmpPath("cjh_ut_sub_spill"), recursive: true) } catch (e: Exception) { () }
     }
 }
+
+/**
+ * 后台任务存活提示文案（B-2）：回合总结条的追加后缀
+ *
+ * 0 个必须返回空串——否则总结条会平白多出 "· 0 个后台任务仍在跑" 的噪声，
+ * 而这条总结条每回合都渲染，噪声会一直跟着。
+ */
+@Test
+public class BgSurvivalSuffixTest {
+
+    @TestCase
+    public func testZeroReturnsEmpty(): Unit {
+        @Assert(bgSurvivalSuffix(0), "")
+    }
+
+    @TestCase
+    public func testNegativeReturnsEmpty(): Unit {
+        @Assert(bgSurvivalSuffix(-1), "")
+    }
+
+    @TestCase
+    public func testPositiveCarriesCount(): Unit {
+        @Assert(bgSurvivalSuffix(1).contains("1 个后台任务仍在跑"), true)
+        @Assert(bgSurvivalSuffix(8).contains("8 个后台任务仍在跑"), true)
+        // 分隔符与总结条其它字段一致（" · "）
+        @Assert(bgSurvivalSuffix(3).startsWith(" · "), true)
+    }
+}
