@@ -245,17 +245,32 @@ private let PASTE_STREAM_RATE_NL_DIV: Int64 = 3
 public let PASTE_MAX_MS: Int64 = 3000
 
 /**
+ * 连续「孤立单字节」达到此数即判定为人为逐键输入。
+ *
+ * 粘贴是批量到达：终端一次性把整块内容写进 pty，读走一字节后缓冲里还堆着
+ * 成千字节；人打字是单个到达，两键之间缓冲是空的。用这个差别，把「未闭合
+ * 粘贴 + 用户继续打字」在几个键内（6 键 ≈ 200ms）识别出来，不必等到
+ * PASTE_MAX_MS 的 3 秒——那 3 秒里用户看到的正是「打字毫无反应」。
+ */
+public let PASTE_TYPING_STREAK: Int64 = 6
+
+/**
  * 括号粘贴读取循环是否该结束（纯函数，便于单测）。
  *
  * - closed：读到 `ESC[201~` 闭合标记 → 立即结束（正常路径）
  * - idleStreak >= 3：连续 3 次 waitInput(200) 无数据 = 600ms 空闲 → 粘贴结束
+ * - isolatedBytes >= PASTE_TYPING_STREAK：连续多个字节都是「读完即无积压」
+ *   → 这是人在逐键打字，不是粘贴 → 立即结束，把按键还给正常解析
  * - elapsedMs >= PASTE_MAX_MS：未闭合却迟迟不结束 → 兜底退出，避免无限吞键
  */
-public func pasteReadStop(elapsedMs: Int64, idleStreak: Int64, closed: Bool): Bool {
+public func pasteReadStop(elapsedMs: Int64, idleStreak: Int64, closed: Bool, isolatedBytes: Int64): Bool {
     if (closed) {
         return true
     }
     if (idleStreak >= 3) {
+        return true
+    }
+    if (isolatedBytes >= PASTE_TYPING_STREAK) {
         return true
     }
     return elapsedMs >= PASTE_MAX_MS

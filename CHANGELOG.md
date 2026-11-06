@@ -15,7 +15,11 @@ cjh 版本变更记录。依据 git tag 史 + 提交史整理；版本号规则�
   **永不退出**，连回车也被当粘贴内容收走（pty 实证：`ESC[200~` 不闭合 + `HELLO` + `WORLD\r`
   → 输入框全程空白，最后攒成一条 `HELLOWORLD` 一次性提交）。新增总时长兜底
   `PASTE_MAX_MS = 3000`，闭合标记 `ESC[201~` 优先判定；触顶时已收内容仍按粘贴插入，不丢字。
-  判据抽成纯函数 `pasteReadStop(elapsedMs, idleStreak, closed)`，`PasteReadStopTest` 4 例。
+  再加**人为打字判据**：粘贴是批量到达（读完一字节缓冲里还堆着），人打字是单个到达
+  （两键之间缓冲为空），连续 `PASTE_TYPING_STREAK = 6` 个孤立字节即判定为人在打字、立刻
+  让位——否则用户仍要先干等满 3 秒才看到字。pty 实测：不闭合 + 逐键打字，第 6 键起输入行
+  开始响应，17/17 字符全部可见（约 180ms）。判据抽成纯函数
+  `pasteReadStop(elapsedMs, idleStreak, closed, isolatedBytes)`，`PasteReadStopTest` 7 例。
 - **`Compacting…` 永不复位**（`Agent.run`）：状态复位原先只挂在回合内每轮请求前的
   `checkPendingCompact`，后台摘要没完成就收尾时会一直停在 `Compacting…`。改为 `run()` 的
   `finally` 无条件 `onCompact(false)`；另加 `compactPendingSince` + 纯函数

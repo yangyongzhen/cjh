@@ -11,21 +11,24 @@ package cjterm
  * pty 实测：发 ESC[200~ 后打 "HELLO"、"WORLD\r"，输入框全程空白、无任何
  * 按键进入 handleKey，最后攒成一条 "HELLOWORLD" 一起提交。
  *
- * 修复：给粘贴读取加"总时长兜底"——未闭合但已持续超过 PASTE_MAX_MS 时，
- * 无论是否仍有数据到达都结束本轮（已收内容按粘贴插入），用户打字立刻恢复。
+ * 修复 1：总时长兜底——未闭合但已持续超过 PASTE_MAX_MS 时结束本轮。
+ * 修复 2：人为打字判据——粘贴是批量到达（读完一字节缓冲里还堆着），人打字
+ *         单个到达（两键之间缓冲为空）。连续 PASTE_TYPING_STREAK 个孤立
+ *         字节即判定为人在打字，立刻结束粘贴，按键还给正常解析。没有它，
+ *         用户仍要先干等满 3 秒才看到字出来。
  */
 @Test
 class PasteReadStopTest {
     /** 正常结束：读到 ESC[201~ 闭合标记立即停 */
     @TestCase
     func closedStops(): Unit {
-        @Assert(pasteReadStop(50, 0, true))
+        @Assert(pasteReadStop(50, 0, true, 0))
     }
 
     /** 600ms 空闲（idleStreak 达 3）停：这是原有的唯一退出条件，须保留 */
     @TestCase
     func idleStops(): Unit {
-        @Assert(pasteReadStop(700, 3, false))
+        @Assert(pasteReadStop(700, 3, false, 0))
     }
 
     /**
@@ -34,12 +37,36 @@ class PasteReadStopTest {
      */
     @TestCase
     func unclosedButTooLongStops(): Unit {
-        @Assert(pasteReadStop(PASTE_MAX_MS, 0, false))
+        @Assert(pasteReadStop(PASTE_MAX_MS, 0, false, 0))
     }
 
     /** 反例：刚开始的粘贴不得被提前截断（大粘贴分块投递依赖它） */
     @TestCase
     func freshPasteContinues(): Unit {
-        @Assert(!pasteReadStop(200, 0, false))
+        @Assert(!pasteReadStop(200, 0, false, 0))
+    }
+
+    /**
+     * 人为逐键打字：孤立字节达阈值即结束——这是"打字没反应"体感的关键，
+     * 否则用户得先干等满 PASTE_MAX_MS 才看到字。
+     */
+    @TestCase
+    func typingStopsQuickly(): Unit {
+        @Assert(pasteReadStop(200, 0, false, PASTE_TYPING_STREAK))
+    }
+
+    /** 差一个字节不算：阈值下沿不得提前放弃（否则大粘贴被截断） */
+    @TestCase
+    func typingJustBelowStreakContinues(): Unit {
+        @Assert(!pasteReadStop(200, 0, false, PASTE_TYPING_STREAK - 1))
+    }
+
+    /**
+     * 反例：批量粘贴走 1 秒仍要继续（字节持续堆积，isolatedBytes 恒 0）。
+     * 这条守住"不能因为超时就截断正常大粘贴"的边界。
+     */
+    @TestCase
+    func burstPasteKeepsReading(): Unit {
+        @Assert(!pasteReadStop(1000, 0, false, 0))
     }
 }
