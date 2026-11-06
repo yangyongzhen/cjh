@@ -325,12 +325,9 @@ public class Agent {
     public var onRoundTick: (Int64, Int64, Int64) -> Unit = { _, _, _ => }
     // 回合结束回调（渲染回合总结条：轮数/工具数/耗时/token用量/缓存命中率）
     public var onRunComplete: (RunSummary) -> Unit = { _ => }
-    // 排队输入拉取回调（atomcode 式"steer"：TUI 忙时提交只入队不打断，
-    // 每轮 LLM 请求前由 Agent 拉取——即"上一次工具调用完成后"的边界。
-    // None=当前回合无排队输入；非 None 注入为 user 消息让模型感知新指令。
-    // 注意：必须在 runLoop 循环内、interrupt 检查之后调用——用户 Esc 中断
-    // 时当前 turn 提前退出，剩余排队消息由 TUI 在 run 结束后作为新 turn 发送。
-    public var onRequestPendingInput: () -> Option<String> = { => None }
+    // 说明：排队输入不在回合内消费（v1.6.9 移除 onRequestPendingInput 回调）。
+    // TUI 忙时提交只入队，回合结束由装配层（entries.cj）出队作新回合发送——
+    // 中途注入会改写当前回合的任务语义（连发两条时第一条被打乱/吞掉）。
 
     // ==================== Agent 事件钩子（Claude Code 式，统一事件化 + 外部扩展）====================
     // 内部回调（onX）负责 UI 展示；hook 是外部注册点（插件/工具/宿主代码），
@@ -738,24 +735,11 @@ public class Agent {
             // 只在 run() 开头检查的话压缩永远不会触发（实测 48 轮 prompt 涨到 31K token）
             this.checkPendingCompact()
 
-            // 排队输入注入（atomcode 式"steer"）：上一轮工具调用完成、本轮
-            // 请求发出前的边界消费 TUI 队列——用户忙时提交的消息不打断当前
-            // 回合，在此作为 user 消息让模型在继续执行时感知新指令并可调整计划。
-            // 一次性排空队列（多条连发合并进本回合）。放在 checkPendingCompact
-            // 之后：避免刚注入的新指令随即被换装成摘要。Esc 中断优先于注入：
-            // 排空前再查一次 isInterrupted——中断后剩余队列消息由 TUI 在 run
-            // 结束后作为新 turn 发送（"中断并立即发送"，见 TuiApp Esc 分支）。
-            if (!this.isInterrupted()) {
-                try {
-                    // while-let 语法糖：条件每轮重新求值，拉到 Some 就注入，None 退出
-                    while (let Some(msg) <- this.onRequestPendingInput()) {
-                        this.messages.add(ChatMessage("user", msg))
-                        this.onAssistantText("\n[收到排队输入，将在本轮响应中处理]\n")
-                    }
-                } catch (e: Exception) {
-                    Log.warn("排队输入拉取回调异常: ${e}")
-                }
-            }
+            // 注意：Agent 回合内**不再**消费排队输入（v1.6.9 回退 v1.3.22 的 steer 注入）。
+            // 旧行为在每轮请求前把 TUI 队列一次性排空、以裸 user 消息塞进当前回合：
+            // 第 1 轮（未做任何工具调用前）也会排空，连发两条时第一条任务的执行语义被
+            // 第二条混进来改变，实测表现为"先发的任务被吞掉"。现语义 = 忙时消息只入队，
+            // 回合结束由 entries.cj 出队作**新回合**发送（dequeueInput → onSubmit）。
 
             // 顶层兜底：LLM 响应解析可能抛 IllegalArgumentException（非法 UTF-8 字节）
             // 不让它崩 TUI，转成错误消息返回

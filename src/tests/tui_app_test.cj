@@ -360,8 +360,9 @@ public class TuiAppKeyTest {
 
     @TestCase
     public func testQueueWhileBusyNoDirectSubmit(): Unit {
-        // steer：agent 执行中提交 → 入队，不直接 onSubmit、不打断当前回合
-        // （旧 commit 行为是"强制插入发送"=onInterrupt 打断——现回归为纯入队）
+        // agent 执行中提交 → 入队，不直接 onSubmit、不打断当前回合，也不在
+        // 回合内注入（v1.6.9：旧 steer 注入会打乱当前回合任务语义，
+        // 连发两条时先发的任务被吞；现改为回合结束后作新回合发送）
         let app = TuiApp()
         let submitted = ArrayList<String>()
         let interrupts = ArrayList<String>()
@@ -372,10 +373,32 @@ public class TuiAppKeyTest {
         app.handleKey(this.keyChar(105))  // i
         app.handleKey(KeyEvent(13))       // Enter
         @Assert(submitted.size, 0)        // busy：不直接提交
-        @Assert(interrupts.size, 0)       // steer：不打断当前回合
+        @Assert(interrupts.size, 0)       // 不打断当前回合
         @Assert(app.queueLength(), 1)     // 已入队
         @Assert(app.testInputText(), "")  // 输入框已清空
         app.setAgentRunning(false)
+    }
+
+    @TestCase
+    public func testQueuedMessagesDequeueInFifoOrder(): Unit {
+        // 忙时连发两条（用户实测场景）→ 都留在队列里，回合结束后按 FIFO
+        // 逐条出队，各自作新回合发送（不合并、不乱序）
+        let (app, submitted) = this.buildApp()
+        app.setAgentRunning(true)
+        app.handleKey(this.keyChar(97))   // a
+        app.handleKey(KeyEvent(13))       // Enter → 入队 "a"
+        app.handleKey(this.keyChar(98))   // b
+        app.handleKey(KeyEvent(13))       // Enter → 入队 "b"
+        @Assert(submitted.size, 0)        // 忙时均不直接提交
+        @Assert(app.queueLength(), 2)
+        app.setAgentRunning(false)        // 回合结束
+        let first = app.dequeueInput()
+        @Assert(first.isSome(), true)
+        @Assert(first.getOrThrow(), "a")  // FIFO：先入先出
+        let second = app.dequeueInput()
+        @Assert(second.isSome(), true)
+        @Assert(second.getOrThrow(), "b")
+        @Assert(app.queueLength(), 0)
     }
 
     @TestCase
@@ -413,9 +436,10 @@ public class TuiAppKeyTest {
         @Assert(app.queueLength(), 2)     // 追加入队
     }
 
-    // ==================== atomcode 式 steer：Esc = 中断并立即发送 ====================
-    // 忙时 Enter 只入队不打断（见 testQueueWhileBusyNoDirectSubmit）；
-    // 想夺回输入权：Esc（中断当前回合，剩余队列由 entries.cj 在 run 结束后
+    // ==================== 忙时入队 + Esc = 中断并立即发送 ====================
+    // 忙时 Enter 只入队：不打断当前回合、也不在回合内注入（见
+    // testQueueWhileBusyNoDirectSubmit）；当前回合作答完毕后由 entries.cj 出队
+    // 作新回合发送。想夺回输入权：Esc（中断当前回合，剩余队列等 run 结束后
     // 作为新 turn 自动发送）或 Ctrl+C 两级中断。
 
     @TestCase
