@@ -224,16 +224,23 @@ public func formatElapsedMs(ms: Int64): String {
  * 超时/取消时 `kill -9 -<pgid>` 能一次带走命令派生的后代进程
  * （Linux 实测：setsid 后 pgid == pid）。Windows 直接起本体。
  */
+// 输出**直接重定向到日志文件**（FromFile），stdin 丢弃：父进程不再持有管道，
+// 也就不需要读线程把管道抽干落盘。这不是风格选择——旧实现 `spawn { readerLoop }`
+// 是阻塞 read，占的是仓颉共享线程池的线程；2 核机器连起几个 bash_start，
+// 阻塞读线程就把池子吃满，TUI 主循环与 agent 调度一起饿死，表现为整个界面
+// 卡死 100 多秒（2026-11-06 实测：gdb 主线程栈停在
+// BackgroundTask.readerLoop → ProcessInputStream.read → read(pipe)，
+// 管道另一端正是 `sleep 120`）。重定向后零常驻线程，进程终态由 harvest() 轮询发现。
 @When[os != "Windows"]
-func launchBgProcess(shellPath: String, wrapped: String): SubProcess {
+func launchBgProcess(shellPath: String, wrapped: String, logFile: File): SubProcess {
     return launch("setsid", [shellPath, "-c", wrapped],
-        stdIn: Pipe, stdOut: Pipe, stdErr: Pipe)
+        stdIn: Discard, stdOut: FromFile(logFile), stdErr: FromFile(logFile))
 }
 
 @When[os == "Windows"]
-func launchBgProcess(shellPath: String, wrapped: String): SubProcess {
+func launchBgProcess(shellPath: String, wrapped: String, logFile: File): SubProcess {
     return launch(shellPath, ["-c", wrapped],
-        stdIn: Pipe, stdOut: Pipe, stdErr: Pipe)
+        stdIn: Discard, stdOut: FromFile(logFile), stdErr: FromFile(logFile))
 }
 
 /** 平台相关：杀掉整个进程组（含命令派生出的后代），失败静默 */
@@ -274,6 +281,8 @@ public class BackgroundTask {
     public let command: String
     public let cwd: String
     public let logPath: String
+    /** 退出码旁路文件：shell 结束时把 $? 写进来（判死与取码的唯一来源） */
+    public let rcPath: String
     public let timeoutMs: Int64
     public let startedAt: DateTime
     private let outputMaxBytes: Int64
@@ -282,23 +291,23 @@ public class BackgroundTask {
     private var stateValue: BgTaskState = BgRunning
     private var exitValue: Int64 = -1
     private var endedAtValue: Option<DateTime> = None
-    private var writtenValue: Int64 = 0
     private var deliveredValue: Int64 = 0
-    private var truncatedValue: Bool = false
     private var killReasonValue: BgKillReason = BgKillNone
-    private var logFile: Option<File> = None
+    // 下达 kill/超时信号的时刻：旁路退出码文件等不到时，靠它做兜底收场的宽限判断
+    private var killAtValue: Option<DateTime> = None
     private var procValue: Option<SubProcess> = None
     // 终态回调：由注册表注入（向 UI 层推送事件）；无人监听时为 None
     public var onFinish: ?(BgTaskState, Int64) -> Unit = None
 
     public init(id: String, kind: String, label: String, command: String, cwd: String,
-        logPath: String, timeoutMs: Int64, outputMaxBytes: Int64) {
+        logPath: String, rcPath: String, timeoutMs: Int64, outputMaxBytes: Int64) {
         this.id = id
         this.kind = kind
         this.label = label
         this.command = command
         this.cwd = cwd
         this.logPath = logPath
+        this.rcPath = rcPath
         this.timeoutMs = timeoutMs
         this.outputMaxBytes = outputMaxBytes
         this.startedAt = DateTime.now()
@@ -322,14 +331,24 @@ public class BackgroundTask {
         }
     }
 
-    /** 已落盘字节数（绝对偏移） */
+    /**
+     * 已落盘字节数（绝对偏移）。
+     *
+     * 子进程把输出直接重定向写日志文件（见 launchBgProcess），父进程不再有写
+     * 句柄可累加，故按文件实际大小取值；超过 outputMaxBytes 后按上限截断
+     * （投递语义不变：超限部分不交给模型）。
+     */
     public func written(): Int64 {
-        this.lock.lock()
+        var size: Int64 = 0
         try {
-            return this.writtenValue
-        } finally {
-            this.lock.unlock()
+            size = FileInfo(this.logPath).size
+        } catch (e: Exception) {
+            size = 0
         }
+        if (this.outputMaxBytes > 0 && size > this.outputMaxBytes) {
+            return this.outputMaxBytes
+        }
+        return size
     }
 
     /** 已交付给模型的字节数（绝对偏移） */
@@ -342,14 +361,9 @@ public class BackgroundTask {
         }
     }
 
-    /** 是否因超出落盘上限被截断 */
+    /** 是否因超出落盘上限被截断（写句柄已不在父进程，按日志实际大小判断） */
     public func isTruncated(): Bool {
-        this.lock.lock()
-        try {
-            return this.truncatedValue
-        } finally {
-            this.lock.unlock()
-        }
+        return this.outputMaxBytes > 0 && this.written() >= this.outputMaxBytes
     }
 
     public func pid(): Int64 {
@@ -384,7 +398,10 @@ public class BackgroundTask {
     }
 
     /**
-     * 挂上已启动的进程：开日志、起读线程与看门狗。
+     * 挂上已启动的进程：只登记句柄，不起任何常驻线程。
+     *
+     * 输出已由子进程直接重定向落盘（见 launchBgProcess），不必抽管道；
+     * 终态与超时由 harvest() 在轮询点上发现。
      */
     internal func attach(proc: SubProcess): Unit {
         this.lock.lock()
@@ -393,104 +410,133 @@ public class BackgroundTask {
         } finally {
             this.lock.unlock()
         }
-        try {
-            let f = File(this.logPath, OpenMode.Append)
-            this.lock.lock()
-            try {
-                this.logFile = Some(f)
-            } finally {
-                this.lock.unlock()
-            }
-        } catch (e: Exception) {
-            // 日志打不开不致命：任务照跑，poll 只能拿到空输出，状态/退出码仍可用
-            Log.warn("[bg] ${this.id} 打开日志失败 ${this.logPath}: ${e}")
-        }
-        spawn { => this.readerLoop(proc) }
-        if (this.timeoutMs > 0) {
-            spawn { => this.watchdogLoop() }
-        }
     }
 
-    /** 读线程：抽干管道 → 落盘；进程结束后唯一 wait 回收并定终态 */
-    private func readerLoop(proc: SubProcess): Unit {
-        var code: Int64 = -1
-        try {
-            let pipe = proc.stdOutPipe
-            let buf = Array<Byte>(8192, repeat: 0)
-            while (true) {
-                var n: Int64 = 0
-                try {
-                    n = pipe.read(buf)
-                } catch (e: Exception) {
-                    break
-                }
-                if (n <= 0) {
-                    break
-                }
-                this.appendOutput(buf, n)
-            }
-        } catch (e: Exception) {
-            Log.warn("[bg] ${this.id} 读管道异常: ${e}")
-        } finally {
-            try {
-                code = proc.wait()
-            } catch (e: Exception) {
-                code = -1
-            }
-            this.finish(code)
+    /**
+     * 非阻塞收割：进程已退出就定终态，超时就杀进程组。
+     *
+     * 以前这件事交给两个常驻 spawn 线程（readerLoop 阻塞读管道 + watchdogLoop
+     * 每 100ms 醒来）。后台任务本来就是"起进程即返回、靠 poll 收割"的设计，
+     * 运行期间不需要线程陪着等；而阻塞线程占的是仓颉共享线程池，2 核机器上
+     * 连起几个 bash_start 就把池子吃满，TUI 主循环与 agent 调度一起饿死，
+     * 表现为整屏卡死 100 多秒（2026-11-06 实测：gdb 主线程栈停在
+     * BackgroundTask.readerLoop → ProcessInputStream.read → read(pipe 另一端是
+     * `sleep 120`)）。现由调用方（启动抢跑窗口 / poll / 面板每秒节拍）顺手调，
+     * 零常驻线程。
+     *
+     * @return 本次是否改变了任务状态（调用方据此决定是否重推面板）
+     */
+    internal func harvest(): Bool {
+        if (this.state().isTerminal()) {
+            return false
         }
-    }
-
-    /** 落盘一段输出；超上限后停写但继续抽管道（否则子进程写满缓冲会挂死） */
-    private func appendOutput(buf: Array<Byte>, n: Int64): Unit {
-        var allowed = n
-        var truncated = false
-        this.lock.lock()
-        try {
-            if (this.outputMaxBytes > 0) {
-                let room = this.outputMaxBytes - this.writtenValue
-                if (room <= 0) {
-                    allowed = 0
-                    truncated = true
-                } else if (n > room) {
-                    allowed = room
-                    truncated = true
-                }
-            }
-        } finally {
-            this.lock.unlock()
-        }
-        if (allowed > 0) {
-            var piece = Array<Byte>(allowed, repeat: 0)
-            for (i in 0..allowed) {
-                piece[i] = buf[i]
-            }
+        // 超时：原 watchdogLoop 的职责，挪到轮询点
+        if (this.timeoutMs > 0 && this.elapsedMs() >= this.timeoutMs) {
             this.lock.lock()
-            let target = this.logFile
-            this.lock.unlock()
-            match (target) {
-                case Some(f) =>
-                    try {
-                        f.write(piece)
-                        f.flush()
-                    } catch (e: Exception) {
-                        Log.warn("[bg] ${this.id} 写日志失败: ${e}")
-                    }
-                case None => ()
+            let already = match (this.killReasonValue) {
+                case BgKillNone => false
+                case _ => true
             }
+            if (!already) {
+                this.killReasonValue = BgKillTimeout
+                this.killAtValue = Some(DateTime.now())
+            }
+            this.lock.unlock()
+            if (!already) {
+                Log.warn("[bg] ${this.id} 超时 ${this.timeoutMs}ms，强制结束")
+                this.terminateProc()
+            }
+            // 不能在这里 return：已经发过超时信号后，被 SIGKILL 的 shell 写不出
+            // 退出码文件，终态得由下面的 kill 兜底收场来定，否则永远停在 running
         }
         this.lock.lock()
+        let target = this.procValue
+        this.lock.unlock()
+        match (target) {
+            case Some(p) =>
+                // 判死只认旁路退出码文件（见 buildBgWrapper 的注释）：isAlive() 对
+                // 已退出但未回收的僵尸仍返回 true，wait(timeout) 第二次调用会忽略
+                // 超时直接阻塞——两个都不能用来轮询，只会把"看一眼"变成"等到底"。
+                match (this.readExitCodeFile()) {
+                    case Some(code) =>
+                        this.finish(code)
+                        // 进程此时必已退出，wait 立即返回，回收僵尸不阻塞
+                        try {
+                            let _ = p.wait()
+                        } catch (e: Exception) {
+                            ()
+                        }
+                        return true
+                    case None => ()
+                }
+            case None => ()
+        }
+        // 已发出 kill/超时信号，但旁路文件不会再有（被 SIGKILL 的 shell 写不了 $?）：
+        // 超过宽限仍未收到就按"已取消"收场，不能让任务永远停在 running
+        return this.finishKilledLongAgo()
+    }
+
+    /** 读旁路退出码文件；不存在、还没写完或内容不是整数时返回 None */
+    private func readExitCodeFile(): Option<Int64> {
+        var size: Int64 = 0
         try {
-            this.writtenValue += allowed
-            if (truncated) {
-                this.truncatedValue = true
+            size = FileInfo(this.rcPath).size
+        } catch (e: Exception) {
+            return None
+        }
+        // shell 写的是 "0\n" 这种几十字节的内容，超长说明不是退出码
+        if (size <= 0 || size > 32) {
+            return None
+        }
+        try {
+            let raw = readLogRange(this.rcPath, 0, size)
+            var value: Int64 = 0
+            var neg = false
+            var seen = false
+            for (b in raw) {
+                if (b == 45u8 && !seen) {
+                    neg = true
+                } else if (b >= 48u8 && b <= 57u8) {
+                    value = value * 10 + Int64(b - 48u8)
+                    seen = true
+                }
             }
-        } finally {
-            this.lock.unlock()
+            if (!seen) {
+                return None
+            }
+            return Some(if (neg) { -value } else { value })
+        } catch (e: Exception) {
+            return None
         }
     }
 
-    /** 定终态并关闭写句柄 */
+    /**
+     * kill / 超时后的兜底收场：
+     *
+     * 被 SIGKILL 的 shell 来不及写退出码，等不到旁路文件。发信号后超过宽限仍未
+     * 收到，就按下达的 killReason 定终态（killed / timeout），避免任务卡在 running
+     * 里永远占着槽位。
+     */
+    private func finishKilledLongAgo(): Bool {
+        this.lock.lock()
+        let reason = this.killReasonValue
+        let killedAt = this.killAtValue
+        this.lock.unlock()
+        if (match (reason) { case BgKillNone => true; case _ => false }) {
+            return false
+        }
+        match (killedAt) {
+            case Some(t) =>
+                if ((DateTime.now() - t).toMilliseconds() < 2000) {
+                    return false
+                }
+                this.finish(this.exitCode())
+                return true
+            case None => return false
+        }
+    }
+
+    /** 定终态 */
     private func finish(code: Int64): Unit {
         this.lock.lock()
         var reason = BgKillNone
@@ -511,19 +557,6 @@ public class BackgroundTask {
         } finally {
             this.lock.unlock()
         }
-        this.lock.lock()
-        let target = this.logFile
-        this.logFile = None
-        this.lock.unlock()
-        match (target) {
-            case Some(f) =>
-                try {
-                    f.close()
-                } catch (e: Exception) {
-                    ()
-                }
-            case None => ()
-        }
         // 只在"首次转终态"时通知：重复 finish 不重复推事件（客户端不闪两次）
         if (!wasTerminal) {
             match (this.onFinish) {
@@ -538,40 +571,7 @@ public class BackgroundTask {
         }
     }
 
-    /** 看门狗：到点置超时原因并杀进程组（不 wait，回收归读线程） */
-    private func watchdogLoop(): Unit {
-        while (true) {
-            try {
-                sleep(Duration.millisecond * 100)
-            } catch (e: Exception) {
-                return
-            }
-            this.lock.lock()
-            let st = this.stateValue
-            let reason = this.killReasonValue
-            this.lock.unlock()
-            if (st.isTerminal()) {
-                return
-            }
-            let alreadyKilling = match (reason) {
-                case BgKillNone => false
-                case _ => true
-            }
-            if (alreadyKilling) {
-                return
-            }
-            if (this.elapsedMs() >= this.timeoutMs) {
-                this.lock.lock()
-                this.killReasonValue = BgKillTimeout
-                this.lock.unlock()
-                Log.warn("[bg] ${this.id} 超时 ${this.timeoutMs}ms，强制结束")
-                this.terminateProc()
-                return
-            }
-        }
-    }
-
-    /** 标记原因并杀进程（组）：kill 路径与看门狗共用 */
+    /** 标记原因并杀进程（组）：kill 路径与超时收割共用 */
     internal func requestKill(reason: BgKillReason): Unit {
         this.lock.lock()
         try {
@@ -580,6 +580,7 @@ public class BackgroundTask {
             }
             if (match (this.killReasonValue) { case BgKillNone => true; case _ => false }) {
                 this.killReasonValue = reason
+                this.killAtValue = Some(DateTime.now())
             }
         } finally {
             this.lock.unlock()
@@ -612,15 +613,15 @@ public class BackgroundTask {
     public func takeOutput(maxBytes: Int64): (String, Int64) {
         this.lock.lock()
         var start: Int64 = 0
-        var total: Int64 = 0
         var st = BgRunning
         try {
             start = this.deliveredValue
-            total = this.writtenValue
             st = this.stateValue
         } finally {
             this.lock.unlock()
         }
+        // 总量以日志文件实际大小为准：子进程直接重定向写入，父进程没有累加器
+        let total = this.written()
         if (total <= start) {
             return ("", 0)
         }
@@ -708,17 +709,34 @@ public func shSingleQuote(s: String): String {
  * 2. `} < /dev/null` 把 stdin 接到 /dev/null——后台任务没有 stdin 通道，
  *    读 stdin 的命令（cat/read/交互脚本）不接 /dev/null 会永久挂住（实测 cat 立刻结束）。
  */
-public func buildBgWrapper(command: String, cwd: String, shellPath: String, isBash: Bool): String {
+/**
+ * 后台任务的 shell 包装：输出直写日志，**退出码由 shell 自己写旁路文件**
+ *
+ * 退出码为什么不由父进程 wait 取：父进程侧没有可靠的"非阻塞判死"手段——
+ * 实测 isAlive() 在子进程退出后仍返回 true（僵尸未回收），而 wait(timeout)
+ * 第一次超时抛异常后、第二次会忽略超时直接阻塞到进程结束（把轮询变成阻塞，
+ * 任务一多又把主循环拖死，这正是本次要修的病根）。故让 shell 退出时把 $?
+ * 落到 `rcPath`，父进程只 stat 那个小文件：零阻塞、零线程、跨平台一致。
+ *
+ * 三个坑必须钉住：
+ * 1. 命令体包在 `( ... )` 子 shell 里：命令自带 `exit` 时只结束子 shell，
+ *    末尾的 `echo $? > rc` 才写得到（否则父进程永远等不到终态）；
+ * 2. 收尾 `}` 独占一行——heredoc 才收得住（会话 heredoc 踩过同一个坑）；
+ * 3. `} < /dev/null 2>&1`——后台任务没有 stdin，读 stdin 的命令不接 /dev/null 会永久挂住。
+ */
+public func buildBgWrapper(command: String, cwd: String, shellPath: String, isBash: Bool,
+    rcPath: String): String {
     var sb = StringBuilder()
     if (isBash) {
         sb.append(shellPathFix(shellPath, true))
     }
+    sb.append("(\n")
     if (cwd.size > 0) {
         sb.append("cd ${shSingleQuote(cwd)} || exit 97; ")
     }
     sb.append("{ ")
     sb.append(command)
-    sb.append("\n} < /dev/null 2>&1")
+    sb.append("\n} < /dev/null 2>&1\n)\necho $? > ${shSingleQuote(rcPath)}")
     return sb.toString()
 }
 
@@ -841,6 +859,19 @@ public class BackgroundTaskRegistry {
         }
     }
 
+    /**
+     * 收割所有任务的状态：进程已退出的定终态、到点的按超时杀掉。
+     *
+     * 后台任务不再有常驻监视线程（见 BackgroundTask.harvest 的注释），所以
+     * 由 UI 的每秒节拍调这个入口。少了它，进程结束后状态会一直停在 running，
+     * 面板上已结束的任务永不淡出、槽位也永不释放。
+     */
+    public func harvestAll(): Unit {
+        for (t in this.allTasks()) {
+            let _ = t.harvest()
+        }
+    }
+
     public func runningTasks(): ArrayList<BackgroundTask> {
         var out = ArrayList<BackgroundTask>()
         for (t in this.allTasks()) {
@@ -899,17 +930,32 @@ public class BackgroundTaskRegistry {
         }
         let activeLabel = if (label.size > 0) { label } else { firstLineOf(command) }
         let logPath = "${this.logDir}/${id}.log"
+        let rcPath = "${this.logDir}/${id}.rc"
         let effectiveTimeout = if (timeoutMs > 0) { timeoutMs } else { this.cfg.timeoutMs }
-        let task = BackgroundTask(id, "bash", activeLabel, command, cwd, logPath,
+        let task = BackgroundTask(id, "bash", activeLabel, command, cwd, logPath, rcPath,
             effectiveTimeout, this.cfg.outputMaxBytes())
-        let wrapped = buildBgWrapper(command, cwd, shellPath, isBash)
+        let wrapped = buildBgWrapper(command, cwd, shellPath, isBash, rcPath)
+        // 日志文件同时是子进程的 stdout/stderr 目标与 poll 的读取源。
+        // 父进程只在 launch 期间持有句柄：dup 给子进程后立刻关闭——不占句柄，
+        // 也不需要读线程（详见 launchBgProcess 的注释）。
+        let logHandle = try {
+            File(logPath, OpenMode.Append)
+        } catch (e: Exception) {
+            return BgStart(false, "", "无法打开后台任务日志 ${logPath}（检查磁盘权限/空间）：${e}")
+        }
         var proc: SubProcess
         try {
-            proc = launchBgProcess(shellPath, wrapped)
+            proc = launchBgProcess(shellPath, wrapped, logHandle)
         } catch (e: Exception) {
             return BgStart(false, "", "启动后台任务失败（进程未能创建）：${e}")
+        } finally {
+            try {
+                logHandle.close()
+            } catch (e: Exception) {
+                ()
+            }
         }
-        // 先登记再 attach：attach 会立刻起读线程，登记晚了 poll 可能查不到
+        // 先登记再 attach：登记晚了 poll 可能查不到（attach 现在只记录句柄，不再起线程）
         task.onFinish = { st: BgTaskState, code: Int64 =>
             this.emitEvent(task, st, code, 0)
         }
@@ -932,6 +978,8 @@ public class BackgroundTaskRegistry {
                 break
             }
             waited += 20
+            // 抢跑窗口内自己收割：短命令当场定终态，不必等下一次 poll
+            let _ = task.harvest()
         }
         var early = ""
         var earlyBytes: Int64 = 0
@@ -952,6 +1000,8 @@ public class BackgroundTaskRegistry {
                 return BgPoll(false, id, BgRunning, -1, "",
                     0, "未找到后台任务 ${id}。用 bash_poll 前请确认 ID；没有正在运行的任务说明它可能从未启动成功。")
             case Some(t) =>
+                // 先收割一次：进程可能早已退出，没人 poll 时终态就靠这类轮询点发现
+                let _ = t.harvest()
                 let budget = if (maxBytes > 0) { maxBytes } else { this.cfg.pollMaxBytes }
                 let (txt, n) = t.takeOutput(budget)
                 return BgPoll(true, id, t.state(), t.exitCode(), txt, n,
@@ -960,7 +1010,7 @@ public class BackgroundTaskRegistry {
     }
 
     /**
-     * 取消任务：先杀进程组再杀本体，等读线程定终态（最多 3s）后返回。
+     * 取消任务：先杀进程组再杀本体，最多等 3s 收割到终态后返回。
      */
     public func kill(id: String): BgKill {
         match (this.find(id)) {
@@ -980,6 +1030,8 @@ public class BackgroundTaskRegistry {
                         break
                     }
                     waited += 50
+                    // 进程已被杀，靠收割把 wait 到的退出码转成终态
+                    let _ = t.harvest()
                 }
                 let st = t.state()
                 if (st.isTerminal()) {
@@ -1010,6 +1062,7 @@ public class BackgroundTaskRegistry {
         while (waited < 2000) {
             var alive = false
             for (t in this.allTasks()) {
+                let _ = t.harvest()
                 if (!t.state().isTerminal()) {
                     alive = true
                 }

@@ -420,6 +420,13 @@ public class TuiApp {
                     let nowSec = now.toUnixTimeStamp().toSeconds()
                     if (secondElapsed(nowSec, lastTickSec)) {
                         lastTickSec = nowSec
+                        // 后台任务收割：进程退出的终态没有监视线程通知，靠这个每秒
+                        // 轮询点发现（失败不能拖垮帧，吞掉继续）
+                        try {
+                            this.bgHarvest()
+                        } catch (e: Exception) {
+                            ()
+                        }
                         // agent 执行中：每秒重绘（刷新 "Thinking… (Ns · ↑ M tokens)" 计时）
                         if (this.isAgentBusy()) {
                             this.markDirty()
@@ -810,6 +817,15 @@ public class TuiApp {
             this.markDirty()
         }
     }
+
+    /**
+     * 后台任务收割钩子（装配层注入注册表的 harvestAll）。
+     *
+     * 后台任务已经不起常驻监视线程了（阻塞读管道会把共享线程池吃满、饿死本循环，
+     * 见 BackgroundTask.harvest 的注释），进程退出只能靠轮询发现——这个每秒节拍
+     * 是唯一的保底轮询点。少了它，任务跑完后面板会一直显示 running、槽位不释放。
+     */
+    public var bgHarvest: () -> Unit = { => }
 
     private func mapRowState(s: AgentNodeState): AgentRowState {
         match (s) {

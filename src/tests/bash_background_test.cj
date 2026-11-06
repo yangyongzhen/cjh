@@ -112,21 +112,24 @@ public class BackgroundPureTest {
     }
 
     /**
-     * shell 包装：两个坑必须钉住
-     * 1. 收尾 `}` 独占一行——heredoc 才收得住（会话 heredoc 踩过同一个坑）；
-     * 2. `} < /dev/null`——后台任务没有 stdin，读 stdin 的命令不接 /dev/null 会永久挂住。
+     * shell 包装：三个坑必须钉住
+     * 1. 命令体在 `( ... )` 子 shell 里——命令自带 exit 时末尾的 `echo $? > rc` 才写得到；
+     * 2. 收尾 `}` 独占一行——heredoc 才收得住（会话 heredoc 踩过同一个坑）；
+     * 3. `} < /dev/null`——后台任务没有 stdin，读 stdin 的命令不接 /dev/null 会永久挂住。
      */
     @TestCase
     public func testBuildWrapper(): Unit {
-        let w = buildBgWrapper("echo hi", "/tmp", "/bin/bash", true)
+        let w = buildBgWrapper("echo hi", "/tmp", "/bin/bash", true, "/tmp/bg.rc")
         @Assert(w.contains("cd '/tmp' || exit 97; "), true)
         @Assert(w.contains("{ echo hi"), true)
-        @Assert(w.endsWith("\n} < /dev/null 2>&1"), true)
+        @Assert(w.contains("\n} < /dev/null 2>&1\n)"), true)
+        // 退出码由 shell 自己落文件：父进程侧没有可靠的非阻塞判死手段
+        @Assert(w.contains("echo $? > '/tmp/bg.rc'"), true)
         // 收尾大括号独占一行的直接后果：命令里带 heredoc 也能正常闭合
-        let h = buildBgWrapper("cat <<EOF\nhello\nEOF", "", "/bin/bash", true)
-        @Assert(h.endsWith("\n} < /dev/null 2>&1"), true)
+        let h = buildBgWrapper("cat <<EOF\nhello\nEOF", "", "/bin/bash", true, "/tmp/bg.rc")
+        @Assert(h.contains("\n} < /dev/null 2>&1\n)"), true)
         // 不给 cwd 就不拼 cd（默认继承 cjh 进程 cwd）
-        let noCwd = buildBgWrapper("pwd", "", "/bin/bash", true)
+        let noCwd = buildBgWrapper("pwd", "", "/bin/bash", true, "/tmp/bg.rc")
         @Assert(noCwd.contains("cd "), false)
     }
 }
@@ -150,6 +153,8 @@ public class BashBackgroundTest {
     private func waitTerminal(reg: BackgroundTaskRegistry, id: String, limitMs: Int64): String {
         var waited: Int64 = 0
         while (waited < limitMs) {
+            // 终态没有监视线程通知，要靠轮询点收割（与产品里每秒节拍同一入口）
+            reg.harvestAll()
             match (reg.find(id)) {
                 case Some(t) =>
                     if (t.state().isTerminal()) {
@@ -479,5 +484,83 @@ public class BashBackgroundTest {
         let r = BashStartTool(reg).execute(args)
         @Assert(r.isError, false)
         @Assert(r.content.contains(dir), true)
+    }
+
+    /**
+     * 回归（2026-11-06 界面整体卡死 100+ 秒）：后台任务在跑时不得占用共享线程池。
+     *
+     * 旧实现对每个任务 `spawn { readerLoop }` 阻塞读管道，2 核机器上几个任务就把
+     * 线程池占满，TUI 主循环与 agent 调度一起饿死（gdb 主线程栈实测停在
+     * BackgroundTask.readerLoop → ProcessInputStream.read → read(pipe)，
+     * 管道另一端正是 `sleep 120`）。现在输出直接重定向落盘、零常驻线程，
+     * 所以起满任务后再 spawn 一个标记任务必须立刻跑到；若还占着池子，
+     * 它得排在 N 个 60s 的阻塞读后面。
+     */
+    @TestCase
+    public func testRunningTasksDoNotStarveThreadPool(): Unit {
+        let reg = this.newRegistry("bg_pool", 8)
+        let hits = ArrayList<Int64>()
+        let guard = Mutex()
+        try {
+            for (i in 0..8) {
+                let r = reg.start("sleep 60", "pool-${i}", "", "/bin/bash", true, 0, 0)
+                @Assert(r.ok, true)
+            }
+            spawn { =>
+                guard.lock()
+                try {
+                    hits.add(1)
+                } finally {
+                    guard.unlock()
+                }
+            }
+            var waited: Int64 = 0
+            while (waited < 5000) {
+                guard.lock()
+                let done = hits.size > 0
+                guard.unlock()
+                if (done) {
+                    break
+                }
+                sleep(Duration.millisecond * 20)
+                waited += 20
+            }
+            guard.lock()
+            let ran = hits.size > 0
+            guard.unlock()
+            @Assert(ran, true)
+        } finally {
+            let _ = reg.killAll()
+        }
+    }
+
+    /**
+     * 收割不依赖监视线程：没有常驻线程后，终态与退出码只能靠 harvestAll 轮询发现。
+     * 少了它，跑完的任务会永远停在 running——面板槽位不释放、模型以为它还在跑。
+     */
+    @TestCase
+    public func testHarvestDetectsExitAndCode(): Unit {
+        let reg = this.newRegistry("bg_harvest", 4)
+        let r = reg.start("sleep 0.2; exit 7", "", "", "/bin/bash", true, 0, 0)
+        @Assert(r.ok, true)
+        var waited: Int64 = 0
+        var wire = "running"
+        while (waited < 15000) {
+            reg.harvestAll()
+            match (reg.find(r.taskId)) {
+                case Some(t) =>
+                    wire = t.state().wire()
+                    if (t.state().isTerminal()) {
+                        @Assert(t.exitCode(), 7)
+                        break
+                    }
+                case None =>
+                    wire = "missing"
+                    break
+            }
+            sleep(Duration.millisecond * 50)
+            waited += 50
+        }
+        @Assert(wire, "failed")
     }
 }

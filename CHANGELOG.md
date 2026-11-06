@@ -6,6 +6,31 @@ cjh 版本变更记录。依据 git tag 史 + 提交史整理；版本号规则�
 
 ## [Unreleased]
 
+### 修复（后台任务把线程池吃满，界面整体卡死 100+ 秒）
+
+现象：连起几个 `bash_start` 长任务后再打字，整屏停帧几十秒到两分钟，随后又「自己好了」。
+gdb 坐实根因：主线程栈停在 `BackgroundTask.readerLoop → ProcessInputStream.read →
+__libc_read`——每个后台任务都 `spawn` 一个**阻塞读管道**的线程，而仓颉线程池按核数调度
+（本机 `nproc=2`），几个任务就把池子占满，TUI 主循环与 agent 调度一起饿死；`sleep 120`
+退出后管道 EOF、线程释放、积压按键一次性回放，这就是「卡一阵又能动」的由来。
+
+- **输出改为子进程直写日志**：`launchBgProcess` 的 `stdOut/stdErr` 由 `Pipe` 换成
+  `ProcessRedirect.FromFile(logFile)`，读线程整体消失；`takeOutput` 本就按偏移读日志文件，
+  交付语义（增量、UTF-8/行完整切点、上限截断）不变。
+- **退出码改由 shell 写旁路文件**：父进程侧没有可靠的非阻塞判死手段——实测 `isAlive()`
+  在子进程退出后仍返回 `true`（僵尸未回收），而 `wait(timeout)` 第一次超时抛异常后，
+  **第二次会忽略超时直接阻塞到进程结束**（实测请求 2ms、实际阻塞 1992ms）。故包装器改为
+  `( … ) ; echo $? > <id>.rc`：命令体放子 shell 里，自带 `exit` 也写得到退出码；父进程只
+  `stat` 那个几十字节的小文件，零阻塞、零线程、跨平台一致。
+- **超时与取消的收场不再靠线程**：超时判定、kill 兜底都挪到收割点；被 SIGKILL 的 shell
+  写不出退出码，故发信号后超过 2s 宽限即按下达的原因（killed / timeout）定终态，
+  任务不会永远停在 `running` 空占槽位。
+- **收割点**：`BackgroundTaskRegistry.harvestAll()`，由启动抢跑窗口、`bash_poll`、
+  `bash_kill` 与 TUI 每秒节拍（`TuiApp.bgHarvest`）调用。
+- 回归用例 `testRunningTasksDoNotStarveThreadPool`（起满 8 个 60s 任务后，标记任务必须
+  立刻跑到）、`testHarvestDetectsExitAndCode`（收割能拿到退出码）；`testBuildWrapper`
+  补子 shell 与退出码文件的断言。
+
 ### 修复（输入框「打字没反应」三条根因：粘贴吞键 / 压缩状态永挂 / 面板不褪）
 
 三起现象都像「界面卡死」，根因各不相同，逐个坐实：

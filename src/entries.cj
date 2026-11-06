@@ -732,6 +732,8 @@ func runTui(sessionId: String): Int64 {
                     tui.refreshBgTasks(bgPanelRows(bg))
                     pushBgSlots()
                 }
+                // 每秒收割：后台任务不起常驻监视线程，进程退出只能靠轮询发现
+                tui.bgHarvest = { => bg.harvestAll() }
                 tui.refreshBgTasks(bgPanelRows(bg))
                 pushBgSlots()
             case None => ()

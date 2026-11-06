@@ -30,6 +30,12 @@ public class BgTaskBroadcaster {
      */
     public var agentUsedProvider: () -> Int64 = { => 0 }
 
+    /**
+     * 收割重入保护：`harvestAll()` 定终态会触发 onEvent → broadcast/pushSlots →
+     * 再次进来收割。同一批任务一起结束时递归深度会随任务数增长，故挡一层。
+     */
+    private var harvesting: Bool = false
+
     public init() {}
 
     /**
@@ -43,7 +49,34 @@ public class BgTaskBroadcaster {
         this.agentsMax = agentsMax
     }
 
-    /** 登记一条新连接（握手成功后调用） */
+    /**
+     * 顺手收割后台任务终态
+     *
+     * Web 入口不像 TUI 有主循环节拍：任务终态若没人 `bash_poll`，面板会一直显示
+     * `running`，直到下一次任务事件或客户端重连才纠正。故在每个"推账"时点先收割一次
+     * ——成本只是一次小文件 stat，零阻塞、零线程（后台任务已无读线程，见
+     * `BackgroundTaskRegistry.harvestAll`）。
+     */
+    private func harvestTasks(): Unit {
+        if (this.harvesting) {
+            return
+        }
+        this.harvesting = true
+        try {
+            match (currentBackgroundRegistry()) {
+                case Some(reg) => reg.harvestAll()
+                case None => ()
+            }
+        } catch (e: Exception) {
+            Log.warn("[bg] Web 侧收割后台任务失败: ${e}")
+        } finally {
+            this.harvesting = false
+        }
+    }
+
+    /**
+     * 登记一条新连接（握手成功后调用）
+     */
     public func attach(wsId: String, channel: WebChannel): Unit {
         this.lock.lock()
         try {
@@ -52,6 +85,7 @@ public class BgTaskBroadcaster {
             this.lock.unlock()
         }
         // 新连接先补一份当前账：否则要等下一次任务事件才看得到（重连场景最明显）
+        this.harvestTasks()
         channel.sendBgSlots(this.currentBgUsed(), this.bgMax, this.currentAgentsUsed(), this.agentsMax)
     }
 
@@ -126,6 +160,9 @@ public class BgTaskBroadcaster {
      * 与 TUI `setSlots` 同一口径——槽位是低频量，无变化就不推。
      */
     public func pushSlots(): Unit {
+        // 先收割：账要反映真实状态，不能把已经结束的任务继续算成 running。
+        // 放在连接判断之前——订阅者可能恰好在此刻重连，收割仍是有意义的。
+        this.harvestTasks()
         let snapshot = this.channelSnapshot()
         if (snapshot.size == 0) {
             return
