@@ -690,6 +690,65 @@ public class InputBoxHistoryTest {
         @Assert(ib.text(), "x")
     }
 
+    /**
+     * 历史不存"光秃秃的 /"：它只是命令菜单的开关键，存进历史后 ↑ 一按就弹命令列表，
+     * 用户想翻上一条输入却看到一片待选命令（实测反馈："按上下键出来个 / 杠内容，
+     * 导致出来了选择项"）。真命令（/theme）仍然要记，否则回吸重跑就失效了。
+     */
+    @TestCase
+    public func testAddToHistorySkipsBareSlash(): Unit {
+        let ib = InputBox()
+        ib.addToHistory("/")
+        @Assert(ib.historyList().size, 0)
+        ib.addToHistory("普通消息")
+        ib.addToHistory("/theme")
+        @Assert(ib.historyList().size, 2)
+        @Assert(ib.historyList()[1], "/theme")
+    }
+
+    /**
+     * 存量历史里的裸 "/" 也要在载入时被剔掉：旧版本把它写进过文件（用户那份 history
+     * 末尾就有两条），不清掉的话修好写入侧也只是"以后不再新增"，↑ 依旧会撞上它。
+     */
+    @TestCase
+    public func testSetHistoryDropsBareSlash(): Unit {
+        let ib = InputBox()
+        let list = ArrayList<String>()
+        list.add("旧输入一")
+        list.add("/")
+        list.add("/new")
+        ib.setHistory(list)
+        @Assert(ib.historyList().size, 2)
+        ib.handleKey(KeyEvent(27, TermEsc.UP))
+        @Assert(ib.text(), "/new")  // 回吸到真命令，不是裸 "/"
+    }
+
+    /**
+     * 历史回吸不是"用户在敲字"：只回调 onHistoryRecall，不触发 onChange。
+     * onChange 的语义是"文本被编辑了"，上层拿它刷新 / 命令候选——回吸一条 "/theme"
+     * 走 onChange 等于把历史重打一遍，命令菜单会立刻重开并把 ↑↓ 抢去当选项导航。
+     */
+    @TestCase
+    public func testHistoryRecallDoesNotFireOnChange(): Unit {
+        let ib = InputBox()
+        let changes = ArrayList<String>()
+        ib.onChange = { _ => changes.add("c") }
+        let recalls = ArrayList<String>()
+        ib.onHistoryRecall = { t => recalls.add(t) }
+        ib.addToHistory("普通消息")
+        ib.addToHistory("/theme")
+        ib.handleKey(KeyEvent(27, TermEsc.UP))
+        @Assert(ib.text(), "/theme")
+        @Assert(changes.size, 0)  // 没被当成编辑
+        @Assert(recalls.size, 1)
+        @Assert(recalls[0], "/theme")
+        // ↓ 回底部恢复 draft：同样属于回吸，不改 onChange 语义
+        ib.handleKey(KeyEvent(27, TermEsc.DOWN))
+        @Assert(ib.text(), "")
+        @Assert(changes.size, 0)
+        @Assert(recalls.size, 2)
+    }
+
     @TestCase
     public func testPasteKeepsNewlines(): Unit {
         // v1.3.20：粘贴保留真实换行（旧版剥离），CRLF→LF 归一化；

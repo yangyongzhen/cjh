@@ -259,6 +259,12 @@ public class TuiApp {
         this.inputBox.onChange = { _ =>
             this.refreshCandidates()
         }
+        // 历史回吸（↑↓）：只换文本，不重开 / 命令候选。回吸不是"用户在敲字"——
+        // 走 onChange 会把历史重打一遍，回吸到 "/xxx" 就弹出命令菜单并把 ↑↓ 抢去导航
+        this.inputBox.onHistoryRecall = { _ =>
+            this.picker.hide()
+            this.markDirty()
+        }
         // 提交（Enter）→ 下拉确认 + 输出回显 + 外部 onSubmit
         this.inputBox.onSubmit = { line =>
             // /theme 交互式选择：picker 选中后确认当前预览主题
