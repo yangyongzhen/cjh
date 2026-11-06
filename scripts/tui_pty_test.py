@@ -486,10 +486,10 @@ def test_provider_paste() -> None:
 
 
 def test_queue_and_autodequeue() -> None:
-    """[场景10] 忙时 Enter 只入队（不打断、也**不中途注入**）；当前回合作答完毕后，
-    排队消息出队作为**新回合**发送（v1.6.9：回退 v1.3.22 的轮边界 steer 注入，
-    旧行为会把后到的消息塞进当前回合，先发的任务被吞掉）。"""
-    print("[场景10] 忙时 Enter 只入队 → 回合结束后作新回合发送（回合内不注入）")
+    """[场景10] 忙时 Enter 只入队（不打断当前回合）；方案 2 边界注入：Agent 在
+    工具批次执行完、下一轮请求前取**一条**并入本回合——所以只剩**一个**回合、
+    不再出现"回合结束后新回合重跑一遍"的第二条总结条。"""
+    print("[场景10] 忙时 Enter 只入队 → 工具批次后并入本回合（不打断、不另起回合）")
     cfg = make_config_dir()
     # 慢 mock（每轮 2.5s 延迟，4 轮 ≈ 10s 忙窗口）保证第二条消息提交时仍在执行；
     # 必须在 PtuSession 构造前设置（构造时快照 os.environ）
@@ -502,23 +502,23 @@ def test_queue_and_autodequeue() -> None:
         time.sleep(1.2)  # 等进入执行态（Thinking/Streaming）
         # 执行中提交第二条：只入队、不打断当前回合
         s.send("任务二\n")
-        s.expect("排队 1 条待发送", timeout=15)
+        s.expect("排队 1 条待并入", timeout=15)
         check("忙时入队显示排队提示（状态行）", True)
         # 第一回合作答完毕（4 轮工具链 + 最终答复）
         s.expect("FINAL-DONE", timeout=45)
         buf = strip_ansi(s.buf)
         check("忙时 Enter 不打断当前回合（无'已中断'）", "已中断" not in buf, f"(buf尾部: {buf[-300:]})")
-        # 回合内不注入：旧 steer 会打印"[收到排队输入，将在本轮响应中处理]"
-        check("回合内不注入排队输入（无'收到排队输入'）", "收到排队输入" not in buf,
+        # 回合内并入走的是带框架抬头的 System Notice，不是旧 steer 的裸注入
+        check("回合内不出现旧 steer 注入标记（无'收到排队输入'）", "收到排队输入" not in buf,
               f"(buf尾部: {buf[-300:]})")
-        # 回合结束后出队作新回合：MockProvider 的 callCount 跨回合累计，第二回合
-        # 直接走最终答复分支 → 总结条是 "1 round"（首回合是 "4 rounds"）。
-        # 用单数形态做判据，避免与首回合的 "4 rounds" 混淆。
-        s.expect("1 round", timeout=45)
+        # 方案 2 关键判据：整轮只应有一次作答——旧语义（回合结束再作新回合）会
+        # 打印第二次 FINAL-DONE。留出充足窗口再数一遍。
+        time.sleep(6.0)
         buf2 = strip_ansi(s.buf)
-        check("回合结束后排队消息作新回合发送（第二次总结条）", "1 round" in buf2,
+        check("排队消息并入本回合、不另起新回合（FINAL-DONE 只一次）",
+              buf2.count("FINAL-DONE") == 1, f"(出现 {buf2.count('FINAL-DONE')} 次)")
+        check("不产生第二回合总结条（无 '1 round'）", "1 round" not in buf2,
               f"(buf尾部: {buf2[-300:]})")
-        check("新回合里同样无中途注入", "收到排队输入" not in buf2, f"(buf尾部: {buf2[-300:]})")
         s.send_key(3)  # 空闲：一次退出
         s.wait_exit()
     finally:
@@ -527,8 +527,9 @@ def test_queue_and_autodequeue() -> None:
 
 
 def test_esc_interrupt_sends_queue() -> None:
-    """[场景11] Esc 中断并立即发送：忙时入队后按 Esc → 中断当前回合（已中断提示），
-    排队消息在 run 结束后作为新 turn 自动发送（第二回合作答完成即 FINAL-DONE）。"""
+    """[场景11] Esc 中断并立即发送：忙时入队后按 Esc → 中断当前回合（已中断提示）。
+    中断优先于边界注入（SteerPolicy.shouldInject），消息留在队列、在 run 结束后
+    作为新 turn 自动发送（第二回合作答完成即 FINAL-DONE）。"""
     print("[场景11] Esc 忙时中断 → 排队消息作为新 turn 立即发送")
     cfg = make_config_dir()
     os.environ["CJH_MOCK_DELAY_MS"] = "2500"
@@ -540,7 +541,7 @@ def test_esc_interrupt_sends_queue() -> None:
         time.sleep(1.2)  # 进入执行态
         # 忙时 Enter：只入队不打断
         s.send("任务二\n")
-        s.expect("排队 1 条待发送", timeout=15)
+        s.expect("排队 1 条待并入", timeout=15)
         # 裸 Esc：中断当前回合（不退出 TUI）
         s.send_esc_seq("\x1b")
         s.expect("已中断", timeout=30)

@@ -7,25 +7,28 @@ import cjcfg.*
 import cjh.tools.*
 
 /**
- * 排队输入「延后到回合结束后发送」单元测试（v1.6.9 回退 steer 中途注入）
+ * 排队输入「回合内边界注入 + 回合结束作新回合」单元测试（方案 2 安全版 steer）
  *
- * 语义（见 loop.cj runLoop 的说明与 entries.cj 回合收尾）：
- *  - Agent 回合内**不消费**排队输入：忙时提交只入队，本轮历史里不出现排队消息，
- *    模型本轮看到的 user 消息只有发起本回合的那一条
- *  - 回合结束由装配层出队，逐条作为**新回合**发送（FIFO）
- *  - 中断（Esc）后队列原样保留，同样留给回合结束后的新回合
+ * 语义（见 loop.cj runLoop 工具批次之后的注入点与 SteerPolicy）：
+ *  - 忙时提交只入队，不打断当前回合
+ *  - Agent 在**每轮工具批次执行完、下一轮请求前**这个边界取**一条**注入当前回合
+ *  - 还没跑过任何工具时不注入（旧 v1.3.22 steer 正是在这里吞任务）
+ *  - 已请求中断时不注入，队列原样留给下一回合
+ *  - 回合结束后由装配层出队，逐条作为**新回合**发送（FIFO）
  *
  * 回归背景：v1.3.22 的 steer 在每轮 LLM 请求前排空队列注入当前回合，且**第 1 轮
  * （未做任何工具调用前）也会排空**——连发两条时后一条以裸 user 消息混进先发的
  * 任务里，模型按后者作答，先发任务被吞掉（用户实测：先发「生成 h5 小游戏」、
- * 紧接着「郑州天气」，只跑了天气）。
+ * 紧接着「郑州天气」，只跑了天气）。v1.6.9 因此整段关闭、改为回合结束才发送；
+ * 本方案（方案 2）只在"工具批次确实跑完"的边界注入，且一次只注入一条。
  *
  * 确定性设计：
  *  - DeferMainProvider 前 toolRounds 轮返回 noop 工具调用（驱动多轮），之后返回最终文本；
- *    每轮记录 messages 里 user 消息条数——注入若复活，这里立刻多一条
+ *    每轮记录 messages 里 user 消息条数——注入若发生在错误边界，这里立刻多一条
  *  - DeferNoOpTool 在 execute 内入队 / 中断，模拟"工具执行期间用户按 Enter 入队 /
  *    按 Esc 中断"（run 内、轮边界之间，无竞态）
- *  - deferDequeue 复用装配层的同名语义（FIFO 取首），模拟 entries.cj 的回合后出队
+ *  - deferDequeue 复用装配层的同名语义（FIFO 取首）：既当 Agent 的 queuedInputSource，
+ *    也模拟 entries.cj 的回合后出队
  */
 
 // ==================== 测试 provider / 工具 / 队列辅助 ====================
@@ -150,6 +153,39 @@ func deferCountUserMsg(agent: Agent, content: String): Int64 {
     return n
 }
 
+/** content **包含** needle 的 user 消息条数（注入消息带框架抬头，不能整串匹配）。 */
+func deferCountUserContains(agent: Agent, needle: String): Int64 {
+    var n: Int64 = 0
+    for (m in agent.getMessages()) {
+        if (m.role == "user" && m.content.contains(needle)) {
+            n += 1
+        }
+    }
+    return n
+}
+
+/** content 包含 needle 的第一条 user 消息下标（未找到 -1）。 */
+func deferUserMsgIndexContains(agent: Agent, needle: String): Int64 {
+    let msgs = agent.getMessages()
+    for (i in 0..msgs.size) {
+        if (msgs[i].role == "user" && msgs[i].content.contains(needle)) {
+            return i
+        }
+    }
+    return -1
+}
+
+/** 第一条 tool 消息下标（无则 -1）——注入必须排在工具结果之后。 */
+func deferFirstToolMsgIndex(agent: Agent): Int64 {
+    let msgs = agent.getMessages()
+    for (i in 0..msgs.size) {
+        if (msgs[i].role == "tool") {
+            return i
+        }
+    }
+    return -1
+}
+
 /** user 消息总条数。 */
 func deferUserMsgTotal(agent: Agent): Int64 {
     var n: Int64 = 0
@@ -167,11 +203,11 @@ func deferUserMsgTotal(agent: Agent): Int64 {
 public class PendingInputDeferTest {
 
     /**
-     * 核心回归锁：工具执行期间入队的消息**不进本轮**——本轮历史里 user 消息
-     * 始终只有发起本回合的那一条（多轮 tool 往返也如此）。
+     * 方案 2 核心契约：工具批次执行完、下一轮请求前的边界注入**一条**排队消息。
+     * 第 1 轮还没跑工具 → 只有原始指令；第 2 轮起模型立刻看得到补充要求。
      */
     @TestCase
-    public func testQueuedInputNotInjectedDuringRun(): Unit {
+    public func testQueuedInputInjectedAtToolBoundary(): Unit {
         let provider = DeferMainProvider(2)
         let tool = DeferNoOpTool()
         let queue = ArrayList<String>()
@@ -180,30 +216,61 @@ public class PendingInputDeferTest {
         tool.enqueueTexts.add("运行中输入")
         let agent = deferBuildAgent(provider, tool)
         tool.agentRef = Some(agent)
+        agent.queuedInputSource = { => deferDequeue(queue) }
         let s = agent.run("原始指令")
         @Assert(s.reply.contains("FINAL-DEFER"), true)
-        // 本轮每次模型请求只看到 1 条 user 消息（注入复活即 >1）
-        @Assert(provider.userCounts.size >= 2, true)
-        for (n in provider.userCounts) {
-            @Assert(n, 1)
-        }
-        // 工具执行期间的历史快照同样只有 1 条
-        @Assert(tool.userCountsDuringRun.size >= 1, true)
-        for (n in tool.userCountsDuringRun) {
-            @Assert(n, 1)
-        }
-        // 回合结束后：消息未进历史、仍留在队列里等新回合
-        @Assert(deferUserMsgTotal(agent), 1)
-        @Assert(deferCountUserMsg(agent, "运行中输入"), 0)
-        @Assert(queue.size, 1)
+        // 第 1 轮 1 条（还没跑工具，不注入）；第 2/3 轮 2 条（边界注入一次）
+        @Assert(provider.userCounts.size, 3)
+        @Assert(provider.userCounts[0], 1)
+        @Assert(provider.userCounts[1], 2)
+        @Assert(provider.userCounts[2], 2)
+        // 工具执行期的历史快照：首次 1 条，注入后 2 条
+        @Assert(tool.userCountsDuringRun.size, 2)
+        @Assert(tool.userCountsDuringRun[0], 1)
+        @Assert(tool.userCountsDuringRun[1], 2)
+        // 注入恰好一次，且带框架抬头（不是裸 user 消息混进去）
+        @Assert(deferCountUserContains(agent, "运行中输入"), 1)
+        @Assert(deferCountUserContains(agent, SteerPolicy.NOTICE_HEAD), 1)
+        // 原始指令仍在最前、份数不变（先发任务不被吞、不被改写）
+        @Assert(deferUserMsgIndex(agent, "原始指令"), 1)
+        @Assert(deferCountUserMsg(agent, "原始指令"), 1)
+        @Assert(deferUserMsgTotal(agent), 2)
+        // 注入排在工具结果之后（边界，不是请求前砸进去）
+        @Assert(deferFirstToolMsgIndex(agent) > 1, true)
+        @Assert(deferUserMsgIndexContains(agent, "运行中输入") > deferFirstToolMsgIndex(agent), true)
+        // 队列被消费（不会在回合结束又被当成新回合重发一次）
+        @Assert(queue.size, 0)
     }
 
     /**
-     * 连发两条（用户实测场景）：两条都留在队列里、FIFO 顺序不变，
-     * 均不进入当前回合——即"先发的任务不会被后一条打乱"。
+     * 首轮保护（旧 steer 的吞任务根因）：一次工具都没跑过时，队列里的消息不进本回合，
+     * 也不会被偷偷消费——留给回合结束后的新回合。
      */
     @TestCase
-    public func testTwoQueuedMessagesStayQueuedInOrder(): Unit {
+    public func testNoInjectionBeforeAnyToolRan(): Unit {
+        let provider = DeferMainProvider(0)
+        let tool = DeferNoOpTool()
+        let queue = ArrayList<String>()
+        queue.add("排队中的任务")
+        let agent = deferBuildAgent(provider, tool)
+        tool.agentRef = Some(agent)
+        agent.queuedInputSource = { => deferDequeue(queue) }
+        let s = agent.run("原始指令")
+        @Assert(s.reply.contains("FINAL-DEFER"), true)
+        for (n in provider.userCounts) {
+            @Assert(n, 1)
+        }
+        @Assert(deferUserMsgTotal(agent), 1)
+        @Assert(queue.size, 1)
+        @Assert(queue[0], "排队中的任务")
+    }
+
+    /**
+     * 一次边界只注入一条：连发两条时后一条留在队列，等下个边界或回合结束的新回合，
+     * 不会把两条一次性砸进同一轮（那正是旧 steer 打乱任务的形态）。
+     */
+    @TestCase
+    public func testAtMostOneMessagePerBoundary(): Unit {
         let provider = DeferMainProvider(1)
         let tool = DeferNoOpTool()
         let queue = ArrayList<String>()
@@ -213,15 +280,88 @@ public class PendingInputDeferTest {
         tool.enqueueTexts.add("第三条：更新文档")
         let agent = deferBuildAgent(provider, tool)
         tool.agentRef = Some(agent)
+        agent.queuedInputSource = { => deferDequeue(queue) }
         let s = agent.run("第一条：生成 h5 小游戏")
         @Assert(s.reply.contains("FINAL-DEFER"), true)
-        for (n in provider.userCounts) {
-            @Assert(n, 1)
-        }
+        @Assert(provider.userCounts.size, 2)
+        @Assert(provider.userCounts[0], 1)
+        @Assert(provider.userCounts[1], 2)
+        @Assert(deferCountUserContains(agent, "第二条：补单元测试"), 1)
+        @Assert(deferCountUserContains(agent, "第三条：更新文档"), 0)
+        // 先发任务仍在最前
+        @Assert(deferUserMsgIndex(agent, "第一条：生成 h5 小游戏"), 1)
+        @Assert(queue.size, 1)
+        @Assert(queue[0], "第三条：更新文档")
+    }
+
+    /** 纯函数策略：中断优先；零工具调用不构成边界（首轮/纯文本回合都不注入）。 */
+    @TestCase
+    public func testSteerPolicyShouldInject(): Unit {
+        @Assert(SteerPolicy.shouldInject(false, 1), true)
+        @Assert(SteerPolicy.shouldInject(false, 3), true)
+        @Assert(SteerPolicy.shouldInject(false, 0), false)
+        @Assert(SteerPolicy.shouldInject(true, 2), false)
+        // 注入正文必须带抬头 + 原文，且写明"不要丢弃当前任务"
+        let notice = SteerPolicy.injectNotice("补一条单元测试", 4)
+        @Assert(notice.contains(SteerPolicy.NOTICE_HEAD), true)
+        @Assert(notice.contains("补一条单元测试"), true)
+        @Assert(notice.contains("不要丢弃"), true)
+    }
+
+    /**
+     * 多条排队跨边界逐条注入：FIFO 顺序不变、各一次，原始任务始终最前。
+     */
+    @TestCase
+    public func testFifoInjectionAcrossBoundaries(): Unit {
+        let provider = DeferMainProvider(2)
+        let tool = DeferNoOpTool()
+        let queue = ArrayList<String>()
+        tool.queueRef = Some(queue)
+        tool.enqueueAtCall = 1
+        tool.enqueueTexts.add("第二条：补单元测试")
+        tool.enqueueTexts.add("第三条：更新文档")
+        let agent = deferBuildAgent(provider, tool)
+        tool.agentRef = Some(agent)
+        agent.queuedInputSource = { => deferDequeue(queue) }
+        let s = agent.run("第一条：生成 h5 小游戏")
+        @Assert(s.reply.contains("FINAL-DEFER"), true)
+        @Assert(provider.userCounts.size, 3)
+        @Assert(provider.userCounts[0], 1)
+        @Assert(provider.userCounts[1], 2)
+        @Assert(provider.userCounts[2], 3)
+        @Assert(queue.size, 0)
+        @Assert(deferCountUserMsg(agent, "第一条：生成 h5 小游戏"), 1)
+        @Assert(deferCountUserContains(agent, "第二条：补单元测试"), 1)
+        @Assert(deferCountUserContains(agent, "第三条：更新文档"), 1)
+        let firstIdx = deferUserMsgIndex(agent, "第一条：生成 h5 小游戏")
+        let secondIdx = deferUserMsgIndexContains(agent, "第二条：补单元测试")
+        let thirdIdx = deferUserMsgIndexContains(agent, "第三条：更新文档")
+        @Assert(firstIdx < secondIdx, true)
+        @Assert(secondIdx < thirdIdx, true)
+    }
+
+    /**
+     * 中断优先于注入：工具批次跑完时若已请求中断，就不把消息塞进被中断的回合，
+     * 队列原样保留，交由回合结束后的新回合发送。
+     */
+    @TestCase
+    public func testInterruptSkipsInjection(): Unit {
+        let provider = DeferMainProvider(2)
+        let tool = DeferNoOpTool()
+        let queue = ArrayList<String>()
+        tool.queueRef = Some(queue)
+        tool.enqueueAtCall = 1
+        tool.enqueueTexts.add("运行中输入")
+        tool.interruptAtCall = 1
+        let agent = deferBuildAgent(provider, tool)
+        tool.agentRef = Some(agent)
+        agent.queuedInputSource = { => deferDequeue(queue) }
+        let s = agent.run("原始指令")
+        @Assert(s.reply.contains("已中断"), true)
         @Assert(deferUserMsgTotal(agent), 1)
-        @Assert(queue.size, 2)
-        @Assert(queue[0], "第二条：补单元测试")
-        @Assert(queue[1], "第三条：更新文档")
+        @Assert(deferCountUserContains(agent, "运行中输入"), 0)
+        @Assert(queue.size, 1)
+        @Assert(queue[0], "运行中输入")
     }
 
     /**

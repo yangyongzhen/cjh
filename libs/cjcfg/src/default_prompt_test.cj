@@ -73,4 +73,31 @@ public class DefaultSystemPromptTest {
         @Assert(cfg.systemPrompt == "自定义提示词", true)
         cleanDir(dir)
     }
+
+    /**
+     * 读文件口径（修"轮次预算被 sed 分段扫吃光"问题）。
+     *
+     * 实测 2026-11-06 16:30：50 轮预算里 59 次 bash 几乎全是
+     * `sed -n '595,645p' src/oschina.cj`——每片烧一整轮，任务还没进写作就没预算了。
+     * 锁死三条：read_file 一次读完 / 禁止对仓库源码逐片 sed / 例外边界必须写明
+     * （管道过滤、超大日志切片、字段提取、脚本内部仍是 sed 的地盘，
+     * 一刀切会挡掉合法用法）。
+     */
+    @TestCase
+    public func testDefaultPromptBansSliceReadingButKeepsSedExceptions(): Unit {
+        let dir = testTmpPath("cjh_ut_default_prompt_readfile")
+        cleanDir(dir)
+        Directory.create(dir)
+        File.writeTo("${dir}/settings.json", "{\"model\": \"m\", \"base_url\": \"https://x/v1\"}".toArray())
+        let cfg = CjhConfig(dir)
+        // 正例：read_file 是读文件的主路径
+        @Assert(cfg.systemPrompt.contains("read_file is the PRIMARY way to read files"), true)
+        // 反例：逐片 sed 扫仓库源码被点名禁止（含"每片烧一整轮"的代价说明）
+        @Assert(cfg.systemPrompt.contains("NEVER page a repo source file slice by slice"), true)
+        @Assert(cfg.systemPrompt.contains("EVERY slice burns a whole LLM round"), true)
+        // 例外边界：禁令只针对"读文件"，不针对 sed 本身
+        @Assert(cfg.systemPrompt.contains("That ban is about READING files, not about sed itself"), true)
+        @Assert(cfg.systemPrompt.contains("sed as a pipe filter"), true)
+        cleanDir(dir)
+    }
 }

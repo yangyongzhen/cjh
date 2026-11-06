@@ -397,3 +397,83 @@ public class ContinuationGuardTest {
     }
 }
 
+/**
+ * 轮次预算续段（capAction / segmentNotice）
+ *
+ * 实测 2026-11-06 16:30（用户十平台发文任务）：`Agent.run 正常结束: 51 rounds, 69 tools`，
+ * 50 轮预算里 59 次 bash 几乎全是 `sed -n '595,645p' src/oschina.cj` 这类分段扫源码——
+ * 预算被**探索**吃光，第 51 轮模型按老软顶指令交了「任务中止·任务未完成」，
+ * 用户看到的就是"异常结束"。
+ *
+ * 契约：
+ *  1. 撞软顶时还有未完成待办 + 段数没用尽 → Extend（续一段预算接着做）
+ *  2. 待办全部 Completed → WrapUp（活干完了，正常收尾，不得凭空续段）
+ *  3. 段数用尽 → WrapUp（哪怕还有活：预算必须有界，不能自旋）
+ *  4. MAX_SEGMENTS=1 等价于老行为（任何情况下都收尾）
+ *  5. 续段指令必须点名未完成待办，并明确禁止"用 bash 的 sed 分段扫源码"
+ */
+@Test
+public class CapActionTest {
+
+    // 枚举不能 ==（仓颉约束），用 match 取名比较
+    private func actionName(a: CapAction): String {
+        match (a) {
+            case CapAction.Extend => return "Extend"
+            case CapAction.WrapUp => return "WrapUp"
+        }
+    }
+
+    @TestCase
+    public func testExtendsWhenTodosUnfinished(): Unit {
+        // 首段撞顶 + 3 项待办未完成 + 还有段数 → 续
+        @Assert(this.actionName(ContinuationPolicy.capAction(1, 3, 3)), "Extend")
+    }
+
+    @TestCase
+    public func testWrapsUpWhenAllTodosDone(): Unit {
+        // 活干完了就收尾：不能因为"撞顶"这个事实本身而续段
+        @Assert(this.actionName(ContinuationPolicy.capAction(1, 3, 0)), "WrapUp")
+    }
+
+    @TestCase
+    public func testWrapsUpWhenSegmentsExhausted(): Unit {
+        // 段数用尽：还有 5 项没做完也必须收尾（预算有界，防自旋）
+        @Assert(this.actionName(ContinuationPolicy.capAction(3, 3, 5)), "WrapUp")
+        // 单段配置 = 老行为
+        @Assert(this.actionName(ContinuationPolicy.capAction(1, 1, 2)), "WrapUp")
+    }
+
+    @TestCase
+    public func testLastSegmentBoundary(): Unit {
+        // 3 段预算：第 2 段撞顶还能续（2<3），第 3 段撞顶必须收尾
+        @Assert(this.actionName(ContinuationPolicy.capAction(2, 3, 1)), "Extend")
+        @Assert(this.actionName(ContinuationPolicy.capAction(3, 3, 1)), "WrapUp")
+    }
+
+    @TestCase
+    public func testDefaultBudgetIsBounded(): Unit {
+        // 默认最多 3 段（含首段）——上限写死，避免"续段"把 maxIterations 变成摆设
+        @Assert(ContinuationPolicy.MAX_SEGMENTS, 3)
+    }
+
+    @TestCase
+    public func testSegmentNoticeListsOpenTodos(): Unit {
+        let a = TodoItem(1, "读完 cspub 源码")
+        a.status = TodoStatus.InProgress
+        let b = TodoItem(2, "写文章")
+        let open = ArrayList<TodoItem>()
+        open.add(a)
+        open.add(b)
+        let n = ContinuationPolicy.segmentNotice(open, 2, 3, 100)
+        @Assert(n.contains("第 2/3 段"), true)
+        // 段预算要写清楚，模型才知道本段还能干多少
+        @Assert(n.contains("100 轮"), true)
+        // 未完成待办要逐条点名（含状态），否则模型不知道还剩什么
+        @Assert(n.contains("#1 [in_progress] 读完 cspub 源码"), true)
+        @Assert(n.contains("#2 [pending] 写文章"), true)
+        // 吃一堑长一智：明确引导 read_file，别再拿 sed 分段扫
+        @Assert(n.contains("read_file"), true)
+        @Assert(n.contains("sed"), true)
+    }
+}
+
