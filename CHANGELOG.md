@@ -6,6 +6,39 @@ cjh 版本变更记录。依据 git tag 史 + 提交史整理；版本号规则�
 
 ## [Unreleased]
 
+### 修复（会话循环：忙时输入只入队，回合结束后作新回合——连发两条不再丢任务）
+
+用户实测：先发「生成个 h5 小游戏」，紧接着发「郑州天气怎么样」——只跑了后者，
+前者**从未被处理**。根因不是模型不听话，而是 v1.3.22 引入的 steer 中途注入：
+
+- 旧实现 `Agent.onRequestPendingInput` 在 runLoop **每轮 LLM 请求前**排空 TUI 队列，
+  以**裸 user 消息**注入当前回合。第 1 轮（还没做任何工具调用）也会排空，所以忙时
+  补发的第二条会混进第一条任务的回合里，模型按后一条作答，先发任务的语言语义被覆盖；
+  注入时只给用户打了一行 `[收到排队输入，将在本轮响应中处理]`，模型侧**无任何标注**
+- 回合结束时 `entries.cj` 再取队列——此时已被排空 → 两条消息只剩一条真正执行
+
+修复（回退到 v1.3.22 之前的语义，与 atomcode 的"忙时入队、`Ctrl+X` 中断后逐条发送"一致）：
+
+- `src/agent/loop.cj`：删除 runLoop 每轮开头的排空注入块与 `onRequestPendingInput` 回调
+  （**回合内不再消费排队输入**）
+- `src/entries.cj`：删除 `agent.onRequestPendingInput = { => tui.dequeueInput() }` 接线；
+  保留回合结束后的 `dequeueInput()` → `setAgentRunning(true)` → `onSubmit(next)`，即排队
+  消息**逐条作为新回合**发送（先置忙堵住调度窗口）
+- 交互不变的部分：忙时 Enter 只入队（不打断当前回合）、状态行 `排队 N 条待发送`、
+  Esc 中断当前回合并保留队列、Ctrl+C 两级中断；并行仍走子代理/后台任务槽位，不靠注入
+
+测试同步（旧契约的 steer 用例整体改写）：
+
+- `src/agent/pending_input_test.cj` 重写 5 例：回合内**不注入**（每次模型请求与每次工具
+  执行时 user 消息恒为 1 条）、连发两条**留在队列且 FIFO 顺序不变**、回合结束后逐条作
+  新回合（先发任务仍在历史最前、各自恰好一次）、中断后队列原样保留、空队列不产生额外回合
+- `src/tests/tui_app_test.cj`：忙时入队用例注释改为新语义，新增 `testQueuedMessagesDequeueInFifoOrder`
+  （忙时连发两条 → 回合结束后按 FIFO 逐条出队）
+- `scripts/tui_pty_test.py` 场景 10/11 改断言：不再等 `收到排队输入`；改为断言"回合内无注入
+  标记 + 第一回合跑完（4 rounds）+ 随后排队消息自己开新回合（总结条 `1 round`，因 mock
+  的 callCount 跨回合累计）"；场景 11 保留"Esc 中断 → 队列消息作新 turn"，并加无注入断言
+
+## [Unreleased]（历史）
 ### 新增（后台任务层：bash 不再阻塞回合 + 三处统一观测面，版本 1.6.5 → 1.6.8）
 
 借鉴 AtomCode 的执行模型：agent 循环不该被一条长命令卡住，回合内可以并发跑多条命令。

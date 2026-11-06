@@ -305,9 +305,10 @@ public class TuiApp {
                 // 排队状态由动态状态行实时显示（"排队 N 条"），agent 结束自动消失。
                 // busy || 队列非空都入队：堵住 run 结束→下一条启动的窗口期
                 // （否则该窗口提交的消息绕过队列、与续跑消息并发执行同一 Agent）。
-                // atomcode 式 steer：忙时提交只入队、不打断当前回合——Agent 每轮
-                // LLM 请求前经 onRequestPendingInput 拉取队列（"上一次工具调用
-                // 完成后"的边界），模型在继续执行时感知新指令并可调整计划。
+                // 忙时提交只入队、不打断当前回合，也**不在回合内注入**——
+                // 等当前回合作答完毕，由 entries.cj 出队作为**新回合**发送。
+                // （v1.6.9：旧 steer 语义会在每轮 LLM 请求前排空队列塞进本回合，
+                // 连发两条时先发的任务被后一条打乱/吞掉，实测丢失任务。）
                 // 想夺回输入权：Esc（中断并立即发送）或 Ctrl+C 两级中断。
                 if (this.isAgentBusy() || this.queueLength() > 0) {
                     this.enqueueInput(finalLine)

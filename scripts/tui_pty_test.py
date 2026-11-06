@@ -486,10 +486,10 @@ def test_provider_paste() -> None:
 
 
 def test_queue_and_autodequeue() -> None:
-    """[场景10] steer：执行中提交只入队、不打断（状态行排队提示）；
-    Agent 每轮 LLM 请求前拉取队列注入 user 消息——排队消息在本回合内
-    被处理（不产生新 turn、FINAL-DONE 恰好一次）。"""
-    print("[场景10] steer：忙时 Enter 只入队（不打断）→ 轮边界注入排队输入")
+    """[场景10] 忙时 Enter 只入队（不打断、也**不中途注入**）；当前回合作答完毕后，
+    排队消息出队作为**新回合**发送（v1.6.9：回退 v1.3.22 的轮边界 steer 注入，
+    旧行为会把后到的消息塞进当前回合，先发的任务被吞掉）。"""
+    print("[场景10] 忙时 Enter 只入队 → 回合结束后作新回合发送（回合内不注入）")
     cfg = make_config_dir()
     # 慢 mock（每轮 2.5s 延迟，4 轮 ≈ 10s 忙窗口）保证第二条消息提交时仍在执行；
     # 必须在 PtuSession 构造前设置（构造时快照 os.environ）
@@ -500,24 +500,25 @@ def test_queue_and_autodequeue() -> None:
         time.sleep(1.0)
         s.send("任务一\n")
         time.sleep(1.2)  # 等进入执行态（Thinking/Streaming）
-        # 执行中提交第二条：steer 语义=只入队、不打断当前回合
+        # 执行中提交第二条：只入队、不打断当前回合
         s.send("任务二\n")
         s.expect("排队 1 条待发送", timeout=15)
         check("忙时入队显示排队提示（状态行）", True)
-        # 轮边界（上一轮工具完成后、本轮请求前）Agent 拉取队列注入 user 消息
-        s.expect("收到排队输入", timeout=30)
-        check("轮边界注入排队输入（收到排队输入标记）", True)
-        # 排队消息在本回合内处理：整回合正常跑完，无中断
-        s.expect("FINAL-DONE", timeout=30)
+        # 第一回合作答完毕（4 轮工具链 + 最终答复）
+        s.expect("FINAL-DONE", timeout=45)
         buf = strip_ansi(s.buf)
         check("忙时 Enter 不打断当前回合（无'已中断'）", "已中断" not in buf, f"(buf尾部: {buf[-300:]})")
-        # 「不产生新 turn」判据：mock 工具链只跑一遍（4 rounds）。
-        # 不用"FINAL-DONE 在原始输出流里恰好一次"——TUI 是差分渲染，布局变化会把同一行
-        # 整行重绘，该文本在流里出现两次（实测两次上下文完全相同＝同一行重绘，屏幕仍只有
-        # 一处；6 次复跑里 2 次 count=2），旧判据在重绘下必然偶发误报
-        check("排队消息不产生新 turn（工具链只跑一遍）",
-              "8 rounds" not in buf and "4 rounds" in buf,
-              f"(4rounds={'4 rounds' in buf}, 8rounds={'8 rounds' in buf})")
+        # 回合内不注入：旧 steer 会打印"[收到排队输入，将在本轮响应中处理]"
+        check("回合内不注入排队输入（无'收到排队输入'）", "收到排队输入" not in buf,
+              f"(buf尾部: {buf[-300:]})")
+        # 回合结束后出队作新回合：MockProvider 的 callCount 跨回合累计，第二回合
+        # 直接走最终答复分支 → 总结条是 "1 round"（首回合是 "4 rounds"）。
+        # 用单数形态做判据，避免与首回合的 "4 rounds" 混淆。
+        s.expect("1 round", timeout=45)
+        buf2 = strip_ansi(s.buf)
+        check("回合结束后排队消息作新回合发送（第二次总结条）", "1 round" in buf2,
+              f"(buf尾部: {buf2[-300:]})")
+        check("新回合里同样无中途注入", "收到排队输入" not in buf2, f"(buf尾部: {buf2[-300:]})")
         s.send_key(3)  # 空闲：一次退出
         s.wait_exit()
     finally:
@@ -527,7 +528,7 @@ def test_queue_and_autodequeue() -> None:
 
 def test_esc_interrupt_sends_queue() -> None:
     """[场景11] Esc 中断并立即发送：忙时入队后按 Esc → 中断当前回合（已中断提示），
-    排队消息在 run 结束后作为新 turn 自动发送（FINAL-DONE 恰好一次）。"""
+    排队消息在 run 结束后作为新 turn 自动发送（第二回合作答完成即 FINAL-DONE）。"""
     print("[场景11] Esc 忙时中断 → 排队消息作为新 turn 立即发送")
     cfg = make_config_dir()
     os.environ["CJH_MOCK_DELAY_MS"] = "2500"
@@ -544,9 +545,12 @@ def test_esc_interrupt_sends_queue() -> None:
         s.send_esc_seq("\x1b")
         s.expect("已中断", timeout=30)
         check("Esc 中断当前回合（已中断提示）", True)
-        # 排队消息在 run 结束后作为新 turn 自动发送
-        s.expect("FINAL-DONE", timeout=30)
+        # 排队消息在 run 结束后作为新 turn 自动发送（首回合被中断，故
+        # FINAL-DONE 只可能来自这个新回合）
+        s.expect("FINAL-DONE", timeout=45)
         check("排队消息中断后作为新 turn 发送", True)
+        buf = strip_ansi(s.buf)
+        check("中断路径同样不在回合内注入", "收到排队输入" not in buf, f"(buf尾部: {buf[-300:]})")
         s.send_key(3)  # 空闲：一次退出
         s.wait_exit()
     finally:
