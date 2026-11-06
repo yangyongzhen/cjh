@@ -33,10 +33,14 @@ import cjterm.*
  * v6：新增出站帧 bg_task（后台任务状态：task_id / kind / label / state /
  *     exit_code / elapsed_ms / new_output_chars；bash_start 成功、转终态、
  *     bash_kill 生效时推送）。旧客户端不认该 type 即忽略，其余帧形状不变。
+ * v7：新增出站帧 bg_slots（两本槽位账全局快照：bg_used / bg_max /
+ *     agents_used / agents_max；任务起停时推、新连接握手后补推一次）。
+ *     agents_max = 0 表示该入口不启用子代理（Web 模式不建 SubagentScheduler），
+ *     客户端据此省略 agents 段，而不是画一个永远不变的假账。
  *     （每次帧形状或帧集合变化都递增，客户端按版本决定要不要读新字段）
  */
 public func capabilityProtocolVersion(): Int64 {
-    return 6
+    return 7
 }
 
 /**

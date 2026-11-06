@@ -659,6 +659,22 @@ public func tasksFrameJson(tasks: JsonArray): String {
  * 与 tasks 帧分开成两帧而不是塞进 tasks：语义不同（一个是待办清单、一个是进程），
  * 客户端面板也要分开渲染；旧客户端不认这个 type 直接忽略，不会误渲染。
  */
+/**
+ * 槽位账帧（v7 `bg_slots`）：两本限量账的全局快照
+ *
+ * 为什么不塞进 `bg_task`：后者按 `task_id` upsert 单行，账是全局量——每行都带一份
+ * 同样的账既冗余，行数多时还会反复覆盖同一个值。独立帧只在账变化时发一次。
+ */
+public func bgSlotsFrameJson(bgUsed: Int64, bgMax: Int64, agentsUsed: Int64, agentsMax: Int64): String {
+    var obj = JsonObject()
+    obj.put("type", JsonString("bg_slots"))
+    obj.put("bg_used", JsonInt(bgUsed))
+    obj.put("bg_max", JsonInt(bgMax))
+    obj.put("agents_used", JsonInt(agentsUsed))
+    obj.put("agents_max", JsonInt(agentsMax))
+    return obj.toJsonString()
+}
+
 public func bgTaskFrameJson(info: BgTaskEventInfo): String {
     var obj = JsonObject()
     obj.put("type", JsonString("bg_task"))

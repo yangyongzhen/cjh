@@ -37,6 +37,9 @@ func sampleEventObj(name: String): JsonObject {
             return JsonValue.fromStr(
                 bgTaskFrameJson(BgTaskEventInfo("bg-1", "bash", "npm run dev",
                     BgTaskState.BgRunning, -1, 0, 0))).asObject()
+        case "bg_slots" =>
+            // v7 出站帧：槽位账必须是真能构造的，不能只写在清单里
+            return JsonValue.fromStr(bgSlotsFrameJson(1, 8, 0, 0)).asObject()
         case "history_messages" =>
             return JsonValue.fromStr(historyMessagesJson("s", JsonArray())).asObject()
         case _ => return JsonObject()

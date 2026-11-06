@@ -29,7 +29,7 @@
 | C4 | §7「子代理 tokens 计入父 RunSummary」 | `RunSummary` 无相应字段；只在 task 结果文本里带 `↑↓`，总结条不含全树 | P1 成本不可见（而"成本不可见"正是无效派生的根因） |
 | C5 | §7「token 预算 / 时间上限」 | 均无；**子代理无墙钟超时** → 卡住会把父回合的组 barrier 永久阻塞 | **P0** 违反不变量 4「有界资源」 |
 | D1 | §9「C：explore→快模型路由（复用 summaryProvider）」 | 未做；子代理一律用父 provider | 待 C 期 |
-| W1 | §8「Web 协议 v5 加 agent_id/agent_label」 | 已作为"偏差 1"延后，只做了 reason 前缀 | 可接受，但 TUI 树呈现会连带需要它 |
+| W1 | §8「Web 协议 v5 加 agent_id/agent_label」 | **已落地**：协议 v5 起 tool_start / tool_result 带可选 agent_id / agent_label（缺省不序列化 = 父回合，不虚报身份）；协议现已到 v7（新增 bg_task / bg_slots 帧） | ✅ 已落地（原记「已延后」为旧评估） |
 | W2 | §10 风险 2「WS 靠 request_id 多路复用」 | **网关侧实现是正确的**：`pendingApprovals: HashMap<String, ApprovalSlot>`（`src/gateway/channel.cj:346-347`），未知/超时/重复答复都结构化报错 | ✅ 真落地（对比 TUI 侧的错误做法，见 §3.1） |
 | T1 | 门禁「per 项配测试」 | 子代理测试全是**顺序**脚本化 provider（`SubagentScriptProvider`），没有一条并发用例 | P1：并发是本期的本质，必须补并发测试 |
 | T2 | `cancelled` 判定（§11.1 偏差 2） | 靠 `summary.reply` 前缀 `[已中断` 字符串嗅探；本期还要加 `timeout`/`budget_exceeded`，字符串嗅探会更脆 | P2：改由 `RunSummary` 显式字段承载（`interrupted: Bool`），前缀仅用于展示 |

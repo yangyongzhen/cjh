@@ -136,6 +136,7 @@ public class StaticAssets {
                 <div id="bg-panel" class="task-panel collapsed">
                     <div class="task-panel-header" onclick="toggleBgPanel()">
                         <span>后台任务</span>
+                        <span id="bg-slots" class="bg-slots"></span>
                         <span id="bg-count">0</span>
                     </div>
                     <div id="bg-list" class="task-list"></div>
@@ -1332,6 +1333,10 @@ function handleServerMessage(msg) {
             // 后台任务状态（协议 v6）：属于进程级全局面板，与待办任务列表互不影响
             handleBgTask(msg);
             break;
+        case 'bg_slots':
+            // 两本槽位账（协议 v7）：全局量，独立帧只在账变化时到
+            handleBgSlots(msg);
+            break;
         case 'history_messages':
             renderHistoryMessages(msg.messages, msg.session_id);
             break;
@@ -1680,6 +1685,34 @@ function toggleTaskPanel() {
 let bgTasks = {};
 // 与后端 keepFinished=32 对齐：终态行最多留这么多，运行中的永远保留
 const BG_MAX_FINISHED = 32;
+// 两本槽位账（协议 v7 bg_slots）：bg 取进程级任务表；agents 在本入口未启用时上限为 0，
+// 前端据此省略 agents 段——与 TUI fmtSlotLedger 同一口径，不画永不变化的假账
+let bgSlots = { bg_used: 0, bg_max: 0, agents_used: 0, agents_max: 0 };
+
+function handleBgSlots(msg) {
+    if (!msg) {
+        return;
+    }
+    bgSlots = {
+        bg_used: msg.bg_used || 0,
+        bg_max: msg.bg_max || 0,
+        agents_used: msg.agents_used || 0,
+        agents_max: msg.agents_max || 0
+    };
+    renderBgTasks();
+}
+
+// 账文本：上限 <= 0 表示不限（只写用量）；agents 未启用（上限 0 且用量 0）整段省略
+function formatSlots() {
+    function pair(used, max) {
+        return max > 0 ? used + '/' + max : String(used);
+    }
+    let text = 'bg ' + pair(bgSlots.bg_used, bgSlots.bg_max);
+    if (bgSlots.agents_max > 0 || bgSlots.agents_used > 0) {
+        text += '  agents ' + pair(bgSlots.agents_used, bgSlots.agents_max);
+    }
+    return text;
+}
 
 function handleBgTask(msg) {
     if (!msg || !msg.task_id) {
@@ -1764,6 +1797,11 @@ function renderBgTasks() {
     });
 
     countEl.textContent = items.length;
+    // 槽位账与任务行同一帧重绘：账变化本来就会触发 renderBgTasks，无需单独通路
+    let slotsEl = document.getElementById('bg-slots');
+    if (slotsEl) {
+        slotsEl.textContent = formatSlots();
+    }
     // 有任务就展开（与待办面板同一约定：collapsed 是可折叠状态，不是永久关闭）
     if (items.length > 0) {
         panelEl.classList.remove('collapsed');
@@ -2663,6 +2701,13 @@ body {
 /* ====== 后台任务面板（bg_task 帧） ====== */
 /* 与待办任务共用 .task-panel 折叠外壳，行样式单独一套：这里显示的是进程状态， */
 /* 需要 ID / 标签 / 状态 / 耗时 / 退出码，且终态行不该被划掉（那是待办语义） */
+.bg-slots {
+    font-size: 11px;
+    color: var(--text-muted, var(--text-secondary));
+    margin-left: 8px;
+    font-family: monospace;
+}
+
 .bg-item {
     display: flex;
     align-items: center;
