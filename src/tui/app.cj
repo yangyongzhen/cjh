@@ -795,7 +795,7 @@ public class TuiApp {
     }
 
     /**
-     * 刷新两本槽位账（B-3 收敛版）：bash 后台任务与子代理各一本，显示在面板标题
+     * 刷新两本槽位账（B-3 收敛版）：bash 后台任务与子代理各一本，显示在状态行心跳
      *
      * 与 refreshBgTasks 同一个"面板内部变更检测 + 有变化才 markDirty"的口径：
      * 槽位是低频量（起/停任务、派/收子代理），无变化时不该触发全屏重绘。
@@ -1994,7 +1994,8 @@ public class TuiApp {
             let agentsH: Int64 = this.agentsPanel.height(outH0, cols)
             // 面板带高度：左右并排取两者较大值（不再垂直相加堆叠）
             let maxBaseH: Int64 = if (tasksH > agentsH) { tasksH } else { agentsH }
-            // bgH：后台任务面板高度（B-2）——全宽独占一行带，垂直叠在 Tasks/Agents 之上
+            // bgH：后台任务面板高度（B-2）——无边框紧凑条（≤2 行），
+            // 垂直叠在 Tasks/Agents 之上
             let bgH: Int64 = this.bgPanel.height(outH0, cols)
             let maxPanelsH: Int64 = maxBaseH + bgH
             // 动态状态行位置：statusRow - 1(间隔) - maxPanelsH(面板带) - 1(自身)
@@ -2026,7 +2027,7 @@ public class TuiApp {
                     this.reasoningLock.unlock()
                     this.outputLock.unlock()
                 }
-                // 后台任务面板（B-2）：全宽独占一行带，叠在 Tasks/Agents 面板带**之上**，
+                // 后台任务面板（B-2）：无边框紧凑条，叠在 Tasks/Agents 面板带**之上**，
                 // 故 availRow 取面板带上沿。outH 传 outH0 与 height() 同参数——
                 // 两边若用不同上限会在 agent 运行时差出 1 行，多占行把输出区顶掉
                 let _ = this.bgPanel.render(this.canvas, statusRow - 1 - maxBaseH, cols, outH0)
@@ -2137,7 +2138,7 @@ public class TuiApp {
                 Ansi.fg(Ansi.THEME_ACCENT) + hb + Ansi.reset()
         }
         // 后台任务同理：面板在窄终端或高度不足时**不渲染**，状态行是最后一道可见性保障
-        //（只报条数与运行数，不报耗时——那条每秒都在变，状态行不必跟着抖）
+        //（面板无标题后，槽位账与各状态计数只在心跳里可见；不报耗时——那条每秒都在变）
         let bgHb = this.bgPanel.heartbeat()
         if (bgHb.size > 0) {
             line += Ansi.fg(Ansi.THEME_MUTED) + "  · " + Ansi.reset() +

@@ -163,17 +163,21 @@ public class BgTaskPanelTest {
     @TestCase
     public func testHeartbeat(): Unit {
         let panel = BgTaskPanel()
+        // 无任务：状态行不挂尾巴
         @Assert(panel.heartbeat(), "")
+        let _ = panel.setSlots(BgSlots(0, 8, 0, 4))
         let rows = ArrayList<BgTaskRow>()
         rows.add(BgTaskRow("bg-1", "a", BgRowRunning, 0, 0, DateTime.now()))
         rows.add(BgTaskRow("bg-2", "b", BgRowRunning, 0, 0, DateTime.now()))
         let _ = panel.updateRows(rows)
-        @Assert(panel.heartbeat(), "2 bg (2 running)")
+        // 面板已无标题：槽位账 + 各状态真实计数全落在状态行心跳里
+        @Assert(panel.heartbeat(), "bg 0/8  agents 0/4  2 running")
         @Assert(panel.runningCount(), 2)
         let done = ArrayList<BgTaskRow>()
         done.add(BgTaskRow("bg-1", "a", BgRowSucceeded, 1000, 0, DateTime.now()))
         let _ = panel.updateRows(done)
-        @Assert(panel.heartbeat(), "1 bg")
+        // 终态必须报具体状态，不能笼统写 done（killed/failed 不是 done）
+        @Assert(panel.heartbeat(), "bg 0/8  agents 0/4  1 succeeded")
         @Assert(panel.runningCount(), 0)
     }
 
@@ -184,15 +188,29 @@ public class BgTaskPanelTest {
      * 这句话，把终态也算进 running 会让人以为还有活没干完。
      */
     @TestCase
-    public func testHeartbeatCountsOnlyRunning(): Unit {
+    public func testHeartbeatSeparatesTerminalStates(): Unit {
         let panel = BgTaskPanel()
+        let _ = panel.setSlots(BgSlots(0, 8, 0, 4))
         let rows = ArrayList<BgTaskRow>()
         rows.add(BgTaskRow("bg-1", "a", BgRowSucceeded, 1000, 0, DateTime.now()))
         rows.add(BgTaskRow("bg-2", "b", BgRowRunning, 0, 0, DateTime.now()))
         rows.add(BgTaskRow("bg-3", "c", BgRowFailed, 2000, 1, DateTime.now()))
+        rows.add(BgTaskRow("bg-4", "d", BgRowKilled, 4000, 2, DateTime.now()))
+        rows.add(BgTaskRow("bg-5", "e", BgRowTimeout, 5000, 3, DateTime.now()))
         let _ = panel.updateRows(rows)
-        @Assert(panel.heartbeat(), "3 bg (1 running)")
+        // killed / failed / timeout 各有其名：笼统算 done 会让人以为任务"完成了"
+        // （实测投诉：被 kill 的 bg-1 显示成 "1 done"）
+        @Assert(panel.heartbeat(),
+            "bg 0/8  agents 0/4  1 running  1 failed  1 killed  1 timeout  1 succeeded")
         @Assert(panel.runningCount(), 1)
+    }
+
+    @TestCase
+    public func testFmtBgStateSummary(): Unit {
+        // 只列非零项，顺序 running → failed → killed → timeout → succeeded
+        @Assert(fmtBgStateSummary(0, 0, 0, 0, 1), "1 killed")
+        @Assert(fmtBgStateSummary(2, 3, 1, 0, 0), "2 running  1 failed  3 succeeded")
+        @Assert(fmtBgStateSummary(0, 0, 0, 0, 0), "")
     }
 
     @TestCase
@@ -203,11 +221,11 @@ public class BgTaskPanelTest {
         var rows = ArrayList<BgTaskRow>()
         rows.add(BgTaskRow("bg-1", "a", BgRowRunning, 0, 0, DateTime.now()))
         let _ = panel.updateRows(rows)
-        // 1 行 → 标题 + 1 行正文 + 底边 = 3
-        @Assert(panel.height(20, 80), 3)
+        // 1 行任务 = 1 行紧凑条（无边框/无标题，不再 +2）
+        @Assert(panel.height(20, 80), 1)
         // 窄终端不画（同 render 判据，否则会顶出空白）
         @Assert(panel.height(20, 39), 0)
-        // 行数多时封顶 4
+        // 行数多时封顶 2（超过的第二行让位给 "+N more"）
         var many = ArrayList<BgTaskRow>()
         var i = 0
         while (i < 8) {
@@ -215,7 +233,7 @@ public class BgTaskPanelTest {
             i += 1
         }
         let _ = panel.updateRows(many)
-        @Assert(panel.height(20, 80), 4)
+        @Assert(panel.height(20, 80), 2)
         // 可用高度极小时按 outH/3 收缩
         @Assert(panel.height(3, 80), 1)
     }
@@ -231,7 +249,11 @@ public class BgTaskPanelTest {
         rows.add(BgTaskRow("bg-2", "cargo build", BgRowSucceeded, 8000, 2048, DateTime.now()))
         let _ = panel.updateRows(rows)
         let text = this.joinLines(this.renderLines(panel, 100, 20))
-        @Assert(text.contains("后台任务"), true)
+        // 紧凑条：不画边框与标题框（用户反馈"大框压在 todo 上面"）
+        @Assert(text.contains("后台任务"), false)
+        @Assert(text.contains("╭"), false)
+        @Assert(text.contains("╰"), false)
+        @Assert(text.contains("│"), false)
         @Assert(text.contains("bg-1"), true)
         @Assert(text.contains("npm install"), true)
         @Assert(text.contains("running"), true)
@@ -331,31 +353,32 @@ public class BgTaskPanelTest {
     }
 
     @TestCase
-    public func testRenderTitleShowsSlotLedger(): Unit {
+    public func testHeartbeatShowsSlotLedger(): Unit {
         let panel = BgTaskPanel()
-        panel.setUtf8(true)
         let _ = panel.setSlots(BgSlots(1, 8, 2, 4))
         var rows = ArrayList<BgTaskRow>()
         rows.add(BgTaskRow("bg-1", "npm install", BgRowRunning, 0, 0, DateTime.now()))
         let _ = panel.updateRows(rows)
-        let text = this.joinLines(this.renderLines(panel, 100, 20))
         // 碰撞场景的关键信息：是哪一本账满了（上限来自两个不同配置键）
-        @Assert(text.contains("bg 1/8"), true)
-        @Assert(text.contains("agents 2/4"), true)
+        // 面板无标题后，账与计数只在状态行心跳里可见
+        let hb = panel.heartbeat()
+        @Assert(hb.contains("bg 1/8"), true)
+        @Assert(hb.contains("agents 2/4"), true)
+        @Assert(hb.contains("1 running"), true)
     }
 
+    /** 40 列（面板渲染下限）仍是紧凑条：窄终端降级只在 <40，见 height/render 判据 */
     @TestCase
-    public func testRenderNarrowDropsLedgerKeepsTitle(): Unit {
+    public func testRenderAt40ColsStillCompact(): Unit {
         let panel = BgTaskPanel()
         panel.setUtf8(true)
         let _ = panel.setSlots(BgSlots(1, 8, 2, 4))
         var rows = ArrayList<BgTaskRow>()
         rows.add(BgTaskRow("bg-1", "a", BgRowRunning, 0, 0, DateTime.now()))
         let _ = panel.updateRows(rows)
-        // 40 列：账放不下就先丢账，标题（含中文）必须保留——账是附加信息，不能挤掉主信息
         let text = this.joinLines(this.renderLines(panel, 40, 20))
-        @Assert(text.contains("后台任务"), true)
-        @Assert(text.contains("bg 1/8"), false)
+        @Assert(text.contains("bg-1"), true)
+        @Assert(text.contains("╭"), false)
     }
 
     /**
@@ -368,6 +391,7 @@ public class BgTaskPanelTest {
     public func testFadeCollapsesAfterAllTerminal(): Unit {
         let panel = BgTaskPanel()
         panel.setUtf8(true)
+        let _ = panel.setSlots(BgSlots(0, 8, 0, 4))
         // 固定时钟：不依赖真实时间，断言才有确定性
         panel.setClock({ => 1000 })
         var rows = ArrayList<BgTaskRow>()
@@ -377,7 +401,7 @@ public class BgTaskPanelTest {
         @Assert(panel.tick(1005), false)
         @Assert(panel.shouldShow(), true)
         @Assert(panel.height(20, 100) > 0, true)
-        @Assert(panel.heartbeat(), "1 bg")
+        @Assert(panel.heartbeat(), "bg 0/8  agents 0/4  1 succeeded")
         // 到点：收起，高度归零，心跳不再挂尾巴
         @Assert(panel.tick(1008), true)
         @Assert(panel.shouldShow(), false)
@@ -394,6 +418,7 @@ public class BgTaskPanelTest {
     public func testFadeResetsWhenNewTaskStarts(): Unit {
         let panel = BgTaskPanel()
         panel.setClock({ => 1000 })
+        let _ = panel.setSlots(BgSlots(0, 8, 0, 4))
         var done = ArrayList<BgTaskRow>()
         done.add(BgTaskRow("bg-1", "old", BgRowSucceeded, 1000, 0, DateTime.now()))
         let _ = panel.updateRows(done)
@@ -405,7 +430,7 @@ public class BgTaskPanelTest {
         let _ = panel.updateRows(live)
         @Assert(panel.shouldShow(), true)
         @Assert(panel.height(20, 100) > 0, true)
-        @Assert(panel.heartbeat(), "2 bg (1 running)")
+        @Assert(panel.heartbeat(), "bg 0/8  agents 0/4  1 running  1 succeeded")
     }
 
     /** 运行中的任务永不收起：等到天荒地老也得看得见 */

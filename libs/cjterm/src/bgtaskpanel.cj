@@ -201,19 +201,57 @@ public func bgTaskRowsSignature(rows: ArrayList<BgTaskRow>): String {
 }
 
 /**
+ * 各状态计数 → 人读摘要（`1 running  1 failed  1 killed  1 timeout  1 succeeded`）
+ *
+ * 只列非零项；顺序 running → failed → killed → timeout → succeeded
+ * （先报在跑的，再报没成功的，最后报成功的）。
+ *
+ * 历史教训：面板标题曾把非 running 一律算成 "done"，被 kill 的任务显示成
+ * "1 done"，用户以为任务跑完了——终态必须各有其名。
+ */
+public func fmtBgStateSummary(running: Int64, succeeded: Int64, failed: Int64,
+    timeout: Int64, killed: Int64): String {
+    var parts = ArrayList<String>()
+    if (running > 0) {
+        parts.add("${running} running")
+    }
+    if (failed > 0) {
+        parts.add("${failed} failed")
+    }
+    if (killed > 0) {
+        parts.add("${killed} killed")
+    }
+    if (timeout > 0) {
+        parts.add("${timeout} timeout")
+    }
+    if (succeeded > 0) {
+        parts.add("${succeeded} succeeded")
+    }
+    var sb = StringBuilder()
+    var i = 0
+    while (i < parts.size) {
+        if (i > 0) {
+            sb.append("  ")
+        }
+        sb.append(parts[i])
+        i += 1
+    }
+    return sb.toString()
+}
+
+/**
  * 后台任务面板（B-2 TUI 侧）：展示进程级后台任务表
  *
- * 渲染样式：
+ * 渲染样式（无边框紧凑条，最多 2 行）：
  * ```
- * ╭─ 后台任务 (2 running · 1 succeeded) ─────────────────╮
- * │ ▶ bg-3  npm install        running 42s   12.4KB      │
- * │ ✓ bg-1  cargo build        succeeded 8s  2.1KB       │
- * ╰──────────────────────────────────────────────────────╯
+ * ▶ bg-3  npm install        running 42s   12.4KB
+ * ✓ bg-1  cargo build        succeeded 8s  2.1KB
  * ```
  *
- * 布局策略与 Agents 面板一致（snapshot + Mutex + height()/render()），但**全宽**渲染
- * 在 Tasks/Agents 面板带**上方**独立一行带：三块面板同底线并排会各自挤到不可读，
- * 而任务行本身只需要"ID + 标签 + 状态 + 耗时 + 输出量"，独占一行更省列宽。
+ * 布局策略与 Agents 面板一致（snapshot + Mutex + height()/render()），全宽渲染
+ * 在 Tasks/Agents 面板带**上方**。**不画边框与标题**：带框时最多占 4 行，
+ * 一整条大框压在 todo 之上观感很重（用户反馈），而无边框一行一条已经够读；
+ * 槽位账与状态计数改由状态行心跳承载（见 heartbeat）。
  */
 public class BgTaskPanel {
     private let lock: Mutex = Mutex()
@@ -354,25 +392,44 @@ public class BgTaskPanel {
         return n > 0 && !f
     }
 
-    /** 状态行心跳：无任务或已淡出返回 ""；有任务返回 "2 bg (1 running)" */
+    /**
+     * 状态行心跳：槽位账 + 各状态真实计数；无任务或已淡出返回 ""
+     *
+     * 形态：`bg 0/8  agents 0/4  1 running  1 killed`
+     *
+     * 为什么计数与账都在这里：面板改成无边框紧凑条后没有标题行了，
+     * 用户撞到"后台起不动"时必须仍能一眼看出是哪本账满了；
+     * 终态又必须按 killed/failed/timeout 分类报——笼统 "done" 会误导。
+     */
     public func heartbeat(): String {
         this.lock.lock()
-        var total: Int64 = this.rows.size
         var running: Int64 = 0
+        var succeeded: Int64 = 0
+        var failed: Int64 = 0
+        var timeout: Int64 = 0
+        var killed: Int64 = 0
+        let total: Int64 = Int64(this.rows.size)
         for (r in this.rows) {
-            if (!bgRowIsTerminal(r.state)) {
-                running += 1
+            match (r.state) {
+                case BgRowRunning => running += 1
+                case BgRowSucceeded => succeeded += 1
+                case BgRowFailed => failed += 1
+                case BgRowTimeout => timeout += 1
+                case BgRowKilled => killed += 1
             }
         }
+        let ledger: String = fmtSlotLedger(this.slots.bgUsed, this.slots.bgMax,
+            this.slots.agentsUsed, this.slots.agentsMax)
         let f = this.faded
         this.lock.unlock()
         if (total == 0 || f) {
             return ""
         }
-        if (running > 0) {
-            return "${total} bg (${running} running)"
+        let summary: String = fmtBgStateSummary(running, succeeded, failed, timeout, killed)
+        if (summary.size == 0) {
+            return ledger
         }
-        return "${total} bg"
+        return ledger + "  " + summary
     }
 
     /** 运行中任务数（回合总结条的存活提示用） */
@@ -405,10 +462,10 @@ public class BgTaskPanel {
             this.lock.unlock()
             return 0
         }
-        // 高度上限 4：标题 + 2 行正文 + 底边；任务多时折 "+N more"
+        // 紧凑条：一行一条，高度上限 2（超过时末行让位给 "+N more"）
         let count: Int64 = Int64(this.rows.size)
         this.lock.unlock()
-        let panelH: Int64 = if (count + 2 > 4) { 4 } else { count + 2 }
+        let panelH: Int64 = if (count > 2) { 2 } else { count }
         let maxH: Int64 = if (outH / 3 > 0) { outH / 3 } else { 1 }
         return if (panelH > maxH) { maxH } else { panelH }
     }
@@ -433,7 +490,6 @@ public class BgTaskPanel {
             items.add(r)
         }
         let useUtf8 = this.utf8
-        let slotsNow: BgSlots = this.slots
         this.lock.unlock()
 
         // 运行中排最前：行数受限时最有信息量的行必须稳定可见（同 Agents 面板约定）
@@ -455,89 +511,46 @@ public class BgTaskPanel {
         }
 
         let count: Int64 = Int64(sorted.size)
-        let panelH: Int64 = if (count + 2 > 4) { 4 } else { count + 2 }
+        // 与 height() 同一套判据（两边不一致会让 agent 运行时多差 1 行，顶掉输出区）
+        let panelH: Int64 = if (count > 2) { 2 } else { count }
         let maxH: Int64 = if (outH / 3 > 0) { outH / 3 } else { 1 }
         let actualH: Int64 = if (panelH > maxH) { maxH } else { panelH }
-        if (actualH < 3) {
-            return 0  // 连标题+一行正文都放不下：不画，避免半截框
+        if (actualH < 1) {
+            return 0
         }
         let startRow: Int64 = availRow - actualH
         if (startRow < 0) {
             return 0
         }
         let panelW: Int64 = cols
-        this.renderBox(canvas, startRow, panelW, actualH, sorted, useUtf8, slotsNow)
+        this.renderRows(canvas, startRow, panelW, actualH, sorted, useUtf8)
         return actualH
     }
 
-    private func renderBox(canvas: TuiCanvas, startRow: Int64, panelW: Int64,
-        panelH: Int64, items: ArrayList<BgTaskRow>, useUtf8: Bool, slots: BgSlots): Unit {
+    /**
+     * 渲染紧凑条（无边框）：一行一条任务，行数超限时末行让位 "+N more"
+     *
+     * 列宽预算 = cols - 1：末列写入会触发终端自动换行，多占一行把布局顶掉。
+     */
+    private func renderRows(canvas: TuiCanvas, startRow: Int64, panelW: Int64,
+        panelH: Int64, items: ArrayList<BgTaskRow>, useUtf8: Bool): Unit {
         let muted: String = Ansi.fg(Ansi.THEME_MUTED)
         let accent: String = Ansi.fg(Ansi.THEME_ACCENT)
         let ok: String = Ansi.fg(Ansi.THEME_OK)
         let warn: String = Ansi.fg(Ansi.THEME_WARN)
         let reset: String = Ansi.reset()
-        let bx = BoxChars(useUtf8)
-
-        var running: Int64 = 0
-        var done: Int64 = 0
-        for (r in items) {
-            if (bgRowIsTerminal(r.state)) {
-                done += 1
-            } else {
-                running += 1
-            }
-        }
-        // 顶边框：标题按显示宽度算填充（字节数会把横线补短——中文标题踩过）
-        // 两本槽位账：宽够才挂在任务计数之后；窄了先丢账、再丢中文（三级降级）
-        let ledger: String = fmtSlotLedger(slots.bgUsed, slots.bgMax, slots.agentsUsed, slots.agentsMax)
-        let baseTitle: String = "后台任务 (${running} running · ${done} done)"
-        let withLedger: String = baseTitle + "  · " + ledger
-        var title: String = if (TuiCanvas.displayWidth(withLedger) + 5 <= panelW) {
-            withLedger
-        } else {
-            baseTitle
-        }
-        var titleW: Int64 = TuiCanvas.displayWidth(title)
-        if (titleW + 5 > panelW) {
-            title = "bg ${running}r/${done}d"
-            titleW = TuiCanvas.displayWidth(title)
-        }
-        var topLine: String = muted + bx.tl + bx.hc + " " + reset + accent + title + reset + muted + " "
-        var dashCount: Int64 = panelW - titleW - 5
-        if (dashCount < 0) {
-            dashCount = 0
-        }
-        var i: Int64 = 0
-        while (i < dashCount) {
-            topLine += bx.hc
-            i += 1
-        }
-        topLine += bx.tr + reset
-        canvas.setLine(startRow, topLine)
-
-        // 正文行上限 = actualH - 2；超限时最后一行让位给 "+N more"
-        let bodyRows: Int64 = panelH - 2
-        var row: Int64 = startRow + 1
+        let budget: Int64 = panelW - 1
+        var row: Int64 = startRow
         var idx: Int64 = 0
-        while (row < startRow + panelH - 1 && idx < Int64(items.size)) {
-            let r: BgTaskRow = items[idx]
-            if (idx == bodyRows - 1 && Int64(items.size) > bodyRows) {
+        while (row < startRow + panelH && idx < Int64(items.size)) {
+            if (idx == panelH - 1 && Int64(items.size) > panelH) {
+                // 末行只报还剩多少条：面板最多 2 行，塞不下的不硬挤
                 let moreText: String = "  +${Int64(items.size) - idx} more"
-                var morePad: Int64 = (panelW - 2) - TuiCanvas.displayWidth(moreText)
-                if (morePad < 0) {
-                    morePad = 0
-                }
-                var moreSpaces: String = ""
-                var mi: Int64 = 0
-                while (mi < morePad) {
-                    moreSpaces += " "
-                    mi += 1
-                }
-                canvas.setLine(row, muted + bx.vc + reset + moreText + moreSpaces + muted + bx.vc + reset)
+                canvas.setLine(row, muted + moreText + reset)
                 row += 1
                 break
             }
+            let r: BgTaskRow = items[idx]
             var marker: String
             var markerColor: String = muted
             match (r.state) {
@@ -565,13 +578,13 @@ public class BgTaskPanel {
             }
             let elapsedCol: String = fmtBgElapsed(liveMs)
             let sizeCol: String = fmtByteSize(r.outputBytes)
-            // 固定列宽部分：边框 + 标记 + ID + 状态 + 耗时 + 输出量 + 分隔空格
-            let fixedW: Int64 = 2 + TuiCanvas.displayWidth(marker) + 2 +
+            // 固定列宽部分：行首空格 + 标记 + 空格 + ID + 状态 + 耗时 + 输出量 + 分隔空格
+            let fixedW: Int64 = 1 + TuiCanvas.displayWidth(marker) + 1 +
                 TuiCanvas.displayWidth(r.taskId) + 2 +
                 TuiCanvas.displayWidth(stateCol) + 1 +
                 TuiCanvas.displayWidth(elapsedCol) + 2 +
                 TuiCanvas.displayWidth(sizeCol)
-            var labelBudget: Int64 = (panelW - 2) - fixedW
+            var labelBudget: Int64 = budget - fixedW
             if (labelBudget < 2) {
                 labelBudget = 2
             }
@@ -579,34 +592,25 @@ public class BgTaskPanel {
             if (TuiCanvas.displayWidth(label) > labelBudget) {
                 label = canvas.truncate(label, labelBudget)
             }
-            var body: String = " " + marker + " " + r.taskId + "  " + label + "  " + stateCol + " " +
-                elapsedCol + "  " + sizeCol
-            var pad: Int64 = (panelW - 2) - TuiCanvas.displayWidth(body)
+            let idPart: String = " " + r.taskId + "  " + label + "  "
+            let tailPart: String = " " + elapsedCol + "  " + sizeCol
+            let lineW: Int64 = 1 + TuiCanvas.displayWidth(marker) + TuiCanvas.displayWidth(idPart) +
+                TuiCanvas.displayWidth(stateCol) + TuiCanvas.displayWidth(tailPart)
+            var pad: Int64 = budget - lineW
             if (pad < 0) {
                 pad = 0
             }
             var padStr: String = ""
-            i = 0
-            while (i < pad) {
+            var pi: Int64 = 0
+            while (pi < pad) {
                 padStr += " "
-                i += 1
+                pi += 1
             }
-            let line: String = muted + bx.vc + reset + " " + markerColor + marker + reset + " " +
-                muted + r.taskId + reset + "  " + label + "  " +
-                markerColor + stateCol + reset + " " + muted + elapsedCol + reset + "  " +
-                muted + sizeCol + reset + padStr + muted + bx.vc + reset
+            let line: String = " " + markerColor + marker + reset + muted + idPart + reset +
+                markerColor + stateCol + reset + muted + tailPart + reset + padStr
             canvas.setLine(row, line)
             row += 1
             idx += 1
         }
-
-        var bottomLine: String = muted + bx.bl
-        i = 0
-        while (i < panelW - 2) {
-            bottomLine += bx.hc
-            i += 1
-        }
-        bottomLine += bx.br + reset
-        canvas.setLine(startRow + panelH - 1, bottomLine)
     }
 }
