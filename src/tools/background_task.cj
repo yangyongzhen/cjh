@@ -249,8 +249,12 @@ func killProcessGroup(pid: Int64): Unit {
     }
 }
 
+/**
+ * Windows 无进程组语义：本体由 `terminateProc` 的 `p.terminate(force: true)` 兜底，
+ * 仅「连带后代」这层缺省（形参无名，避免 Windows 目标编译出 unused variable 告警）
+ */
 @When[os == "Windows"]
-func killProcessGroup(pid: Int64): Unit {
+func killProcessGroup(_: Int64): Unit {
     ()
 }
 
