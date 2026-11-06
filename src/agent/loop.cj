@@ -1135,10 +1135,15 @@ public class Agent {
                 Log.error("LLM 连续只输出思考、无正文，放弃补写（预算用尽）")
                 this.onAssistantText("\n[提醒] 模型只输出了思考内容、未给出正文，回合结束；可再发一条消息重试。\n")
             } else {
-                // LLM 返回空响应（无 text 且无 tool_calls）：重试，超过 maxEmptyRetries 才退出
+                // LLM 返回空响应（无 text 且无 tool_calls）：重试，超过 maxEmptyRetries 才退出。
+                // 诊断信息必须跟着一起记——否则事后只能靠猜（真实 E2E 实测两次空响应之间
+                // 白等 92s，日志只有一句"重试 1/3"，既不知 finish_reason 也不知 token 用量，
+                // 复盘时查不出上游到底干了什么）。判读口径：
+                //   completionTokens 远大于 0、正文与推理却都空 ⇒ 输出预算被上游思考吃掉；
+                //   usage 全 0 ⇒ 代理层空返回（请求没真正推理）；promptTokens 畸高 ⇒ 上下文过长。
                 emptyRetries += 1
                 if (emptyRetries <= maxEmptyRetries) {
-                    Log.warn("LLM 返回空响应，重试 ${emptyRetries}/${maxEmptyRetries}")
+                    Log.warn("LLM 返回空响应，重试 ${emptyRetries}/${maxEmptyRetries} | 第 ${iterations} 轮 耗时 ${roundMs}ms | prompt ${response.usage.promptTokens} completion ${response.usage.completionTokens} cached ${response.usage.cachedTokens} | 推理增量 ${roundReasoning.load()} 字符 | textLen ${response.text.size} toolCalls ${response.toolCalls.size} | truncated ${response.truncated} timedOut ${response.timedOut}")
                     this.messages.add(ChatMessage("user",
                         "[System Notice] Your previous response was empty (no text and no tool calls). " +
                         "Please continue the task and provide a response."))
@@ -1146,7 +1151,7 @@ public class Agent {
                     iterations -= 1
                     continue
                 }
-                Log.error("LLM 连续 ${maxEmptyRetries} 次返回空响应，放弃重试")
+                Log.error("LLM 连续 ${maxEmptyRetries} 次返回空响应，放弃重试 | 末次 第 ${iterations} 轮 耗时 ${roundMs}ms prompt ${response.usage.promptTokens} completion ${response.usage.completionTokens} cached ${response.usage.cachedTokens} | 推理增量 ${roundReasoning.load()} 字符 | truncated ${response.truncated} timedOut ${response.timedOut}")
                 this.onAssistantText("\n[空响应] LLM 连续 ${maxEmptyRetries} 次未返回内容，回合结束。")
             }
             // 续跑闸门（「任务没做完就收场」）：纯文本收束但活儿没干完 → 注入指令继续跑。
