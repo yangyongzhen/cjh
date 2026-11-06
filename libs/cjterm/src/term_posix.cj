@@ -533,6 +533,10 @@ public class PosixTerminalBackend <: TerminalBackend {
         // 残留 ESC[201~ 和剩余字节被逐键解析 → 吞键/换行触发 Enter 自动提交。
         // 粘贴中数据持续到达 → waitInput 立即返回，不误判；结束标记匹配优先。
         var idleStreak: Int64 = 0
+        // 人为逐键输入判据：粘贴是批量到达（读完一字节缓冲里还堆着后续字节），
+        // 人打字是单个到达（两键之间缓冲为空）。连续「孤立字节」达阈值即结束，
+        // 免得未闭合时把用户后续打字一直吞到 PASTE_MAX_MS 的 3 秒。
+        var isolatedBytes: Int64 = 0
         // 总时长兜底（PASTE_MAX_MS）：未闭合粘贴 + 用户持续打字时，waitInput
         // 每次都能拿到数据 → idleStreak 恒归零 → 旧逻辑永不退出，后续按键
         // （含回车）全被吞进 raw，输入框毫无反应（详见 PASTE_MAX_MS 注释）。
@@ -543,7 +547,7 @@ public class PosixTerminalBackend <: TerminalBackend {
                 return decodePaste(raw, termN)
             }
             let elapsedMs = (DateTime.now() - startedAt).toMilliseconds()
-            if (pasteReadStop(elapsedMs, idleStreak, false)) {
+            if (pasteReadStop(elapsedMs, idleStreak, false, isolatedBytes)) {
                 break
             }
             if (!this.waitInput(200)) {
@@ -553,6 +557,13 @@ public class PosixTerminalBackend <: TerminalBackend {
             idleStreak = 0
             if (!readOne()) {
                 break
+            }
+            // 读完这一字节后立刻探测积压：还有数据 → 批量粘贴，计数归零；
+            // 已经空了 → 这是个孤立字节（人打字特征），累加到阈值即退出
+            if (this.waitInput(0)) {
+                isolatedBytes = 0
+            } else {
+                isolatedBytes += 1
             }
             // 内容上限：极端大粘贴体截断（截断后继续消费到闭合标记，
             // 避免残留字节被逐键解析；丢弃超限内容）
