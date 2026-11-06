@@ -132,6 +132,44 @@ public class BackgroundPureTest {
         let noCwd = buildBgWrapper("pwd", "", "/bin/bash", true, "/tmp/bg.rc")
         @Assert(noCwd.contains("cd "), false)
     }
+
+    /**
+     * 三件套都声明可选 `intent`：会话流把它当条目标题显示
+     *
+     * 只断言 schema（模型看得见的那一面）与"非必填"——执行路径刻意不看它，
+     * 它不会改变命令行为，只是一个给用户看的自述。
+     */
+    @TestCase
+    public func testBgToolsDeclareOptionalIntent(): Unit {
+        // 只取 spec，不起进程：registry 构造不建目录、不 spawn
+        let reg = BackgroundTaskRegistry(BgTaskConfig(2, 60000, 8, 1000))
+        let tools: ArrayList<CjhTool> = ArrayList<CjhTool>()
+        tools.add(BashStartTool(reg))
+        tools.add(BashPollTool(reg))
+        tools.add(BashKillTool(reg))
+        for (t in tools) {
+            let schema = t.spec().parameters
+            match (schema.get("properties")) {
+                case Some(props) =>
+                    @Assert(props.asObject().get("intent").isSome(), true)
+                case None => @Assert("no properties for ${t.spec().name}", "")
+            }
+            // 非必填：漏了 intent 仍能正常调用（老客户端/旧提示词不受影响）
+            var required: ArrayList<String> = ArrayList<String>()
+            match (schema.get("required")) {
+                case Some(arr) =>
+                    // JsonArray 不实现 Iterator（无 == / for-in），只能按索引取
+                    let items = arr.asArray()
+                    var i = 0
+                    while (i < items.size()) {
+                        required.add(items[i].asString().getValue())
+                        i += 1
+                    }
+                case None => ()
+            }
+            @Assert(required.contains("intent"), false)
+        }
+    }
 }
 
 /**

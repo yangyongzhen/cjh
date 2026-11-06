@@ -722,19 +722,28 @@ func runTui(sessionId: String): Int64 {
             }
             tui.appendSubagentEvent(id, text)
         }
-        // B-2：后台任务面板数据源——任务状态事件（启动/转终态/kill）→ 快照 → TUI。
-        // 事件只在状态变化时来，运行中的耗时由面板按单调时钟实时算，不必定时推送
-        // （否则就是每秒一次快照 + 全量重绘）。
+        // 后台任务的状态变化 → 会话流（面板已退役）。
+        // 启动事件不补记：bash_start 的工具行已经写了「● 标题 + └ BashStart(...)」；
+        // 只补终态，让"没人 poll 的任务跑完了"也在流里留痕（见 bgStreamNotice）。
         // 注：与 Web 侧订阅同一个 onEvent 槽位，但 TUI/Web 是互斥入口（一次只跑一个）
         match (currentBackgroundRegistry()) {
             case Some(bg) =>
-                bg.onEvent = { _: BgTaskEventInfo =>
-                    tui.refreshBgTasks(bgPanelRows(bg))
+                bg.onEvent = { info: BgTaskEventInfo =>
+                    let notice = bgStreamNotice(info)
+                    if (notice.size > 0) {
+                        let color = match (info.state) {
+                            case BgSucceeded => Ansi.THEME_OK
+                            case BgFailed => Ansi.THEME_ERR
+                            case BgTimedOut => Ansi.THEME_WARN
+                            case BgKilled => Ansi.THEME_MUTED
+                            case BgRunning => Ansi.THEME_MUTED
+                        }
+                        tui.appendOutput(Ansi.fg(color) + notice + Ansi.reset())
+                    }
                     pushBgSlots()
                 }
                 // 每秒收割：后台任务不起常驻监视线程，进程退出只能靠轮询发现
                 tui.bgHarvest = { => bg.harvestAll() }
-                tui.refreshBgTasks(bgPanelRows(bg))
                 pushBgSlots()
             case None => ()
         }
@@ -830,7 +839,15 @@ func runTui(sessionId: String): Int64 {
             }
             TuiBridge.ensureNewline()
             // 工具调用行 bg 236 整行卡片（P2b）：行内只用 fg 改色、禁止中途 reset（保背景）
-            TuiBridge.tool(Ansi.fg(Ansi.THEME_OK) + "▶ ${name} " + Ansi.fg(Ansi.THEME_MUTED) + formatToolArgs(name, args))
+            if (isBgTool(name)) {
+                // 后台三件套：命令往往很长、结果又要等，先用一句话说清"这次在干嘛"，
+                // 第二行才给工具名与参数（atomcode 的 ● / └ 式）。标题三级回退见 bgToolTitle
+                TuiBridge.tool(Ansi.fg(Ansi.THEME_OK) + "● " + bgToolTitle(name, args))
+                TuiBridge.output(Ansi.fg(Ansi.THEME_MUTED) + "  └ " + displayToolName(name) +
+                    "(" + formatToolArgs(name, args) + ")" + Ansi.reset())
+            } else {
+                TuiBridge.tool(Ansi.fg(Ansi.THEME_OK) + "▶ ${name} " + Ansi.fg(Ansi.THEME_MUTED) + formatToolArgs(name, args))
+            }
             tui.setAgentState("Running ${name}…")
         }
         agent.onToolResult = { name, result =>
@@ -1247,28 +1264,6 @@ func bgSurvivalSuffix(n: Int64): String {
         return ""
     }
     return " · ${n} 个后台任务仍在跑"
-}
-
-/**
- * 任务表快照 → TUI 面板行（轻量副本；TUI 层不持有任务引用，同 Agents 面板约定）
- *
- * startedAt 直接透传任务的启动时刻：面板渲染时按 now - startedAt 实时算耗时，
- * 口径与任务层 elapsedMs() 一致。
- */
-func bgPanelRows(bg: BackgroundTaskRegistry): ArrayList<BgTaskRow> {
-    let rows = ArrayList<BgTaskRow>()
-    for (t in bg.allTasks()) {
-        var st = BgRowRunning
-        match (t.state()) {
-            case BgSucceeded => st = BgRowSucceeded
-            case BgFailed => st = BgRowFailed
-            case BgTimedOut => st = BgRowTimeout
-            case BgKilled => st = BgRowKilled
-            case BgRunning => st = BgRowRunning
-        }
-        rows.add(BgTaskRow(t.id, t.label, st, t.elapsedMs(), t.written(), t.startedAt))
-    }
-    return rows
 }
 
 /** 进程退出前回收后台任务：不回收就是孤儿进程（父进程没了，命令还在跑） */
