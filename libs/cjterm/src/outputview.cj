@@ -22,6 +22,10 @@ public class OutputView <: Component {
     // 每轮按 anchorLines 交织回消息流（默认折叠 1 行 / Ctrl+T 展开全文），
     // 随输出滚动回看；不写入 output（会话存档不含思考过程）
     public var thinkingExpanded: Bool = false
+    // 展开/折叠后待生效的视口定位请求（见 render 的定位段）。
+    // 折叠摘要在消息流末尾（贴视口），展开内容却钉在本轮起点（消息流靠前），
+    // 视口默认贴末尾 → 不定位时用户看到的就是"按 Ctrl+T，思考界面直接消失了"。
+    private var revealThinkingPending: Bool = false
     // 多轮思考历史：每轮独立保留。旧实现只留"最新一轮"（新一轮开始时清空上一轮），
     // 历史无从回看；旧布局又把全部思考堆在消息流末尾（会话底部）。现在逐轮累积
     // 且按锚点插回各自位置（见 render），复用输出区既有 PageUp/PageDown/Ctrl+U/Ctrl+D
@@ -120,6 +124,7 @@ public class OutputView <: Component {
 
     /** 清空思考历史（含冻结行缓存） */
     public func clearThinking(): Unit {
+        this.revealThinkingPending = false
         this.thinkLog.clear()
         this.thinkFrozen = ArrayList<String>()
         this.thinkFrozenEnds = ArrayList<Int64>()
@@ -133,6 +138,8 @@ public class OutputView <: Component {
      */
     public func toggleThinking(): Unit {
         this.thinkingExpanded = !this.thinkingExpanded
+        // 下一帧必须重新定位视口：展开 → 跳到思考块；折叠 → 回末尾看 1 行摘要
+        this.revealThinkingPending = true
     }
 
     // ===== 思考行内 Markdown 渲染（粗体 / 行内代码）=====
@@ -656,6 +663,17 @@ public class OutputView <: Component {
         if (this.scrollOffset < 0) {
             this.scrollOffset = 0
         }
+        // 展开/折叠后首次渲染：把视口搬到思考块上。折叠摘要在消息流末尾（贴视口），
+        // 展开内容却钉在轮次起点（消息流靠前）—— 不定位时摘要那行消失、内容全在窗口
+        // 上方，用户观感就是"按 Ctrl+T，思考界面直接隐藏了"。折叠则回末尾看摘要。
+        if (this.revealThinkingPending) {
+            this.revealThinkingPending = false
+            this.scrollOffset = if (this.thinkingExpanded) {
+                this.thinkingRevealOffset(segStart, segCount, segGrp, segGap, totalV, height, maxOffset)
+            } else {
+                0
+            }
+        }
         var startIdx = totalV - height - this.scrollOffset
         if (startIdx < 0) {
             startIdx = 0
@@ -706,6 +724,48 @@ public class OutputView <: Component {
             vrow += segCount[k] + segGap
         }
         return r
+    }
+
+    /**
+     * 展开态的视口定位：把思考段放进窗口，返回 clamp 过的 scrollOffset。
+     * 全部思考装得下 → 对齐首段顶部（整段历史一眼可见）；
+     * 装不下 → 对齐最后一轮（最新）思考顶部，更早的用 Ctrl+U/PageUp 回看。
+     */
+    private func thinkingRevealOffset(segStart: ArrayList<Int64>, segCount: ArrayList<Int64>,
+                                      segGrp: ArrayList<Int64>, segGap: Int64,
+                                      totalV: Int64, height: Int64, maxOffset: Int64): Int64 {
+        var v: Int64 = 0
+        var spanStart: Int64 = -1
+        var spanEnd: Int64 = 0
+        var lastStart: Int64 = 0
+        for (k in 0..segStart.size) {
+            if (k > 0) {
+                v += segGap
+            }
+            if (segGrp[k] >= 0) {
+                if (spanStart < 0) {
+                    spanStart = v
+                }
+                spanEnd = v + segCount[k]
+                lastStart = v
+            }
+            v += segCount[k]
+        }
+        if (spanStart < 0) {
+            return 0
+        }
+        var desired = if (spanEnd - spanStart <= height) { spanStart } else { lastStart }
+        if (desired < 0) {
+            desired = 0
+        }
+        var off = totalV - height - desired
+        if (off < 0) {
+            off = 0
+        }
+        if (off > maxOffset) {
+            off = maxOffset
+        }
+        return off
     }
 
     /**
