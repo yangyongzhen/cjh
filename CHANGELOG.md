@@ -6,6 +6,27 @@ cjh 版本变更记录。依据 git tag 史 + 提交史整理；版本号规则�
 
 ## [Unreleased]
 
+### 修复（输入框「打字没反应」三条根因：粘贴吞键 / 压缩状态永挂 / 面板不褪）
+
+三起现象都像「界面卡死」，根因各不相同，逐个坐实：
+
+- **未闭合括号粘贴把后续按键全吞掉**（`libs/cjterm`）：旧逻辑只在「连续 600ms 无数据」时结束
+  粘贴读取，而用户一边等一边继续打字时 `waitInput` 每次都有数据 → `idleStreak` 恒归零 →
+  **永不退出**，连回车也被当粘贴内容收走（pty 实证：`ESC[200~` 不闭合 + `HELLO` + `WORLD\r`
+  → 输入框全程空白，最后攒成一条 `HELLOWORLD` 一次性提交）。新增总时长兜底
+  `PASTE_MAX_MS = 3000`，闭合标记 `ESC[201~` 优先判定；触顶时已收内容仍按粘贴插入，不丢字。
+  判据抽成纯函数 `pasteReadStop(elapsedMs, idleStreak, closed)`，`PasteReadStopTest` 4 例。
+- **`Compacting…` 永不复位**（`Agent.run`）：状态复位原先只挂在回合内每轮请求前的
+  `checkPendingCompact`，后台摘要没完成就收尾时会一直停在 `Compacting…`。改为 `run()` 的
+  `finally` 无条件 `onCompact(false)`；另加 `compactPendingSince` + 纯函数
+  `compactPendingStale`（120s 超时），后台摘要永挂时放弃本次并允许重新触发。
+  `AsyncCompactionTest` 增 2 例。
+- **后台面板终态永不淡出、状态行随面板上下跳**（`TuiApp` 主循环 + 布局）：心跳分支先
+  `lastTick = now`，面板分支紧接着又用同一锚点判秒 → 恒得 0 秒 → `bgPanel.tick()` 一次都不
+  执行（终态任务永不淡出）。改为每秒**只判一次**秒（纯函数 `secondElapsed`）、同一分支内驱动
+  心跳与面板；面板改画在状态行**上方**（`agentRow` 不再计入 `bgH`），状态行位置固定不抖。
+  `SecondTickTest` 4 例 + 布局断言 2 例。
+
 ### 修复（后台任务面板：大框改紧凑条，终态不再谎称「done」）
 
 用户报两件事：面板那一整圈框压在 todo 上面观感重；更要紧的是 bg-1 被 kill 之后标题写
