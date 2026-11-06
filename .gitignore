@@ -31,6 +31,8 @@ dist/windows-*/
 dist/linux/
 dist/win-x64-test/
 dist/cjh-v*-x64*.zip
+# 逐版本 tar.gz 归档包同理：只做本地留存。裸二进制与 SHA256SUMS 仍入库
+dist/*.tar.gz
 
 # npm 平台包里的二进制由 scripts/npm_publish.sh 从 dist/ 拷入，不入版本库
 npm/cli-linux-x64/bin/cjh

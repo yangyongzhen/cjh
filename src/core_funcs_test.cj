@@ -1085,3 +1085,141 @@ public class BgSurvivalSuffixTest {
         @Assert(bgSurvivalSuffix(3).startsWith(" · "), true)
     }
 }
+
+/**
+ * 后台任务在会话流里的标题（面板退役后）：工具名、三件套判定、三级回退
+ *
+ * 面板退役后，用户对后台任务的唯一感知就是这两行文本——标题取错或取空，
+ * 等于"看不出这次调用在干嘛"，所以每级回退都单独断言。
+ */
+@Test
+public class BgStreamTitleTest {
+
+    @TestCase
+    public func testDisplayToolName(): Unit {
+        @Assert(displayToolName("bash_start"), "BashStart")
+        @Assert(displayToolName("bash_poll"), "BashPoll")
+        @Assert(displayToolName("bash_kill"), "BashKill")
+        // 其余工具维持原名：工具名本身可读，改名只会让人对不上文档与日志
+        @Assert(displayToolName("read_file"), "read_file")
+        @Assert(displayToolName("bash"), "bash")
+    }
+
+    @TestCase
+    public func testIsBgTool(): Unit {
+        @Assert(isBgTool("bash_start"), true)
+        @Assert(isBgTool("bash_poll"), true)
+        @Assert(isBgTool("bash_kill"), true)
+        // 前台 bash 与普通工具仍走单行卡片，不进两行式
+        @Assert(isBgTool("bash"), false)
+        @Assert(isBgTool("read_file"), false)
+    }
+
+    @TestCase
+    public func testTitlePrefersIntent(): Unit {
+        var args = JsonObject()
+        args.put("command", JsonString("ls -la"))
+        args.put("label", JsonString("列目录"))
+        args.put("intent", JsonString("看看仓库根有什么"))
+        // intent 优先于 label 与命令：它是模型对"目的"的自述
+        @Assert(bgToolTitle("bash_start", args), "看看仓库根有什么")
+    }
+
+    @TestCase
+    public func testTitleFallsBackToLabelThenCommand(): Unit {
+        var withLabel = JsonObject()
+        withLabel.put("command", JsonString("cjpm build"))
+        withLabel.put("label", JsonString("全量构建"))
+        @Assert(bgToolTitle("bash_start", withLabel), "全量构建")
+        // 无 label 无 intent：取命令首条非空行（多行命令不能整段塞进标题）
+        var cmdOnly = JsonObject()
+        cmdOnly.put("command", JsonString("\n   cjpm build 2>&1\ncd /tmp"))
+        @Assert(bgToolTitle("bash_start", cmdOnly), "cjpm build 2>&1")
+        // 三样都没有：兜底模板，标题不能空
+        @Assert(bgToolTitle("bash_start", JsonObject()), "后台执行命令")
+    }
+
+    @TestCase
+    public func testTitlePollKillTemplates(): Unit {
+        var poll = JsonObject()
+        poll.put("task_id", JsonString("bg-3"))
+        @Assert(bgToolTitle("bash_poll", poll), "取 bg-3 的新增输出")
+        var kill = JsonObject()
+        kill.put("task_id", JsonString("bg-3"))
+        @Assert(bgToolTitle("bash_kill", kill), "结束 bg-3")
+        // 漏 task_id：退到无 id 模板，不能渲染成"取  的新增输出"
+        @Assert(bgToolTitle("bash_poll", JsonObject()), "取后台任务输出")
+        @Assert(bgToolTitle("bash_kill", JsonObject()), "结束后台任务")
+    }
+
+    @TestCase
+    public func testTitleTruncatesLongIntent(): Unit {
+        var sb = StringBuilder()
+        for (i in 0..200) {
+            sb.append("等")
+        }
+        var args = JsonObject()
+        args.put("intent", JsonString(sb.toString()))
+        let title = bgToolTitle("bash_start", args)
+        // 120 字节上限 + 省略号（中文 3 字节 → 40 字）
+        @Assert(title.size <= 125, true)
+        @Assert(title.endsWith("…"), true)
+    }
+}
+
+/**
+ * 终态补记：没人 poll 的任务跑完了，也要在会话流里留痕
+ *
+ * 回归背景：面板退役后，任务跑完如果没人 bash_poll，流里就一个字都没有——
+ * 用户只看到 bash_start 那一行，永远不知道它结束了没有。
+ */
+@Test
+public class BgStreamNoticeTest {
+
+    @TestCase
+    public func testSucceededNotice(): Unit {
+        let ev = BgTaskEventInfo("bg-2", "shell", "全量测试", BgSucceeded, 0, 42000, 1024)
+        @Assert(bgStreamNotice(ev), "✔ 全量测试 完成 · 42s")
+    }
+
+    @TestCase
+    public func testFailedNoticeCarriesExitCode(): Unit {
+        // 失败最要紧的是 exit code：没有它只看得到"失败了"，查不出原因
+        let ev = BgTaskEventInfo("bg-2", "shell", "npm test", BgFailed, 2, 8000, 0)
+        @Assert(bgStreamNotice(ev), "✘ npm test 失败（exit 2） · 8s")
+    }
+
+    @TestCase
+    public func testTimeoutAndKilledNotices(): Unit {
+        let t = BgTaskEventInfo("bg-9", "shell", "sleep", BgTimedOut, 0, 120000, 0)
+        @Assert(bgStreamNotice(t), "⏱ sleep 超时 · 2m")
+        // 被取消不报耗时：那不是任务自己跑完的时长，报出来只会误导
+        let k = BgTaskEventInfo("bg-9", "shell", "sleep", BgKilled, 0, 5000, 0)
+        @Assert(bgStreamNotice(k), "⊘ sleep 已取消")
+    }
+
+    @TestCase
+    public func testRunningProducesNoNotice(): Unit {
+        // 启动不补记：bash_start 的工具行已经写了「● 标题 + └ BashStart(...)」
+        let ev = BgTaskEventInfo("bg-2", "shell", "x", BgRunning, 0, 0, 0)
+        @Assert(bgStreamNotice(ev), "")
+    }
+
+    @TestCase
+    public func testEmptyLabelFallsBackToTaskId(): Unit {
+        let ev = BgTaskEventInfo("bg-7", "shell", "   ", BgSucceeded, 0, 1000, 0)
+        @Assert(bgStreamNotice(ev), "✔ bg-7 完成 · 1s")
+    }
+
+    @TestCase
+    public func testDurationFormatting(): Unit {
+        @Assert(fmtBgDuration(0), "0s")
+        @Assert(fmtBgDuration(-5), "0s")
+        @Assert(fmtBgDuration(42000), "42s")
+        // 补零：1m02s 不会被读成 1m2s 的歧义
+        @Assert(fmtBgDuration(62000), "1m02s")
+        @Assert(fmtBgDuration(60000), "1m")
+        @Assert(fmtBgDuration(3720000), "1h02m")
+        @Assert(fmtBgDuration(3600000), "1h")
+    }
+}

@@ -636,52 +636,35 @@ public class OutputAreaBottomTest {
     @TestCase
     public func testNoPanelsUsesRowAboveStatusBar(): Unit {
         // 无面板：输出区照旧铺到状态栏上一行
-        @Assert(outputAreaBottom(40, false, -1, 0, 0), 39)
+        @Assert(outputAreaBottom(40, false, -1, 0), 39)
     }
 
     @TestCase
     public func testIdleWithPanelsStopsAbovePanelBand(): Unit {
         // panelsH=5 ⇒ 面板带 34..38，输出区底沿必须是 33（不得伸进面板带）
-        @Assert(outputAreaBottom(40, false, -1, 5, 0), 33)
+        @Assert(outputAreaBottom(40, false, -1, 5), 33)
     }
 
     @TestCase
     public func testOutputBottomNeverInsidePanelBand(): Unit {
-        // 不变式：任意面板高度（含 bg 面板）下，底沿都落在面板带上沿之上
+        // 不变式：任意面板高度下，底沿都落在面板带上沿之上
         for (panelsH in 1..9) {
-            for (bgH in 0..2) {
-                let bottom = outputAreaBottom(40, false, -1, panelsH, bgH)
-                let bandTop = 40 - 1 - panelsH - bgH
-                @Assert(bottom < bandTop)
-            }
+            let bottom = outputAreaBottom(40, false, -1, panelsH)
+            let bandTop = 40 - 1 - panelsH
+            @Assert(bottom < bandTop)
         }
     }
 
     @TestCase
     public func testBusyLayoutUnchanged(): Unit {
-        // 执行中：动态状态行上方（agentRow 已扣面板带），无 bg 面板时不变
-        @Assert(outputAreaBottom(40, true, 33, 5, 0), 32)
+        // 执行中：动态状态行上方（agentRow 已扣面板带）
+        @Assert(outputAreaBottom(40, true, 33, 5), 32)
     }
 
     @TestCase
     public func testBusyTooShallowFallsBackToIdleRule(): Unit {
         // 空间太浅（agentRow < 8）走空闲分支——同样不得伸进面板带
-        @Assert(outputAreaBottom(40, true, 6, 3, 0), 40 - 2 - 3)
-    }
-
-    @TestCase
-    public func testBusyStopsAboveBgPanel(): Unit {
-        // 执行中 bg 面板画在状态行**上方**：输出区底沿还要再让出 bgH 行
-        @Assert(outputAreaBottom(40, true, 33, 5, 2), 30)
-    }
-
-    @TestCase
-    public func testBgHeightOnlyShiftsOutputNotStateRow(): Unit {
-        // 状态行位置固定（agentRow 不再含 bgH），bgH 0→2 只让输出区底沿缩 2 行。
-        // 旧布局把 bgH 计入 agentRow：面板一出现状态行上移 2 行、淡出又下移，
-        // 用户实测"状态行时上时下"。
-        @Assert(outputAreaBottom(40, true, 33, 5, 0), 32)
-        @Assert(outputAreaBottom(40, true, 33, 5, 2), 30)
+        @Assert(outputAreaBottom(40, true, 6, 3), 40 - 2 - 3)
     }
 }
 

@@ -92,16 +92,15 @@
 - **权限**：三件套并入 `bash` 单一授权面（配 `tools: ["bash"]` 即涵盖），`bash_start` 的命令
   同等受命令白名单/黑名单约束。
 - **回收**：TUI 的 `finally` 与 CLI/JSON 模式尾部统一 `killAll()`，退出不留孤儿进程。
-- **可观测（TUI）**：独立 `BgTaskPanel` 全宽行区，叠在 Tasks/Agents 面板带之上，
-  每行 `bg-3 · npm install · running · 42s · 12.4KB`（终态显示 `succeeded`/`failed`/
-  `timeout`/`killed` 与 `exit N`）；超过 3 条折 `+N more`；**运行中耗时按秒实时递增**
-  （渲染时用 `now - startedAt` 现算，签名里不计，避免每秒无谓重绘）；agent 空闲时
-  也每秒重绘一次，后台跑着的任务时间在走。回合总结条追加 `· N 个后台任务仍在跑`，
-  提醒「本轮结束了但进程还在」。窄于 40 列不渲染。
-- **两本槽位账**：面板标题挂 `bg 1/8  agents 2/4`，回合总结条显示 `2/4 agents (2✓ 0✗)`——
+- **可观测（TUI）**：后台任务不再占底部面板，**直接在会话流里留痕**——调用输出
+  `● <标题>` + `  └ BashStart(<参数>)` 两行（标题按 `intent → label → 命令首行 → 模板` 回退），
+  任务转终态再自动补一条 `✔ 完成 · 42s` / `✘ 失败（exit 2） · 8s` / `⏱ 超时 · 2m` /
+  `⊘ 已取消`，**没 poll 也看得见结局**；输出正文仍由 `bash_poll` 交付。
+  回合总结条追加 `· N 个后台任务仍在跑`，提醒「本轮结束了但进程还在」。
+- **两本槽位账**：状态行心跳挂 `bg 1/8  agents 2/4`（`fmtSlotLedger`；上限 0 表示不限、只写用量，
+  子代理未启用时整段省略），回合总结条显示 `2/4 agents (2✓ 0✗)`——
   后台任务（`max_background_tasks` 8）与子代理（`max_subagents` 4）是两套独立上限，
-  撞到「起不动」时要能分清是哪一本满了。窄终端按宽度降级：宽够带账 → 只留任务计数 →
-  `bg 1r/0d`。Agents 面板与 Ctrl+G 焦点交互不受影响（子代理行仍有 iterations/tokens，
+  撞到「起不动」时要能分清是哪一本满了。Agents 面板与 Ctrl+G 焦点交互不受影响（子代理行仍有 iterations/tokens，
   焦点切的是看哪个子代理的转录，与「后台进程还活着」是两种语义）。
 - **可观测（Web）**：协议 v6 新增 `bg_task` 帧，服务端在「`bash_start` 成功 / 转终态 /
   `bash_kill` 生效」三处推送；浏览器端 `#bg-panel` 按 `task_id` 更新行（`bg-3 · npm run dev

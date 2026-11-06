@@ -97,9 +97,11 @@ public class TuiApp {
     private var confirmDialog: ConfirmDialog = ConfirmDialog()
     // Agents 面板（S3：子代理树状态，渲染在 Tasks 面板之上）
     private var agentsPanel: AgentsPanel = AgentsPanel()
-    // 后台任务面板（B-2）：无边框紧凑条（≤2 行）渲染在 Tasks/Agents 面板带之上，
-    // 只在有任务时占行；槽位账与各状态计数走状态行心跳（见 renderAgentStatus）
-    private var bgPanel: BgTaskPanel = BgTaskPanel()
+    // 后台任务的两本槽位账（bg N/8 · agents M/4）：只走状态行心跳。
+    // 底部常驻面板已退役——后台任务的启动/轮询/终态都在会话流里逐条落痕
+    // （见 entries.cj 的 onToolStart 与 onEvent），屏幕上只剩"还有几个槽位"这一个量。
+    private var bgSlots: BgSlots = BgSlots(0, 0, 0, 0)
+    private var bgSlotsLock: Mutex = Mutex()
     // 焦点（Ctrl+G 循环）：0=父，否则子 agentId；聚焦子代理时其行事件进主流（│ 前缀）
     private var focusAgentId: Int64 = 0
     private var focusLock: Mutex = Mutex()
@@ -374,7 +376,6 @@ public class TuiApp {
         // S3 复核 #3：Agents 面板此前漏接（构造默认 utf8=true）——其它面板降级成 +-|
         // 时它仍画 ╭─╮│ 与 ▶ ✓ ✗，正是历史上反复修的"UTF-8 与 ASCII 混排"
         this.agentsPanel.setUtf8(utf8Now)
-        this.bgPanel.setUtf8(utf8Now)
         this.spinner.setUtf8(utf8Now)
         this.confirmDialog.setUtf8(utf8Now)
         this.welcomeView.setUtf8(utf8Now)
@@ -430,14 +431,6 @@ public class TuiApp {
                         // agent 执行中：每秒重绘（刷新 "Thinking… (Ns · ↑ M tokens)" 计时）
                         if (this.isAgentBusy()) {
                             this.markDirty()
-                        }
-                        // B-2：后台面板每秒驱动一次 tick——到点把终态面板收起
-                        // （淡出那一帧才 markDirty，否则每秒白重绘一次不再变化的终态行）
-                        if (this.bgPanel.needsTick()) {
-                            let faded = this.bgPanel.tick(nowSec)
-                            if (faded || this.bgPanel.runningCount() > 0) {
-                                this.markDirty()
-                            }
                         }
                     }
                     // agent 执行中：看门狗（阈值以秒计，触发后重新武装）
@@ -795,27 +788,40 @@ public class TuiApp {
     }
 
     /**
-     * 刷新后台任务面板（B-2）：装配层从任务表快照转换后推送
+     * 刷新两本槽位账：bash 后台任务与子代理各一本，显示在状态行心跳
      *
-     * **变更检测在面板内做**（BgTaskPanel.updateRows 按签名比对，耗时按秒取整）：
-     * 任务频繁回调时无变化不重绘——照 scheduler.cj:225「高频回调淹没主循环」的教训。
+     * 变更检测放在这里（槽位是低频量：起/停任务、派/收子代理），无变化不 markDirty——
+     * 照 scheduler.cj:225「高频回调淹没主循环」的教训，重复重绘不能有。
      */
-    public func refreshBgTasks(rows: ArrayList<BgTaskRow>): Unit {
-        if (this.bgPanel.updateRows(rows)) {
+    public func refreshBgSlots(slots: BgSlots): Unit {
+        this.bgSlotsLock.lock()
+        let changed: Bool = !this.bgSlots.sameAs(slots)
+        if (changed) {
+            this.bgSlots = slots
+        }
+        this.bgSlotsLock.unlock()
+        if (changed) {
             this.markDirty()
         }
     }
 
-    /**
-     * 刷新两本槽位账（B-3 收敛版）：bash 后台任务与子代理各一本，显示在状态行心跳
-     *
-     * 与 refreshBgTasks 同一个"面板内部变更检测 + 有变化才 markDirty"的口径：
-     * 槽位是低频量（起/停任务、派/收子代理），无变化时不该触发全屏重绘。
-     */
-    public func refreshBgSlots(slots: BgSlots): Unit {
-        if (this.bgPanel.setSlots(slots)) {
-            this.markDirty()
+    /** 当前账本快照（测试观测用） */
+    public func currentBgSlots(): BgSlots {
+        this.bgSlotsLock.lock()
+        let s = this.bgSlots
+        this.bgSlotsLock.unlock()
+        return s
+    }
+
+    /** 状态行心跳的账本文本：两本账都没用量就不显示（免每帧挂一条恒为 0 的尾巴） */
+    private func bgSlotsHeartbeat(): String {
+        this.bgSlotsLock.lock()
+        let s = this.bgSlots
+        this.bgSlotsLock.unlock()
+        if (s.bgUsed == 0 && s.agentsUsed == 0) {
+            return ""
         }
+        return fmtSlotLedger(s.bgUsed, s.bgMax, s.agentsUsed, s.agentsMax)
     }
 
     /**
@@ -2015,22 +2021,18 @@ public class TuiApp {
             let agentsH: Int64 = this.agentsPanel.height(outH0, cols)
             // 面板带高度：左右并排取两者较大值（不再垂直相加堆叠）
             let maxBaseH: Int64 = if (tasksH > agentsH) { tasksH } else { agentsH }
-            // bgH：后台任务面板高度（B-2）——无边框紧凑条（≤2 行）。
-            // 执行中画在动态状态行**上方**（基线见下方 bgBaseRow），空闲时贴面板带上沿。
-            let bgH: Int64 = this.bgPanel.height(outH0, cols)
-            // 动态状态行位置固定：只扣 Tasks/Agents 面板带，不把 bgH 算进来——
-            // 旧实现 agentRow = statusRow-1-(maxBaseH+bgH)-1，后台任务一出现状态行就
-            // 上移 2 行、淡出又下移（用户实测"状态行时上时下"）。bg 面板改为占用状态行
-            // **上方**的行，状态行位置与 bgH 无关。
+            // 动态状态行位置：只扣 Tasks/Agents 面板带。
+            // 后台任务原本在状态行上方再占一条紧凑面板（bgH），现已退役——任务都在
+            // 会话流里逐条呈现，底部不再有随任务起停上下跳的常驻条。
             // 无 agent 运行时，agentRow 不使用，仅用于 outH 计算
             let agentRow: Int64 = if (agentBusy) { statusRow - 1 - maxBaseH - 1 } else { -1 }
 
             // 思考块（方案 B）：作为消息流成员由 OutputView 渲染（折叠/展开段），
             // 不再占用独立布局区域——消息区高度恒定，思考随输出滚动回看
             // 输出区可用高度：8 .. outBottom（恒定）
-            // agent 执行中：状态行上方再让出 bg 面板行；空闲：面板带上沿之上
+            // agent 执行中：停在状态行上一行；空闲：Tasks/Agents 面板带上沿之上
             // （判据收在纯函数里便于单测，见文件末尾 outputAreaBottom）
-            let outBottom: Int64 = outputAreaBottom(statusRow, agentBusy, agentRow, maxBaseH, bgH)
+            let outBottom: Int64 = outputAreaBottom(statusRow, agentBusy, agentRow, maxBaseH)
             let outH: Int64 = if (outBottom - 8 + 1 > 0) { outBottom - 8 + 1 } else { 0 }
 
             // 输出区（对话 / 帮助视图，无边框全宽）
@@ -2050,13 +2052,6 @@ public class TuiApp {
                     this.reasoningLock.unlock()
                     this.outputLock.unlock()
                 }
-                // 后台任务面板（B-2）：无边框紧凑条。
-                // 执行中画在动态状态行**上方**（基线 agentRow-1）——状态行因此位置固定，
-                // 不随面板出现/淡出上下跳；空闲时贴 Tasks/Agents 面板带上沿。
-                // outH 传 outH0 与 height() 同参数——两边若用不同上限会在 agent 运行时
-                // 差出 1 行，多占行把输出区顶掉
-                let bgBaseRow: Int64 = if (agentBusy && agentRow >= 8) { agentRow - 1 } else { statusRow - 1 - maxBaseH }
-                let _ = this.bgPanel.render(this.canvas, bgBaseRow, cols, outH0)
                 // Tasks 面板：有任务时在输出区左下角渲染
                 this.tasksPanel.render(this.canvas, statusRow - 1, cols, outH)
                 // Agents 面板（S3）：右下角，与 Tasks **同底线**。overlay 模式：
@@ -2164,9 +2159,9 @@ public class TuiApp {
             line += Ansi.fg(Ansi.THEME_MUTED) + "   " + Ansi.reset() +
                 Ansi.fg(Ansi.THEME_ACCENT) + hb + Ansi.reset()
         }
-        // 后台任务同理：面板在窄终端或高度不足时**不渲染**，状态行是最后一道可见性保障
-        //（面板无标题后，槽位账与各状态计数只在心跳里可见；不报耗时——那条每秒都在变）
-        let bgHb = this.bgPanel.heartbeat()
+        // 槽位账（bg N/8 · agents M/4）：底部面板退役后这里是唯一的常驻出口——
+        // 任务本身在会话流里逐条可见，但"还剩几个槽位"只有这一处显示
+        let bgHb = this.bgSlotsHeartbeat()
         if (bgHb.size > 0) {
             line += Ansi.fg(Ansi.THEME_MUTED) + "  · " + Ansi.reset() +
                 Ansi.fg(Ansi.THEME_ACCENT) + bgHb + Ansi.reset()
@@ -2265,17 +2260,15 @@ public enum WatchdogAction {
  * @param agentRow 动态状态行所在行（执行中有效）
  * @param panelsH 面板带占用行数（0=无面板）
  */
-public func outputAreaBottom(statusRow: Int64, agentBusy: Bool, agentRow: Int64, panelsH: Int64, bgH: Int64): Int64 {
+public func outputAreaBottom(statusRow: Int64, agentBusy: Bool, agentRow: Int64, panelsH: Int64): Int64 {
     if (agentBusy && agentRow >= 8) {
-        // 执行中：状态行位置固定（agentRow 只扣面板带），bg 面板画在状态行上方，
-        // 故输出区还要再让出 bgH 行——否则输出会被压在 bg 面板底下
-        return agentRow - 1 - bgH
+        // 执行中：停在动态状态行上一行
+        return agentRow - 1
     }
-    // 空闲：面板带底沿在 statusRow-1、共占 panelsH + bgH 行（面板自身渲染到
-    // statusRow-1-panelsH-bgH .. statusRow-2），输出区必须停在面板上沿之上，
+    // 空闲：面板带底沿在 statusRow-1、共占 panelsH 行，输出区必须停在面板上沿之上，
     // 否则最新几行被面板覆盖——而最新几行正是回合收尾（见本函数注释）
-    if (panelsH > 0 || bgH > 0) {
-        return statusRow - 2 - panelsH - bgH
+    if (panelsH > 0) {
+        return statusRow - 2 - panelsH
     }
     // 无面板：照旧铺到状态栏上一行
     return statusRow - 1
