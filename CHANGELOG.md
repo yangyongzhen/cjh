@@ -6,6 +6,24 @@ cjh 版本变更记录。依据 git tag 史 + 提交史整理；版本号规则�
 
 ## [Unreleased]
 
+### 修复（会话循环：只输出思考被判成"空响应"，白烧 158s）
+
+真实 E2E（`glm-5.3-flash` 思考模式）日志里记了两次 `LLM 返回空响应，重试 1/3`、
+`重试 2/3`（间隔 79s），而同轮埋点给出 `deltas=17480 chars=63909` —— 响应里**有**增量，
+只是全在**思维链**里，正文空、也没有 `tool_calls`。旧判定只认 `text` 和 `toolCalls` 两样，
+于是把整轮当空响应重跑：模型把同一段长思考又交了一遍卷（590s 回合里约 158s 空转），
+还被"你上一条回复为空"这种不准确的措辞质问。
+
+- `src/agent/loop.cj` 每轮用 `AtomicInt64 roundReasoning` 统计推理增量字符数
+  （`var` 不行：仓颉不允许闭包捕获可变的局部变量）
+- 空正文分支一分为二：**推理有增量** → 不算空响应、不消耗 `emptyRetries`，改注入
+  `ContinuationPolicy.reasoningOnlyNotice`（"思考不会被执行，需要动手就直接调工具，
+  不需要动手就直接给正文，别复述思考过程"），预算与续跑共用 `MAX_NUDGES`，用满即收场；
+  **连推理都没有** → 仍是真·空响应，走原重试
+- `continuation_guard_test.cj` 9 → 11 例：`testReasoningOnlyIsNotEmptyResponse`
+  （只吐思考 → 注入的是针对性指令，不是 `previous response was empty`）+
+  `testTrulyEmptyStillRetried`（真·空响应的老路径没被改坏）
+
 ### 修复（会话循环：任务没做完就收场——纯文本收束加续跑闸门）
 
 用户实测：让模型生成 h5 小游戏，跑到一半忽然停下，待办还挂在 `in_progress`，
