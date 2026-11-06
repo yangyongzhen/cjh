@@ -6,6 +6,69 @@ cjh 版本变更记录。依据 git tag 史 + 提交史整理；版本号规则�
 
 ## [Unreleased]
 
+### 新增（后台任务层：bash 不再阻塞回合 + 三处统一观测面，版本 1.6.5 → 1.6.8）
+
+借鉴 AtomCode 的执行模型：agent 循环不该被一条长命令卡住，回合内可以并发跑多条命令。
+原实现里 `bash` 一次调用要把命令跑完才返回，一条 30 分钟的 `npm install` 就把整个回合顶住。
+分三批落地。
+
+**B-1 任务层三件套 `bash_start` / `bash_poll` / `bash_kill`**（`src/tools/background_task.cj`）
+
+- **独立进程组**：`setsid` 起进程，超时/取消用 `kill -9 -pgid` 连根带走——只杀父进程会留下
+  握管道的后代，读线程永远等不到 EOF（这正是 `cmd | tail` 卡死那条坑的同一根因）。
+- **短命令不退化**：≤200ms 抢跑窗口，命令当场跑完就直接交出结果，不必"起了再轮询"。
+- **增量收割**：按字节游标只交付新增输出；非终态只交完整行 + UTF-8 边界回退（中文不会
+  半字乱码）。落盘超上限**停写但继续抽管道**——否则子进程写满管道阻塞，任务永远不结束。
+- **8 槽位上限**（`max_background_tasks`）：满了直接拒绝并给出「在跑什么 + 怎么腾」，不排队。
+- **并入 bash 单一授权面**：三件套经 `capabilityToolAlias` 归到 bash，`bash_start` 的 command
+  同等受命令白名单/黑名单约束，不是绕过审批的后门。
+- 四键配置：`max_background_tasks` / `background_task_timeout_ms` /
+  `background_output_max_kb` / `background_poll_max_chars`（模板 + 解析 + 序列化齐改）。
+- 退出回收：TUI `finally`、CLI/JSON 尾部统一 `killAll`，退出不留孤儿进程。
+
+**B-2 可观测面：TUI 面板行 + Web 面板**
+
+- 新增 `libs/cjterm/src/bgtaskpanel.cj`（独立面板，不并入 Agents 面板：`AgentRow` 的
+  iterations/tokens/currentTool 语义对 bash 任务完全不适用），全宽独占一行带叠在
+  Tasks/Agents 之上，超 3 条折 `+N more`，窄于 40 列不渲染。
+- **耗时按秒实时递增**：变更签名**故意不计**运行中耗时（否则每秒都"有变化"），渲染时用
+  `now - startedAt` 现算；主循环只在真有可见变化时 `markDirty`（`scheduler.cj:225` 那次
+  "高频回调淹没主循环"的同款教训）。
+- **状态行兜底**：面板不渲染时（窄终端 / 高度不足）仍报 `2 bg (2 running)`——不至于
+  "起了长命令，界面上一点反馈都没有"。
+- **全终态自动收起**：无运行中任务后等 `fadeAfterSecs`（默认 8 秒）再淡出，`height()` 一并
+  归零（只不画却仍占位，会在底部留一块洗不掉的空白）。终态行有回看价值（`bash_poll` 读
+  结果、看退出码与耗时），但一个 3 秒跑完的任务常驻底部直到进程退出，观感就是"框赖着
+  不走"；新任务推送（或表被清空）立即复位，`fadeAfterSecs <= 0` 关闭该行为，时钟可注入
+  （`setClock`）所以单测不依赖真实时间。
+- **Web 侧协议 v5 → v7**：v6 加 `bg_task` 帧（服务端→浏览器，按 `task_id` upsert 单行，
+  终态留最近 32 条，与后端 `BackgroundTaskRegistry.keepFinished = 32` 同值），前端并列
+  `#bg-panel`；v7 加 `bg_slots` 帧承载**两本槽位账**的全局快照，只在账变化时推，新连接
+  握手后补推一次（否则重连要等下一次任务事件才看得到）。
+
+**B-3 收敛为"只统一账，不统一表与名"**
+
+- **表不合并**：`BgTaskState` 是「一次进程的生死」（进程组 kill + 读线程 wait），`AgentNode`
+  是「父回合要等的阶段」（iterations / DAG barrier / token 预算）——硬并会把一个状态机撑成
+  两种语义。
+- **名不改**：`bash_start` 对模型零样本自解释；改名要动提示词、能力清单、
+  `capability.cj:433` 授权映射、6 库测试与用户 skill 白名单，收益远小于代价。
+- **面板不合并**：Agents 面板承担 Ctrl+G 焦点切换与「Tasks 左 / Agents 右、底沿对齐」，
+  pty 有真实断言；焦点切的是"看哪个子代理的转录"，与"后台进程还活着"不是一回事。
+- **真正落地的是统一观测面**：TUI 面板标题 `bg 2/8  agents 1/4`、回合总结条 `N/4 agents`、
+  Web `bg_slots` 段三处同一口径——上限/用量为 0 表示不限（只写用量）；某入口不启用子代理
+  （Web 模式不建 `SubagentScheduler`，上限传 0）时整段省略，**不画一个永远不变的假账**。
+  标题按显示宽度三级降级：带账 → 只留任务计数 → `bg 1r/0d`。
+
+**测试 +49**：根包 23（任务层纯函数 7 + 真进程 10 + 事件源 4 + `bg_slots` 帧 2）、cjcfg 四键 3、
+capability 三例（含 `bash_start` 走 bash 授权面）、cjterm 面板 17（格式化边界、签名忽略运行中
+耗时但跟踪输出量与终态、渲染状态词、折叠、ASCII 降级、槽位账两种口径、自动收起 5 例）、
+根包 UI 3（回合总结条存活提示 0 / 负数 / 正数）。
+
+**门禁**：`test.sh` **627 例全绿**、`test_libs.sh` **237 例全绿**（cjterm 142）、`cjpm build`
+零代码告警（`--static` 驱动提示 ×5 例外照旧）、`cjh --mock` 端到端通过、`tui_pty_test.py`
+77 通过 0 失败。
+
 ### 修复（WS 断开不再"无条件打断本轮"：加 `web.keep_running_on_disconnect`）
 
 上一轮给 WS 写失败加了容错（`WsSendGuard`），但端到端复跑发现**还有一层**：

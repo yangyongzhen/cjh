@@ -135,6 +135,11 @@ public class WebChannel <: Channel {
         this.sendWs(bgTaskFrameJson(info))
     }
 
+    /** 槽位账帧（v7 `bg_slots`）：两本限量账的全局快照 */
+    public func sendBgSlots(bgUsed: Int64, bgMax: Int64, agentsUsed: Int64, agentsMax: Int64): Unit {
+        this.sendWs(bgSlotsFrameJson(bgUsed, bgMax, agentsUsed, agentsMax))
+    }
+
     public func sendApprovalRequest(_: String, info: ApprovalRequestInfo): Unit {
         let ev = ApprovalRequestEvent(info.requestId, info.toolName, info.args, info.reason)
         ev.meta = info.meta

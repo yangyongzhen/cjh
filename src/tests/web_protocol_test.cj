@@ -239,8 +239,8 @@ public class WebProtocolFrameTest {
         let resultObj = parseObj(result.toJson())
         @Assert(getInt(resultObj, "agent_id"), 42)
         @Assert(getStr(resultObj, "agent_label"), "并发审批一号")
-        // 协议版本随帧形状变化递增到 v6（v6 = 新增出站帧 bg_task）
-        @Assert(capabilityProtocolVersion(), 6)
+        // 协议版本随帧形状变化递增到 v7（v7 = 新增出站帧 bg_slots）
+        @Assert(capabilityProtocolVersion(), 7)
     }
 
     /**
@@ -280,6 +280,31 @@ public class WebProtocolFrameTest {
             @Assert(getInt(obj, "exit_code"), code)
             @Assert(getInt(obj, "new_output_chars"), 12)
         }
+    }
+
+    /**
+     * v7：bg_slots 帧字段完整 + 两本的"未启用"表达
+     *
+     * 锁住这两个约定的原因：
+     * 1) bg 账是全局量，独立一帧承载（不塞进按 task_id upsert 的 bg_task）；
+     * 2) agents_max = 0 是**刻意**的未启用信号——Web 入口不建子代理调度器，
+     *    客户端据此省略该段；一旦有人把它改成 config 里的 max_subagents，
+     *    前端就会画出一个永不变化的假账，本用例会红。
+     */
+    @TestCase
+    public func testBgSlotsFrameFields(): Unit {
+        let json = bgSlotsFrameJson(3, 8, 0, 0)
+        let obj = parseObj(json)
+        @Assert(getStr(obj, "type"), "bg_slots")
+        @Assert(getInt(obj, "bg_used"), 3)
+        @Assert(getInt(obj, "bg_max"), 8)
+        @Assert(getInt(obj, "agents_used"), 0)
+        @Assert(getInt(obj, "agents_max"), 0)
+        @Assert(frameTypeOf(json), "bg_slots")
+        // 子代理入口（TUI）用同一帧但带真实上限，形状不变
+        let agentObj = parseObj(bgSlotsFrameJson(1, 8, 2, 4))
+        @Assert(getInt(agentObj, "agents_used"), 2)
+        @Assert(getInt(agentObj, "agents_max"), 4)
     }
 
     /** 取帧的 type 字段（解析器认不认这个帧，用 parseMsgType 之外的方式独立验证） */

@@ -177,6 +177,24 @@ public class BgTaskPanelTest {
         @Assert(panel.runningCount(), 0)
     }
 
+    /**
+     * 心跳只数"非终态"：终态与运行中混在一起时，括号里必须只出运行中的那个数
+     *
+     * 这是状态行降级显示的边界——面板不渲染（窄终端/高度不足）时，用户只能看到
+     * 这句话，把终态也算进 running 会让人以为还有活没干完。
+     */
+    @TestCase
+    public func testHeartbeatCountsOnlyRunning(): Unit {
+        let panel = BgTaskPanel()
+        let rows = ArrayList<BgTaskRow>()
+        rows.add(BgTaskRow("bg-1", "a", BgRowSucceeded, 1000, 0, DateTime.now()))
+        rows.add(BgTaskRow("bg-2", "b", BgRowRunning, 0, 0, DateTime.now()))
+        rows.add(BgTaskRow("bg-3", "c", BgRowFailed, 2000, 1, DateTime.now()))
+        let _ = panel.updateRows(rows)
+        @Assert(panel.heartbeat(), "3 bg (1 running)")
+        @Assert(panel.runningCount(), 1)
+    }
+
     @TestCase
     public func testHeight(): Unit {
         let panel = BgTaskPanel()
@@ -338,5 +356,92 @@ public class BgTaskPanelTest {
         let text = this.joinLines(this.renderLines(panel, 40, 20))
         @Assert(text.contains("后台任务"), true)
         @Assert(text.contains("bg 1/8"), false)
+    }
+
+    /**
+     * 全终态 + 到点 → 自动收起
+     *
+     * 收起必须同时让 height() 归零：只让 render 不画而 height 仍占位，
+     * 就是底部留一块洗不掉的空白（S3 复核 #9 同款坑）。
+     */
+    @TestCase
+    public func testFadeCollapsesAfterAllTerminal(): Unit {
+        let panel = BgTaskPanel()
+        panel.setUtf8(true)
+        // 固定时钟：不依赖真实时间，断言才有确定性
+        panel.setClock({ => 1000 })
+        var rows = ArrayList<BgTaskRow>()
+        rows.add(BgTaskRow("bg-1", "done-1", BgRowSucceeded, 3000, 10, DateTime.now()))
+        let _ = panel.updateRows(rows)
+        // 回看窗口内照常显示
+        @Assert(panel.tick(1005), false)
+        @Assert(panel.shouldShow(), true)
+        @Assert(panel.height(20, 100) > 0, true)
+        @Assert(panel.heartbeat(), "1 bg")
+        // 到点：收起，高度归零，心跳不再挂尾巴
+        @Assert(panel.tick(1008), true)
+        @Assert(panel.shouldShow(), false)
+        @Assert(panel.height(20, 100), 0)
+        @Assert(panel.heartbeat(), "")
+        // 幂等：已收起再 tick 不重复报变化（否则每秒白重绘一次）
+        @Assert(panel.tick(1009), false)
+        // 收起后不必再空转
+        @Assert(panel.needsTick(), false)
+    }
+
+    /** 收起后被新任务打回可见：不能让"已淡出"吃掉新起的任务 */
+    @TestCase
+    public func testFadeResetsWhenNewTaskStarts(): Unit {
+        let panel = BgTaskPanel()
+        panel.setClock({ => 1000 })
+        var done = ArrayList<BgTaskRow>()
+        done.add(BgTaskRow("bg-1", "old", BgRowSucceeded, 1000, 0, DateTime.now()))
+        let _ = panel.updateRows(done)
+        @Assert(panel.tick(1008), true)
+        @Assert(panel.shouldShow(), false)
+        var live = ArrayList<BgTaskRow>()
+        live.add(BgTaskRow("bg-1", "old", BgRowSucceeded, 1000, 0, DateTime.now()))
+        live.add(BgTaskRow("bg-2", "new", BgRowRunning, 0, 0, DateTime.now()))
+        let _ = panel.updateRows(live)
+        @Assert(panel.shouldShow(), true)
+        @Assert(panel.height(20, 100) > 0, true)
+        @Assert(panel.heartbeat(), "2 bg (1 running)")
+    }
+
+    /** 运行中的任务永不收起：等到天荒地老也得看得见 */
+    @TestCase
+    public func testFadeNeverCollapsesWhileRunning(): Unit {
+        let panel = BgTaskPanel()
+        panel.setClock({ => 1000 })
+        var rows = ArrayList<BgTaskRow>()
+        rows.add(BgTaskRow("bg-1", "long", BgRowRunning, 0, 0, DateTime.now()))
+        let _ = panel.updateRows(rows)
+        @Assert(panel.tick(1000 + 100000), false)
+        @Assert(panel.shouldShow(), true)
+        @Assert(panel.needsTick(), true)
+    }
+
+    /** 表被清空后收起状态复位；fadeAfterSecs <= 0 表示永不自动收起 */
+    @TestCase
+    public func testFadeResetAndDisabled(): Unit {
+        let panel = BgTaskPanel()
+        panel.setClock({ => 1000 })
+        var rows = ArrayList<BgTaskRow>()
+        rows.add(BgTaskRow("bg-1", "x", BgRowKilled, 500, 0, DateTime.now()))
+        let _ = panel.updateRows(rows)
+        @Assert(panel.tick(1009), true)
+        @Assert(panel.shouldShow(), false)
+        // 空表：本来就不显示，且不必再驱动
+        let _ = panel.updateRows(ArrayList<BgTaskRow>())
+        @Assert(panel.shouldShow(), false)
+        @Assert(panel.needsTick(), false)
+        var again = ArrayList<BgTaskRow>()
+        again.add(BgTaskRow("bg-2", "y", BgRowSucceeded, 100, 0, DateTime.now()))
+        let _ = panel.updateRows(again)
+        @Assert(panel.shouldShow(), true)
+        // 关掉自动收起：终态行常驻（需要长期回看时的配置）
+        panel.fadeAfterSecs = 0
+        @Assert(panel.tick(1000 + 100000), false)
+        @Assert(panel.shouldShow(), true)
     }
 }

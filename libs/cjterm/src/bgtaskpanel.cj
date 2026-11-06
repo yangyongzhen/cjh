@@ -223,8 +223,32 @@ public class BgTaskPanel {
     private var lastSig: String = ""
     // 两本槽位账（标题行显示；变更检测在 setSlots 里做，槽位是低频变化量）
     private var slots: BgSlots = BgSlots(0, 0, 0, 0)
+    /**
+     * 全终态自动收起：无运行中任务后等这么多秒再淡出（<=0 表示永不淡出）
+     *
+     * 为什么要有：终态行本身有回看价值（`bash_poll` 读结果、看成功/失败与耗时），
+     * 但一个 3 秒就跑完的任务会让面板一直占着底部最多 4 行，直到进程退出——
+     * 观感上就是"框赖着不走"。折中成"留够回看时间再收起"，比"立刻消失"
+     * （结果一眼没看到）和"永不消失"（长期占屏）都更贴直觉。
+     */
+    public var fadeAfterSecs: Int64 = 8
+    // 全终态起始时刻（秒；0 = 无计时：仍有任务在跑，或表为空）
+    private var allDoneAtSec: Int64 = 0
+    // 已淡出（到点收起；有新任务推送或表被清空时复位）
+    private var faded: Bool = false
+    // 时钟（秒）：可注入，测试不必依赖真实时间
+    private var clockSec: () -> Int64
 
-    public init() {}
+    public init() {
+        this.clockSec = { => DateTime.now().toUnixTimeStamp().toSeconds() }
+    }
+
+    /** 注入时钟（测试用）：返回秒级时间戳 */
+    public func setClock(f: () -> Int64): Unit {
+        this.lock.lock()
+        this.clockSec = f
+        this.lock.unlock()
+    }
 
     /**
      * 更新槽位账
@@ -266,19 +290,71 @@ public class BgTaskPanel {
         } else {
             this.lastSig = sig
             this.rows = rows
+            // 自动收起的计时起点：有 running 或表为空 → 复位（新任务出现必须重新可见）
+            var running: Int64 = 0
+            for (r in rows) {
+                if (!bgRowIsTerminal(r.state)) {
+                    running += 1
+                }
+            }
+            if (rows.size == 0 || running > 0) {
+                this.allDoneAtSec = 0
+                this.faded = false
+            } else if (this.allDoneAtSec == 0) {
+                // 首次观察到"全终态"：从这个时刻开始计时，等到点再收起
+                this.allDoneAtSec = this.clockSec()
+                this.faded = false
+            }
         }
         this.lock.unlock()
         return changed
     }
 
+    /**
+     * 驱动自动收起（主循环按秒调用一次）
+     * @param nowSec 当前时刻（秒）。由调用方传入而非面板自取时钟，测试才能断言"到点"。
+     * @return true = 可见性翻转（调用方据此 markDirty）；false = 无变化
+     */
+    public func tick(nowSec: Int64): Bool {
+        this.lock.lock()
+        if (this.rows.size == 0 || this.faded || this.fadeAfterSecs <= 0 || this.allDoneAtSec == 0) {
+            this.lock.unlock()
+            return false
+        }
+        if (nowSec - this.allDoneAtSec < this.fadeAfterSecs) {
+            this.lock.unlock()
+            return false
+        }
+        this.faded = true
+        this.lock.unlock()
+        return true
+    }
+
+    /** 主循环是否还需要按秒驱动：有可见行且尚未淡出（淡出后就不必再空转重绘） */
+    public func needsTick(): Bool {
+        this.lock.lock()
+        let need: Bool = this.rows.size > 0 && !this.faded
+        this.lock.unlock()
+        return need
+    }
+
+    /** 是否已淡出：高度/渲染/心跳统一按"不显示"处理 */
+    public func isFaded(): Bool {
+        this.lock.lock()
+        let f = this.faded
+        this.lock.unlock()
+        return f
+    }
+
     public func shouldShow(): Bool {
         this.lock.lock()
         let n = this.rows.size
+        let f = this.faded
         this.lock.unlock()
-        return n > 0
+        return n > 0 && !f
     }
 
-    /** 状态行心跳：无任务返回 ""；有任务返回 "2 bg (1 running)" */
+    /** 状态行心跳：无任务或已淡出返回 ""；有任务返回 "2 bg (1 running)" */
     public func heartbeat(): String {
         this.lock.lock()
         var total: Int64 = this.rows.size
@@ -288,8 +364,9 @@ public class BgTaskPanel {
                 running += 1
             }
         }
+        let f = this.faded
         this.lock.unlock()
-        if (total == 0) {
+        if (total == 0 || f) {
             return ""
         }
         if (running > 0) {
@@ -324,7 +401,7 @@ public class BgTaskPanel {
             return 0
         }
         this.lock.lock()
-        if (this.rows.size == 0) {
+        if (this.rows.size == 0 || this.faded) {
             this.lock.unlock()
             return 0
         }
@@ -343,7 +420,7 @@ public class BgTaskPanel {
      */
     public func render(canvas: TuiCanvas, availRow: Int64, cols: Int64, outH: Int64): Int64 {
         this.lock.lock()
-        if (this.rows.size == 0) {
+        if (this.rows.size == 0 || this.faded) {
             this.lock.unlock()
             return 0
         }

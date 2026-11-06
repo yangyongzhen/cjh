@@ -424,12 +424,17 @@ public class TuiApp {
                         }
                     }
                     // B-2：后台任务运行中同样每秒重绘——耗时列按单调时钟实时算，
-                    // agent 空闲（任务在后台跑）时也要看得到时间在走
-                    if (this.bgPanel.runningCount() > 0) {
+                    // agent 空闲（任务在后台跑）时也要看得到时间在走。
+                    // 全终态后仍需按秒驱动一次 tick：到点把面板收起（淡出那一帧才 markDirty，
+                    // 否则就等于每秒白重绘一次已经不再变化的终态行）
+                    if (this.bgPanel.needsTick()) {
                         let nowBg = DateTime.now()
                         if ((nowBg - lastTick).toSeconds() >= 1) {
                             lastTick = nowBg
-                            this.markDirty()
+                            let faded = this.bgPanel.tick(nowBg.toUnixTimeStamp().toSeconds())
+                            if (faded || this.bgPanel.runningCount() > 0) {
+                                this.markDirty()
+                            }
                         }
                     }
                     if (this.takeDirty()) {
@@ -2041,12 +2046,19 @@ public class TuiApp {
         if (qLen > 0) {
             line += Ansi.fg(Ansi.THEME_ACCENT) + " · 📥 排队 ${qLen} 条待发送" + Ansi.reset()
         }
-        // S3 修实测"干活时主界面啥也没有"：状态行追加子代理聚合心跳
-        //（如 3 agents (2/5 4/5 1/5) ↑3.2k）；状态行每秒 tick 刷新，零刷屏成本
+        // S3 修实测"干活时主界面啥也没有"：状态行追加聚合心跳
+        //（如 3 agents (2/5 4/5 1/5) ↑3.2k  2 bg (2 running)）；每秒 tick 刷新，零刷屏成本
         let hb = this.agentsPanel.heartbeat()
         if (hb.size > 0) {
-            line += Ansi.fg(Ansi.THEME_MUTED) + "  · " + Ansi.reset() +
+            line += Ansi.fg(Ansi.THEME_MUTED) + "   " + Ansi.reset() +
                 Ansi.fg(Ansi.THEME_ACCENT) + hb + Ansi.reset()
+        }
+        // 后台任务同理：面板在窄终端或高度不足时**不渲染**，状态行是最后一道可见性保障
+        //（只报条数与运行数，不报耗时——那条每秒都在变，状态行不必跟着抖）
+        let bgHb = this.bgPanel.heartbeat()
+        if (bgHb.size > 0) {
+            line += Ansi.fg(Ansi.THEME_MUTED) + "  · " + Ansi.reset() +
+                Ansi.fg(Ansi.THEME_ACCENT) + bgHb + Ansi.reset()
         }
         canvas.setLine(row, line)
     }

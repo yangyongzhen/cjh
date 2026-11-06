@@ -108,6 +108,9 @@ public class WebDistributor <: HttpRequestDistributor {
         this.gateway = ChannelGateway(this.config, this.provider, this.registry)
         // 后台任务事件 → bg_task 帧广播（订阅进程级任务表；无表时静默）
         this.bgBroadcaster = BgTaskBroadcaster()
+        // 槽位上限（v7 账）：bg 取配置；agents 传 0 —— Web 模式不建 SubagentScheduler，
+        // 传 max_subagents 会画出一个永不变化的假账，客户端见上限 0 即省略该段
+        this.bgBroadcaster.setLimits(this.config.maxBackgroundTasks, 0)
         this.bgBroadcaster.subscribe()
         // WsHandler 实例（WebSocket 端点，只负责帧读写 + JSON 解析）
         this.wsHandler = WsHandler(this.config, this.gateway, this.bgBroadcaster)
@@ -129,6 +132,9 @@ public class WebDistributor <: HttpRequestDistributor {
         this.gateway = ChannelGateway(this.config, this.provider, this.registry, providerFactory)
         // 后台任务事件 → bg_task 帧广播（订阅进程级任务表；无表时静默）
         this.bgBroadcaster = BgTaskBroadcaster()
+        // 槽位上限（v7 账）：bg 取配置；agents 传 0 —— Web 模式不建 SubagentScheduler，
+        // 传 max_subagents 会画出一个永不变化的假账，客户端见上限 0 即省略该段
+        this.bgBroadcaster.setLimits(this.config.maxBackgroundTasks, 0)
         this.bgBroadcaster.subscribe()
         // WsHandler 实例（WebSocket 端点，只负责帧读写 + JSON 解析）
         this.wsHandler = WsHandler(this.config, this.gateway, this.bgBroadcaster)
