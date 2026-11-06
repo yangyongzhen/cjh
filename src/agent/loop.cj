@@ -183,6 +183,83 @@ public class TodoItem {
 }
 
 /**
+ * 续跑防护策略（「任务没做完就收场」）
+ *
+ * 实测故障（用户 h5 小游戏会话，日志 `Agent.run 正常结束: 2 rounds, 1 tools`）：
+ * 模型回一条**只有文本、没有工具调用**的答复（"测试已重写，现在运行验证："），
+ * runLoop 便把它当回合正常结束——待办 #3 还挂在 InProgress，用户得追问
+ * "结束了吗"才继续。退出判定缺一道闸，不是看门狗、不是轮次上限。
+ *
+ * 判据三条，都很硬：
+ *   1. 有待办在 InProgress（模型自己声明"正在做"）→ 一定续跑
+ *   2. 上一批工具调用里有失败（isError / 非零退出码）→ 一定续跑
+ *      这条不依赖措辞、也不依赖模型是否用待办（推理型模型常常不用 todo_write）：
+ *      2026-11-06 真实 provider 长任务实测，模型拿到自测 `exit code: 1` 后只回一句
+ *      「发现真实 bug：…修复 spawnWalls，要求整段有效才计入并重试。」就收场，
+ *      bug 没修、没给用户最终答复。旧的两条判据全漏（无待办 + 句号收尾）。
+ *   3. 文本是"承接句"（以冒号收尾且不长，"现在运行验证：" 这种）→ 续跑
+ * 刻意**不**把"本轮新增的 Pending 待办"算作未收尾：模型常先列计划再干活，
+ * 若把 Pending 当未完成，`--mock` 端到端（先 todo_write 三条再派子代理）会被
+ * 多续跑两轮，pty 断言的轮数全部失真；而遗留 Pending 还会把用户新问的无关问题
+ * 拽回旧任务。实测两次"静默收场"都是 InProgress 待办 + 冒号承接句，两条覆盖。
+ *
+ * 预算是硬的（MAX_NUDGES）：模型若一直交承接句也必须收场，不能自旋。
+ */
+public class ContinuationPolicy {
+    /** 单回合最多续跑次数（预算耗尽即结束，防自旋） */
+    public static let MAX_NUDGES: Int64 = 2
+    /** 承接句长度上限：更长的文本视为正式答复/总结，不再当"我要继续" */
+    public static let LEAD_IN_MAX_CHARS: Int64 = 400
+
+    /** 文本是否以冒号收尾（"现在运行验证："这种承接句） */
+    public static func endsWithLeadIn(text: String): Bool {
+        let t = text.trimAscii()
+        if (t.size == 0 || t.size > ContinuationPolicy.LEAD_IN_MAX_CHARS) {
+            return false
+        }
+        return t.endsWith("：") || t.endsWith(":")
+    }
+
+    /**
+     * 是否需要注入续跑指令。
+     * @param text 本轮模型的纯文本答复
+     * @param hasInProgress 是否存在 InProgress 待办
+     * @param lastToolFailed 上一批工具调用里是否有失败（isError）
+     */
+    public static func needsContinuation(text: String, hasInProgress: Bool, lastToolFailed: Bool): Bool {
+        if (hasInProgress) {
+            return true
+        }
+        // 结构性判据：工具刚失败，模型却只回一句"我来修…"就收束。
+        // 与措辞无关、与是否用待办无关——真实会话里模型既没建待办，也不是冒号收尾。
+        if (lastToolFailed) {
+            return true
+        }
+        return ContinuationPolicy.endsWithLeadIn(text)
+    }
+
+    /** 续跑指令正文（列出未完成待办 + 明确禁止交说明性答复） */
+    public static func nudgeNotice(open: ArrayList<TodoItem>, round: Int64, toolFailed: Bool): String {
+        var notice = "[System Notice] 你还没有完成任务，不要结束回合：\n"
+        for (t in open) {
+            let st = match (t.status) {
+                case TodoStatus.Pending => "pending"
+                case TodoStatus.InProgress => "in_progress"
+                case TodoStatus.Completed => "completed"
+            }
+            notice += "  #${t.id} [${st}] ${t.content}\n"
+        }
+        if (toolFailed) {
+            notice += "上一批工具调用返回了失败（结果标记 isError / 非零退出码），问题还没有解决，不要就此收束。\n"
+        }
+        notice += "说明性回复（「接下来要做…」「现在运行验证：」这类话）不等于完成，也不会被执行。\n"
+        notice += "请立刻调用工具继续执行；做完后把对应待办标为 completed，再给最终答复。\n"
+        notice += "（第 ${round}/${ContinuationPolicy.MAX_NUDGES} 次续跑提醒）"
+        return notice
+    }
+}
+
+/**
  * 单次 Agent.run 的统计摘要（回合总结条数据源）
  */
 public class RunSummary {
@@ -663,6 +740,38 @@ public class Agent {
         this.onTodosChanged()
     }
 
+    // ==================== 续跑防护内部判据 ====================
+
+    /** 未完成（非 Completed）待办快照 */
+    private func openTodoItems(): ArrayList<TodoItem> {
+        let open = ArrayList<TodoItem>()
+        for (item in this.todos) {
+            // 仓颉枚举不支持 == 比较，用 match 判定
+            let done = match (item.status) {
+                case TodoStatus.Completed => true
+                case _ => false
+            }
+            if (!done) {
+                open.add(item)
+            }
+        }
+        return open
+    }
+
+    /** 是否存在 InProgress 待办（模型自己声明"正在做"） */
+    private func hasInProgressTodo(): Bool {
+        for (item in this.todos) {
+            let running = match (item.status) {
+                case TodoStatus.InProgress => true
+                case _ => false
+            }
+            if (running) {
+                return true
+            }
+        }
+        return false
+    }
+
     /**
      * 追加用户消息并运行，返回回合统计（含最终文本答复 summary.reply）
      */
@@ -701,6 +810,10 @@ public class Agent {
         // 空响应重试计数（LLM 返回无 text 且无 tool_calls 时重试，超过 maxEmptyRetries 才退出）
         var emptyRetries: Int64 = 0
         let maxEmptyRetries: Int64 = 3
+        // 续跑防护（见 ContinuationPolicy）：本回合已注入的续跑指令数
+        var continuationNudges: Int64 = 0
+        // 上一批工具调用里是否有失败（isError）：续跑闸门的结构性判据之一
+        var lastToolFailed: Bool = false
         // 软顶（wrapUpRounds）：达到 maxIterations 后注入"立即总结收尾"指令，不再硬切——
         // 长任务可在当前工作线程自然收尾；超过 wrapUpRounds 仍未结束才强制停止
         var wrapUpInjected: Bool = false
@@ -755,14 +868,20 @@ public class Agent {
             let roundStart = DateTime.now()
             let msgCount = Int64(this.messages.size)
             Log.info("=== 第 ${iterations} 轮开始 | 消息数 ${msgCount} | 历史 token ~${summary.promptTokens} ===")
+            // 流式到达埋点（CJH_TRACE_STREAM=1 才生效，关闭时零开销）：
+            // 在"交给 UI 的那一层"测量，一处覆盖所有 provider——首字节延迟 + 吐字节奏。
+            // 与 cjterm 的 CJH_TRACE_PERF（渲染耗时）配对，才能分清"模型慢"与"渲染慢"。
+            StreamTrace.beginRequest()
             try {
                 this.onThinking()
                 response = this.provider.chatStream(this.messages, this.tools.specs(), { delta =>
+                    StreamTrace.onDelta(Int64(delta.size))
                     this.onDelta(delta)
                     var p = JsonObject()
                     p.put("delta", JsonString(delta))
                     this.fireHooks(AgentHook.ChatDelta, p)
                 }, { r =>
+                    StreamTrace.onDelta(Int64(r.size))
                     this.onReasoning(r)
                     var p = JsonObject()
                     p.put("delta", JsonString(r))
@@ -932,9 +1051,13 @@ public class Agent {
                 }
 
                 // 按原始顺序回填结果到消息历史
+                lastToolFailed = false
                 for (i in 0..n) {
                     let tc = toolCalls[i]
                     let result = results[i]
+                    if (result.isError) {
+                        lastToolFailed = true
+                    }
                     this.onToolResult(tc.name, result)
                     var postP = JsonObject()
                     postP.put("tool", JsonString(tc.name))
@@ -988,6 +1111,25 @@ public class Agent {
                 }
                 Log.error("LLM 连续 ${maxEmptyRetries} 次返回空响应，放弃重试")
                 this.onAssistantText("\n[空响应] LLM 连续 ${maxEmptyRetries} 次未返回内容，回合结束。")
+            }
+            // 续跑闸门（「任务没做完就收场」）：纯文本收束但活儿没干完 → 注入指令继续跑。
+            // 只有文本、没有 tool_calls 的答复会被当作回合正常完成（实测 h5 会话
+            // `正常结束: 2 rounds, 1 tools`，待办 #3 还挂着 InProgress 就交卷了）。
+            // 预算硬上限 ContinuationPolicy.MAX_NUDGES；`iterations < maxIterations`
+            // 顺带把"轮次软顶已要求收尾"的情形排除——达到软顶时不再续跑，
+            // 免得"要求收尾"与"要求继续"两条指令打架。
+            if (response.text.size > 0 &&
+                continuationNudges < ContinuationPolicy.MAX_NUDGES &&
+                iterations < this.config.maxIterations) {
+                if (ContinuationPolicy.needsContinuation(response.text, this.hasInProgressTodo(), lastToolFailed)) {
+                    continuationNudges += 1
+                    let open = this.openTodoItems()
+                    Log.warn("纯文本收束但任务未收尾（未完成待办 ${open.size} 项，上批工具失败 ${lastToolFailed}），注入续跑指令 ${continuationNudges}/${ContinuationPolicy.MAX_NUDGES}")
+                    this.onAssistantText(
+                        "\n[System] 检测到任务未收尾，要求模型继续执行（第 ${continuationNudges}/${ContinuationPolicy.MAX_NUDGES} 次）\n")
+                    this.messages.add(ChatMessage("user", ContinuationPolicy.nudgeNotice(open, continuationNudges, lastToolFailed)))
+                    continue
+                }
             }
             // 回合结束：计算耗时，回填 reply，返回 summary（onRunComplete 由调用方在 setAgentRunning(false) 后触发）
             let durationMs = (DateTime.now() - startTime).toMilliseconds()

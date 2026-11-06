@@ -6,6 +6,65 @@ cjh 版本变更记录。依据 git tag 史 + 提交史整理；版本号规则�
 
 ## [Unreleased]
 
+### 修复（会话循环：任务没做完就收场——纯文本收束加续跑闸门）
+
+用户实测：让模型生成 h5 小游戏，跑到一半忽然停下，待办还挂在 `in_progress`，
+追问"结束了吗"才继续。根因不是模型偷懒：`runLoop` 把**只有文本、没有 tool_calls**
+的答复当作回合正常完成（日志 `Agent.run 正常结束: 2 rounds, 1 tools`），而模型回的是
+「测试已重写，现在运行验证：」这种**承接句**——它在报进度，agent 以为它交卷了。
+
+- `src/agent/loop.cj` 新增 `ContinuationPolicy`（纯函数 + 指令正文，可单测）：
+  需要续跑 = **有待办 InProgress**（模型自己声明"正在做"）**或文本是承接句**
+  （以冒号收尾且 ≤400 字符）
+- `runLoop` 纯文本收束分支加闸门：命中则注入 `nudgeNotice`（列出未完成待办 +
+  "说明性回复不等于完成，也不会被执行"）并继续下一轮，不算回合结束
+- 预算硬上限 `MAX_NUDGES = 2`（一直交承接句也必须收场，防自旋）；`iterations <
+  maxIterations` 顺带排除轮次软顶——"要求收尾"与"要求继续"两条指令不能打架
+- 判据刻意收窄：**不**把"本轮新增的 Pending 待办"算未收尾（`--mock` 先 `todo_write`
+  三条 Pending 再派子代理，若 Pending 也算未完成，每回合多续跑两次，pty 断言的
+  `4 rounds` 全部失真；遗留 Pending 还会把用户新问的无关问题拽回旧任务）
+- 新增 `src/agent/continuation_guard_test.cj`（7 例）：InProgress 用满预算才收场 /
+  全部 Completed 立刻结束 / 冒号承接句续跑 / 预算有界 / 遗留 Pending 不续跑 /
+  软顶不续跑 / Pending-only 不续跑
+
+### 修复（会话循环：工具刚失败就纯文本收场——补第三条结构性判据）
+
+真实 provider 长任务实测（2026-11-06，`glm-5.3-flash`，贪吃蛇 + 自测）：模型跑自测拿到
+`exit code: 1`（`❌ spawnWalls 段数 6~9 got=4`，14 通过 1 失败），随后只回一句
+「发现真实 bug：…修复 `spawnWalls`，要求整段有效才计入并重试。」就收场——工具没再调、
+bug 没修、既没给用户最终答复，也没说"卡住了"。会话证据：`s1793943403.418.2.json`
+第 [15] 条 `exit code: 1` → 第 [16] 条纯文本承诺句 → 回合结束（`8 rounds, 6 tools, 590245ms`）。
+
+两条旧判据全漏，且漏法很典型：本轮模型**从未建待办**（推理型模型常态），那句承诺句又以
+**句号**收尾而非冒号。判据只能靠**结构**，不能靠措辞：
+
+- `src/agent/loop.cj`：`ContinuationPolicy.needsContinuation(text, hasInProgress, lastToolFailed)`
+  新增第三条判据——**上一批工具结果里有失败（isError / 非零退出码）、其后模型只回文本**
+  → 视为未收尾，必须续跑；与模型是否用 `todo_write` 无关
+- `runLoop` 回填工具结果时记录 `lastToolFailed`（本批任一条 `isError` 即置真，下一批工具轮
+  覆盖重置）；`nudgeNotice(open, round, toolFailed)` 在工具失败时额外点明
+  「上一批工具调用返回了失败（结果标记 isError / 非零退出码），问题还没有解决，不要就此收束」
+- 预算不变（`MAX_NUDGES = 2`）：模型若反复只回文本，用满两次即收场，不会自旋
+- `src/agent/continuation_guard_test.cj` +2 例（共 9 例）：**工具失败 + 纯文本 → 必续跑**
+  （1 工具轮 + 1 收尾 + 2 续跑 = 4 次请求，且注入的指令含"还没有完成"/"工具"）、
+  **工具成功 + 纯文本 → 照旧结束**（2 次请求，专防"无条件续跑"作弊把 `--mock`/pty 轮数搞失真）
+
+### 修复（MCP：`_` 前缀的示例键被当成真实服务器去连接）
+
+启动即 4 条 WARN：`_example_stdio initialize 无响应` ×2、`连接服务器 _example_stdio 失败，跳过` ×2。
+`settings.json` 模板里的 `_example_stdio` / `_example_sse` 本意是**文档示例**，解析循环却把它们
+当成真实服务器，每次都真去跑一遍 `npx -y …`。
+
+- `libs/cjcfg/src/config.cj`：`mcp_servers` 段解析跳过名称以 `_` 开头的键（示例即示例，不连接）
+- `libs/cjcfg/src/mcp_servers_test.cj`（新建，2 例）：示例键（哪怕 command/url 齐全）一律不出现；
+  正常键的 `transport` / `command` / `args` / `url` / `env` 照旧解析（防跳过逻辑误伤）
+
+### 未修记录（P1：空响应误判，留待后续）
+
+本轮实测 `LLM 返回空响应，重试 1/3` ×2（间隔 79s），而埋点显示
+`deltas=17480 chars=63909`——响应里确有增量，是**只有推理增量、正文为空**的响应被误判成
+"空响应"，590s 里约 158s 纯空转。后续应把判定放宽为"本次请求已收到推理/正文增量即不算空"。
+
 ### 修复（会话循环：忙时输入只入队，回合结束后作新回合——连发两条不再丢任务）
 
 用户实测：先发「生成个 h5 小游戏」，紧接着发「郑州天气怎么样」——只跑了后者，

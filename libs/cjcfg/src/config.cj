@@ -842,6 +842,12 @@ public class CjhConfig {
                             case JsonKind.JsObject =>
                                 let serversObj = v.asObject()
                                 for ((serverName, serverCfg) in serversObj.getFields()) {
+                                    // 以 "_" 开头的键视为示例/注释（settings.json 模板自带的
+                                    // `_example_stdio` / `_example_sse`），不当真实服务器去连接——
+                                    // 否则每次启动都会白跑一次 `npx -y …` 再报"连接失败"（实测 4 条 WARN）。
+                                    if (serverName.startsWith("_")) {
+                                        continue
+                                    }
                                     match (serverCfg.kind()) {
                                         case JsonKind.JsObject =>
                                             let cfg = McpServerConfig(serverName)
