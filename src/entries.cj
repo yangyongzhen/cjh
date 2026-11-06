@@ -216,6 +216,45 @@ func readLineFromStdIn(): Option<String> {
     }
 }
 
+/**
+ * TodoWriteTool 注入：全部回调绑定到具体 agent。
+ *
+ * 两个视图都要给——`list` 是给人（模型）看的格式化文本，`pairs` 是给工具做
+ * done 按内容匹配用的结构化投影；别让工具去反解析自己画出来的表格。
+ */
+func makeTodoWriteTool(agent: Agent): TodoWriteTool {
+    return TodoWriteTool(
+        { c => agent.addTask(c) },
+        { id => agent.updateTaskStatus(id, TodoStatus.InProgress) },
+        { id => agent.updateTaskStatus(id, TodoStatus.Completed) },
+        { id, c => agent.updateTaskContent(id, c) },
+        { => agent.clearTodos() },
+        { =>
+            let todos = agent.getTodos()
+            if (todos.size == 0) {
+                return "暂无任务"
+            }
+            var result = "Tasks:\n"
+            for (item in todos) {
+                let marker = match (item.status) {
+                    case TodoStatus.Completed => "✓"
+                    case TodoStatus.InProgress => "▶"
+                    case TodoStatus.Pending => "☐"
+                }
+                result += "  ${marker} #${item.id} ${item.content}\n"
+            }
+            return result
+        },
+        { =>
+            let refs = ArrayList<TodoRef>()
+            for (item in agent.getTodos()) {
+                refs.add(TodoRef(item.id, item.content))
+            }
+            return refs
+        }
+    )
+}
+
 func runCli(sessionId: String): Int64 {
     println("cjh - Cangjie Coding Agent")
     println("========================")
@@ -446,27 +485,7 @@ func runJson(prompt: String, sessionId: String): Int64 {
         let store = SessionStore(cjhCfg.sessionsDir)
 
         // TodoWriteTool：LLM 通过工具调用管理任务列表（回调绑定到 agent）
-        registry.register(TodoWriteTool(
-            { c => agent.addTask(c) },
-            { id => agent.updateTaskStatus(id, TodoStatus.InProgress) },
-            { id => agent.updateTaskStatus(id, TodoStatus.Completed) },
-            { id, c => agent.updateTaskContent(id, c) },
-            { => agent.clearTodos() },
-            { =>
-                let todos = agent.getTodos()
-                if (todos.size == 0) { return "暂无任务" }
-                var result = "Tasks:\n"
-                for (item in todos) {
-                    let marker = match (item.status) {
-                        case TodoStatus.Completed => "✓"
-                        case TodoStatus.InProgress => "▶"
-                        case TodoStatus.Pending => "☐"
-                    }
-                    result += "  ${marker} #${item.id} ${item.content}\n"
-                }
-                return result
-            }
-        ))
+        registry.register(makeTodoWriteTool(agent))
 
         // TaskTool：派发子代理执行独立任务（spawnFn 回调注入；父 agent 用于简报上下文块）
         // S2：子代理 provider 每次派生新建实例，避免共享单槽 transport 的 abort 串台（P0-2）
@@ -654,27 +673,7 @@ func runTui(sessionId: String): Int64 {
         agent.setPluginManager(pluginManager)
 
         // TodoWriteTool：LLM 通过工具调用管理任务列表（回调绑定到 agent）
-        registry.register(TodoWriteTool(
-            { c => agent.addTask(c) },
-            { id => agent.updateTaskStatus(id, TodoStatus.InProgress) },
-            { id => agent.updateTaskStatus(id, TodoStatus.Completed) },
-            { id, c => agent.updateTaskContent(id, c) },
-            { => agent.clearTodos() },
-            { =>
-                let todos = agent.getTodos()
-                if (todos.size == 0) { return "暂无任务" }
-                var result = "Tasks:\n"
-                for (item in todos) {
-                    let marker = match (item.status) {
-                        case TodoStatus.Completed => "✓"
-                        case TodoStatus.InProgress => "▶"
-                        case TodoStatus.Pending => "☐"
-                    }
-                    result += "  ${marker} #${item.id} ${item.content}\n"
-                }
-                return result
-            }
-        ))
+        registry.register(makeTodoWriteTool(agent))
         // TaskTool：派发子代理执行独立任务（spawnFn 回调注入；父 agent 用于简报上下文块）
         // S2：子代理 provider 每次派生新建实例，避免共享单槽 transport 的 abort 串台（P0-2）
         registry.register(TaskTool({ description, prompt, subagentType, scope =>

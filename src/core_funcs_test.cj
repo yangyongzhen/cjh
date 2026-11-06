@@ -769,7 +769,8 @@ public class SubagentIsolationTest {
         registry.register(WriteTool())
         registry.register(BashTool())
         registry.register(TodoWriteTool(
-            { _ => 1 }, { _ => () }, { _ => () }, { _, _ => () }, { => () }, { => "Tasks:" }))
+            { _ => 1 }, { _ => () }, { _ => () }, { _, _ => () }, { => () }, { => "Tasks:" },
+            { => ArrayList<TodoRef>() }))
         let config = AgentConfig("parent system", 5, cap, 0, 0, 6, 6000,
             tmpPath("cjh_ut_sub_spill"), "sess-sub")
         let agent = Agent(provider, registry, config)
