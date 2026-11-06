@@ -33,6 +33,16 @@ public class InputBox <: Component {
 
     // 变更回调（输入内容变化时触发，参数为新内容）
     public var onChange: (String) -> Unit = { _ => }
+
+    /**
+     * 历史回吸回调（↑↓ 浏览历史：文本被整体替换，不是逐字编辑）。
+     *
+     * 与 onChange 分开的原因：onChange 语义是"用户编辑了文本"，上层拿它刷新 / 命令候选。
+     * 回吸历史若走 onChange，等于把那条历史"重打一遍"——回吸到 "/xxx" 会立刻弹出命令
+     * 菜单，并把随后的 ↑↓ 抢去做选项导航（用户实测反馈："按上下键查看历史输入，结果
+     * 出来个 / 杠内容，导致出来了选择项"）。
+     */
+    public var onHistoryRecall: (String) -> Unit = { _ => }
     // 提交回调（回车时触发，参数为完整输入——大粘贴已展开为原文）
     public var onSubmit: (String) -> Unit = { _ => }
 
@@ -199,7 +209,9 @@ public class InputBox <: Component {
      * 加入输入历史（提交时调用）：非空且与最近一条不同；超上限移除最旧
      */
     public func addToHistory(text: String): Unit {
-        if (text.size == 0) {
+        // 空串与"光秃秃的 /"一律不记：后者只是命令菜单的开关键，不是输入内容；
+        // 存进历史后 ↑ 一按就把它回吸出来 → 菜单弹开、↑↓ 被抢去选命令（实测反馈）
+        if (text.size == 0 || text == "/") {
             return
         }
         if (this.history.size > 0 && this.history[this.history.size - 1] == text) {
@@ -222,6 +234,11 @@ public class InputBox <: Component {
     public func setHistory(list: ArrayList<String>): Unit {
         this.history = ArrayList<String>()
         for (h in list) {
+            // 存量文件里可能已躺着旧版本存下的裸 "/"（用户实测那份 history 末尾就有两条），
+            // 载入即剔除；下次 saveHistory 落盘时自然清掉
+            if (h.size == 0 || h == "/") {
+                continue
+            }
             this.history.add(h)
         }
         // 超上限裁剪（保留最近 historyMax 条）
@@ -775,7 +792,7 @@ public class InputBox <: Component {
         }
         this.text_ = list[list.size - 1 - this.historyIndex]
         this.cursorPos = Int64(this.text_.size)  // 历史浏览：光标置尾
-        this.onChange(this.text_)
+        this.onHistoryRecall(this.text_)
     }
 
     /**
@@ -795,7 +812,7 @@ public class InputBox <: Component {
             this.text_ = this.historyDraft
             this.cursorPos = Int64(this.text_.size)  // 恢复 draft：光标置尾
         }
-        this.onChange(this.text_)
+        this.onHistoryRecall(this.text_)
     }
 
     /**

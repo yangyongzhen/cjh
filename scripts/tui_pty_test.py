@@ -749,6 +749,42 @@ def test_ref_panel_gate() -> None:
         s.close()
 
 
+def test_history_recall_no_slash_menu() -> None:
+    """[场景17] 历史回吸不重开 / 命令菜单（回归："按上下键出来个 / 杠内容 + 选择项"）
+
+    真实复现：用户 history 文件里躺着旧版本存下的裸 "/"（本机那份末尾就有两条），
+    按 ↑ 只想翻上一条输入，结果输入框变成 "/"、命令候选整屏弹出，随后的 ↑↓ 还被
+    抢去做选项导航。修复后：载入即剔除裸 "/"，且回吸只换文本、不触发候选刷新。
+    """
+    print("[场景17] 历史回吸不重开 / 命令菜单")
+    cfg = make_config_dir()
+    # 预置历史（旧在前），照抄用户那份文件的真实形态：末尾躺着裸 "/"（旧版本存的）
+    with open(os.path.join(cfg, "history"), "w", encoding="utf-8") as f:
+        f.write("/theme\n/\n历史输入一\n")
+    s = PtuSession(cfg)
+    try:
+        s.expect("cjh")
+        time.sleep(1.2)
+        s.send_esc_seq("\x1b[A")  # ↑：回吸最新一条
+        s.read_available(0.8)
+        buf = strip_ansi(s.buf)
+        tail = buf[-400:]
+        check("↑ 回吸到正常输入（裸 / 不插队）", "历史输入一" in tail, f"(buf尾部: {tail})")
+        check("不再弹出整屏命令候选", "/model" not in tail and "/provider" not in tail,
+              f"(buf尾部: {tail})")
+        # 继续 ↑ 翻到更早的真命令：回吸只换文本，不触发候选刷新
+        s.send_esc_seq("\x1b[A")
+        s.read_available(0.8)
+        buf = strip_ansi(s.buf)
+        tail = buf[-400:]
+        check("继续 ↑ 翻到更早的真命令", "/theme" in tail, f"(buf尾部: {tail})")
+        s.send_key(3)  # 空闲：一次退出
+        code = s.wait_exit()
+        check("退出码 0", code == 0, f"(实际 {code})")
+    finally:
+        s.close()
+
+
 def main() -> None:
     if not os.path.exists(BIN):
         print(f"错误：未找到 {BIN}，请先 cjpm build")
@@ -773,6 +809,7 @@ def main() -> None:
     test_bracketed_paste_chinese()
     test_thinking_history_expand()
     test_ref_panel_gate()
+    test_history_recall_no_slash_menu()
     print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
     sys.exit(1 if FAIL else 0)
 
