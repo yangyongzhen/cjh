@@ -60,8 +60,7 @@ public class TuiApp {
     private var agentRunningLock: Mutex = Mutex()
     // Agent 执行开始时间（实时状态行计时用）
     private var agentStartTime: DateTime = DateTime.now()
-    // Agent 当前 LLM 轮次计数（状态行"第 N 轮"：让用户看到 run 在推进、
-    // 排队消息将在下一轮 LLM 请求前被 Agent 拉取处理（atomcode 式 steer））
+    // Agent 当前 LLM 轮次计数（状态行"第 N 轮"：让用户看到 run 在推进）
     private var agentRounds: Int64 = 0
     // Agent 执行期间累计输入 token（实时状态行显示用）
     private var agentPromptTokens: Int64 = 0
@@ -314,14 +313,16 @@ public class TuiApp {
                 this.appendOutput("")  // 空行：分隔用户输入与 Agent 回复
                 // 方案 B：Agent 执行期间提交的消息入队，执行完毕后自动处理。
                 // 不在 transcript 追加"已入队"提示（处理后残留误导，且污染会话存档）——
-                // 排队状态由动态状态行实时显示（"排队 N 条"），agent 结束自动消失。
+                // 排队状态由动态状态行实时显示（"排队 N 条待并入"），agent 结束自动消失。
                 // busy || 队列非空都入队：堵住 run 结束→下一条启动的窗口期
                 // （否则该窗口提交的消息绕过队列、与续跑消息并发执行同一 Agent）。
-                // 忙时提交只入队、不打断当前回合，也**不在回合内注入**——
-                // 等当前回合作答完毕，由 entries.cj 出队作为**新回合**发送。
-                // （v1.6.9：旧 steer 语义会在每轮 LLM 请求前排空队列塞进本回合，
-                // 连发两条时先发的任务被后一条打乱/吞掉，实测丢失任务。）
-                // 想夺回输入权：Esc（中断并立即发送）或 Ctrl+C 两级中断。
+                // 忙时提交只入队、不打断当前回合。消费有两条路径，共用同一 FIFO 队列：
+                //   1. 回合内边界注入（方案 2，见 SteerPolicy）：每批工具执行完、下一轮
+                //      请求前取**一条**并入当前回合——首轮（还没跑工具）与中断后都不取；
+                //   2. 回合结束后 entries.cj 出队作**新回合**发送（到这时仍未消费的）。
+                // （v1.6.9 曾整段关掉路径 1：旧 steer 在每轮请求前排空队列、第 1 轮也注入，
+                // 连发两条时先发的任务被后一条顶掉，实测丢任务。）
+                // 想夺回输入权：Esc（中断当前回合，队列消息作新回合立即发送）或 Ctrl+C 两级中断。
                 if (this.isAgentBusy() || this.queueLength() > 0) {
                     this.enqueueInput(finalLine)
                     if (this.isAgentBusy()) {
@@ -1699,14 +1700,18 @@ public class TuiApp {
                 }
                 return
             }
-            // atomcode 式：agent 执行中按 Esc = 中断并立即发送（中断当前回合，
+            // atomcode 式：agent 执行中按 Esc = 中断当前回合（中断优先于边界注入，
             // 未消费的排队消息由 entries.cj 在 run 结束后作为新 turn 自动发送）。
             // 仅在"干净对话视图"触发——editMode/帮助视图/下拉框的 Esc 语义优先。
             if (this.isAgentBusy()) {
                 this.onInterrupt()
-                this.safeLog("info", "Esc: 中断当前回合（排队消息中断后作为新 turn 发送）")
+                this.safeLog("info", "Esc: 中断当前回合（未消费的排队消息作为新 turn 发送）")
                 this.appendOutput(Ansi.fg(Ansi.THEME_WARN) +
-                    "⏸ 已中断当前回合，排队消息将立即发送…" + Ansi.reset())
+                    (if (this.queueLength() > 0) {
+                        "⏸ 已中断当前回合，队列里的消息将作为新回合发送…"
+                    } else {
+                        "⏸ 已中断当前回合…"
+                    }) + Ansi.reset())
                 return
             }
             return
@@ -2114,7 +2119,7 @@ public class TuiApp {
             Ansi.fg(Ansi.THEME_MUTED) + " (" + elapsed.toString() + "s · ↑ " + Ansi.reset() +
             Ansi.fg(Ansi.THEME_WARN) + fmtTokenCount(tokens) + Ansi.reset() +
             Ansi.fg(Ansi.THEME_MUTED) + " tokens" + Ansi.reset()
-        // 多轮任务：显示当前轮次（用户可判断 run 在推进、排队消息还要等几轮）
+        // 多轮任务：显示当前轮次（用户可判断 run 在推进）
         if (this.agentRounds > 1) {
             line += Ansi.fg(Ansi.THEME_MUTED) + " · 第 " + Ansi.reset() +
                 Ansi.fg(Ansi.THEME_WARN) + this.agentRounds.toString() + Ansi.reset() +
@@ -2122,7 +2127,7 @@ public class TuiApp {
         }
         line += Ansi.fg(Ansi.THEME_MUTED) + ")" + Ansi.reset()
         if (qLen > 0) {
-            line += Ansi.fg(Ansi.THEME_ACCENT) + " · 📥 排队 ${qLen} 条待发送" + Ansi.reset()
+            line += Ansi.fg(Ansi.THEME_ACCENT) + " · 📥 排队 ${qLen} 条待并入" + Ansi.reset()
         }
         // S3 修实测"干活时主界面啥也没有"：状态行追加聚合心跳
         //（如 3 agents (2/5 4/5 1/5) ↑3.2k  2 bg (2 running)）；每秒 tick 刷新，零刷屏成本

@@ -804,8 +804,11 @@ func runTui(sessionId: String): Int64 {
             tui.resetAgentTokens()
             tui.setAgentState("Thinking…")
         }
-        // 排队输入**不在回合内**消费（v1.6.9 回退 v1.3.22 的 steer 注入）：
-        // 忙时提交只入队，由下方 run 结束后的 dequeueInput 出队作新回合发送。
+        // 方案 2「边界 steer」：Agent 每跑完一批工具、下一轮请求前，从这里取一条
+        // 排队消息注入当前回合（策略见 SteerPolicy）——用户补充要求不必等整回合结束。
+        // 一次只取一条，首轮（还没跑工具）与中断后都不取；回合结束后仍未消费的消息
+        // 由下方 dequeueInput 出队作新回合发送。两条路径共用同一个 FIFO 队列，不重复发送。
+        agent.queuedInputSource = { => tui.dequeueInput() }
         agent.onTokens = { tokens =>
             tui.addAgentTokens(tokens)
         }

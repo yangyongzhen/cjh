@@ -205,11 +205,62 @@ public class TodoItem {
  *
  * 预算是硬的（MAX_NUDGES）：模型若一直交承接句也必须收场，不能自旋。
  */
+/**
+ * 轮次预算撞到软顶时的决策（见 ContinuationPolicy.capAction）
+ */
+public enum CapAction {
+    | Extend    // 还有未完成待办 + 段数没用尽 → 续一段预算，接着做
+    | WrapUp    // 该收尾了：活干完了，或段数已用尽（预算必须有界，不能自旋）
+}
+
 public class ContinuationPolicy {
     /** 单回合最多续跑次数（预算耗尽即结束，防自旋） */
     public static let MAX_NUDGES: Int64 = 2
     /** 承接句长度上限：更长的文本视为正式答复/总结，不再当"我要继续" */
     public static let LEAD_IN_MAX_CHARS: Int64 = 400
+    /**
+     * 轮次预算最多分几段（含首段）：撞软顶时若有未完成待办就续一段。
+     * 上限 3 段——预算必须有界，否则"续段"等于把 maxIterations 变成摆设。
+     */
+    public static let MAX_SEGMENTS: Int64 = 3
+
+    /**
+     * 撞软顶时的决策（纯函数，便于单测）。
+     *
+     * 老行为只有一条路：撞 maxIterations 就注入"立即总结收尾"，模型遂交一份
+     * 「任务中止·任务未完成」。真实长任务里，50 轮常常被**探索**吃光（读源码、
+     * 分批 sed 切片），此时活没干完但预算没了——正确做法是续一段预算接着做，
+     * 而不是让用户看到"异常结束"。
+     *
+     * @param segmentsDone 已用段数（首段=1）
+     * @param maxSegments 允许的总段数上限
+     * @param openTodos 未完成（非 Completed）待办数——任何未完成项都算活没干完
+     */
+    public static func capAction(segmentsDone: Int64, maxSegments: Int64, openTodos: Int64): CapAction {
+        if (openTodos > 0 && segmentsDone < maxSegments) {
+            return CapAction.Extend
+        }
+        return CapAction.WrapUp
+    }
+
+    /** 续段指令正文（列出未完成待办 + 禁止重复已完成的工作） */
+    public static func segmentNotice(open: ArrayList<TodoItem>, segment: Int64, totalSegments: Int64,
+        segCap: Int64): String {
+        var notice = "[System Notice] 轮次预算已续：这是本任务的第 ${segment}/${totalSegments} 段预算（本段可用轮次累计至 ${segCap} 轮）。\n"
+        notice += "上一段预算用在了探索上，任务还没做完。未完成待办：\n"
+        for (t in open) {
+            let st = match (t.status) {
+                case TodoStatus.Pending => "pending"
+                case TodoStatus.InProgress => "in_progress"
+                case TodoStatus.Completed => "completed"
+            }
+            notice += "  #${t.id} [${st}] ${t.content}\n"
+        }
+        notice += "接着做：不要再重读已经读过的文件、不要重复列一遍计划、不要重述已完成的工作。\n"
+        notice += "读文件一律用 read_file（可带 offset/limit/ranges 一次取多段），不要再用 bash 的 sed/head/tail 分段扫源码。\n"
+        notice += "推进到下一个可见产物，做完后把对应待办标为 completed，再给最终答复。"
+        return notice
+    }
 
     /** 文本是否以冒号收尾（"现在运行验证："这种承接句） */
     public static func endsWithLeadIn(text: String): Bool {
@@ -273,6 +324,52 @@ public class ContinuationPolicy {
         notice += "  1. 需要动手 → 直接调用工具（不要重复推导已经想清楚的部分）；\n"
         notice += "  2. 不需要动手 → 直接给出面向用户的最终答复正文（简洁，不要复述思考过程）。\n"
         notice += "（第 ${round}/${ContinuationPolicy.MAX_NUDGES} 次续写提醒）"
+        return notice
+    }
+}
+
+/**
+ * 回合内排队输入「边界注入」策略（方案 2，安全版 steer）。
+ *
+ * 语义：忙时提交的消息只进 TUI 队列，不打断当前回合；Agent 在**一轮工具批次执行完、
+ * 下一轮请求前**这个天然边界取**一条**注入当前回合，用户补充要求不必等整回合结束。
+ *
+ * 与 v1.3.22 旧 steer 的两处关键区别（旧行为实测吞任务，v1.6.9 曾整段关闭）：
+ *  1. 不在"还没跑过任何工具"的时候注入——那时会话里同时出现两条 user 消息，模型会
+ *     按后一条作答，先发的任务直接消失（用户实测：先发「生成 h5 小游戏」、紧接着
+ *     「郑州天气」，只跑了天气）；
+ *  2. 一次边界只注入一条，**不排空队列**——多条连发时逐条并入，而不是一次性砸进去。
+ *
+ * 注入文本带框架抬头（NOTICE_HEAD），明确"原任务仍有效、不要中途切换后忘掉"，
+ * 避免模型把补充要求当成替换指令。
+ */
+public class SteerPolicy {
+    /** 注入消息抬头：测试与排障据此区分"排队补充"与普通 user 消息 */
+    public static const NOTICE_HEAD: String = "[System Notice] 用户在你执行期间发来一条补充要求（排队消息）"
+
+    /**
+     * 本边界是否应注入。
+     * @param interrupted 本回合已被请求中断（中断优先：消息留给下一回合，不塞进被中断的回合）
+     * @param toolCallsThisRound 本轮工具调用数（>0 才构成"工具批次完成"这个边界）
+     */
+    public static func shouldInject(interrupted: Bool, toolCallsThisRound: Int64): Bool {
+        if (interrupted) {
+            return false
+        }
+        return toolCallsThisRound > 0
+    }
+
+    /** 注入消息正文：抬头 + 原文 + 三条处理原则（防"补充要求顶替原任务"） */
+    public static func injectNotice(queued: String, round: Int64): String {
+        var notice = SteerPolicy.NOTICE_HEAD + "，原文如下：\n"
+        notice += "---\n"
+        notice += queued
+        notice += "\n---\n"
+        notice += "处理原则：\n"
+        notice += "  1. 不要丢弃、也不要重启当前任务——已完成的步骤保留，未完成的待办继续做完；\n"
+        notice += "  2. 若这条补充要求与当前任务相关，直接并入接下来的执行步骤；\n"
+        notice += "  3. 若它是另一个独立任务，先把当前任务收尾，并在答复里明确说明接下来处理这条，不要中途切换后忘掉原任务。\n"
+        notice += "（第 ${round} 轮工具批次后注入）"
         return notice
     }
 }
@@ -420,9 +517,15 @@ public class Agent {
     public var onRoundTick: (Int64, Int64, Int64) -> Unit = { _, _, _ => }
     // 回合结束回调（渲染回合总结条：轮数/工具数/耗时/token用量/缓存命中率）
     public var onRunComplete: (RunSummary) -> Unit = { _ => }
-    // 说明：排队输入不在回合内消费（v1.6.9 移除 onRequestPendingInput 回调）。
-    // TUI 忙时提交只入队，回合结束由装配层（entries.cj）出队作新回合发送——
-    // 中途注入会改写当前回合的任务语义（连发两条时第一条被打乱/吞掉）。
+    /**
+     * 回合内排队输入源（方案 2「边界 steer」，策略见 SteerPolicy）。
+     * 装配层（entries.cj）接到 TUI 的 dequeueInput()：Agent 在**每轮工具批次执行完、
+     * 下一轮请求前**取一条注入当前回合，用户的补充要求不必等整回合结束。
+     * 默认 `{ => None }`：子代理等不接队列的实例零开销、不会抢用户消息。
+     * （历史：v1.3.22 旧 steer 在每轮请求前排空队列、第 1 轮也注入，连发两条时先发的
+     *  任务被打乱/吞掉，v1.6.9 整段关闭改为回合结束才发送；本方案是它的安全版。）
+     */
+    public var queuedInputSource: () -> Option<String> = { => None }
 
     // ==================== Agent 事件钩子（Claude Code 式，统一事件化 + 外部扩展）====================
     // 内部回调（onX）负责 UI 展示；hook 是外部注册点（插件/工具/宿主代码），
@@ -489,6 +592,11 @@ public class Agent {
         }
         // 诊断：确认中断请求到达 agent 层（排查"中断发出但回合不结束"）
         Log.warn("Agent.interrupt 已请求：interruptFlag=true + abort() 已调用")
+        // 工具侧中断传播：工具执行期间不查 interruptFlag（它只在轮次间/工具返回后
+        // 被检查），所以 bash 长命令、find 遍历这类"卡在工具里"的中断请求原本要等
+        // 工具自己返回才生效 —— 实测 2026-11-06 15:55:09 打出这句后再无日志，回合
+        // 从未结束。InterruptGate 由 BashSession 每 50ms 轮询一次，置位即杀会话。
+        InterruptGate.request()
         // 中断传播（方案 §7）：Ctrl+C / Web cancel 杀整棵树——
         // 登记中的子代理同置中断标志并 abort（异常隔离：单个子代理失败不影响其余）
         this.childLock.lock()
@@ -517,6 +625,9 @@ public class Agent {
         } finally {
             this.interruptLock.unlock()
         }
+        // 工具中断门同批清零：上一回合若在工具执行中被中断，门可能仍置位——
+        // 留着会让下回合第一条 bash 命令立刻自杀（见 BashSession 的轮询）
+        InterruptGate.clear()
         // S4：回合级 token 归账清零（预算闸门按回合计）
         match (this.subagentScheduler) {
             case Some(s) => s.resetTurn()
@@ -832,18 +943,37 @@ public class Agent {
         var continuationNudges: Int64 = 0
         // 上一批工具调用里是否有失败（isError）：续跑闸门的结构性判据之一
         var lastToolFailed: Bool = false
-        // 软顶（wrapUpRounds）：达到 maxIterations 后注入"立即总结收尾"指令，不再硬切——
+        // 轮次预算分段（见 ContinuationPolicy.capAction）：撞到本段预算时，若还有
+        // 未完成待办且段数没用尽，就续一段预算接着做，而不是交一份"任务中止"总结。
+        // 实测 2026-11-06：50 轮预算全花在探索 cspub 源码上（bash `sed -n` 59 次），
+        // 第 51 轮模型按软顶指令交了「任务中止·任务未完成」——用户看到的就是"异常结束"。
+        var segmentsDone: Int64 = 1
+        let maxSegments: Int64 = ContinuationPolicy.MAX_SEGMENTS
+        // 软顶（wrapUpRounds）：该收尾时注入"立即总结"指令，不再硬切——
         // 长任务可在当前工作线程自然收尾；超过 wrapUpRounds 仍未结束才强制停止
         var wrapUpInjected: Bool = false
         let wrapUpRounds: Int64 = 10
-        let hardCap: Int64 = this.config.maxIterations + wrapUpRounds
+        // 硬顶 = 全部段数用尽 + 收尾窗口
+        let hardCap: Int64 = this.config.maxIterations * maxSegments + wrapUpRounds
         while (iterations < hardCap) {
-            // 软顶注入：达到 maxIterations 时要求模型收尾（不消耗轮次）
-            if (iterations >= this.config.maxIterations && !wrapUpInjected) {
-                wrapUpInjected = true
-                this.messages.add(ChatMessage("user",
-                    "[System Notice] 任务已执行 ${this.config.maxIterations} 轮，请立即结束：不要再调用任何工具，直接给出最终总结答复（如任务确未完成，简述剩余步骤）。"))
-                this.onAssistantText("\n[System] 已达轮次上限（${this.config.maxIterations}），要求模型收尾总结\n")
+            // 段内软顶：撞到本段预算时由 capAction 决定「续一段」还是「收尾」
+            if (iterations >= this.config.maxIterations * segmentsDone && !wrapUpInjected) {
+                let openSeg = this.openTodoItems()
+                match (ContinuationPolicy.capAction(segmentsDone, maxSegments, openSeg.size)) {
+                    case CapAction.Extend =>
+                        segmentsDone += 1
+                        let segCap = this.config.maxIterations * segmentsDone
+                        Log.warn("轮次预算续段 ${segmentsDone}/${maxSegments}（未完成待办 ${openSeg.size} 项），本段预算至 ${segCap} 轮")
+                        this.onAssistantText(
+                            "\n[System] 轮次预算续段 ${segmentsDone}/${maxSegments}（剩 ${openSeg.size} 项待办，预算至 ${segCap} 轮），继续执行\n")
+                        this.messages.add(ChatMessage("user",
+                            ContinuationPolicy.segmentNotice(openSeg, segmentsDone, maxSegments, segCap)))
+                    case CapAction.WrapUp =>
+                        wrapUpInjected = true
+                        this.messages.add(ChatMessage("user",
+                            "[System Notice] 任务已执行 ${iterations} 轮（预算 ${this.config.maxIterations} × ${maxSegments} 段），请立即结束：不要再调用任何工具，直接给出最终总结答复（如任务确未完成，简述剩余步骤）。"))
+                        this.onAssistantText("\n[System] 已达轮次上限（${iterations} 轮），要求模型收尾总结\n")
+                }
             }
             // P0-2：用户 Ctrl+C 中断——轮次间检查，保留已完成工作
             if (this.isInterrupted()) {
@@ -866,11 +996,12 @@ public class Agent {
             // 只在 run() 开头检查的话压缩永远不会触发（实测 48 轮 prompt 涨到 31K token）
             this.checkPendingCompact()
 
-            // 注意：Agent 回合内**不再**消费排队输入（v1.6.9 回退 v1.3.22 的 steer 注入）。
-            // 旧行为在每轮请求前把 TUI 队列一次性排空、以裸 user 消息塞进当前回合：
-            // 第 1 轮（未做任何工具调用前）也会排空，连发两条时第一条任务的执行语义被
-            // 第二条混进来改变，实测表现为"先发的任务被吞掉"。现语义 = 忙时消息只入队，
-            // 回合结束由 entries.cj 出队作**新回合**发送（dequeueInput → onSubmit）。
+            // 排队输入不在**请求前**消费：注入点在每轮工具批次执行完之后（见下方
+            // `SteerPolicy.shouldInject` 那段），而不是这里。历史上 v1.3.22 在每轮请求前
+            // 排空队列、连第 1 轮（还没做任何工具调用）也注入，连发两条时先发的任务被
+            // 后一条顶掉（v1.6.9 因此整段关闭、改为回合结束才发送）。现在的安全版 steer
+            // 只在"工具批次确实跑完"的边界取一条；回合结束后仍未消费的消息照旧由
+            // entries.cj 出队作**新回合**发送（dequeueInput → onSubmit）。
 
             // 顶层兜底：LLM 响应解析可能抛 IllegalArgumentException（非法 UTF-8 字节）
             // 不让它崩 TUI，转成错误消息返回
@@ -1049,6 +1180,13 @@ public class Agent {
                         // 收集组内结果，累加假设串行耗时
                         var serialMs: Int64 = 0
                         for (k in 0..group.size) {
+                            if (this.isInterrupted()) {
+                                // 中断生效：不再等剩余 future（可能卡在无界外部等待里——
+                                // glob 的 find 快速路径没有超时）。留空结果让本轮收场，
+                                // 别为等工具把整个回合挂死（2026-11-06 事故形态）
+                                results[group[k]] = ToolResult("⚠ 已中断：未等该工具返回", true)
+                                continue
+                            }
                             let (idx, result, dur) = futures[k].get()
                             serialMs += dur
                             let tc = toolCalls[idx]
@@ -1109,6 +1247,17 @@ public class Agent {
                     notice += "Do NOT perform any other action until the above steps are complete."
                     this.messages.add(ChatMessage("user", notice))
                     this.onAssistantText("\n[System] Truncation detected, forced continuation directive injected\n")
+                }
+                // 方案 2「边界 steer」：工具批次已全部回填历史，下一轮请求前是用户
+                // 补充要求的天然边界——取**一条**注入，补充要求不必等整回合结束。
+                // 三条纪律（见 SteerPolicy）：中断优先不注入；一次只取一条、不排空队列；
+                // 注入文本带框架抬头，避免模型把它当成"替换指令"而丢掉原任务。
+                if (SteerPolicy.shouldInject(this.isInterrupted(), n)) {
+                    let queued = this.queuedInputSource()
+                    if (let Some(text) <- queued) {
+                        this.messages.add(ChatMessage("user", SteerPolicy.injectNotice(text, iterations)))
+                        Log.info("回合内边界注入排队输入（第 ${iterations} 轮，${Int64(text.size)} 字符）")
+                    }
                 }
                 // tool 执行完毕，回到 while 顶部发起下一轮 LLM 请求
                 // （让 LLM 看到 tool result 后继续总结/调用）

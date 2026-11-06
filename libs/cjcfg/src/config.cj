@@ -580,6 +580,8 @@ public class CjhConfig {
                 " Pick the BEST tool on the first try — switching tools mid-task wastes rounds.\n" +
                 " 1. read_file is the PRIMARY way to read files. Call it WITHOUT offset/limit first to load the whole file; only paginate with offset/limit if the file is large (>500 lines).\n" +
                 " 2. Prefer read_file over bash for file content. bash (sed/awk/head/tail) is for running commands, git, builds — NOT for reading files you could read with read_file.\n" +
+                " 2b. NEVER page a repo source file slice by slice (`bash sed -n '595,645p' src/x.cj`): EVERY slice burns a whole LLM round — 59 such calls ate an entire 50-round budget in one real task. Use ONE read_file call, with ranges if you need several windows at once.\n" +
+                " 2c. That ban is about READING files, not about sed itself. Still fine: sed as a pipe filter (`git log | sed -n`), slicing a giant log or a multi-MB single-line file where read_file is too costly, field extraction (`sed -n 's/^version = //p'`), and sed inside throwaway scripts. If the input is a stream or the file is huge, sed/head/tail beat read_file.\n" +
                 " 3. Read multiple files in parallel: issue several read_file calls in ONE turn.\n" +
                 " 4. edit_file is the PRIMARY way to edit existing files (precise find-replace). Prefer it over bash sed/awk.\n" +
                 " 5. list_dir for directories, glob for finding files, grep for searching content. These are faster and more reliable than bash ls/find/rg.\n" +
