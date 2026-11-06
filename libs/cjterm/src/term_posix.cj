@@ -13,6 +13,9 @@ package cjterm
 
 @When[os != "Windows"]
 import std.collection.*
+// 粘贴读取总时长兜底（PASTE_MAX_MS）需要毫秒级耗时
+@When[os != "Windows"]
+import std.time.*
 
 // ===== termios FFI（直接调 libc，无外部 .so 依赖）=====
 // Linux termios 结构体布局（x86_64，60 字节）：
@@ -530,12 +533,21 @@ public class PosixTerminalBackend <: TerminalBackend {
         // 残留 ESC[201~ 和剩余字节被逐键解析 → 吞键/换行触发 Enter 自动提交。
         // 粘贴中数据持续到达 → waitInput 立即返回，不误判；结束标记匹配优先。
         var idleStreak: Int64 = 0
+        // 总时长兜底（PASTE_MAX_MS）：未闭合粘贴 + 用户持续打字时，waitInput
+        // 每次都能拿到数据 → idleStreak 恒归零 → 旧逻辑永不退出，后续按键
+        // （含回车）全被吞进 raw，输入框毫无反应（详见 PASTE_MAX_MS 注释）。
+        let startedAt = DateTime.now()
         while (true) {
+            // 闭合标记优先：读到 ESC[201~ 立即结束（正常粘贴路径）
+            if (endsWithBytes(raw, term)) {
+                return decodePaste(raw, termN)
+            }
+            let elapsedMs = (DateTime.now() - startedAt).toMilliseconds()
+            if (pasteReadStop(elapsedMs, idleStreak, false)) {
+                break
+            }
             if (!this.waitInput(200)) {
                 idleStreak += 1
-                if (idleStreak >= 3) {
-                    break  // 600ms 无数据：粘贴结束（或未闭合）
-                }
                 continue
             }
             idleStreak = 0
