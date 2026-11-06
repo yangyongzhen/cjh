@@ -90,6 +90,7 @@ public class BashSession {
             let timeoutMs = if (timeoutSecs > 0) { timeoutSecs * 1000 } else { Int64(600000) }
             let start = DateTime.now()
             var done: Bool = false
+            var aborted: Bool = false
             while (true) {
                 state.lock.lock()
                 let d = state.done
@@ -98,10 +99,23 @@ public class BashSession {
                     done = true
                     break
                 }
+                // 中断可达：用户 Ctrl+C / TUI 看门狗请求中断 → 立刻杀会话。
+                // 旧实现只置 Agent.interruptFlag，本循环从不查——命令照跑、回合挂着，
+                // 实测 2026-11-06 15:55:09 打出"已请求中断"后再无一行日志，只能强退。
+                if (InterruptGate.requested()) {
+                    aborted = true
+                    break
+                }
                 if ((DateTime.now() - start).toMilliseconds() >= timeoutMs) {
                     break
                 }
                 sleep(Duration.millisecond * 50)
+            }
+            if (aborted) {
+                // 中断路径：杀会话即返回。故意不抓 procSnapshotOf（那是超时现场取证，
+                // 走 ps -ef 还要再等一次外部进程）；中断要的是"马上停"。
+                this.killSession()
+                return (-1, "⚠ 已中断（用户中断/看门狗），会话已重建，未执行完的命令不再继续")
             }
             if (!done) {
                 // 超时：**先存证再杀会话**。典型现场是"命令早就跑完了、标记永远不来"

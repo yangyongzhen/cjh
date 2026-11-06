@@ -1,6 +1,9 @@
 package cjh.tests
 
 import stdx.encoding.json.*
+import std.collection.*
+import std.time.*
+import std.sync.*
 import cjh.tools.*
 import cjterm.*
 
@@ -103,6 +106,44 @@ public class BashSessionTest {
             @Assert(o1.contains("超时"), true)
             @Assert(s.testReapedCount(), 1)  // 超时会话进程已被 wait 回收，非僵尸
         } finally {
+            s.close()
+        }
+    }
+
+    @TestCase
+    public func testInterruptGateStopsRunningCommand(): Unit {
+        // 回归 2026-11-06 事故：工具执行期间中断打不进去。
+        // 旧实现只置 Agent.interruptFlag，BashSession 的等待循环从不查它 ⇒
+        // 用户 Ctrl+C / 看门狗请求中断后，命令照跑，回合无限挂着，只能强退。
+        // 契约：InterruptGate 置位后，正在跑的命令必须在秒级内被杀并返回。
+        InterruptGate.clear()
+        let s = BashSession()
+        let done = ArrayList<Bool>()
+        done.add(false)
+        let elapsedMs = ArrayList<Int64>()
+        elapsedMs.add(-1)
+        let t0 = DateTime.now()
+        spawn {
+            try {
+                let _ = s.execute("sleep 30", 60)
+            } finally {
+                elapsedMs[0] = (DateTime.now() - t0).toMilliseconds()
+                done[0] = true
+            }
+        }
+        try {
+            sleep(Duration.millisecond * 800)
+            @Assert(done[0], false)  // 前置：确实还在跑
+            InterruptGate.request()
+            var waited: Int64 = 0
+            while (!done[0] && waited < 8000) {
+                sleep(Duration.millisecond * 50)
+                waited += 50
+            }
+            @Assert(done[0], true)                  // 中断生效：命令调用返回了
+            @Assert(elapsedMs[0] < 8000, true)      // 不是等 sleep 30 自然结束
+        } finally {
+            InterruptGate.clear()
             s.close()
         }
     }

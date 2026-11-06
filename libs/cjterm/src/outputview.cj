@@ -550,6 +550,19 @@ public class OutputView <: Component {
     }
 
     /**
+     * 回到最新位置（视口贴底）。
+     *
+     * 新回合开始时调用：用户上回合可能停在历史里（滚动 offset>0），
+     * 若不复位，本回合的输出会追加在视口下方而看不见——实测 2026-11-06
+     * 用户「界面没滚到下面」，连按 PageDown 才找回收尾。
+     * 刻意**不**在回合结束时调用：那一刻用户可能正停在历史里回看，
+     * 把他拽回底部等于抢走阅读位置。
+     */
+    public func scrollToBottom(): Unit {
+        this.scrollOffset = 0
+    }
+
+    /**
      * 当前滚动偏移行数（状态栏提示用）
      */
     public func scrollOffsetLines(): Int64 {

@@ -89,11 +89,17 @@ public class TuiApp {
     // 180s：第三方代理（taotoken.net 等）缓冲 SSE + 模型思考/长生成阶段
     // 客户端可长时间无帧；60s 太激进会误切正常任务（已多次实测）
     private let idleTimeoutSecs: Int64
+    // 工具在跑计数（看门狗判据）：工具执行期间没有任何流式/思考帧，锚点会一直涨，
+    // 但那不是"模型停滞"。计数 >0 时看门狗只如实说明工具耗时，不请求（对工具无效的）中断。
+    private var toolsInFlight: Int64 = 0
+    private var toolsInFlightLock: Mutex = Mutex()
+    private var toolInFlightName: String = ""
     // 审批/确认弹窗（替代旧的状态行内联审批 UI）
     private var confirmDialog: ConfirmDialog = ConfirmDialog()
     // Agents 面板（S3：子代理树状态，渲染在 Tasks 面板之上）
     private var agentsPanel: AgentsPanel = AgentsPanel()
-    // 后台任务面板（B-2）：全宽渲染在 Tasks/Agents 面板带之上，只在有任务时占行
+    // 后台任务面板（B-2）：无边框紧凑条（≤2 行）渲染在 Tasks/Agents 面板带之上，
+    // 只在有任务时占行；槽位账与各状态计数走状态行心跳（见 renderAgentStatus）
     private var bgPanel: BgTaskPanel = BgTaskPanel()
     // 焦点（Ctrl+G 循环）：0=父，否则子 agentId；聚焦子代理时其行事件进主流（│ 前缀）
     private var focusAgentId: Int64 = 0
@@ -414,20 +420,36 @@ public class TuiApp {
                         // 触发后重置计时（重新武装）：若中断未生效（连接/异常路径卡死），
                         // 下个超时周期再次告警+中断，持续升级直到恢复
                         let idleSecs = (now - this.agentLastActivity).toSeconds()
-                        if (idleSecs > this.idleTimeoutSecs && !this.idleWarned) {
-                            this.idleWarned = true
-                            // 看门狗已请求中断：置 interruptPending——若中断未生效
-                            // （线程卡死），用户下次 Ctrl+C 直接强制退出
-                            this.interruptPending = true
-                            this.appendOutput(Ansi.fg(Ansi.THEME_WARN) +
-                                "⚠ 模型 ${idleSecs}s 无响应（可能停滞），已请求中断。有数据恢复则立即停止。" +
-                                Ansi.reset())
-                            this.safeLog("warn", "看门狗触发中断（idle ${idleSecs}s）")
-                            this.onInterrupt()
-                            // 重新武装：若中断未生效（回合未结束），每超时周期重复
-                            // 中断直到回合结束——不依赖单次中断成功率
-                            this.agentLastActivity = now
-                            this.idleWarned = false
+                        // 判据见 watchdogAction：工具在跑 ≠ 模型停滞。
+                        // 触发后重置锚点（重新武装）：若中断未生效，下个超时周期再报一次
+                        match (watchdogAction(idleSecs, this.idleTimeoutSecs, this.toolsInFlightCount())) {
+                            case WatchdogAction.InterruptModel =>
+                                this.idleWarned = true
+                                // 看门狗已请求中断：置 interruptPending——若中断未生效
+                                // （线程卡死），用户下次 Ctrl+C 直接强制退出
+                                this.interruptPending = true
+                                this.appendOutput(Ansi.fg(Ansi.THEME_WARN) +
+                                    "⚠ 模型 ${idleSecs}s 无响应（可能停滞），已请求中断。有数据恢复则立即停止。" +
+                                    Ansi.reset())
+                                this.safeLog("warn", "看门狗触发中断（idle ${idleSecs}s）")
+                                this.onInterrupt()
+                                // 重新武装：若中断未生效（回合未结束），每超时周期重复
+                                // 中断直到回合结束——不依赖单次中断成功率
+                                this.agentLastActivity = now
+                                this.idleWarned = false
+                            case WatchdogAction.ToolBusy =>
+                                // 工具执行中：不甩锅给模型，也不请求打不断工具的中断。
+                                // 如实说明在等哪个工具、等了多久（用户据此判断是自己给的
+                                // 长命令还是真挂了）；Ctrl+C 由 InterruptGate 即刻生效
+                                let toolName = this.toolsInFlightLabel()
+                                let label = if (toolName.size > 0) { toolName } else { "工具" }
+                                this.appendOutput(Ansi.fg(Ansi.THEME_MUTED) +
+                                    "⏳ ${label} 已执行 ${idleSecs}s 未返回（等待工具，非模型停滞）。" +
+                                    "Ctrl+C 可立即中断。" + Ansi.reset())
+                                this.safeLog("warn", "看门狗：工具 ${label} 执行 ${idleSecs}s 未返回，不打断")
+                                this.agentLastActivity = now
+                                this.idleWarned = false
+                            case WatchdogAction.Cool => ()
                         }
                     }
                     // B-2：后台任务运行中同样每秒重绘——耗时列按单调时钟实时算，
@@ -939,6 +961,15 @@ public class TuiApp {
             // 并打断）。每次 run 启动从此刻计起，前思考期不再被旧帧污染。
             this.agentLastActivity = DateTime.now()
             this.idleWarned = false
+            // 工具计数同样从 0 起：上一 run 若在工具执行中被中断，计数可能残留
+            this.toolsInFlightLock.lock()
+            this.toolsInFlight = 0
+            this.toolInFlightName = ""
+            this.toolsInFlightLock.unlock()
+            // 视口回底：上一回合用户可能停在历史里，不复位的话本回合输出会追加在
+            // 视口下方（用户看不见、PageDown 到 0 也被钳住）。只在回合开始复位，
+            // 回合结束不复位——那时用户可能正在回看，别抢阅读位置。
+            this.outputView.scrollToBottom()
         } else {
             // 任务结束/中断生效：复位中断标记（下次 Ctrl+C 重新从"请求中断"开始）
             this.interruptPending = false
@@ -991,6 +1022,47 @@ public class TuiApp {
     public func markAgentActivity(): Unit {
         this.agentLastActivity = DateTime.now()
         this.idleWarned = false
+    }
+
+    /**
+     * 工具开始执行（entries 的 onToolStart 接线）。
+     *
+     * 工具执行期间没有任何流式帧，但这不是模型停滞——计数 +1 让看门狗把
+     * "等待工具"与"等待模型"分开，同时刷新活动锚点。
+     */
+    public func toolStarted(name: String): Unit {
+        this.toolsInFlightLock.lock()
+        this.toolsInFlight += 1
+        this.toolInFlightName = name
+        this.toolsInFlightLock.unlock()
+        this.markAgentActivity()
+    }
+
+    /** 工具结束（含失败/中断）：计数归零时清空工具名。 */
+    public func toolFinished(): Unit {
+        this.toolsInFlightLock.lock()
+        if (this.toolsInFlight > 0) {
+            this.toolsInFlight -= 1
+        }
+        if (this.toolsInFlight == 0) {
+            this.toolInFlightName = ""
+        }
+        this.toolsInFlightLock.unlock()
+        this.markAgentActivity()
+    }
+
+    public func toolsInFlightCount(): Int64 {
+        this.toolsInFlightLock.lock()
+        let n = this.toolsInFlight
+        this.toolsInFlightLock.unlock()
+        return n
+    }
+
+    public func toolsInFlightLabel(): String {
+        this.toolsInFlightLock.lock()
+        let name = this.toolInFlightName
+        this.toolsInFlightLock.unlock()
+        return name
     }
 
     /**
@@ -1927,10 +1999,9 @@ public class TuiApp {
             // 思考块（方案 B）：作为消息流成员由 OutputView 渲染（折叠/展开段），
             // 不再占用独立布局区域——消息区高度恒定，思考随输出滚动回看
             // 输出区可用高度：8 .. outBottom（恒定）
-            // agent 执行中：动态状态行上方；空闲：状态栏上方
-            let outBottom: Int64 = if (agentBusy && agentRow >= 8) {
-                agentRow - 1
-            } else { statusRow - 1 }
+            // agent 执行中：动态状态行上方；空闲：面板带上沿之上
+            // （判据收在纯函数里便于单测，见文件末尾 outputAreaBottom）
+            let outBottom: Int64 = outputAreaBottom(statusRow, agentBusy, agentRow, maxPanelsH)
             let outH: Int64 = if (outBottom - 8 + 1 > 0) { outBottom - 8 + 1 } else { 0 }
 
             // 输出区（对话 / 帮助视图，无边框全宽）
@@ -2122,4 +2193,69 @@ public class TuiApp {
         }
         // 滚动超出时标记（底部"更多"提示由状态栏滚动指示逻辑类似；简单截断）
     }
+}
+
+/**
+ * 空闲看门狗的动作分类。
+ *
+ * 看门狗原先只有一件事：`agentLastActivity` 超时 → 请求中断。但锚点只由
+ * onDelta/onReasoning/onThinking 更新，**工具执行期间没有任何帧**——于是"工具在跑 181s"
+ * 被当成"模型停滞 181s"，界面打出"⚠ 模型 181s 无响应（可能停滞）"，并请求一个
+ * 打不断正在执行的工具（的中断）。实测 2026-11-06 15:52：bash + glob 两个工具开始
+ * 执行后 181s 无返回，看门狗报上面那句，随后回合再没结束，只能强退。
+ *
+ * 三态区分开：模型真停滞才请求中断；工具在跑就如实说明，别甩锅给模型。
+ */
+public enum WatchdogAction {
+    | Cool            // 未到阈值：什么也不做
+    | InterruptModel  // 模型侧无任何帧：请求中断（有效，流式读会被 abort）
+    | ToolBusy        // 工具仍在执行：只提示工具耗时，不请求（对工具无效的）中断
+}
+
+/**
+ * 看门狗判据（纯函数，便于单测）。
+ *
+ * @param idleSecs 距最后一次真实活动（流式帧/思考帧/工具回调）的秒数
+ * @param timeoutSecs 阈值（CJH_IDLE_TIMEOUT_SECS，默认 180）
+ * @param toolsInFlight 正在执行的工具数（>0 说明等待的是工具，不是模型）
+ */
+/**
+ * 输出区底沿（含）——OutputView 拿到的可见高度就由它决定。
+ *
+ * 底部这几行是"公共资源"，谁在最下面谁可见：状态栏(statusRow) → 面板带
+ * （Tasks/Agents/bg，占 statusRow-1-panelsH .. statusRow-2）→ 输出区。
+ * 面板由 TuiApp.render 在输出区**之后**绘制，所以输出区一旦铺到面板带底下，
+ * 最后 panelsH 行就被面板盖掉——而那正是最新输出（滚动 offset=0 时永远在最底部）。
+ *
+ * @param statusRow 状态栏所在行
+ * @param agentBusy agent 是否在执行（执行中另有动态状态行占位）
+ * @param agentRow 动态状态行所在行（执行中有效）
+ * @param panelsH 面板带占用行数（0=无面板）
+ */
+public func outputAreaBottom(statusRow: Int64, agentBusy: Bool, agentRow: Int64, panelsH: Int64): Int64 {
+    if (agentBusy && agentRow >= 8) {
+        // 执行中：动态状态行上方（agentRow 已扣除面板带与间隔行）
+        return agentRow - 1
+    }
+    // 空闲：面板带底沿在 statusRow-1、占 panelsH 行（面板自身渲染到
+    // statusRow-1-panelsH .. statusRow-2），输出区必须停在面板上沿之上，
+    // 否则最新几行被面板覆盖——而最新几行正是回合收尾（见本函数注释）
+    if (panelsH > 0) {
+        return statusRow - 2 - panelsH
+    }
+    // 无面板：照旧铺到状态栏上一行
+    return statusRow - 1
+}
+
+public func watchdogAction(idleSecs: Int64, timeoutSecs: Int64, toolsInFlight: Int64): WatchdogAction {
+    if (idleSecs <= timeoutSecs) {
+        return WatchdogAction.Cool
+    }
+    // 工具还在跑：等到的是工具，不是模型。此时请求中断是空转——
+    // 旧实现照旧 onInterrupt()，实测（2026-11-06 15:55:09）日志只有
+    // "Agent.interrupt 已请求" 一行，此后空白、回合从未结束。
+    if (toolsInFlight > 0) {
+        return WatchdogAction.ToolBusy
+    }
+    return WatchdogAction.InterruptModel
 }
