@@ -6,6 +6,168 @@ cjh 版本变更记录。依据 git tag 史 + 提交史整理；版本号规则�
 
 ## [Unreleased]
 
+### 修复（后台任务面板：大框改紧凑条，终态不再谎称「done」）
+
+用户报两件事：面板那一整圈框压在 todo 上面观感重；更要紧的是 bg-1 被 kill 之后标题写
+`1 done`——**被杀的任务被算成完成**，看着像跑完了。
+
+- 面板去掉边框与标题，改**无边框紧凑条**：一行一条（`▶ bg-3  npm install  running 42s  12.4KB`），
+  高度 `min(条数, 2)`（原 `min(条数+2, 4)`），超过两行时末行让位 `+N more`。省下的 2~3 行还给输出区。
+- 终态**按状态分类报数**（`fmtBgStateSummary`，顺序 running → failed → killed → timeout → succeeded），
+  不再把 killed/failed/timeout 合并成 "done"；`1 killed` 就是 1 killed。
+- 标题没了，标题上的两本槽位账（`bg 3/8  agents 2/4`）与计数改挂**状态行心跳**：
+  `bg 0/8  agents 0/4  1 running  1 killed`。账是"后台起不动"时唯一的诊断线索（两个上限来自
+  两个不同配置键），不能随手丢。
+- 终态 8 秒自动收起的淡出行为不变。
+
+测试：`BgTaskPanelTest` 先红 3 例（高度/渲染两处断言）后绿；cjterm **143/143**。
+注意状态行心跳只在 `agentRow >= 8` 时渲染，验证观感要用 ≥8 行余量的终端。
+
+### 改进（排队消息改为「回合内边界并入」——v1.3.22 steer 的安全版）
+
+用户实测痛点：忙时连发几条消息，状态行一直是「排队 N 条待发送」，要等**整回合**（多轮 LLM 请求 +
+工具 + 收尾，实测 300s 以上）跑完才发出，"信息晚了很多步"。v1.6.9 之所以整段关掉回合内注入，
+是因为 v1.3.22 的旧 steer 在**每轮请求前把队列排空**、连第 1 轮（还没做任何工具调用）也注入——
+连发两条时后一条以裸 user 消息混进先发的任务里，模型按后者作答，先发任务被吞掉
+（用户实测：先发「生成 h5 小游戏」+ 紧接「郑州天气」，只跑了天气）。
+
+现在是它的安全版：注入点在 `loop.cj` 工具批次回填历史之后、`continue` 回下一轮请求之前，
+判据与正文收在 `SteerPolicy`：
+
+- **一次边界只取一条**，不排空队列；多条按 FIFO 逐条并入。
+- **首轮保护**：本轮工具调用数 > 0 才构成边界——还没跑过工具时绝不注入。
+- **中断优先**：已请求中断就不注入，消息原样留给下一回合（Esc 的"中断并立即发送"语义不变）。
+- **防吞框架**：注入正文带 `[System Notice] …（排队消息）` 抬头 + 三条处理原则（别丢弃/别重启原任务、
+  相关就并入、独立任务先收尾再说明），模型不会把它当替换指令。
+- 消费有两条路径、共用同一 FIFO 队列：回合内边界（上面）+ 回合结束后 `entries.cj` 出队作新回合（兜底），
+  不会重复发送。`Agent.queuedInputSource` 默认 `{ => None }`，子代理等不接队列的实例零开销。
+
+TUI 文案跟着改：状态行 `📥 排队 N 条待并入`（原"待发送"）；Esc 提示按队列是否非空说话
+（`⏸ 已中断当前回合…` / `⏸ 已中断当前回合，队列里的消息将作为新回合发送…`）。
+
+测试：`PendingInputDeferTest` 重写为 9 例——边界注入（原始任务仍在最前、注入排在 tool 结果之后、
+抬头只出现一次）、首轮不注入、一次边界只注入一条、跨边界 FIFO、中断跳过注入、
+纯函数 `shouldInject`/`injectNotice`、回合结束出队作新回合、空队列不额外起回合；
+实现前 3 例红（`FAILED: 3`）。pty 场景 10 改为「整轮只应有一次作答」（旧断言要的
+"第二回合 summary `1 round`"正是被修掉的行为）。
+
+### 改进（`todo_write` 的 `done` 也认待办内容，不再逼模型来回补 id）
+
+真实运行（2026-11-06 端到端）暴露的摩擦：模型把待办**文本**当 `content` 传给 `done`，旧实现只认 `id`、
+直接回 `done 操作缺少参数: id`，模型只能再 `list` 一轮把 id 抄回来——63 次 `todo_write` 里有一堆耗在补账上。
+
+- `done` 现在：给 `id` 走老路径；只给 `content` 时按**内容子串**匹配（大小写不敏感、两端空白裁掉），
+  唯一命中才置完成，并回显命中的 `#id + 原文`。
+- 多命中**不猜**（猜错会把没做完的待办标成完成，比报错更糟）：回 `done 命中 N 项待办，请改用 id 指定: #1 … / #2 …`。
+- 零命中给明确文案 `done 未找到内容包含「…」的待办；用 action=list 查看现有待办`。
+- 待办引用走新的 `TodoRef` 投影回调（id+content），**不去反解析** `list` 渲染给人看的表格；
+  注入点收成 `entries.cj::makeTodoWriteTool(agent)`，主链路与子代理共用一份。
+
+测试：`TodoWriteToolTest` 新增 4 例（子串命中 / 多命中报候选 / 零命中 / 给了 id 时不与 content 混用），
+修复前 3 例红（`FAILED: 3`）。
+
+### 修复（回合收尾被面板盖住；轮次预算被"探索"吃光）
+
+用户实测（2026-11-06 16:30，十平台发文任务）：任务跑完"界面没滚到下面"，末尾那几行要连按
+PageDown 才看见（日志里 `PG6×94`）；所谓"异常结束"其实是 `max_iterations=50` 软顶按设计收尾，
+不是崩溃/看门狗/中断——`[WARN] Agent.run 正常结束: 51 rounds, 69 tools, 331052ms`。
+
+- **面板覆盖输出（真 bug）**：`TuiApp.render` 先画输出区、**后**画 Tasks/Agents/bg 面板，但空闲时
+  `outBottom = statusRow - 1` 没扣面板带 → 最后 `panelsH` 行被面板盖掉，而那正是最新输出
+  （`scrollOffset=0` 时窗口底沿即视口底沿，PageDown 到 0 被钳住，按 94 次也无反应）。
+  抽出纯判据 `outputAreaBottom(statusRow, agentBusy, agentRow, panelsH)`：空闲时返回
+  `statusRow - 2 - panelsH`，有面板就不再铺到面板带底下；无面板行为不变。
+- **回合开始视口回底**：新增 `OutputView.scrollToBottom()`，`setAgentRunning(true)` 时复位。
+  只在回合**开始**复位——回合结束不动，那一刻用户可能正在回看历史，别抢阅读位置。
+- **轮次预算分段（有界自动续段）**：撞软顶时若还有未完成待办且段数没用尽，就续一段预算接着做，
+  而不是让模型交一份「任务中止 · 任务未完成」。判据收在 `ContinuationPolicy.capAction()`，
+  上限 `MAX_SEGMENTS = 3`（默认 50×3 = 150 轮 + 10 轮收尾窗口），段数用尽照旧收尾。
+  续段提示会逐条点名未完成待办、禁重读已读文件、禁重列计划。
+- **读文件口径**：默认提示词新增 2b/2c 两条——禁止对仓库源码逐片 `sed -n 'A,Bp'`
+  （每片烧一整轮，实测 59 次吃光 50 轮预算），一次 `read_file` 搞定（必要时带 `ranges`）；
+  同时写明**例外边界**：管道过滤（`git log | sed -n`）、超大日志/巨型单行文件切片、
+  字段提取、脚本内部，sed/head/tail 仍是正确工具——禁令只针对"读文件"。
+
+测试：`tui_app_test.cj::OutputAreaBottomTest`（5 例，修复前 3 例红）、
+`continuation_guard_test.cj::CapActionTest`（6 例）、
+`cjcfg::DefaultSystemPromptTest::testDefaultPromptBansSliceReadingButKeepsSedExceptions`。
+
+### 修复（看着像"模型卡住"，其实是工具在跑；而中断又打不断工具）
+
+用户实测：一句"读项目 + 生成文章 + 发布"发下去，界面停在 `▶ bash …` / `▶ glob …` 两行，
+181 秒后弹出 `⚠ 模型 181s 无响应（可能停滞），已请求中断。`，随后**回合再没结束**——
+`~/.cjh/tui.log` 在 `Agent.interrupt 已请求` 那一行之后完全空白，用户只能强退。
+
+两处独立缺陷叠在一起：
+
+- **看门狗把"等工具"当成"等模型"**：活动锚点只由 `onDelta/onReasoning/onThinking` 刷新，
+  工具执行期间本来就没有流式帧 —— 于是"工具跑了 181s"被报成"模型停滞 181s"，甩锅给模型，
+  还请求了一个对工具**注定无效**的中断（`interrupt()` 只置 `interruptFlag` + `provider.abort()`，
+  两者都不碰已经在跑的子进程）。
+- **工具执行期间中断打不进去**：`BashSession` 的等待循环只轮询"完成标记"和"超时"，从不查中断
+  → Ctrl+C / 看门狗请求中断后命令照跑，回合无限挂着，只有强退能收场。
+
+修法：
+
+- `src/tui/app.cj`：新增 `WatchdogAction`（`Cool` / `InterruptModel` / `ToolBusy`）与纯判据
+  `watchdogAction(idleSecs, timeoutSecs, toolsInFlight)`；`toolStarted()/toolFinished()`
+  维护在跑工具计数并刷新活动锚点；工具在跑时只如实提示
+  `⏳ <工具> 已执行 Ns 未返回（等待工具，非模型停滞）。Ctrl+C 可立即中断。`，不再请求中断
+- `src/entries.cj`：`onToolStart/onToolResult` 接上计数（TUI 主链路），
+  `onSubagentEvent` 的 `tool_start/tool_result` 同样计入 —— 子代理跑长工具时父级一样收不到流式帧，
+  不补这条就会把"子代理在跑工具"重新报成"模型停滞"
+- `src/tools/interrupt_gate.cj`（新增）：跨线程中断门，`Agent.interrupt()` 置位、`beginRound()` 清零
+- `src/tools/bash_session.cj`：等待循环每 50ms 轮询中断门，命中即 `killSession()` 并即刻返回
+- `src/agent/loop.cj`：并行工具组收集结果前先查 `isInterrupted()`，中断后不再死等
+  （`glob` 的 `find` 快速路径没有超时，是已知无界点）
+- 测试：`WatchdogDecisionTest`（5 例）+ `BashSessionTest.testInterruptGateStopsRunningCommand`
+  —— 先红：旧实现要等 `sleep 30` 自然结束才返回（30.0s），修后秒级返回
+
+### 修复（TUI：↑↓ 翻历史却冒出 `/` 并弹出整屏命令候选）
+
+用户实测反馈："我在输入框按上下按键查看历史输入，结果出来了个 / 杠内容，导致出来了选择项的内容。"
+不是按键映射错，是**历史里存了不该存的输入** + **回吸被当成"用户在敲字"**两处叠加：
+
+- `InputBox.addToHistory()` 只挡空串，**没挡"光秃秃的 `/`"** —— 而 `/` 只是命令菜单的开关键，
+  用户打 `/` 看菜单、随后提交时它就进了历史（本机 `~/.cjh/history` 末尾实测躺着两条裸 `/`）；
+- ↑ 回吸走的是 `onChange`，而上层拿 `onChange` 刷新 `/` 命令候选 —— 回吸一条 `/` 等于把菜单
+  开关键**重打一遍**，`refreshCandidates()` 立刻把全部命令列出来，随后的 ↑↓ 又被下拉框抢去做
+  选项导航（`app.cj` 中 picker 可见时方向键优先给 `picker.prev/next`），于是"想翻上一条输入"
+  彻底失效。
+
+- `libs/cjterm/src/input.cj`：`addToHistory()` 不记空串与裸 `/`；`setHistory()` 载入时同样剔除
+  （存量文件里旧版本存的裸 `/` 下次落盘自然清掉）；新增 `onHistoryRecall` 回调，`historyUp()`/
+  `historyDown()` 改走它 —— 语义是"文本被整体替换，不是逐字编辑"
+- `src/tui/app.cj`：`onHistoryRecall` 只 `picker.hide()` + `markDirty()`，不调 `refreshCandidates()`
+- 新增 `src/tests/tui_test.cj::testAddToHistorySkipsBareSlash`（先红后绿）、
+  `testSetHistoryDropsBareSlash`、`testHistoryRecallDoesNotFireOnChange`；
+  `scripts/tui_pty_test.py` 新增**场景17**（真实 history 文件预置裸 `/` → ↑ 回吸到普通输入、
+  不再弹整屏候选）
+- 门禁：主包 643/643、`libs/cjterm` 142/142、`cjpm build` 仅 `--static` ×5、`--mock` 通过、
+  pty 83/0（17 场景）
+
+### 修复（TUI：Ctrl+T 展开后思考落在视口外，看着像"思考界面直接消失"）
+
+用户实测反馈："按 Ctrl+T，思考的界面直接隐藏了。"根因不是渲染坏掉，而是**展开从不定位视口**：
+
+- 折叠摘要在消息流末尾（`grpAnchor = lineCache.size`，贴视口），折叠态永远看得见那 1 行；
+- 展开内容按 `roundAnchor` 钉在本轮起点（消息流靠前，见段表交织）；
+- 视口贴末尾（`startIdx = totalV - height - scrollOffset`）。
+
+于是展开瞬间摘要那行消失、正文全在窗口上方 → 观感就是"界面没了"；思考越长、回复越多越必然。
+此前单测全绿，是因为用例的窗口都比内容大。
+
+- `libs/cjterm/src/outputview.cj`：`toggleThinking()` 登记 `revealThinkingPending`，`render()`
+  在段表与 `maxOffset` 算出后、`startIdx` 之前消费——展开走 `thinkingRevealOffset()`
+  （思考整体装得下 → 对齐首段顶部，历史一眼可见；装不下 → 对齐最后一轮顶部，更早的用
+  `Ctrl+U`/`PageUp` 回看）；折叠则 `scrollOffset = 0` 回末尾看摘要；`clearThinking()` 丢弃未生效请求
+- 新增 `src/tests/thinking_history_test.cj::testExpandScrollsThinkingIntoView`（先红后绿：
+  思考在流前部 + 其后 60 行回复，展开后必须看得见思考正文）；
+  `src/tests/outputview_weave_test.cj::testWeaveScrollBackReachesWovenThinking` 原先锁的正是
+  这个旧观感（展开后断言内容不可见、要靠 `scrollUp(30)` 才摸到），按新契约改写为
+  "展开即可见 + 视口已离底 + 继续上滚仍能回到更早消息"
+- 门禁：主包 640/640、`libs/cjterm` 142/142、`cjpm build` 仅 `--static` ×5、`--mock` 通过、pty 79/0
+
 ### 修复（会话循环：只输出思考被判成"空响应"，白烧 158s）
 
 真实 E2E（`glm-5.3-flash` 思考模式）日志里记了两次 `LLM 返回空响应，重试 1/3`、
