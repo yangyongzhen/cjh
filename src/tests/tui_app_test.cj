@@ -636,34 +636,90 @@ public class OutputAreaBottomTest {
     @TestCase
     public func testNoPanelsUsesRowAboveStatusBar(): Unit {
         // 无面板：输出区照旧铺到状态栏上一行
-        @Assert(outputAreaBottom(40, false, -1, 0), 39)
+        @Assert(outputAreaBottom(40, false, -1, 0, 0), 39)
     }
 
     @TestCase
     public func testIdleWithPanelsStopsAbovePanelBand(): Unit {
         // panelsH=5 ⇒ 面板带 34..38，输出区底沿必须是 33（不得伸进面板带）
-        @Assert(outputAreaBottom(40, false, -1, 5), 33)
+        @Assert(outputAreaBottom(40, false, -1, 5, 0), 33)
     }
 
     @TestCase
     public func testOutputBottomNeverInsidePanelBand(): Unit {
-        // 不变式：任意面板高度下，底沿都落在面板带上沿之上
+        // 不变式：任意面板高度（含 bg 面板）下，底沿都落在面板带上沿之上
         for (panelsH in 1..9) {
-            let bottom = outputAreaBottom(40, false, -1, panelsH)
-            let bandTop = 40 - 1 - panelsH
-            @Assert(bottom < bandTop)
+            for (bgH in 0..2) {
+                let bottom = outputAreaBottom(40, false, -1, panelsH, bgH)
+                let bandTop = 40 - 1 - panelsH - bgH
+                @Assert(bottom < bandTop)
+            }
         }
     }
 
     @TestCase
     public func testBusyLayoutUnchanged(): Unit {
-        // 执行中：动态状态行上方（agentRow 已扣面板带），与本次修复无关
-        @Assert(outputAreaBottom(40, true, 33, 5), 32)
+        // 执行中：动态状态行上方（agentRow 已扣面板带），无 bg 面板时不变
+        @Assert(outputAreaBottom(40, true, 33, 5, 0), 32)
     }
 
     @TestCase
     public func testBusyTooShallowFallsBackToIdleRule(): Unit {
         // 空间太浅（agentRow < 8）走空闲分支——同样不得伸进面板带
-        @Assert(outputAreaBottom(40, true, 6, 3), 40 - 2 - 3)
+        @Assert(outputAreaBottom(40, true, 6, 3, 0), 40 - 2 - 3)
+    }
+
+    @TestCase
+    public func testBusyStopsAboveBgPanel(): Unit {
+        // 执行中 bg 面板画在状态行**上方**：输出区底沿还要再让出 bgH 行
+        @Assert(outputAreaBottom(40, true, 33, 5, 2), 30)
+    }
+
+    @TestCase
+    public func testBgHeightOnlyShiftsOutputNotStateRow(): Unit {
+        // 状态行位置固定（agentRow 不再含 bgH），bgH 0→2 只让输出区底沿缩 2 行。
+        // 旧布局把 bgH 计入 agentRow：面板一出现状态行上移 2 行、淡出又下移，
+        // 用户实测"状态行时上时下"。
+        @Assert(outputAreaBottom(40, true, 33, 5, 0), 32)
+        @Assert(outputAreaBottom(40, true, 33, 5, 2), 30)
+    }
+}
+
+/**
+ * 每秒节拍判据（secondElapsed）：心跳计时与后台面板淡出必须共用**同一个**锚点、
+ * 且**只判一次**秒。
+ *
+ * 回归背景（2026-11-06 用户实测）：TuiApp 主循环里心跳分支先 `lastTick = now`，
+ * 紧接着后台面板分支又拿同一个 lastTick 判 `(nowBg - lastTick).toSeconds() >= 1`，
+ * 恒得 0 秒 ⇒ `bgPanel.tick()` 一次都不执行 ⇒ 终态任务永不淡出、面板一直挂着
+ * 已结束任务（现象："已结束的后台任务槽位没有自动释放"）。用户连发三次
+ * bash_start（三次完整回合、agent 全程忙）时 100% 复现。
+ */
+@Test
+public class SecondTickTest {
+
+    @TestCase
+    public func testSameSecondNotDue(): Unit {
+        // 同一秒内不重复驱动（否则每帧都 tick，白重绘）
+        @Assert(!secondElapsed(100, 100))
+    }
+
+    @TestCase
+    public func testOneSecondDue(): Unit {
+        @Assert(secondElapsed(101, 100))
+        @Assert(secondElapsed(160, 100))
+    }
+
+    @TestCase
+    public func testSharedAnchorDropsSecondDriver(): Unit {
+        // 旧 bug 的形状：心跳先判秒并推进锚点，面板紧接着用同一锚点判 → 不到点。
+        // 这正是"面板 tick 永不执行"的机制，锁住它防止再退回共享锚点。
+        var anchor: Int64 = 100
+        let nowSec: Int64 = 101
+        @Assert(secondElapsed(nowSec, anchor))
+        anchor = nowSec
+        @Assert(!secondElapsed(nowSec, anchor))
+        // 正确写法：一个分支里判一次秒，同时驱动心跳与面板；下一秒照常到点
+        @Assert(secondElapsed(102, anchor))
     }
 }
