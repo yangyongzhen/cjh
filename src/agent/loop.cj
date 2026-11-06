@@ -257,6 +257,24 @@ public class ContinuationPolicy {
         notice += "（第 ${round}/${ContinuationPolicy.MAX_NUDGES} 次续跑提醒）"
         return notice
     }
+
+    /**
+     * 只输出思考、正文为空时的续写指令。
+     *
+     * 推理型模型（思考模式）会把整个响应花在思维链上，正文留空、也没有 tool_calls。
+     * 这**不是**"空响应"：模型确实在工作，只是没把结论落成正文。此时重跑整轮
+     * 等于把同一段长思考再交一遍卷（实测两次空转约 158s／回合 590s），
+     * 而且"你上一条回复为空"这种措辞对它是误导——它明明想了很多。
+     * 正确指令是：别重复推导，直接给正文或直接调工具。
+     */
+    public static func reasoningOnlyNotice(round: Int64): String {
+        var notice = "[System Notice] 你上一轮只输出了思考内容，没有给出正文或工具调用。\n"
+        notice += "思考内容不会被执行，也不构成对用户的答复。请立刻按下面二选一：\n"
+        notice += "  1. 需要动手 → 直接调用工具（不要重复推导已经想清楚的部分）；\n"
+        notice += "  2. 不需要动手 → 直接给出面向用户的最终答复正文（简洁，不要复述思考过程）。\n"
+        notice += "（第 ${round}/${ContinuationPolicy.MAX_NUDGES} 次续写提醒）"
+        return notice
+    }
 }
 
 /**
@@ -872,6 +890,9 @@ public class Agent {
             // 在"交给 UI 的那一层"测量，一处覆盖所有 provider——首字节延迟 + 吐字节奏。
             // 与 cjterm 的 CJH_TRACE_PERF（渲染耗时）配对，才能分清"模型慢"与"渲染慢"。
             StreamTrace.beginRequest()
+            // 本轮推理增量字符数：区分"真·空响应"与"只吐思考、正文为空"（见空响应分支）。
+            // 用 AtomicInt64 而非 var：仓颉不允许闭包捕获可变的局部变量（每次进循环重建即可归零）。
+            let roundReasoning = AtomicInt64(0)
             try {
                 this.onThinking()
                 response = this.provider.chatStream(this.messages, this.tools.specs(), { delta =>
@@ -882,6 +903,7 @@ public class Agent {
                     this.fireHooks(AgentHook.ChatDelta, p)
                 }, { r =>
                     StreamTrace.onDelta(Int64(r.size))
+                    let _ = roundReasoning.fetchAdd(Int64(r.size))
                     this.onReasoning(r)
                     var p = JsonObject()
                     p.put("delta", JsonString(r))
@@ -1097,6 +1119,21 @@ public class Agent {
             if (response.text.size > 0) {
                 this.messages.add(ChatMessage("assistant", response.text))
                 this.onAssistantText(response.text)
+            } else if (roundReasoning.load() > 0) {
+                // 只吐思考、正文为空：**不是空响应**，是"没把结论落成正文"。
+                // 旧实现把它当空响应整轮重跑，同一段长思考被重做一遍（实测两次空转约 158s／590s），
+                // 且"你上一条回复为空"对它是彻头彻尾的误报。改为针对性续写指令，
+                // 预算与续跑共用（MAX_NUDGES），用满即收场，防自旋。
+                if (continuationNudges < ContinuationPolicy.MAX_NUDGES) {
+                    continuationNudges += 1
+                    Log.warn("LLM 只输出思考、无正文（推理增量 ${roundReasoning.load()} 字符），注入续写指令 ${continuationNudges}/${ContinuationPolicy.MAX_NUDGES}")
+                    this.onAssistantText(
+                        "\n[System] 上一轮只输出思考内容，要求直接给出正文或调用工具（第 ${continuationNudges}/${ContinuationPolicy.MAX_NUDGES} 次）\n")
+                    this.messages.add(ChatMessage("user", ContinuationPolicy.reasoningOnlyNotice(continuationNudges)))
+                    continue
+                }
+                Log.error("LLM 连续只输出思考、无正文，放弃补写（预算用尽）")
+                this.onAssistantText("\n[提醒] 模型只输出了思考内容、未给出正文，回合结束；可再发一条消息重试。\n")
             } else {
                 // LLM 返回空响应（无 text 且无 tool_calls）：重试，超过 maxEmptyRetries 才退出
                 emptyRetries += 1

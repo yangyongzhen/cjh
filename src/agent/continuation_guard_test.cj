@@ -123,6 +123,62 @@ class ToolThenTextProvider <: LlmProvider {
     }
 }
 
+/** 只发推理增量、不发正文的 provider：第 1 次调用只吐思考（正文空），之后给正文 */
+class ReasoningOnlyThenTextProvider <: LlmProvider {
+    public var callCount: Int64 = 0
+    public var lastMessages: ArrayList<ChatMessage> = ArrayList<ChatMessage>()
+    private let reasoning: String
+    private let text: String
+
+    public init(reasoning: String, text: String) {
+        this.reasoning = reasoning
+        this.text = text
+    }
+
+    public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
+        onDelta: (String) -> Unit, onReasoning: (String) -> Unit,
+        onTokenEstimate: (Int64) -> Unit, isCancelled: () -> Bool): ModelResponse {
+        this.callCount += 1
+        this.lastMessages = ArrayList<ChatMessage>()
+        for (m in messages) {
+            this.lastMessages.add(m)
+        }
+        if (this.callCount == 1) {
+            // 思考模式：整轮花在思维链上，正文为空、也没有 tool_calls
+            onReasoning(this.reasoning)
+            return ModelResponse("", ArrayList<ToolCall>())
+        }
+        onDelta(this.text)
+        return ModelResponse(this.text, ArrayList<ToolCall>())
+    }
+}
+
+/** 真·空响应 provider：第 1 次调用连推理都不发，之后给正文（对照用例用） */
+class EmptyThenTextProvider <: LlmProvider {
+    public var callCount: Int64 = 0
+    public var lastMessages: ArrayList<ChatMessage> = ArrayList<ChatMessage>()
+    private let text: String
+
+    public init(text: String) {
+        this.text = text
+    }
+
+    public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
+        onDelta: (String) -> Unit, onReasoning: (String) -> Unit,
+        onTokenEstimate: (Int64) -> Unit, isCancelled: () -> Bool): ModelResponse {
+        this.callCount += 1
+        this.lastMessages = ArrayList<ChatMessage>()
+        for (m in messages) {
+            this.lastMessages.add(m)
+        }
+        if (this.callCount == 1) {
+            return ModelResponse("", ArrayList<ToolCall>())
+        }
+        onDelta(this.text)
+        return ModelResponse(this.text, ArrayList<ToolCall>())
+    }
+}
+
 @Test
 public class ContinuationGuardTest {
 
@@ -299,4 +355,45 @@ public class ContinuationGuardTest {
         @Assert(summary.reply.contains("任务完成"), true)
         agent.clearTodos()
     }
+
+    /**
+     * 契约 10：**只吐推理、正文为空**的响应不得被判成"空响应"。
+     *
+     * 真实实测（2026-11-06 贪吃蛇 E2E，推理型模型 `glm-5.3-flash`）：
+     * 回合内记了两次 `LLM 返回空响应，重试 1/3`、`重试 2/3`（间隔 79s），
+     * 而埋点显示 `deltas=17480 chars=63909` —— 响应里明明有增量，只是全在**思维链**里，
+     * 正文空、也没有 tool_calls。旧判定只认 `text` 和 `tool_calls`，于是把整轮当空响应重跑：
+     * 既让模型把同一段长思考重做一遍（590s 里约 158s 空转），
+     * 又用"你上一条回复为空"这种不准确的措辞去质问它。
+     *
+     * 契约：推理有增量 → 不算空响应（不计 emptyRetries），改为注入"只给正文/直接调工具"的
+     * 针对性续写指令。
+     */
+    @TestCase
+    public func testReasoningOnlyIsNotEmptyResponse(): Unit {
+        let provider = ReasoningOnlyThenTextProvider("先看下配置怎么解析，再决定改哪里……", "已改好，任务完成。")
+        let agent = this.buildAgent(provider, 10)
+        agent.clearTodos()
+        let summary = agent.run("改一下配置")
+        @Assert(provider.callCount, 2)                                   // 续写一轮后拿到正文
+        let last = this.lastUserText(provider.lastMessages)
+        @Assert(last.contains("只输出了思考内容"), true)                   // 注入的是针对性指令
+        @Assert(last.contains("previous response was empty"), false)      // 不是旧的空响应提示
+        @Assert(summary.reply.contains("任务完成"), true)
+        agent.clearTodos()
+    }
+
+    /** 契约 11：连推理都没有的真·空响应，照旧走空响应重试（别把老路径改坏） */
+    @TestCase
+    public func testTrulyEmptyStillRetried(): Unit {
+        let provider = EmptyThenTextProvider("任务完成。")
+        let agent = this.buildAgent(provider, 10)
+        agent.clearTodos()
+        let summary = agent.run("改一下配置")
+        @Assert(provider.callCount, 2)
+        @Assert(this.lastUserText(provider.lastMessages).contains("previous response was empty"), true)
+        @Assert(summary.reply.contains("任务完成"), true)
+        agent.clearTodos()
+    }
 }
+
