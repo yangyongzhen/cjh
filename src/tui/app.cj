@@ -393,9 +393,12 @@ public class TuiApp {
             // 若终端自行发送 ESC[200~ 包裹，readKey 仍识别为单次粘贴事件。
             this.render()
 
-            // 动态状态行计时刷新：agent 执行中时每秒强制 markDirty，
-            // 让 "Thinking… (Ns · ↑ M tokens)" 的计时按秒递增
-            var lastTick: DateTime = DateTime.now()
+            // 每秒统一节拍：心跳计时与后台面板淡出共用一个锚点、只判一次秒。
+            // 曾经两处各拿同一个 lastTick 判秒——心跳先把它推进到 now，面板紧接着
+            // 比较恒得 0 秒 ⇒ bgPanel.tick() 一次都不执行 ⇒ 终态任务永不淡出、
+            // 面板一直挂着已结束任务（实测 2026-11-06："已结束的后台任务槽位没释放"，
+            // 用户连发三次 bash_start、agent 全程忙时 100% 复现）。
+            var lastTickSec: Int64 = DateTime.now().toUnixTimeStamp().toSeconds()
             while (this.running) {
                 // 单帧 try/catch：任一帧的 readKey/handleKey/render 抛异常
                 // 绝不能让它终止事件循环——否则循环提前退出、TUI 永久消失
@@ -409,13 +412,25 @@ public class TuiApp {
                     if (this.term.sizeChanged()) {
                         this.markDirty()
                     }
-                    // agent 执行中：每 1 秒触发一次重绘（刷新计时/token 计数）
-                    if (this.isAgentBusy()) {
-                        let now = DateTime.now()
-                        if ((now - lastTick).toSeconds() >= 1) {
-                            lastTick = now
+                    let now = DateTime.now()
+                    let nowSec = now.toUnixTimeStamp().toSeconds()
+                    if (secondElapsed(nowSec, lastTickSec)) {
+                        lastTickSec = nowSec
+                        // agent 执行中：每秒重绘（刷新 "Thinking… (Ns · ↑ M tokens)" 计时）
+                        if (this.isAgentBusy()) {
                             this.markDirty()
                         }
+                        // B-2：后台面板每秒驱动一次 tick——到点把终态面板收起
+                        // （淡出那一帧才 markDirty，否则每秒白重绘一次不再变化的终态行）
+                        if (this.bgPanel.needsTick()) {
+                            let faded = this.bgPanel.tick(nowSec)
+                            if (faded || this.bgPanel.runningCount() > 0) {
+                                this.markDirty()
+                            }
+                        }
+                    }
+                    // agent 执行中：看门狗（阈值以秒计，触发后重新武装）
+                    if (this.isAgentBusy()) {
                         // 空闲检测：idleTimeoutSecs 无活动（模型停滞、流无帧）→ 自动中断，
                         // 避免 Streaming… 无限计时 + 新消息僵持排队。
                         // 触发后重置计时（重新武装）：若中断未生效（连接/异常路径卡死），
@@ -451,20 +466,6 @@ public class TuiApp {
                                 this.agentLastActivity = now
                                 this.idleWarned = false
                             case WatchdogAction.Cool => ()
-                        }
-                    }
-                    // B-2：后台任务运行中同样每秒重绘——耗时列按单调时钟实时算，
-                    // agent 空闲（任务在后台跑）时也要看得到时间在走。
-                    // 全终态后仍需按秒驱动一次 tick：到点把面板收起（淡出那一帧才 markDirty，
-                    // 否则就等于每秒白重绘一次已经不再变化的终态行）
-                    if (this.bgPanel.needsTick()) {
-                        let nowBg = DateTime.now()
-                        if ((nowBg - lastTick).toSeconds() >= 1) {
-                            lastTick = nowBg
-                            let faded = this.bgPanel.tick(nowBg.toUnixTimeStamp().toSeconds())
-                            if (faded || this.bgPanel.runningCount() > 0) {
-                                this.markDirty()
-                            }
                         }
                     }
                     if (this.takeDirty()) {
@@ -1994,20 +1995,22 @@ public class TuiApp {
             let agentsH: Int64 = this.agentsPanel.height(outH0, cols)
             // 面板带高度：左右并排取两者较大值（不再垂直相加堆叠）
             let maxBaseH: Int64 = if (tasksH > agentsH) { tasksH } else { agentsH }
-            // bgH：后台任务面板高度（B-2）——无边框紧凑条（≤2 行），
-            // 垂直叠在 Tasks/Agents 之上
+            // bgH：后台任务面板高度（B-2）——无边框紧凑条（≤2 行）。
+            // 执行中画在动态状态行**上方**（基线见下方 bgBaseRow），空闲时贴面板带上沿。
             let bgH: Int64 = this.bgPanel.height(outH0, cols)
-            let maxPanelsH: Int64 = maxBaseH + bgH
-            // 动态状态行位置：statusRow - 1(间隔) - maxPanelsH(面板带) - 1(自身)
+            // 动态状态行位置固定：只扣 Tasks/Agents 面板带，不把 bgH 算进来——
+            // 旧实现 agentRow = statusRow-1-(maxBaseH+bgH)-1，后台任务一出现状态行就
+            // 上移 2 行、淡出又下移（用户实测"状态行时上时下"）。bg 面板改为占用状态行
+            // **上方**的行，状态行位置与 bgH 无关。
             // 无 agent 运行时，agentRow 不使用，仅用于 outH 计算
-            let agentRow: Int64 = if (agentBusy) { statusRow - 1 - maxPanelsH - 1 } else { -1 }
+            let agentRow: Int64 = if (agentBusy) { statusRow - 1 - maxBaseH - 1 } else { -1 }
 
             // 思考块（方案 B）：作为消息流成员由 OutputView 渲染（折叠/展开段），
             // 不再占用独立布局区域——消息区高度恒定，思考随输出滚动回看
             // 输出区可用高度：8 .. outBottom（恒定）
-            // agent 执行中：动态状态行上方；空闲：面板带上沿之上
+            // agent 执行中：状态行上方再让出 bg 面板行；空闲：面板带上沿之上
             // （判据收在纯函数里便于单测，见文件末尾 outputAreaBottom）
-            let outBottom: Int64 = outputAreaBottom(statusRow, agentBusy, agentRow, maxPanelsH)
+            let outBottom: Int64 = outputAreaBottom(statusRow, agentBusy, agentRow, maxBaseH, bgH)
             let outH: Int64 = if (outBottom - 8 + 1 > 0) { outBottom - 8 + 1 } else { 0 }
 
             // 输出区（对话 / 帮助视图，无边框全宽）
@@ -2027,10 +2030,13 @@ public class TuiApp {
                     this.reasoningLock.unlock()
                     this.outputLock.unlock()
                 }
-                // 后台任务面板（B-2）：无边框紧凑条，叠在 Tasks/Agents 面板带**之上**，
-                // 故 availRow 取面板带上沿。outH 传 outH0 与 height() 同参数——
-                // 两边若用不同上限会在 agent 运行时差出 1 行，多占行把输出区顶掉
-                let _ = this.bgPanel.render(this.canvas, statusRow - 1 - maxBaseH, cols, outH0)
+                // 后台任务面板（B-2）：无边框紧凑条。
+                // 执行中画在动态状态行**上方**（基线 agentRow-1）——状态行因此位置固定，
+                // 不随面板出现/淡出上下跳；空闲时贴 Tasks/Agents 面板带上沿。
+                // outH 传 outH0 与 height() 同参数——两边若用不同上限会在 agent 运行时
+                // 差出 1 行，多占行把输出区顶掉
+                let bgBaseRow: Int64 = if (agentBusy && agentRow >= 8) { agentRow - 1 } else { statusRow - 1 - maxBaseH }
+                let _ = this.bgPanel.render(this.canvas, bgBaseRow, cols, outH0)
                 // Tasks 面板：有任务时在输出区左下角渲染
                 this.tasksPanel.render(this.canvas, statusRow - 1, cols, outH)
                 // Agents 面板（S3）：右下角，与 Tasks **同底线**。overlay 模式：
@@ -2238,16 +2244,17 @@ public enum WatchdogAction {
  * @param agentRow 动态状态行所在行（执行中有效）
  * @param panelsH 面板带占用行数（0=无面板）
  */
-public func outputAreaBottom(statusRow: Int64, agentBusy: Bool, agentRow: Int64, panelsH: Int64): Int64 {
+public func outputAreaBottom(statusRow: Int64, agentBusy: Bool, agentRow: Int64, panelsH: Int64, bgH: Int64): Int64 {
     if (agentBusy && agentRow >= 8) {
-        // 执行中：动态状态行上方（agentRow 已扣除面板带与间隔行）
-        return agentRow - 1
+        // 执行中：状态行位置固定（agentRow 只扣面板带），bg 面板画在状态行上方，
+        // 故输出区还要再让出 bgH 行——否则输出会被压在 bg 面板底下
+        return agentRow - 1 - bgH
     }
-    // 空闲：面板带底沿在 statusRow-1、占 panelsH 行（面板自身渲染到
-    // statusRow-1-panelsH .. statusRow-2），输出区必须停在面板上沿之上，
+    // 空闲：面板带底沿在 statusRow-1、共占 panelsH + bgH 行（面板自身渲染到
+    // statusRow-1-panelsH-bgH .. statusRow-2），输出区必须停在面板上沿之上，
     // 否则最新几行被面板覆盖——而最新几行正是回合收尾（见本函数注释）
-    if (panelsH > 0) {
-        return statusRow - 2 - panelsH
+    if (panelsH > 0 || bgH > 0) {
+        return statusRow - 2 - panelsH - bgH
     }
     // 无面板：照旧铺到状态栏上一行
     return statusRow - 1
