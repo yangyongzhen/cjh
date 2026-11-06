@@ -227,6 +227,41 @@ private let PASTE_STREAM_RATE_MIN: Int64 = 12
 private let PASTE_STREAM_RATE_NL_DIV: Int64 = 3
 
 /**
+ * 未闭合括号粘贴的总时长兜底（毫秒）：超过即结束粘贴读取并交还按键。
+ *
+ * 动机（2026-11-06 用户实测"连续输入时打字没反应、光标不动"）：cjh 开启了
+ * bracketed paste（`ESC[?2004h`），终端粘贴会发 `ESC[200~`。若闭合标记
+ * `ESC[201~` 没到（断包、终端/输入法异常、粘贴流被打断），旧逻辑唯一的退出
+ * 条件是"连续 3 次 waitInput(200) 无数据"（600ms 空闲）。**只要用户继续打字，
+ * waitInput 每次都能拿到数据 → idleStreak 恒归零 → 永不退出**，后续所有按键
+ * （含回车）都被当粘贴内容吞进 raw，输入框毫无反应；用户越急越打、就越出不来。
+ *
+ * pty 实证：发 `ESC[200~` 不打闭合标记，再打 `HELLO` + `WORLD\r`，输入框全程
+ * 空白、无任何按键进入 handleKey，最后攒成一条 `HELLOWORLD` 一次性提交。
+ *
+ * 取值 3000ms：正常粘贴（哪怕几万行）在 3 秒内早就闭合；只有异常流才会触顶。
+ * 触顶时已收内容按粘贴插入（不丢字），用户打字立即恢复。
+ */
+public let PASTE_MAX_MS: Int64 = 3000
+
+/**
+ * 括号粘贴读取循环是否该结束（纯函数，便于单测）。
+ *
+ * - closed：读到 `ESC[201~` 闭合标记 → 立即结束（正常路径）
+ * - idleStreak >= 3：连续 3 次 waitInput(200) 无数据 = 600ms 空闲 → 粘贴结束
+ * - elapsedMs >= PASTE_MAX_MS：未闭合却迟迟不结束 → 兜底退出，避免无限吞键
+ */
+public func pasteReadStop(elapsedMs: Int64, idleStreak: Int64, closed: Bool): Bool {
+    if (closed) {
+        return true
+    }
+    if (idleStreak >= 3) {
+        return true
+    }
+    return elapsedMs >= PASTE_MAX_MS
+}
+
+/**
  * 终端控制器：委托 TerminalBackend 实现平台差异，对外 API 与旧版一致
  */
 public class Term {
