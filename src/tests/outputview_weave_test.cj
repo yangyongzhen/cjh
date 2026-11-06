@@ -99,11 +99,14 @@ public func testWeaveScrollBackReachesWovenThinking(): Unit {
     }
     ov.toggleThinking()
     let bottom = weaveRenderText(ov, 8, 60)
-    @Assert(bottom.indexOf("早期推理锚点内容").isNone(), true)
-    // 向上滚动回看：交织进消息流的早期思考应重新出现在窗口内
+    // 展开即定位到思考块（用户实测反馈"按 Ctrl+T，思考的界面直接隐藏了"的修复契约：
+    // 摘要在流末尾、内容在轮起点，不定位就只剩"消失"的观感）
+    @Assert(bottom.indexOf("早期推理锚点内容").isSome(), true)
+    @Assert(bottom.indexOf("输出行19").isNone(), true)        // 视口已离开底部
+    // 交织进消息流的思考计入滚动范围：继续上滚还能回到思考之前更早的消息
     ov.scrollUp(30)
     let scrolled = weaveRenderText(ov, 8, 60)
-    @Assert(scrolled.indexOf("早期推理锚点内容").isSome(), true)
+    @Assert(scrolled.indexOf("❯ 任务").isSome(), true)
 }
 
 @Test

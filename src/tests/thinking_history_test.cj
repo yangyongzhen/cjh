@@ -136,4 +136,30 @@ public class ThinkingHistoryTest {
         @Assert(multi.contains("思考 #2"), true)
         @Assert(!multi.contains("思考过程 · Ctrl+T 折叠"), true)
     }
+
+    /**
+     * Ctrl+T 展开必须"看得见"（用户实测反馈："按 Ctrl+T，思考的界面直接隐藏了"）。
+     *
+     * 折叠摘要在消息流末尾（贴视口），展开内容却钉在本轮起点（消息流靠前），
+     * 而视口默认贴末尾（startIdx = total - height - scrollOffset）—— 展开后
+     * 摘要那行消失、正文全在窗口上方，观感就是"思考界面直接没了"。
+     * 契约：展开即定位到最近一轮思考（不要求用户自己 Ctrl+U 摸黑找）。
+     */
+    @TestCase
+    public func testExpandScrollsThinkingIntoView(): Unit {
+        let ov = OutputView()
+        ov.appendThinking("早轮标记：思考在流的前部")
+        ov.finishThinking()
+        for (i in 0..60) {
+            ov.append("回复正文第" + i.toString() + "行")
+        }
+        let folded = renderThink(ov, 12, 60)
+        @Assert(folded.contains("Ctrl+T 查看"), true)                 // 折叠态 1 行摘要可见
+        ov.toggleThinking()
+        let expanded = renderThink(ov, 12, 60)
+        @Assert(expanded.contains("早轮标记：思考在流的前部"), true)  // 展开即看到内容
+        ov.toggleThinking()
+        let collapsed = renderThink(ov, 12, 60)
+        @Assert(collapsed.contains("Ctrl+T 查看"), true)              // 折叠回到末尾摘要
+    }
 }
