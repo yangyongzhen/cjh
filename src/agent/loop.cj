@@ -12,6 +12,17 @@ import cjutil.*
 import std.sync.*
 
 /**
+ * 后台摘要 pending 超时判据（纯函数，便于单测）
+ *
+ * `elapsedMs >= timeoutMs` 判过期（闭合边界，避免"永远差 1ms"的回收盲区）。
+ * 为什么需要：`pendingCompact` 一旦永挂（网关长时间无响应、Future 永不完成），
+ * `maybeTriggerBackgroundCompact` 的 `isSome() → return` 会让之后所有压缩全部失效。
+ */
+public func compactPendingStale(elapsedMs: Int64, timeoutMs: Int64): Bool {
+    return elapsedMs >= timeoutMs
+}
+
+/**
  * Agent 生命周期事件钩子（Claude Code 式，统一事件化）
  *
  * 事件触发点（Agent.run 内部）：
@@ -462,6 +473,9 @@ public class Agent {
     private var compactLock: Mutex = Mutex()
     // P1b 后台压缩状态：pending 摘要任务（None=无）；auto 模式（None/SyncFallback）
     private var pendingCompact: Option<Future<String>> = None
+    // 后台摘要起始时刻：超时回收用。网关无响应时 Future 永不完成，
+    // 不回收则 pendingCompact 永远 Some → 之后不再触发压缩 + 状态栏 Compacting… 永挂
+    private var compactPendingSince: Option<DateTime> = None
     private var autoCompactMode: String = "None"
     // P1b 模式终态标记：本 run 是否触发过后台摘要 / 是否完成过一次换装
     // （mode 推导：pending 在=Async；否则曾换装=AsyncApplied；否则 SyncFallback/None）
@@ -921,6 +935,10 @@ public class Agent {
             summary.errorRetryable = true
         } finally {
             // 所有出口（正常/中断/异常）统一清理：状态回 Idle
+            // 压缩状态也在此复位：onCompact(false) 原本只挂在 checkPendingCompact
+            // （回合内每轮请求前调用），后台摘要未完成就收尾时状态栏会永久停在
+            // Compacting…（实测 90s+ 不复位，用户误以为界面卡死）
+            this.onCompact(false)
             this.endRound()
         }
         return summary
@@ -1630,6 +1648,7 @@ public class Agent {
         let snapSummaryMsgs = snapMsgs
         // spawn 摘要任务：读快照生成摘要（失败静默重试一次，返回 ""=失败）
         this.compactTriggeredOnce = true
+        this.compactPendingSince = Some(DateTime.now())
         this.onCompact(true)
         this.pendingCompact = Some(spawn {
             let sp = if (this.summaryProvider.isSome()) { this.summaryProvider.getOrThrow() } else { this.provider }
@@ -1662,6 +1681,18 @@ public class Agent {
             return
         }
         let fut = this.pendingCompact.getOrThrow()
+        // 超时回收：网关长时间无响应时后台 Future 永不完成，若不回收，
+        // pendingCompact 永远 Some → 之后不再触发新压缩，状态也会一直挂着
+        if (this.compactPendingSince.isSome()) {
+            let idleMs = (DateTime.now() - this.compactPendingSince.getOrThrow()).toMilliseconds()
+            if (compactPendingStale(idleMs, 120000)) {
+                this.pendingCompact = None
+                this.compactPendingSince = None
+                Log.warn("compaction 后台摘要超时（>120s），放弃本次并允许重新触发")
+                this.onCompact(false)
+                return
+            }
+        }
         let res = fut.tryGet()
         if (res.isNone()) {
             // 未完成 → 顺延

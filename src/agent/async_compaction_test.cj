@@ -334,4 +334,38 @@ public class AsyncCompactionTest {
         @Assert(acContainsSummary(agent), true)
         @Assert(agent.getCompactionMode(), "None")  // 手动路径不改 auto 模式
     }
+
+    /**
+     * 回合结束必须复位压缩状态（实测缺陷：后台摘要未完成时 run 返回，
+     * `Compacting…` 永久挂在状态栏——onCompact(false) 只挂在 checkPendingCompact
+     * 里，而它在回合内每轮请求前才被调用，回合结束就再没人调）。
+     * 断言：run 返回后 onCompact 末事件为 false（状态栏回默认徽章）。
+     */
+    @TestCase
+    public func testRunEndResetsCompactStatus(): Unit {
+        let mainProvider = ScriptedMainProvider(1, 500, 1)
+        // neverRelease：摘要 provider 阻塞到 run 返回之后，pending 恒未完成
+        let gate = ReleaseGateSummaryProvider(tmpPath("cjh_ac_reset_f6"), true)
+        let tool = NoOpTool(0, "")
+        let agent = acBuildAgent(mainProvider, tool, 3, 5, 5, 50, Some(gate))
+        let events = ArrayList<Bool>()
+        agent.onCompact = { running => events.add(running) }
+        let s = agent.run("ac 状态复位")
+        @Assert(s.reply.contains("FINAL-DONE"), true)
+        @Assert(events.size >= 1, true)  // spawn 时发过 true
+        @Assert(events[events.size - 1], false)  // 回合结束必须复位
+    }
+
+    /**
+     * 后台摘要超时判据（纯函数）：防 pendingCompact 永远 Some——
+     * 那会让 maybeTriggerBackgroundCompact 之后再也不触发新压缩。
+     * 边界：恰好到点即判过期（闭合），避免"永远差 1ms"的回收盲区。
+     */
+    @TestCase
+    public func testCompactPendingStalePredicate(): Unit {
+        @Assert(compactPendingStale(1000, 120000), false)   // 等待中
+        @Assert(compactPendingStale(119999, 120000), false) // 差 1ms：不回收
+        @Assert(compactPendingStale(120000, 120000), true)  // 恰到期：回收
+        @Assert(compactPendingStale(200000, 120000), true)  // 已超时：回收
+    }
 }
