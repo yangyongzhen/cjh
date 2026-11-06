@@ -566,3 +566,104 @@ public class TuiAppReasoningHistoryTest {
         @Assert(app.testThinkingActive(), false)
     }
 }
+
+/**
+ * 空闲看门狗判据（纯函数）：模型停滞 vs 工具在跑，必须分开。
+ *
+ * 回归 2026-11-06 15:52 事故：`▶ bash`/`▶ glob` 两个工具开始执行后 181s 无返回，
+ * 界面打出"⚠ 模型 181s 无响应（可能停滞），已请求中断"，而请求的中断打不断正在
+ * 执行的工具——日志在 15:55:09 之后空白，回合从未结束。等待工具不等于模型停滞。
+ */
+@Test
+public class WatchdogDecisionTest {
+
+    // 枚举不能 ==（仓颉约束），用 match 取名比较
+    private func actionName(a: WatchdogAction): String {
+        match (a) {
+            case WatchdogAction.Cool => return "Cool"
+            case WatchdogAction.InterruptModel => return "InterruptModel"
+            case WatchdogAction.ToolBusy => return "ToolBusy"
+        }
+    }
+
+    @TestCase
+    public func testIdleUnderThresholdIsCool(): Unit {
+        @Assert(this.actionName(watchdogAction(30, 180, 0)), "Cool")
+    }
+
+    @TestCase
+    public func testModelStallInterrupts(): Unit {
+        // 无工具在跑、锚点超阈值 ⇒ 模型确实没吐帧，请求中断（流式读可被 abort）
+        @Assert(this.actionName(watchdogAction(181, 180, 0)), "InterruptModel")
+    }
+
+    @TestCase
+    public func testToolInFlightIsNotModelStall(): Unit {
+        // 工具在跑：不甩锅给模型，也不请求一个打不断工具的中断
+        @Assert(this.actionName(watchdogAction(181, 180, 1)), "ToolBusy")
+        // 多个工具并发同样成立
+        @Assert(this.actionName(watchdogAction(400, 180, 3)), "ToolBusy")
+    }
+
+    @TestCase
+    public func testToolInFlightUnderThresholdIsCool(): Unit {
+        // 阈值内一律不动作（工具刚起跑属于正常）
+        @Assert(this.actionName(watchdogAction(5, 180, 2)), "Cool")
+    }
+
+    @TestCase
+    public func testToolFinishRedirectsBlameBack(): Unit {
+        // 工具全部结束后回到模型语义：仍在静默 ⇒ 该中断模型
+        @Assert(this.actionName(watchdogAction(200, 180, 0)), "InterruptModel")
+    }
+}
+
+/**
+ * 输出区底沿（outputAreaBottom）：底部几行是公共资源，谁在最下面谁可见。
+ *
+ * 布局从上到下：输出区 → 面板带（Tasks 左 / Agents 右 / bg 全宽，占
+ * `statusRow-1-panelsH .. statusRow-2`）→ 状态栏(statusRow)。
+ * `TuiApp.render` 先画输出区、**后**画面板，所以输出区一旦铺到面板带底下，
+ * 最后 panelsH 行就被面板盖掉。而那正是最新输出：滚动 offset=0 时窗口底沿
+ * 就是视口底沿，PageDown 也救不回来（offset 已为 0，再按被钳住）。
+ *
+ * 实测 2026-11-06 16:30：用户任务跑完只看到任务单，回合收尾那几行看不见，
+ * 连按 94 次 PageDown 无反应（日志里 PG6×94 全在回合结束之后）。
+ */
+@Test
+public class OutputAreaBottomTest {
+
+    @TestCase
+    public func testNoPanelsUsesRowAboveStatusBar(): Unit {
+        // 无面板：输出区照旧铺到状态栏上一行
+        @Assert(outputAreaBottom(40, false, -1, 0), 39)
+    }
+
+    @TestCase
+    public func testIdleWithPanelsStopsAbovePanelBand(): Unit {
+        // panelsH=5 ⇒ 面板带 34..38，输出区底沿必须是 33（不得伸进面板带）
+        @Assert(outputAreaBottom(40, false, -1, 5), 33)
+    }
+
+    @TestCase
+    public func testOutputBottomNeverInsidePanelBand(): Unit {
+        // 不变式：任意面板高度下，底沿都落在面板带上沿之上
+        for (panelsH in 1..9) {
+            let bottom = outputAreaBottom(40, false, -1, panelsH)
+            let bandTop = 40 - 1 - panelsH
+            @Assert(bottom < bandTop)
+        }
+    }
+
+    @TestCase
+    public func testBusyLayoutUnchanged(): Unit {
+        // 执行中：动态状态行上方（agentRow 已扣面板带），与本次修复无关
+        @Assert(outputAreaBottom(40, true, 33, 5), 32)
+    }
+
+    @TestCase
+    public func testBusyTooShallowFallsBackToIdleRule(): Unit {
+        // 空间太浅（agentRow < 8）走空闲分支——同样不得伸进面板带
+        @Assert(outputAreaBottom(40, true, 6, 3), 40 - 2 - 3)
+    }
+}

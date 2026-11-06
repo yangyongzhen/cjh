@@ -712,7 +712,15 @@ func runTui(sessionId: String): Int64 {
             // 子代理派发/收尾都会改变账上的 agents 用量
             pushBgSlots()
         })
-        agent.onSubagentEvent = { id, _, text =>
+        agent.onSubagentEvent = { id, kind, text =>
+            // 子代理跑工具时父级同样收不到任何流式帧——漏计会把"子代理在跑长工具"
+            // 误报成"模型停滞"（与主链路同一类缺陷）。kind 是现成的判别字段，
+            // 工具事件成对（loop.cj 并行组也逐个回调 onToolResult），计数能配平。
+            match (kind) {
+                case "tool_start" => tui.toolStarted("子代理工具")
+                case "tool_result" => tui.toolFinished()
+                case _ => ()
+            }
             tui.appendSubagentEvent(id, text)
         }
         // B-2：后台任务面板数据源——任务状态事件（启动/转终态/kill）→ 快照 → TUI。
@@ -810,6 +818,8 @@ func runTui(sessionId: String): Int64 {
             tui.setAgentTokenEstimate(est)
         }
         agent.onToolStart = { name, args =>
+            // 看门狗判据：工具在跑期间没有流式帧，但那不是模型停滞（见 app.cj watchdogAction）
+            tui.toolStarted(name)
             if (StreamState.active) {
                 TuiBridge.delta("")
                 StreamState.active = false
@@ -820,6 +830,7 @@ func runTui(sessionId: String): Int64 {
             tui.setAgentState("Running ${name}…")
         }
         agent.onToolResult = { name, result =>
+            tui.toolFinished()
             var preview = result.content
             // read_file 是按需读取工具，LLM 已通过 offset/limit 控制读取量；
             // 截断 preview 会让 LLM 误以为输出被截断，反复换 bash 重读
