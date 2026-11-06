@@ -279,4 +279,64 @@ public class BgTaskPanelTest {
         // 窄终端不渲染（与 height 同判据）
         @Assert(panel.render(TuiCanvas(), 14, 39, 20), 0)
     }
+
+    // ---- 两本槽位账（B-3 收敛版：账可见，Agents 面板与焦点交互不动）----
+
+    @TestCase
+    public func testFmtSlotLedger(): Unit {
+        @Assert(fmtSlotLedger(3, 8, 2, 4), "bg 3/8  agents 2/4")
+        // 上限 <= 0 = 不限（settings 四键 0 的语义）：只写用量
+        @Assert(fmtSlotLedger(3, 0, 2, 0), "bg 3  agents 2")
+        // 子代理未启用（上限 0 且用量 0）：整段省略，不留恒为 0 的尾巴
+        @Assert(fmtSlotLedger(1, 8, 0, 0), "bg 1/8")
+        @Assert(fmtSlotLedger(0, 8, 0, 4), "bg 0/8  agents 0/4")
+    }
+
+    @TestCase
+    public func testFmtAgentLedger(): Unit {
+        // 回合总结条用："N/4 agents (x✓ y✗)"——上限可见才知道 4 是天花板
+        @Assert(fmtAgentLedger(3, 4), "3/4 agents")
+        // 上限 <= 0 = 不限：只写用量
+        @Assert(fmtAgentLedger(3, 0), "3 agents")
+        @Assert(fmtAgentLedger(2, -1), "2 agents")
+    }
+
+    @TestCase
+    public func testSetSlotsChangeDetection(): Unit {
+        let panel = BgTaskPanel()
+        // 首次推送必算变化（否则首帧标题不会带上账）
+        @Assert(panel.setSlots(BgSlots(1, 8, 0, 4)), true)
+        // 同值不触发重绘：槽位是低频量，重复 markDirty 就是无谓的全屏重绘
+        @Assert(panel.setSlots(BgSlots(1, 8, 0, 4)), false)
+        @Assert(panel.setSlots(BgSlots(1, 8, 1, 4)), true)
+        @Assert(panel.currentSlots().agentsUsed, 1)
+    }
+
+    @TestCase
+    public func testRenderTitleShowsSlotLedger(): Unit {
+        let panel = BgTaskPanel()
+        panel.setUtf8(true)
+        let _ = panel.setSlots(BgSlots(1, 8, 2, 4))
+        var rows = ArrayList<BgTaskRow>()
+        rows.add(BgTaskRow("bg-1", "npm install", BgRowRunning, 0, 0, DateTime.now()))
+        let _ = panel.updateRows(rows)
+        let text = this.joinLines(this.renderLines(panel, 100, 20))
+        // 碰撞场景的关键信息：是哪一本账满了（上限来自两个不同配置键）
+        @Assert(text.contains("bg 1/8"), true)
+        @Assert(text.contains("agents 2/4"), true)
+    }
+
+    @TestCase
+    public func testRenderNarrowDropsLedgerKeepsTitle(): Unit {
+        let panel = BgTaskPanel()
+        panel.setUtf8(true)
+        let _ = panel.setSlots(BgSlots(1, 8, 2, 4))
+        var rows = ArrayList<BgTaskRow>()
+        rows.add(BgTaskRow("bg-1", "a", BgRowRunning, 0, 0, DateTime.now()))
+        let _ = panel.updateRows(rows)
+        // 40 列：账放不下就先丢账，标题（含中文）必须保留——账是附加信息，不能挤掉主信息
+        let text = this.joinLines(this.renderLines(panel, 40, 20))
+        @Assert(text.contains("后台任务"), true)
+        @Assert(text.contains("bg 1/8"), false)
+    }
 }

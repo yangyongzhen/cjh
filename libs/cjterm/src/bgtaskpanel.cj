@@ -111,6 +111,67 @@ public func fmtBgElapsed(ms: Int64): String {
 }
 
 /**
+ * 槽位占用快照：**两本账**——bash 后台任务与子代理各有一套上限，互不占用
+ *
+ * 为什么要显示账：两个上限分属不同配置键（`max_background_tasks` 默认 8 /
+ * `max_subagents` 默认 4）。用户撞到"后台起不动"时，只有账在眼前才分得清
+ * 是哪一本满了——否则只会看到一句"槽位已满"，然后去猜是哪个配置。
+ */
+public class BgSlots {
+    public let bgUsed: Int64
+    public let bgMax: Int64
+    public let agentsUsed: Int64
+    public let agentsMax: Int64
+
+    public init(bgUsed: Int64, bgMax: Int64, agentsUsed: Int64, agentsMax: Int64) {
+        this.bgUsed = bgUsed
+        this.bgMax = bgMax
+        this.agentsUsed = agentsUsed
+        this.agentsMax = agentsMax
+    }
+
+    public func sameAs(o: BgSlots): Bool {
+        return this.bgUsed == o.bgUsed && this.bgMax == o.bgMax &&
+            this.agentsUsed == o.agentsUsed && this.agentsMax == o.agentsMax
+    }
+}
+
+/** 账上"用量/上限"；上限 <= 0 表示不限（settings 四键 0 的语义），只显示用量 */
+private func slotPair(used: Int64, max: Int64): String {
+    if (max <= 0) {
+        return "${used}"
+    }
+    return "${used}/${max}"
+}
+
+/**
+ * 两本账文本：`bg 3/8  agents 2/4`
+ *
+ * 子代理未启用（上限 0 且用量 0）时省略该段——否则每一帧都挂一个恒为
+ * `agents 0` 的尾巴，白占列宽。
+ */
+public func fmtSlotLedger(bgUsed: Int64, bgMax: Int64, agentsUsed: Int64, agentsMax: Int64): String {
+    let bgPart: String = "bg " + slotPair(bgUsed, bgMax)
+    if (agentsMax <= 0 && agentsUsed == 0) {
+        return bgPart
+    }
+    return bgPart + "  agents " + slotPair(agentsUsed, agentsMax)
+}
+
+/**
+ * 子代理归账文本：`3/4 agents`；上限 <= 0（不限）只写用量
+ *
+ * 与 fmtSlotLedger 的 agents 段同一口径，差别是这里带单位——回合总结条以
+ * "N/4 agents (x✓ y✗)" 出现，让用户知道 4 是天花板而不是随机数。
+ */
+public func fmtAgentLedger(total: Int64, max: Int64): String {
+    if (max <= 0) {
+        return "${total} agents"
+    }
+    return "${total}/${max} agents"
+}
+
+/**
  * 行快照签名：变更检测用
  *
  * **必须做变更检测**（`scheduler.cj:225` 那次"高频回调淹没主循环"的教训）：
@@ -160,8 +221,31 @@ public class BgTaskPanel {
     private var utf8: Bool = true
     // 上次推送的行签名（updateRows 内部做变更检测）
     private var lastSig: String = ""
+    // 两本槽位账（标题行显示；变更检测在 setSlots 里做，槽位是低频变化量）
+    private var slots: BgSlots = BgSlots(0, 0, 0, 0)
 
     public init() {}
+
+    /**
+     * 更新槽位账
+     * @return true = 账有变化（调用方据此 markDirty）；false = 无变化，不必重绘
+     */
+    public func setSlots(s: BgSlots): Bool {
+        this.lock.lock()
+        let changed: Bool = !this.slots.sameAs(s)
+        if (changed) {
+            this.slots = s
+        }
+        this.lock.unlock()
+        return changed
+    }
+
+    public func currentSlots(): BgSlots {
+        this.lock.lock()
+        let s = this.slots
+        this.lock.unlock()
+        return s
+    }
 
     public func setUtf8(v: Bool): Unit {
         this.lock.lock()
@@ -272,6 +356,7 @@ public class BgTaskPanel {
             items.add(r)
         }
         let useUtf8 = this.utf8
+        let slotsNow: BgSlots = this.slots
         this.lock.unlock()
 
         // 运行中排最前：行数受限时最有信息量的行必须稳定可见（同 Agents 面板约定）
@@ -304,12 +389,12 @@ public class BgTaskPanel {
             return 0
         }
         let panelW: Int64 = cols
-        this.renderBox(canvas, startRow, panelW, actualH, sorted, useUtf8)
+        this.renderBox(canvas, startRow, panelW, actualH, sorted, useUtf8, slotsNow)
         return actualH
     }
 
     private func renderBox(canvas: TuiCanvas, startRow: Int64, panelW: Int64,
-        panelH: Int64, items: ArrayList<BgTaskRow>, useUtf8: Bool): Unit {
+        panelH: Int64, items: ArrayList<BgTaskRow>, useUtf8: Bool, slots: BgSlots): Unit {
         let muted: String = Ansi.fg(Ansi.THEME_MUTED)
         let accent: String = Ansi.fg(Ansi.THEME_ACCENT)
         let ok: String = Ansi.fg(Ansi.THEME_OK)
@@ -327,7 +412,15 @@ public class BgTaskPanel {
             }
         }
         // 顶边框：标题按显示宽度算填充（字节数会把横线补短——中文标题踩过）
-        var title: String = "后台任务 (${running} running · ${done} done)"
+        // 两本槽位账：宽够才挂在任务计数之后；窄了先丢账、再丢中文（三级降级）
+        let ledger: String = fmtSlotLedger(slots.bgUsed, slots.bgMax, slots.agentsUsed, slots.agentsMax)
+        let baseTitle: String = "后台任务 (${running} running · ${done} done)"
+        let withLedger: String = baseTitle + "  · " + ledger
+        var title: String = if (TuiCanvas.displayWidth(withLedger) + 5 <= panelW) {
+            withLedger
+        } else {
+            baseTitle
+        }
         var titleW: Int64 = TuiCanvas.displayWidth(title)
         if (titleW + 5 > panelW) {
             title = "bg ${running}r/${done}d"

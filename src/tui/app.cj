@@ -759,6 +759,18 @@ public class TuiApp {
         }
     }
 
+    /**
+     * 刷新两本槽位账（B-3 收敛版）：bash 后台任务与子代理各一本，显示在面板标题
+     *
+     * 与 refreshBgTasks 同一个"面板内部变更检测 + 有变化才 markDirty"的口径：
+     * 槽位是低频量（起/停任务、派/收子代理），无变化时不该触发全屏重绘。
+     */
+    public func refreshBgSlots(slots: BgSlots): Unit {
+        if (this.bgPanel.setSlots(slots)) {
+            this.markDirty()
+        }
+    }
+
     private func mapRowState(s: AgentNodeState): AgentRowState {
         match (s) {
             case AgentNodeState.Pending => AgentRowState.RowPending

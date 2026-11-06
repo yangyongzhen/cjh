@@ -686,9 +686,31 @@ func runTui(sessionId: String): Int64 {
         tuiOpt = Some(tui)
         tui.setModel(cjhCfg.model)
 
+        // B-3（收敛版）：两本槽位账——bash 后台任务与子代理各记一本，互不占用。
+        // 两个上限分属不同配置键（max_background_tasks / max_subagents），用户撞到
+        // "起不动"时只有账在眼前才分得清是哪本满了，否则只能猜是哪个配置。
+        // 推送时机：任务起/停（bg.onEvent）、子代理派/收（scheduler.onChanged）。
+        let pushBgSlots = { =>
+            let bgUsed: Int64 = match (currentBackgroundRegistry()) {
+                case Some(bg) => bg.runningTasks().size
+                case None => 0
+            }
+            var agentUsed: Int64 = 0
+            for (node in scheduler.snapshot()) {
+                match (node.state) {
+                    case AgentNodeState.Pending => agentUsed += 1
+                    case AgentNodeState.Running => agentUsed += 1
+                    case _ => ()
+                }
+            }
+            tui.refreshBgSlots(BgSlots(bgUsed, cjhCfg.maxBackgroundTasks, agentUsed, cjhCfg.maxSubagents))
+        }
+
         // S3d：Agents 面板数据源（scheduler 变更 → 深拷贝快照 → TUI）+ 焦点行事件转发
         scheduler.onChanged({ =>
             tui.refreshAgents(scheduler.snapshot())
+            // 子代理派发/收尾都会改变账上的 agents 用量
+            pushBgSlots()
         })
         agent.onSubagentEvent = { id, _, text =>
             tui.appendSubagentEvent(id, text)
@@ -699,8 +721,12 @@ func runTui(sessionId: String): Int64 {
         // 注：与 Web 侧订阅同一个 onEvent 槽位，但 TUI/Web 是互斥入口（一次只跑一个）
         match (currentBackgroundRegistry()) {
             case Some(bg) =>
-                bg.onEvent = { _: BgTaskEventInfo => tui.refreshBgTasks(bgPanelRows(bg)) }
+                bg.onEvent = { _: BgTaskEventInfo =>
+                    tui.refreshBgTasks(bgPanelRows(bg))
+                    pushBgSlots()
+                }
                 tui.refreshBgTasks(bgPanelRows(bg))
+                pushBgSlots()
             case None => ()
         }
         // G-A：TUI 审批超时与服务端同源（subagent_timeout_ms；0=不限）——
@@ -884,7 +910,11 @@ func runTui(sessionId: String): Int64 {
                 }
             }
             if (okCount + failCount > 0) {
-                stat = stat + " · ${okCount + failCount} agents (${okCount}✓ ${failCount}✗)"
+                // 带上限（max_subagents）：与面板标题的两本账同一口径，用户才知道 4 是天花板；
+                // 上限 <= 0 表示不限（settings 四键 0 的语义），此时不写 "/max"
+                // 文案走 cjterm.fmtAgentLedger：与面板标题的 agents 段同一口径，且可单测
+                let agentsHead: String = fmtAgentLedger(okCount + failCount, cjhCfg.maxSubagents)
+                stat = stat + " · ${agentsHead} (${okCount}✓ ${failCount}✗)"
                 let wasted = scheduler.wastedCount()
                 if (wasted > 0) {
                     stat = stat + " · ⚠${wasted} 低效派生"
