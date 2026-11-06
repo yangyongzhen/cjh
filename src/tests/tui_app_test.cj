@@ -723,3 +723,41 @@ public class SecondTickTest {
         @Assert(secondElapsed(102, anchor))
     }
 }
+
+/**
+ * 忙时入队提示（2026-11-06，第八十七轮）
+ *
+ * 回归背景：用户连发 9 条同一句话才意识到"发了没反应"——忙碌时提交只入队、
+ * 不打断当前回合，排队消息要等回合边界才注入；一次卡住 115 秒的请求期间，
+ * 屏幕上只有状态行一行小字，既看不出收下几条，也不知道能立即发送。
+ * 文案须同时答两件事：**第几条**与**Esc 可立即发送**。
+ */
+@Test
+public class QueueHintTest {
+
+    @TestCase
+    public func testNoticeReportsSequence(): Unit {
+        let s = queueNoticeText(3)
+        @Assert(s.contains("第 3 条"))
+        @Assert(s.contains("Esc"))
+    }
+
+    @TestCase
+    public func testNoticeReportsFirstItem(): Unit {
+        @Assert(queueNoticeText(1).contains("第 1 条"))
+    }
+
+    @TestCase
+    public func testStatusHiddenWhenQueueEmpty(): Unit {
+        // 0 条（或异常负值）不显示：空闲时状态行不该常驻一个空排队片段
+        @Assert(queueStatusText(0) == "")
+        @Assert(queueStatusText(-1) == "")
+    }
+
+    @TestCase
+    public func testStatusShowsCountAndEsc(): Unit {
+        let s = queueStatusText(2)
+        @Assert(s.contains("2 条"))
+        @Assert(s.contains("Esc"))
+    }
+}

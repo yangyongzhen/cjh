@@ -512,11 +512,18 @@ def test_queue_and_autodequeue() -> None:
         check("回合内不出现旧 steer 注入标记（无'收到排队输入'）", "收到排队输入" not in buf,
               f"(buf尾部: {buf[-300:]})")
         # 方案 2 关键判据：整轮只应有一次作答——旧语义（回合结束再作新回合）会
-        # 打印第二次 FINAL-DONE。留出充足窗口再数一遍。
+        # 打印第二次 FINAL-DONE + 第二条回合总结条。留出充足窗口再数一遍。
         time.sleep(6.0)
         buf2 = strip_ansi(s.buf)
-        check("排队消息并入本回合、不另起新回合（FINAL-DONE 只一次）",
-              buf2.count("FINAL-DONE") == 1, f"(出现 {buf2.count('FINAL-DONE')} 次)")
+        # 计数以「回合总结条」为准：差分渲染在输出区滚动时会把已有行原样重画，
+        # 纯文本流里 FINAL-DONE 因此可能被计成 2 次（基线实测 8 次里 3 次踩到，
+        # 而同一次运行里总结条恒为 1——是同一行被重画，不是第二个回合）。
+        # 第二个回合必然多写一条 "✓ N rounds · …" 总结条，用它判「是否另起回合」
+        # 既准确又不受重绘影响。
+        summaries = buf2.count("rounds · ")
+        check("排队消息并入本回合、不另起新回合（回合总结条只一条）",
+              summaries == 1 and "FINAL-DONE" in buf2,
+              f"(FINAL-DONE {buf2.count('FINAL-DONE')} 次 / 总结条 {summaries} 次)")
         check("不产生第二回合总结条（无 '1 round'）", "1 round" not in buf2,
               f"(buf尾部: {buf2[-300:]})")
         s.send_key(3)  # 空闲：一次退出

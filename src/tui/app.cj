@@ -324,7 +324,11 @@ public class TuiApp {
                 // 连发两条时先发的任务被后一条顶掉，实测丢任务。）
                 // 想夺回输入权：Esc（中断当前回合，队列消息作新回合立即发送）或 Ctrl+C 两级中断。
                 if (this.isAgentBusy() || this.queueLength() > 0) {
-                    this.enqueueInput(finalLine)
+                    let seq = this.enqueueInput(finalLine)
+                    // 回显一行确认（只进输出区，不进会话存档）：收下第几条 + 怎么立刻发。
+                    // 原先刻意不加提示，怕"处理后残留误导"——但连发时没有任何确认，
+                    // 用户会以为没发出去；文案写明"已入队"，不承诺"即将发送"。
+                    this.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + queueNoticeText(seq) + Ansi.reset())
                     if (this.isAgentBusy()) {
                         this.safeLog("info", "Enter: 忙时入队（不打断，回合边界自动处理）")
                     }
@@ -2134,7 +2138,8 @@ public class TuiApp {
         }
         line += Ansi.fg(Ansi.THEME_MUTED) + ")" + Ansi.reset()
         if (qLen > 0) {
-            line += Ansi.fg(Ansi.THEME_ACCENT) + " · 📥 排队 ${qLen} 条待并入" + Ansi.reset()
+            line += Ansi.fg(Ansi.THEME_MUTED) + " " + Ansi.reset() +
+                Ansi.fg(Ansi.THEME_ACCENT) + queueStatusText(qLen) + Ansi.reset()
         }
         // S3 修实测"干活时主界面啥也没有"：状态行追加聚合心跳
         //（如 3 agents (2/5 4/5 1/5) ↑3.2k  2 bg (2 running)）；每秒 tick 刷新，零刷屏成本
@@ -2271,4 +2276,23 @@ public func watchdogAction(idleSecs: Int64, timeoutSecs: Int64, toolsInFlight: I
         return WatchdogAction.ToolBusy
     }
     return WatchdogAction.InterruptModel
+}
+
+// ── 忙时入队提示（2026-11-06，第八十七轮）────────────────────────────
+// 用户连发 9 条同一句话才意识到"发了没反应"：忙碌时提交只入队、不打断当前
+// 回合，而排队消息要等回合边界才注入——一次卡住 115 秒的请求期间，屏幕上
+// 只有状态行里一行小字，看不出到底收下了几条、也不知道能立刻发送。提示必须
+// 同时答两件事：**收下了第几条**、**想立刻发送按什么**。
+
+/** 入队后回显到输出区的一行（纯文本；色彩由调用方加） */
+public func queueNoticeText(seq: Int64): String {
+    "已入队 第 ${seq} 条  ·  Esc 立即中断并发送"
+}
+
+/** 状态行里的排队片段（纯文本；0 条返回空串 = 不显示） */
+public func queueStatusText(qLen: Int64): String {
+    if (qLen <= 0) {
+        return ""
+    }
+    return "· 📥 排队 ${qLen} 条待并入  Esc 立即发送"
 }
