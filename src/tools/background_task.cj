@@ -237,6 +237,24 @@ func launchBgProcess(shellPath: String, wrapped: String, logFile: File): SubProc
         stdIn: Discard, stdOut: FromFile(logFile), stdErr: FromFile(logFile))
 }
 
+/**
+ * 启动前清掉同名任务遗留的 rc / 日志文件。
+ *
+ * ID 每进程从 bg-1 重排、日志目录却跨进程共享，两个文件都会"跨生命周期撞名"：
+ * - rc 残留 → harvest() 读到旧退出码 → 误判终态 → 无超时的 wait() 卡到进程结束；
+ * - 日志残留 → Append 让本次结果里混进上一轮任务的输出。
+ * 删除失败不致命（最坏退回旧行为），不该让整个启动失败。
+ */
+func clearStaleBgFiles(rcPath: String, logPath: String): Unit {
+    for (p in [rcPath, logPath]) {
+        try {
+            removeIfExists(p)
+        } catch (e: Exception) {
+            ()
+        }
+    }
+}
+
 @When[os == "Windows"]
 func launchBgProcess(shellPath: String, wrapped: String, logFile: File): SubProcess {
     return launch(shellPath, ["-c", wrapped],
@@ -931,6 +949,12 @@ public class BackgroundTaskRegistry {
         let activeLabel = if (label.size > 0) { label } else { firstLineOf(command) }
         let logPath = "${this.logDir}/${id}.log"
         let rcPath = "${this.logDir}/${id}.rc"
+        // 任务 ID 每进程从 bg-1 重排，日志目录却跨进程共享：上一轮遗留的 rc
+        // 必须先清掉。否则 harvest() 读到旧退出码 → 立刻判"已结束" → 走无超时
+        // 的 p.wait() 回收 → 阻塞到真实进程结束，整个 TUI 一起卡住
+        // （v1.6.11 实测：6 个 sleep 30 让回合拖成 30s，按键积压满屏，
+        // 下一次模型请求也被推迟 30s）。日志同理清掉，免得结果混进上一轮输出。
+        clearStaleBgFiles(rcPath, logPath)
         let effectiveTimeout = if (timeoutMs > 0) { timeoutMs } else { this.cfg.timeoutMs }
         let task = BackgroundTask(id, "bash", activeLabel, command, cwd, logPath, rcPath,
             effectiveTimeout, this.cfg.outputMaxBytes())
