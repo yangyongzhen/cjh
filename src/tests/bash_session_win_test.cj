@@ -43,15 +43,18 @@ public class BashSessionWindowsTest {
     }
 
     /**
-     * 收尾靠「会话自报 $$ → 按进程组杀」：文件名必须每个会话唯一，
-     * 否则两个会话共用一份 pid 文件，收尾会杀掉别人的进程组。
+     * 收尾靠「会话自报 $$ → 按进程组杀」：文件名 = 启动器 pid + 熵，必须每个会话唯一。
+     * 只带 pid 的旧名字在 pid 被复用时会撞上历史文件，`cat` 读到旧组号 → kill 到无关进程组。
      */
     @TestCase
     public func testSessionPgFileUniquePerLauncher(): Unit {
-        let a = sessionPgFile(1234)
-        let b = sessionPgFile(5678)
-        @Assert(a == "/tmp/cjh-sess-1234.pid", true)
-        @Assert(b == "/tmp/cjh-sess-5678.pid", true)
+        let a = sessionPgFile(1234, 1)
+        let b = sessionPgFile(5678, 2)
+        let c = sessionPgFile(1234, 3)
+        @Assert(a == "/tmp/cjh-sess-1234-1.pid", true)
+        @Assert(b == "/tmp/cjh-sess-5678-2.pid", true)
         @Assert(a == b, false)
+        // 同一个启动器 pid、不同熵也必须不同（挡住 pid 复用后的撞名）
+        @Assert(a == c, false)
     }
 }

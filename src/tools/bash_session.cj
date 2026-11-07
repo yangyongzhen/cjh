@@ -33,10 +33,16 @@ public class BashSession {
     private var reapedCount: Int64 = 0
     // 平台感知 shell 解析（v1.3.17）：Windows 优先 Git Bash，Linux 默认 /bin/bash
     private let shell: ShellProvider = ShellProvider()
-    // 会话 bash 自己写的 `$$` 落在这个临时文件里（见 ensureStarted / killProcessTree）。
-    // Windows 上 SubProcess.pid 只是 Git 的 bash.exe 启动器，真正干活的 bash 已被
-    // re-parent 成 PPID=1，taskkill /T 与两种父链都够不着它——只有进程组号可靠。
+    // 会话 bash 自己写的 `$$` 落在这个临时文件里（见 ensureStarted / cleanupPgFile）。
+    // **仅 Windows 需要**：那里 SubProcess.pid 只是 Git 的 bash.exe 启动器，真正干活的
+    // bash 已被 re-parent 成 PPID=1，taskkill /T 与两种父链都够不着它——只有进程组号可靠。
+    // POSIX 侧由 setsid 保证 pid == pgid（见 launchCommand），直接拿 p.pid 组杀、不落文件：
+    // 少一次文件 IO、少一个失败点，也没有「echo $$ 还没执行就收尾 → 读到陈旧 pgid」的窗口。
     private var pgFile: String = ""
+    // pid 文件名的熵：进程启动毫秒 + 静态计数器。文件名主键是启动器 pid（跨会话唯一），
+    // 熵只用来挡住「pid 被复用、撞上历史同名文件」的极小概率。
+    private static let pgEpoch: DateTime = DateTime.now()
+    private static var pgSerial: Int64 = 0
 
     public init() {}
 
@@ -153,6 +159,9 @@ public class BashSession {
                 Int64(-1)
             }
             this.proc = None  // 进程已死，下次重建
+            // 会话自己退出了（命令带 `exit N` / bash 崩溃）：pid 文件里的组号已无价值。
+            // 旧实现只在 killProcessTree 里 rm，这条 EOF 路径漏掉 → /tmp 越积越多。
+            this.cleanupPgFile()
             return (exitCode, output)
         } catch (e: Exception) {
             this.killSession()
@@ -181,6 +190,8 @@ public class BashSession {
                     return p
                 }
                 this.proc = None
+                // 旧会话已经死了：先收掉它的 pid 文件，别让新会话读到上一次的旧组号
+                this.cleanupPgFile()
             case None => ()
         }
         // 持久 shell：stdin 管道写命令，stdout/stderr 管道（读线程消费），
@@ -190,17 +201,18 @@ public class BashSession {
         let (launchPath, launchArgs) = launchCommand(this.shell.shellPath)
         let p = launch(launchPath, launchArgs, stdIn: Pipe, stdOut: Pipe, stdErr: Pipe)
         this.proc = Some(p)
-        // 让会话 bash 把自己的 MSYS pid 写进临时文件：它的 PGID 等于自己，收尾时
-        // `kill -9 -<pgid>` 才能连正在跑的子命令一起收掉（父链在 Windows 上是断的）。
-        // 文件名带启动器 pid 保证每个会话一份；写不进去就留空，收尾自动退化。
-        this.pgFile = if (this.shell.isBash) {
-            sessionPgFile(p.pid)
+        // 让会话 bash 把自己的 MSYS pid 写进临时文件（**仅 Windows**，见 pgFile 字段注释）：
+        // 那里 PGID 等于它自己，收尾 `kill -9 -<pgid>` 才能连正在跑的子命令一起收掉。
+        // 文件名 = 启动器 pid + 熵；写之前先 rm 同名文件——`echo $$` 是异步排队的，
+        // 若收尾抢在它前面执行，`cat` 会读到上一次运行留下的旧组号（pid 复用场景）。
+        this.pgFile = if (this.shell.isBash && sessionNeedsPgFile()) {
+            sessionPgFile(p.pid, BashSession.nextPgNonce())
         } else {
             ""
         }
         if (this.pgFile.size > 0) {
             try {
-                p.stdInPipe.write("echo $$ > '${this.pgFile}' 2>/dev/null\n".toArray())
+                p.stdInPipe.write("rm -f '${this.pgFile}'; echo $$ > '${this.pgFile}' 2>/dev/null\n".toArray())
                 p.stdInPipe.flush()
             } catch (e: Exception) {
                 this.pgFile = ""
@@ -237,6 +249,37 @@ public class BashSession {
                 this.proc = None
             case None => ()
         }
+        // 清理放在 match **外面**：proc 已是 None（EOF 退出的会话再来 close / 重复 close）
+        // 时同样要收掉临时文件。旧实现把 `rm -f` 埋在 killProcessTree 里，None 分支直接跳过。
+        this.cleanupPgFile()
+    }
+
+    /**
+     * 删掉本会话的 pid 文件（POSIX 没有文件，空转）。
+     *
+     * 收尾（killSession）与 EOF 退出（命令自己 exit / 会话崩溃）都要走这里。旧实现只在
+     * killProcessTree 的收尾命令里 `rm -f`，于是「进程被结束但没走 killSession」的路径
+     * 一律留垃圾：实测本机 /tmp 积了 8 个 cjh-sess-*.pid。
+     */
+    private func cleanupPgFile(): Unit {
+        let f = this.pgFile
+        this.pgFile = ""
+        if (f.size == 0) {
+            return
+        }
+        try {
+            if (this.shell.isBash) {
+                let _ = executeWithOutput(this.shell.shellPath, ["-c", "rm -f '${f}'; exit 0"])
+            }
+        } catch (e: Exception) {
+            ()
+        }
+    }
+
+    /** 下一次 pid 文件名用的熵（同一次运行内单调，且带启动毫秒） */
+    private static func nextPgNonce(): Int64 {
+        BashSession.pgSerial += 1
+        return (DateTime.now() - BashSession.pgEpoch).toMilliseconds() * 1000 + BashSession.pgSerial
     }
 
     /**
@@ -366,9 +409,15 @@ public class BashSession {
  *   ③ 按 Windows 原生父链递归：中间那层也已消失（实测 `find.exe` 的 ppid 查出来是 GONE）。
  *
  * 唯一可靠的线索是 **worker bash 的 PGID 等于它自己的 MSYS pid**，`find`/`head` 都在这个组里。
- * 所以会话启动时让 bash 自己把 `$$` 写进临时文件（见 `ensureStarted`），
+ * 所以 Windows 侧会话启动时让 bash 自己把 `$$` 写进临时文件（见 `ensureStarted`），
  * 收尾时 `kill -9 -$(cat <pidfile>)` 整组收掉——实测 `find-alive=0`，比 /T 干净。
  * `taskkill /T` 留作兜底：非 bash 模式或临时文件没写上时至少收掉启动器本体。
+ *
+ * POSIX 侧不需要这个文件：setsid 之后会话 shell 本身就是进程组组长，组号 == `p.pid`，
+ * 直接 `kill -9 -<pid>` 即可（见 POSIX 分支）。
+ *
+ * 删除临时文件**不在这里做**：统一由 `BashSession.cleanupPgFile` 收口——EOF 退出、
+ * `proc` 已是 None、重复 close 这些不走 killProcessTree 的路径也要清，否则只增不减。
  *
  * 失败一律吞掉：清理是尽力而为，绝不能让收尾路径自己抛异常把工具调用搞崩。
  */
@@ -380,8 +429,10 @@ func killProcessTree(pid: Int64, shell: ShellProvider, pgFile: String): Unit {
     try {
         if (shell.isBash && pgFile.size > 0) {
             // `-$(cat …)` 展开成 `-<pgid>`：负号表示"发给整个进程组"
+            // 不在这里 `rm -f`：临时文件统一由 BashSession.cleanupPgFile 收口，
+            // 否则 EOF 退出、proc 已是 None 的路径漏清，/tmp 里的文件只增不减。
             let _ = executeWithOutput(shell.shellPath,
-                ["-c", "kill -9 -$(cat '${pgFile}' 2>/dev/null) 2>/dev/null; rm -f '${pgFile}'; exit 0"])
+                ["-c", "kill -9 -$(cat '${pgFile}' 2>/dev/null) 2>/dev/null; exit 0"])
         }
     } catch (e: Exception) {
         ()
@@ -404,14 +455,14 @@ func killProcessTree(pid: Int64, shell: ShellProvider, pgFile: String): Unit {
     } else {
         "/bin/bash"
     }
-    // 有 pid 文件就用会话自己的 pid（= 进程组号），没有就退回本体
-    let group = if (pgFile.size > 0) {
-        "$(cat '${pgFile}' 2>/dev/null)"
-    } else {
-        "${pid}"
-    }
+    // POSIX 不再依赖 pid 文件：setsid（见 launchCommand）让会话 shell 成为进程组组长，
+    // 组号就等于它的 pid，`kill -9 -<pid>` 直接命中整组。少一次文件读取，也就少了
+    // 「echo $$ 还没执行就到收尾 → 读到上一个会话的旧 pgid → 误杀无关进程组」的窗口。
+    // 参数留着只为与 Windows 版同签名。无 setsid 的环境里 pid 不是组长，kill 报 ESRCH
+    // （被 2>/dev/null 吞掉），收尾退回 killSession 里的 terminate —— 不误伤，与修复前一致。
+    let _ = pgFile
     try {
-        let _ = executeWithOutput(bin, ["-c", "kill -9 -${group} 2>/dev/null; rm -f '${pgFile}'; exit 0"])
+        let _ = executeWithOutput(bin, ["-c", "kill -9 -${pid} 2>/dev/null; exit 0"])
     } catch (e: Exception) {
         ()
     }
@@ -428,7 +479,7 @@ func killProcessTree(pid: Int64, shell: ShellProvider, pgFile: String): Unit {
  *
  * 用 setsid 包一层：它 exec 会话 shell，pid 不变，但新会话里该进程是组长
  * （实测 `setsid bash -c …` → `pid=1078932 pgid=1078932`），
- * 收尾的 `kill -9 -$(cat <pgFile>)` 才真正命中整组。
+ * 收尾的 `kill -9 -<pid>` 才真正命中整组（POSIX 不需要 pid 文件，见 killProcessTree）。
  *
  * 系统没有 setsid 时退回原样启动：组杀失效但不误伤，行为等同修复前。
  */
@@ -450,9 +501,27 @@ func launchCommand(shellPath: String): (String, Array<String>) {
     return (shellPath, Array<String>(0, repeat: ""))
 }
 
-/** 会话进程组 pid 文件的路径（每个会话一份：名字带启动器 pid 保证不撞） */
-public func sessionPgFile(launcherPid: Int64): String {
-    return "/tmp/cjh-sess-${launcherPid}.pid"
+/**
+ * 会话进程组 pid 文件的路径（**仅 Windows 使用**，POSIX 不落文件）。
+ *
+ * 名字 = 启动器 pid + 熵。pid 保证跨会话不撞；熵挡住「pid 被复用、撞上历史同名文件」——
+ * 旧名字只有 pid，一旦复用就可能读到上一个会话的旧 pgid，`kill -9 -<旧组>` 会打到
+ * 无关进程组上。目录仍用 /tmp：MSYS 的 /tmp 就是当前用户的临时目录（%TEMP%），本身
+ * 私有；再套一层子目录只多一个 mkdir 失败点，失败即等于没有文件、组杀退化。
+ */
+public func sessionPgFile(launcherPid: Int64, nonce: Int64): String {
+    return "/tmp/cjh-sess-${launcherPid}-${nonce}.pid"
+}
+
+/** 是否需要「会话自报 $$ 到文件」这套机制：只有 Windows 需要（见 pgFile 字段注释） */
+@When[os == "Windows"]
+func sessionNeedsPgFile(): Bool {
+    return true
+}
+
+@When[os != "Windows"]
+func sessionNeedsPgFile(): Bool {
+    return false
 }
 
 /**
