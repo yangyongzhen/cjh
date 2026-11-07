@@ -59,7 +59,9 @@ else
     say "下载 $FILE …"
     curl -fsSL -o "$TMP/cjh.zip" "$BASE/$FILE/download"
     unzip -o -q "$TMP/cjh.zip" -d "$TMP/unzipped"
-    mv "$TMP/unzipped/cjh-$CJH_VERSION-windows-x64.exe" "$PREFIX/cjh.exe"
+    exe="$(ls "$TMP/unzipped/"*.exe 2>/dev/null | head -1)"
+    [ -n "$exe" ] || die "安装包内未找到 exe"
+    mv "$exe" "$PREFIX/cjh.exe"
     # 自包含版的 4 枚 DLL 一并带入
     cp "$TMP/unzipped/"*.dll "$PREFIX/" 2>/dev/null || true
 fi
