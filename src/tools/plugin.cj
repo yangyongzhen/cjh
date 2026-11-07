@@ -116,14 +116,14 @@ public class PluginTool <: CjhTool {
  */
 public class PluginManager {
     private let pluginsDir: String
-    private var hooks: HashMap<String, String>   // 事件名 → 脚本绝对路径
+    private var hooks: HashMap<String, ArrayList<String>>   // 事件名 → 脚本绝对路径（可多个，按注册顺序链式执行）
     private var loadedPlugins: ArrayList<String> // 已加载的插件名列表
     // V3 Step 3：可信发布者列表（空=开放模式，非空=严格模式）
     private var trustedPublishers: ArrayList<String>
 
     public init(pluginsDir: String) {
         this.pluginsDir = pluginsDir
-        this.hooks = HashMap<String, String>()
+        this.hooks = HashMap<String, ArrayList<String>>()
         this.loadedPlugins = ArrayList<String>()
         this.trustedPublishers = ArrayList<String>()
     }
@@ -353,7 +353,10 @@ public class PluginManager {
                                         let scriptRel = scriptVal.asString().getValue()
                                         let scriptPath = this.resolveScript(pluginDir, scriptRel)
                                         if (scriptPath.size > 0 && exists(scriptPath)) {
-                                            this.hooks.add(eventName, scriptPath)
+                                            if (!this.hooks.contains(eventName)) {
+                                                this.hooks.add(eventName, ArrayList<String>())
+                                            }
+                                            this.hooks.get(eventName).getOrThrow().add(scriptPath)
                                             Log.debug("[PLUGIN] 注册钩子: ${eventName} → ${scriptPath}")
                                         }
                                     case _ => ()
@@ -467,28 +470,53 @@ public class PluginManager {
         if (!this.hooks.contains(event)) {
             return ""
         }
-        let scriptPath = this.hooks.get(event).getOrThrow()
-        if (!exists(scriptPath)) {
-            return ""
-        }
-        try {
-            // 事件数据通过环境变量 CJH_HOOK_DATA 传递（JSON 字符串）
-            let hookJson = data.toJsonString()
-            var env = HashMap<String, String>()
-            env.add("CJH_HOOK_DATA", hookJson)
-
-            var argv = Array<String>(2, repeat: "")
-            argv[0] = scriptPath
-            let (code, stdoutBytes, _) = executeWithOutput("bash", argv,
-                environment: env)
-            if (code != 0) {
-                Log.warn("[PLUGIN] 钩子 ${event} 失败 (exit ${code})，用原内容")
-                return ""
+        let scripts = this.hooks.get(event).getOrThrow()
+        var payload = data
+        var lastOut = ""
+        for (scriptPath in scripts) {
+            if (!exists(scriptPath)) {
+                continue
             }
-            return safeFromUtf8(stdoutBytes)
-        } catch (e: Exception) {
-            Log.warn("[PLUGIN] 钩子 ${event} 异常: ${e}")
-            return ""
+            try {
+                // 事件数据通过环境变量 CJH_HOOK_DATA 传递（JSON 字符串）
+                var env = HashMap<String, String>()
+                env.add("CJH_HOOK_DATA", payload.toJsonString())
+
+                var argv = Array<String>(2, repeat: "")
+                argv[0] = scriptPath
+                let (code, stdoutBytes, _) = executeWithOutput("bash", argv,
+                    environment: env)
+                if (code != 0) {
+                    Log.warn("[PLUGIN] 钩子 ${event} 失败 (exit ${code})，用原内容")
+                    continue
+                }
+                let out = safeFromUtf8(stdoutBytes)
+                if (out.size == 0) {
+                    continue
+                }
+                lastOut = out
+                // 链式：上一个钩子的输出作为下一个钩子的 content，插件之间可叠加改写
+                payload = this.withContent(payload, out)
+            } catch (e: Exception) {
+                Log.warn("[PLUGIN] 钩子 ${event} 异常: ${e}")
+            }
+        }
+        return lastOut
+    }
+
+    /**
+     * 复制事件数据并只替换 content 字段（不改动调用方对象）
+     */
+    private func withContent(data: JsonValue, content: String): JsonValue {
+        match (data.kind()) {
+            case JsonKind.JsObject =>
+                var copy = JsonObject()
+                for ((k, v) in data.asObject().getFields()) {
+                    copy.put(k, v)
+                }
+                copy.put("content", JsonString(content))
+                return copy
+            case _ => return data
         }
     }
 
