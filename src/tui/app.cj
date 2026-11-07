@@ -292,16 +292,24 @@ public class TuiApp {
             }
             // 下拉框可见时：Enter 确认当前选中项（否则提交原始输入）
             var finalLine = line
+            var pickedFromList = false
             if (this.picker.isVisible()) {
                 let cur = this.picker.current()
                 if (cur.size > 0) {
                     finalLine = cur
+                    pickedFromList = (cur != line)
                 }
                 this.safeLog("debug", "enter+pick: 选中项='${cur}' -> inputLine='${finalLine}'")
             }
             this.inputBox.clear()
             this.picker.hide()
             if (finalLine.size > 0) {
+                // 回显与历史跟随选中项：Enter 时输入框记下的是原文（如 "/"），
+                // 真正执行的是选中项（如 "/model"）——不修正就会"无论选哪条命令，
+                // 屏幕上都只看到默认的 /"
+                if (pickedFromList) {
+                    this.inputBox.overrideLastSubmission(line, finalLine)
+                }
                 this.safeLog("info", "submit: '${finalLine}'")
                 this.appendOutput("")  // 空行：与上一轮回复分隔
                 // 回显：提交的文本原样（多行内容按输出区自动软换行显示），
@@ -967,6 +975,8 @@ public class TuiApp {
     // 思考历史观测（单测用）：已保留轮数 / 末轮是否仍在思考
     public func testThinkingRounds(): Int64 { return this.outputView.thinkingRounds() }
     public func testThinkingActive(): Bool { return this.outputView.thinkingActive() }
+    // 输出区全文本观测（单测用）：断言提交回显 / 命令输出
+    public func testOutputText(): String { return this.outputView.content() }
 
     /**
      * 设置 Agent 执行状态（方案 B：执行期间输入可编辑，提交时入队 + 提示）

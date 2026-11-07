@@ -294,6 +294,22 @@ public class TuiAppKeyTest {
     }
 
     @TestCase
+    public func testPickerSubmitEchoesPickedCommand(): Unit {
+        // 实机反馈：输入 "/" 后 ↓ 选中 /new 再 Enter，输出区回显却只有 "❯ /"
+        // （输入框原文）——屏幕上"无论选哪条命令都只看到默认的 /"。
+        // 回显必须跟随真正提交的选中项。
+        let (app, submitted) = this.buildApp()
+        app.handleKey(this.keyChar(47))               // "/"
+        app.handleKey(KeyEvent(27, TermEsc.DOWN))     // ↓ → /new
+        app.handleKey(KeyEvent(13))                   // Enter
+        @Assert(submitted.size, 1)
+        @Assert(submitted[0], "/new")
+        // 输出区存的是带 ANSI 的原文（图标与文本之间夹着色码），按内容断言
+        let out = app.testOutputText()
+        @Assert(out.contains("/new"), true)
+    }
+
+    @TestCase
     public func testViewSwitchToHelp(): Unit {
         let (app, _) = this.buildApp()
         // Tab 切换视图（对话→帮助）；TabBar activeIndex 从 0 到 1（ch=9 即 Tab）
