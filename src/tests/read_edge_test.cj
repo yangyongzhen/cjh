@@ -110,12 +110,12 @@ public class ReadToolEdgeTest {
         let path = this.dir + "/test.db"
         writeTextFile(path, "placeholder")
         let result = this.runRead(path, 0, 0)
-        // 两种合法结果：sqlite3 存在 → 表结构输出；不存在 → 提示安装
-        let hasSqlite = sqlite3Available()
-        if (hasSqlite) {
-            @Assert(result.isError, false)
-        } else {
-            @Assert(result.isError, true)
+        // 非数据库内容必须明确报错（有 sqlite3 时是 sqlite3 的错误输出，无 sqlite3 时是
+        // 「请安装 sqlite3」提示），不能静默返回占位内容。
+        // 原实现在 sqlite3 可用分支断言 isError == false，与其意图（不静默失败）相反；
+        // 本地无 sqlite3 CLI 故该分支从未被覆盖，直到在有 sqlite3 的 CI 上才暴露。
+        @Assert(result.isError, true)
+        if (!sqlite3Available()) {
             @Assert(result.content.contains("sqlite3"), true)
         }
     }

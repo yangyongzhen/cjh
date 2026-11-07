@@ -2,6 +2,7 @@ package cjh.tests
 
 import std.collection.*
 import std.fs.*
+import std.process.*
 import stdx.encoding.json.*
 import cjh.tools.*
 
@@ -40,6 +41,20 @@ public class ExamplePluginsTest {
             }
         }
         return "example/plugins"
+    }
+
+    /// 示例钩子用 jq 解析事件 JSON；缺 jq 时 hook 输出退化成 `[tool: ]`，
+    /// 属环境缺失而非回归，跳过（CI 已在 ci.yml 里 apt 安装 jq）。
+    private func jqAvailable(): Bool {
+        var args = Array<String>(2, repeat: "")
+        args[0] = "-lc"
+        args[1] = "command -v jq"
+        try {
+            let (code, _, _) = executeWithOutput("bash", args)
+            return code == 0
+        } catch (e: Exception) {
+            return false
+        }
     }
 
     @TestCase
