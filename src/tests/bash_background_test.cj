@@ -232,6 +232,38 @@ public class BashBackgroundTest {
         }
     }
 
+    /**
+     * 残留 rc 不能让新任务被误判终态（v1.6.11 实测事故的回归）。
+     *
+     * 任务 ID 每进程从 bg-1 重排、日志目录却跨进程共享：上一轮遗留的 bg-1.rc
+     * 一旦被 harvest() 读到，新任务立刻被定成终态并走无超时的 p.wait()，
+     * 阻塞到真实进程结束——实测 6 个 sleep 30 的后台任务把 TUI 卡死 30s，
+     * 按键积压满屏、下一次模型请求也推迟 30s。
+     */
+    @TestCase
+    public func testStaleRcFileDoesNotFakeTerminal(): Unit {
+        let dir = testTempDir("bg_stale_rc")
+        // 模拟上一轮遗留：bg-1.rc 写着成功退出码，日志里留着旧输出
+        writeTextFile("${dir}/bg-1.rc", "0\n")
+        writeTextFile("${dir}/bg-1.log", "上一轮残留输出\n")
+        let reg = BackgroundTaskRegistry(BgTaskConfig(4, 600000, 64, 6000), dir)
+        let t0 = DateTime.now()
+        let r = reg.start("sleep 5", "stale-rc", "", "/bin/bash", true, 0, 200)
+        let elapsed = (DateTime.now() - t0).toMilliseconds()
+        try {
+            @Assert(r.ok, true)
+            @Assert(r.taskId, "bg-1")
+            // 修复前：读到旧 rc → "已在启动窗口内结束"，且 start 阻塞到 sleep 5 结束
+            @Assert(r.text.contains("已启动"), true)
+            @Assert(r.text.contains("已在启动窗口内结束"), false)
+            // 残留日志不得混进本次结果
+            @Assert(r.text.contains("上一轮残留输出"), false)
+            @Assert(elapsed < 3000, true)
+        } finally {
+            let _ = reg.kill(r.taskId)
+        }
+    }
+
     /** 抢跑窗口：短命令一次调用就拿到结果，省掉"start 完再 poll"的一轮往返 */
     @TestCase
     public func testEagerWindowReturnsShortOutput(): Unit {
