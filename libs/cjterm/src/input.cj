@@ -266,6 +266,31 @@ public class InputBox <: Component {
     }
 
     /**
+     * 修正本次提交的记录（上层选中候选 / 重写文本后调用）。
+     *
+     * Enter 时输入框记下的是**框里原文**（如 "/"），而真正执行的是上层重写后的
+     * 文本（如 "/" 下拉选中 → "/model"）。不修正的话输出区回显与 ↑ 历史都停在
+     * 原文 "/" —— 屏幕上"无论选哪条命令都只看到默认的 /"，历史里还多出一条
+     * 从未执行过的裸 "/"。
+     *
+     * @param from Enter 时的原文（用于判断它是否已被 addToHistory 记下）
+     * @param to   真正提交/执行的文本
+     */
+    public func overrideLastSubmission(from: String, to: String): Unit {
+        if (to.size == 0 || from == to) {
+            return
+        }
+        this.lastEcho = to
+        if (this.history.size > 0 && this.history[this.history.size - 1] == from) {
+            // 原文进了历史：就地改写，别留下一条从未执行的文本
+            this.history[this.history.size - 1] = to
+        } else {
+            // 原文没进历史（如裸 "/" 被 addToHistory 跳过）：按真正提交的内容补记
+            this.addToHistory(to)
+        }
+    }
+
+    /**
      * 粘贴追加到光标处：真实换行保留（CRLF→LF 归一化）。
      * 折叠判定（对齐 atomcode PASTE_FOLD_LINES/PASTE_FOLD_CHARS）：
      * ≥5 行 或 ≥400 字符（码点）→ 折叠为原子 marker——多行用 "[Paste #N, +M lines]"、
