@@ -21,28 +21,66 @@ jobs:
           version: 1.2.0
           components: stdx
 
-      - name: Locate stdx root
+      - name: Locate stdx roots
         id: stdx
         run: |
-          set -e
-          ROOT="${CANGJIE_STDX_PATH:-}"
-          if [ -z "$ROOT" ] || [ ! -d "$ROOT" ]; then
-            # setup-cangjie may install stdx under the toolchain or ~/.cangjie
-            ROOT=$(find "$HOME" /opt /usr/local "$CANGJIE_HOME" -maxdepth 7 -type d -name "cangjie-stdx-linux-x64-*" 2>/dev/null | head -1 || true)
+          set -euo pipefail
+          # setup-cangjie@v3 exports CANGJIE_STDX_PATH_STATIC / _DYNAMIC (there is no
+          # CANGJIE_STDX_PATH) and lays stdx out as
+          #   <setup>/stdx/sts-<ver>/{static,dynamic}
+          # so the old `-name "cangjie-stdx-linux-x64-*"` search never matched.
+          pick() {
+            local base="$1" cand
+            [ -n "$base" ] && [ -d "$base" ] || return 1
+            for cand in "$base/stdx" "$base" \
+                        $(find "$base" -maxdepth 3 -type d -name stdx 2>/dev/null | head -5); do
+              [ -d "$cand" ] || continue
+              if ls "$cand"/*.a "$cand"/*.so > /dev/null 2>&1; then printf '%s' "$cand"; return 0; fi
+            done
+            return 1
+          }
+          STATIC_BASE="${CANGJIE_STDX_PATH_STATIC:-}"
+          DYNAMIC_BASE="${CANGJIE_STDX_PATH_DYNAMIC:-}"
+          [ -n "$STATIC_BASE" ] || STATIC_BASE=$(find "$HOME" /opt -maxdepth 8 -type d -name static -path '*stdx*' 2>/dev/null | head -1 || true)
+          [ -n "$DYNAMIC_BASE" ] || DYNAMIC_BASE=$(find "$HOME" /opt -maxdepth 8 -type d -name dynamic -path '*stdx*' 2>/dev/null | head -1 || true)
+          echo "static base : ${STATIC_BASE:-<none>}"
+          echo "dynamic base: ${DYNAMIC_BASE:-<none>}"
+          STDX_STATIC=$(pick "$STATIC_BASE" || true)
+          STDX_DYNAMIC=$(pick "$DYNAMIC_BASE" || true)
+          echo "STDX_STATIC : ${STDX_STATIC:-<not found>}"
+          echo "STDX_DYNAMIC: ${STDX_DYNAMIC:-<not found>}"
+          if [ -z "$STDX_STATIC" ]; then
+            echo "::error::stdx static libraries not found"
+            ls -R "$STATIC_BASE" 2>/dev/null | head -40
+            exit 1
           fi
-          echo "stdx root: ${ROOT:-<not found>}"
-          [ -n "$ROOT" ] || { echo "::error::stdx not found on runner"; exit 1; }
-          echo "STDX_ROOT=$ROOT" >> "$GITHUB_ENV"
+          if [ -z "$STDX_DYNAMIC" ]; then
+            echo "::error::stdx dynamic libraries not found"
+            ls -R "$DYNAMIC_BASE" 2>/dev/null | head -40
+            exit 1
+          fi
+          {
+            echo "STDX_STATIC=$STDX_STATIC"
+            echo "STDX_DYNAMIC=$STDX_DYNAMIC"
+          } >> "$GITHUB_ENV"
 
       - name: Rewrite cjpm paths for this runner
         run: |
-          set -e
+          set -euo pipefail
           SDK="${CANGJIE_HOME:-$(dirname "$(dirname "$(command -v cjc)")")}"
           echo "SDK root: $SDK"
-          find . -name cjpm.toml -not -path "./target/*" | while read -r f; do
-            sed -i "s|/root/.cangjie/stdx/cangjie-stdx-linux-x64-[0-9.]*/|$STDX_ROOT/|g" "$f"
-            sed -i "s|/opt/cangjie/cangjie[^/\" ]*/|$SDK/|g" "$f"
+          find . -name cjpm.toml -not -path "./target/*" -not -path "*/target/*" | while read -r f; do
+            sed -i -E "s|/root/.cangjie/stdx/cangjie-stdx-linux-x64-[0-9.]+/linux_x86_64_cjnative/static/stdx|$STDX_STATIC|g" "$f"
+            sed -i -E "s|/root/.cangjie/stdx/cangjie-stdx-linux-x64-[0-9.]+/dynamic/stdx|$STDX_DYNAMIC|g" "$f"
+            sed -i -E "s|/opt/cangjie/cangjie[^/\" ]*/|$SDK/|g" "$f"
           done
+          # Fail loudly instead of letting an unrewritten path surface as a link error later.
+          LEFT=$(grep -rn --include=cjpm.toml -e '/root/.cangjie/stdx' -e '/opt/cangjie/cangjie' . 2>/dev/null | grep -v '/target/' || true)
+          if [ -n "$LEFT" ]; then
+            echo "::error::hardcoded paths left after rewrite:"
+            echo "$LEFT" | head -20
+            exit 1
+          fi
 
       - name: Build (zero code warnings)
         run: |
