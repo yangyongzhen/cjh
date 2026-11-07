@@ -32,6 +32,10 @@ public class BashSession {
     private var reapedCount: Int64 = 0
     // 平台感知 shell 解析（v1.3.17）：Windows 优先 Git Bash，Linux 默认 /bin/bash
     private let shell: ShellProvider = ShellProvider()
+    // 会话 bash 自己写的 `$$` 落在这个临时文件里（见 ensureStarted / killProcessTree）。
+    // Windows 上 SubProcess.pid 只是 Git 的 bash.exe 启动器，真正干活的 bash 已被
+    // re-parent 成 PPID=1，taskkill /T 与两种父链都够不着它——只有进程组号可靠。
+    private var pgFile: String = ""
 
     public init() {}
 
@@ -183,12 +187,36 @@ public class BashSession {
         // shell 路径由 ShellProvider 按平台选择（Windows Git Bash / Linux /bin/bash）
         let p = launch(this.shell.shellPath, Array<String>(0, repeat: ""), stdIn: Pipe, stdOut: Pipe, stdErr: Pipe)
         this.proc = Some(p)
+        // 让会话 bash 把自己的 MSYS pid 写进临时文件：它的 PGID 等于自己，收尾时
+        // `kill -9 -<pgid>` 才能连正在跑的子命令一起收掉（父链在 Windows 上是断的）。
+        // 文件名带启动器 pid 保证每个会话一份；写不进去就留空，收尾自动退化。
+        this.pgFile = if (this.shell.isBash) {
+            sessionPgFile(p.pid)
+        } else {
+            ""
+        }
+        if (this.pgFile.size > 0) {
+            try {
+                p.stdInPipe.write("echo $$ > '${this.pgFile}' 2>/dev/null\n".toArray())
+                p.stdInPipe.flush()
+            } catch (e: Exception) {
+                this.pgFile = ""
+            }
+        }
         return p
     }
 
     private func killSession(): Unit {
         match (this.proc) {
             case Some(p) =>
+                // **先杀进程树，再 terminate 本体**（2026-11-07 实测的卡死根因）。
+                // 旧实现只 terminate 会话 bash，它正在跑的子命令（如 agent 自己写的
+                // `find / -maxdepth 6 …`）会落成孤儿：
+                //   ① 孤儿继续吃 CPU/磁盘——实测全盘扫描 644s 还在跑、累计 CPU 605s；
+                //   ② **孤儿继承了 stdout 管道的写端 ⇒ 管道永不 EOF ⇒ 下面的 p.wait 永远等不到**，
+                //      超时提示回不到模型，整轮 agent 就这么卡在一条工具调用里（用户看到「执行中 565s」）。
+                // 顺序不能反：先杀树（子孙随之消失、写端关闭），wait 才可能及时返回。
+                killProcessTree(p.pid, this.shell, this.pgFile)
                 try {
                     p.terminate(force: true)
                 } catch (e: Exception) {
@@ -316,6 +344,79 @@ public class BashSession {
         }
         return (code, content)
     }
+}
+
+/**
+ * 杀掉会话 bash **整个进程组**（会话本体 + 它正在跑的子命令及其子孙）。
+ *
+ * 为什么要连子孙一起杀（而不是只 terminate 会话本体）：
+ * 会话里跑的是 `{ <cmd> } 2>&1`，`<cmd>` 只要不是内建命令就是 bash 的**子进程**。
+ * 它继承了 stdout 管道的写端；只杀 bash 会把它落成孤儿，管道因此永不 EOF，
+ * 随后 `SubProcess.wait()` 就再也返回不了——超时提示回不到模型，整轮 agent 卡死
+ * （2026-11-07 灵渠实测：`find /` 全盘扫描把工具调用挂死 644s+，杀掉孤儿后 3s 内恢复）。
+ *
+ * Windows 上三条"想当然"的路**逐条实测都不通**（2026-11-07）：
+ *   ① `taskkill /T /F /PID <pid>`：只收掉 Git 的 `bash.exe` **启动器**，真正干活的
+ *      `/usr/bin/bash` 与 `find.exe` 照样活着（`terminate` 已报 pid 不存在，find 仍在）；
+ *   ② 按 MSYS PPID 递归：干活的 bash 被 re-parent 成 PPID=1，从启动器连不过去
+ *      （`ps -W` 实测：启动器 `4203880 0 0 9576` 与 worker `12279 1 12279 8940` 无父子关系）；
+ *   ③ 按 Windows 原生父链递归：中间那层也已消失（实测 `find.exe` 的 ppid 查出来是 GONE）。
+ *
+ * 唯一可靠的线索是 **worker bash 的 PGID 等于它自己的 MSYS pid**，`find`/`head` 都在这个组里。
+ * 所以会话启动时让 bash 自己把 `$$` 写进临时文件（见 `ensureStarted`），
+ * 收尾时 `kill -9 -$(cat <pidfile>)` 整组收掉——实测 `find-alive=0`，比 /T 干净。
+ * `taskkill /T` 留作兜底：非 bash 模式或临时文件没写上时至少收掉启动器本体。
+ *
+ * 失败一律吞掉：清理是尽力而为，绝不能让收尾路径自己抛异常把工具调用搞崩。
+ */
+@When[os == "Windows"]
+func killProcessTree(pid: Int64, shell: ShellProvider, pgFile: String): Unit {
+    if (pid <= 0) {
+        return
+    }
+    try {
+        if (shell.isBash && pgFile.size > 0) {
+            // `-$(cat …)` 展开成 `-<pgid>`：负号表示"发给整个进程组"
+            let _ = executeWithOutput(shell.shellPath,
+                ["-c", "kill -9 -$(cat '${pgFile}' 2>/dev/null) 2>/dev/null; rm -f '${pgFile}'; exit 0"])
+        }
+    } catch (e: Exception) {
+        ()
+    }
+    try {
+        let _ = executeWithOutput("taskkill", ["/T", "/F", "/PID", "${pid}"])
+    } catch (e: Exception) {
+        ()
+    }
+}
+
+/** 见 Windows 版说明（同上，POSIX 分支） */
+@When[os != "Windows"]
+func killProcessTree(pid: Int64, shell: ShellProvider, pgFile: String): Unit {
+    if (pid <= 0) {
+        return
+    }
+    let bin = if (shell.isBash) {
+        shell.shellPath
+    } else {
+        "/bin/bash"
+    }
+    // 有 pid 文件就用会话自己的 pid（= 进程组号），没有就退回本体
+    let group = if (pgFile.size > 0) {
+        "$(cat '${pgFile}' 2>/dev/null)"
+    } else {
+        "${pid}"
+    }
+    try {
+        let _ = executeWithOutput(bin, ["-c", "kill -9 -${group} 2>/dev/null; rm -f '${pgFile}'; exit 0"])
+    } catch (e: Exception) {
+        ()
+    }
+}
+
+/** 会话进程组 pid 文件的路径（每个会话一份：名字带启动器 pid 保证不撞） */
+public func sessionPgFile(launcherPid: Int64): String {
+    return "/tmp/cjh-sess-${launcherPid}.pid"
 }
 
 /**
