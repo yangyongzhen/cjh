@@ -96,10 +96,35 @@ public class ExamplePluginsTest {
         data.put("tool", JsonString("bash"))
         data.put("content", JsonString("hello world"))
         let rewritten = pm.fireHook("on_tool_result", data)
-        // 临时诊断：CI 上钩子输出与本地不一致，先把原始内容打出来再判定
-        println("HOOK_RAW_DEBUG len=${rewritten.size} text=[${rewritten}]")
-        // 精确比对：失败时直接显示钩子的真实输出（`[tool: ]`、空内容、多余换行一眼可见）
-        @Assert(rewritten, "[tool: bash]\nhello world")
+        // 同一事件可能挂多个插件钩子（log-pruner 也处理 on_tool_result，会补尾换行），
+        // 故只锁「横幅在开头 + 正文没丢」，不锁逐字符相等
+        @Assert(rewritten.startsWith("[tool: bash]"), true)
+        @Assert(rewritten.contains("hello world"), true)
+    }
+
+    @TestCase
+    public func testMultipleHooksChainOnSameEvent(): Unit {
+        // 示例插件里 log-pruner 与 tool-result-banner 都挂 on_tool_result。
+        // 曾用单值 map 存钩子，后加载的插件静默覆盖前一个，跑哪个取决于目录遍历顺序
+        // （本地绿、CI 红）。现在多钩子链式执行，两者都必须留下痕迹。
+        if (!this.jqAvailable()) {
+            return
+        }
+        let pluginsDir = this.repoRoot()
+        let pm = PluginManager(pluginsDir)
+        pm.loadAll(ToolRegistry(), ArrayList<String>(), false, ArrayList<String>())
+
+        // 超过 1000 字符才触发 log-pruner 的截断标记
+        var longText = StringBuilder()
+        for (_ in 0..1200) {
+            longText.append("x")
+        }
+        var data = JsonObject()
+        data.put("tool", JsonString("bash"))
+        data.put("content", JsonString(longText.toString()))
+        let rewritten = pm.fireHook("on_tool_result", data)
+        @Assert(rewritten.contains("[tool: bash]"), true)
+        @Assert(rewritten.contains("[log-pruner 截断"), true)
     }
 
     @TestCase
