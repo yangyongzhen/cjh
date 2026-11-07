@@ -96,6 +96,8 @@ public class ExamplePluginsTest {
         data.put("tool", JsonString("bash"))
         data.put("content", JsonString("hello world"))
         let rewritten = pm.fireHook("on_tool_result", data)
+        // 临时诊断：CI 上钩子输出与本地不一致，先把原始内容打出来再判定
+        println("HOOK_RAW_DEBUG len=${rewritten.size} text=[${rewritten}]")
         // 精确比对：失败时直接显示钩子的真实输出（`[tool: ]`、空内容、多余换行一眼可见）
         @Assert(rewritten, "[tool: bash]\nhello world")
     }
