@@ -79,6 +79,9 @@ public class ExamplePluginsTest {
 
     @TestCase
     public func testToolResultBannerHookRewrites(): Unit {
+        if (!this.jqAvailable()) {
+            return
+        }
         let pluginsDir = this.repoRoot()
         @Assert(exists(pluginsDir + "/tool-result-banner/plugin.json"), true)
 
@@ -93,9 +96,8 @@ public class ExamplePluginsTest {
         data.put("tool", JsonString("bash"))
         data.put("content", JsonString("hello world"))
         let rewritten = pm.fireHook("on_tool_result", data)
-        @Assert(rewritten.size > 0, true)
-        @Assert(rewritten.startsWith("[tool: bash]"), true)
-        @Assert(rewritten.contains("hello world"), true)
+        // 精确比对：失败时直接显示钩子的真实输出（`[tool: ]`、空内容、多余换行一眼可见）
+        @Assert(rewritten, "[tool: bash]\nhello world")
     }
 
     @TestCase
