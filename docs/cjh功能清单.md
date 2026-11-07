@@ -102,11 +102,14 @@
   后台任务（`max_background_tasks` 8）与子代理（`max_subagents` 4）是两套独立上限，
   撞到「起不动」时要能分清是哪一本满了。Agents 面板与 Ctrl+G 焦点交互不受影响（子代理行仍有 iterations/tokens，
   焦点切的是看哪个子代理的转录，与「后台进程还活着」是两种语义）。
-- **可观测（Web）**：协议 v6 新增 `bg_task` 帧，服务端在「`bash_start` 成功 / 转终态 /
+- **可观测（Web）**：协议 **v6** 新增 `bg_task` 帧，服务端在「`bash_start` 成功 / 转终态 /
   `bash_kill` 生效」三处推送；浏览器端 `#bg-panel` 按 `task_id` 更新行（`bg-3 · npm run dev
   · running 42s`），终态行显示 `exit N`。事件从任务层 `BgTaskEventInfo` 出发（工具层不碰
   JSON），由 `cjh.web` 的 `BgTaskBroadcaster` 转帧广播给各自存活连接，与 `tasks`（待办清单）
-  语义分离、互不影响。
+  语义分离、互不影响。**v7** 再补一条独立出站帧 `bg_slots`（`bg_used`/`bg_max`/`agents_used`/
+  `agents_max` 全局快照，任务起停时推 + 新连接握手后补推一次）——账是全局量，不塞进按
+  `task_id` upsert 的 `bg_task`；`agents_max = 0` 表示该入口不启用子代理，客户端据此省略
+  agents 段。当前协议版本号见 `/api/capabilities` 的 `protocol` 字段（旧客户端忽略未知帧）。
 
 ### web_search + web_fetch 详细设计
 
