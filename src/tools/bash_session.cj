@@ -6,6 +6,7 @@ import std.io.*
 import std.sync.*
 import std.time.*
 import std.convert.Parsable
+import std.fs.*
 import cjutil.*
 import cjterm.*
 
@@ -184,8 +185,10 @@ public class BashSession {
         }
         // 持久 shell：stdin 管道写命令，stdout/stderr 管道（读线程消费），
         // stderr 由命令 2>&1 合并进 stdout
-        // shell 路径由 ShellProvider 按平台选择（Windows Git Bash / Linux /bin/bash）
-        let p = launch(this.shell.shellPath, Array<String>(0, repeat: ""), stdIn: Pipe, stdOut: Pipe, stdErr: Pipe)
+        // shell 路径由 ShellProvider 按平台选择（Windows Git Bash / Linux /bin/bash）；
+        // POSIX 侧再套一层 setsid，让会话 shell 成为进程组组长（见 launchCommand）
+        let (launchPath, launchArgs) = launchCommand(this.shell.shellPath)
+        let p = launch(launchPath, launchArgs, stdIn: Pipe, stdOut: Pipe, stdErr: Pipe)
         this.proc = Some(p)
         // 让会话 bash 把自己的 MSYS pid 写进临时文件：它的 PGID 等于自己，收尾时
         // `kill -9 -<pgid>` 才能连正在跑的子命令一起收掉（父链在 Windows 上是断的）。
@@ -412,6 +415,39 @@ func killProcessTree(pid: Int64, shell: ShellProvider, pgFile: String): Unit {
     } catch (e: Exception) {
         ()
     }
+}
+
+/**
+ * 会话 shell 的启动命令（POSIX）。
+ *
+ * **非交互 bash 不自建进程组**：stdin 是管道（非 tty）⇒ 没有 job control ⇒ 不调用
+ * setpgid，直接从父进程继承进程组。实测 `bash -c 'echo $$; ps -o pgid= -p $$'`
+ * 得到 `pid=1078138 pgid=1078137`（跟着 cjh 自己的组走），此时 `kill -9 -<pid>`
+ * 只报 `No such process`——整组收尾等于空转，孤儿子命令照样活着吃 CPU。
+ * （`set -m` 也无效，实测 pid 仍 ≠ pgid。）
+ *
+ * 用 setsid 包一层：它 exec 会话 shell，pid 不变，但新会话里该进程是组长
+ * （实测 `setsid bash -c …` → `pid=1078932 pgid=1078932`），
+ * 收尾的 `kill -9 -$(cat <pgFile>)` 才真正命中整组。
+ *
+ * 系统没有 setsid 时退回原样启动：组杀失效但不误伤，行为等同修复前。
+ */
+@When[os != "Windows"]
+func launchCommand(shellPath: String): (String, Array<String>) {
+    for (candidate in ["/usr/bin/setsid", "/bin/setsid"]) {
+        if (exists(candidate)) {
+            var args = Array<String>(1, repeat: "")
+            args[0] = shellPath
+            return (candidate, args)
+        }
+    }
+    return (shellPath, Array<String>(0, repeat: ""))
+}
+
+/** Windows 侧不需要 setsid：MSYS 的 worker bash 天然自成进程组（pgid == 自身 pid） */
+@When[os == "Windows"]
+func launchCommand(shellPath: String): (String, Array<String>) {
+    return (shellPath, Array<String>(0, repeat: ""))
 }
 
 /** 会话进程组 pid 文件的路径（每个会话一份：名字带启动器 pid 保证不撞） */
