@@ -6,10 +6,10 @@
 
 [![Website](https://img.shields.io/badge/website-yangyongzhen.github.io%2Fcjh-00868B)](https://yangyongzhen.github.io/cjh/)
 [![CI](https://github.com/yangyongzhen/cjh/actions/workflows/ci.yml/badge.svg)](https://github.com/yangyongzhen/cjh/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/badge/release-v1.6.10-00868B)](https://atomgit.com/qq8864/cjh/releases)
+[![Release](https://img.shields.io/badge/release-v1.6.12-00868B)](https://atomgit.com/qq8864/cjh/releases)
 [![AtomGitStars](https://atomgit.com/qq8864/cjh/star/badge.svg)](https://atomgit.com/qq8864/cjh)
 [![Cangjie](https://img.shields.io/badge/language-Cangjie-00868B)](https://cangjie-lang.cn)
-[![Tests](https://img.shields.io/badge/tests-682%20passed-2ea44f)](./scripts/test.sh)
+[![Tests](https://img.shields.io/badge/tests-696%20passed-2ea44f)](./scripts/test.sh)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-lightgrey)](https://atomgit.com/qq8864/cjh/releases)
 [![License](https://img.shields.io/badge/license-MIT-2ea44f)](./LICENSE)
 
@@ -38,19 +38,19 @@ curl -fsSL https://yangyongzhen.github.io/cjh/install.sh | bash
 **Try it without spending a cent** (Mock mode: no network, no API key needed):
 
 ```bash
-curl -LO https://api.atomgit.com/api/v5/repos/qq8864/cjh/releases/v1.6.10/attach_files/cjh-v1.6.10-linux-x64
-chmod +x cjh-v1.6.10-linux-x64
-CJH_MOCK=1 ./cjh-v1.6.10-linux-x64
+curl -LO https://atomgit.com/qq8864/cjh/releases/download/v1.6.12/cjh-v1.6.12-linux-x64.tar.gz
+tar xzf cjh-v1.6.12-linux-x64.tar.gz
+CJH_MOCK=1 ./cjh-linux-x64
 ```
 
 **Connect a real model** (any one provider key works):
 
 ```bash
 export DEEPSEEK_API_KEY=sk-xxx     # or OPENAI_API_KEY / DASHSCOPE_API_KEY / CJH_API_KEY
-./cjh-v1.6.10-linux-x64             # TUI by default; --cli for plain text, --mode json for headless
+./cjh-linux-x64                     # TUI by default; --cli for plain text, --mode json for headless
 ```
 
-Windows: grab [`cjh-v1.6.10-windows-x64-selfcontained.zip`](https://api.atomgit.com/api/v5/repos/qq8864/cjh/releases/v1.6.10/attach_files/cjh-v1.6.10-windows-x64-selfcontained.zip) and unzip — keep the exe next to its 4 runtime DLLs. Building from source: see [Quick Start](#-quick-start).
+Windows: grab [`cjh-v1.6.12-windows-x64-selfcontained.zip`](https://atomgit.com/qq8864/cjh/releases/download/v1.6.12/cjh-v1.6.12-windows-x64-selfcontained.zip) and unzip — keep the exe next to its 4 runtime DLLs. Building from source: see [Quick Start](#-quick-start).
 
 ![cjh session demo (real CLI output, mock mode)](docs/imgs/cjh-demo.gif)
 
@@ -64,8 +64,8 @@ Windows: grab [`cjh-v1.6.10-windows-x64-selfcontained.zip`](https://api.atomgit.
 |---|---|
 | **What** | A terminal coding agent harness written from scratch in Cangjie: agent loop (message state machine + tool-call protocol) + tool system + diff-rendered TUI + remote web UI + plugin trust chain |
 | **Who** | ① people who want AI to edit code in the terminal without installing a Node/Python toolchain; ② Cangjie learners looking for a runnable, readable AI-application reference; ③ regulated / domestic-stack teams that require "no foreign runtime dependencies" |
-| **Why** | One static binary (Linux 17.1 MB / Windows exe 14.1 MB) with zero runtime dependencies; token efficiency and execution speed are measured, not claimed; plugins carry SHA256 checksums + SM2 signatures |
-| **Status** | v1.6.10, 682 unit tests green (plus 255 across the 6 publishable libraries), Linux / Windows builds published; background tasks de-threaded (no reader thread, shell-written exit-code file) so the TUI can never starve on a 2-core box |
+| **Why** | One static binary (Linux 18.5 MB / Windows exe 13.8 MB) with zero runtime dependencies; token efficiency and execution speed are measured, not claimed; plugins carry SHA256 checksums + SM2 signatures |
+| **Status** | v1.6.12, 696 unit tests green (plus 235 across the 6 publishable libraries), Linux / Windows builds published; slash-command submissions now echo the picked candidate, and a stale background-task `rc` file can no longer fake a terminal state |
 
 ---
 
@@ -605,6 +605,8 @@ cjh has a built-in MCP client supporting stdio transport + JSON-RPC 2.0. After c
 
 | Version | Main Features |
 |---|---|
+| **v1.6.12** | **Slash-command submit echo follows the picked candidate**: pressing ↓ then Enter executed the right command, but the transcript echoed the raw `/` and history kept it — `InputBox.overrideLastSubmission` now rewrites `lastEcho` and the history entry to what was actually submitted. Also: `start()` clears stale `bg-N.rc`/log files before launch (a leftover exit code made a new background task look finished, then `p.wait()` on the zombie froze the loop for 30s), and `bg_slots` was missing from `outboundEventNames()` (protocol v7) |
+| **v1.6.11** | Background tasks appear as chat-stream entries instead of a bottom panel: optional `intent` on the three `bash_*` tools, two-line `● title` + `└ BashStart(...)` rendering, `BgTaskPanel` (616 lines) deleted in favour of `bgslots.cj`, plus a `✔ done · 42s` / `✘ failed · 8s` notice when a task reaches a terminal state |
 | **v1.6.10** | **Background tasks de-threaded — the "TUI freezes for 100s+" root cause fixed**. `gdb` caught it red-handed: `BackgroundTask.readerLoop` parked in `CJ_OS_FileRead → __libc_read(fd=18)`, and on a 2-core box 7–8 `sleep 120` jobs exhausted the shared thread pool, starving the TUI and the agent loop (keys replayed in one burst once the sleeps exited). The reader thread and its watchdog are **gone**: output goes straight to a log file (`ProcessRedirect.FromFile`), and the terminal state is decided by a shell-written `echo $? > <id>.rc` side file that the parent only ever `stat`s — zero blocking, no `isAlive()` (always true while a zombie) and no `wait(timeout:)` (its second call ignores the timeout and blocked 1992ms). Harvest now runs at every poll/kill/TUI tick, plus the web broadcaster's slot-push points, so a web panel nobody polls still converges to the real state. Adds `WebBgHarvestTest` |
 | **v1.6.5** | New default-prompt "Intellectual honesty" section (no sycophancy, completion claims require fresh tool evidence, failures reported verbatim); one-line installer + GitHub Actions CI + CONTRIBUTING guide |
 | **v1.6.4** | Compaction notices moved to the status bar (Compacting… — no more chat interruptions); bash tool per-call timeout (long commands no longer stall a turn); piped-command non-session fix |

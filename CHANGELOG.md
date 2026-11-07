@@ -4,6 +4,47 @@ cjh 版本变更记录。依据 git tag 史 + 提交史整理；版本号规则�
 
 > 注：v1.0.0 / v1.1.0（首个 tag 前）/ v1.2.2 / v1.3.0 / v1.3.5 等版本未打 tag，日期与内容按提交史还原，以「无 tag」标注。
 
+## [v1.6.12] - 2026-11-07
+
+### 修复（斜杠命令回显不跟随选中项 / 后台任务残留 rc 造成假终态 / 出站帧清单漏列）
+
+- **提交回显与历史跟随下拉选中项**：敲 `/` 后用 ↓ 挑任意命令回车，**执行本来就是对的**，
+  但输出区回显读的是 `InputBox.lastEchoText()`（输入框原文 `/`），屏幕上就是「无论选哪条
+  都只看到默认 `/`」，历史里也留不下这次选择。新增
+  `InputBox.overrideLastSubmission(from, to)`：`lastEcho` 换成真正提交的文本，原文进了历史
+  就地改写末项、没进历史（裸 `/`，`setHistory` 本就剔除）则按实际提交补记。回归用例
+  `testPickerSubmitEchoesPickedCommand`。
+- **后台任务启动前清残留 rc/日志**：`bg-N` 按进程重编号，而 `/tmp/cjh_bg/` 跨进程共享——
+  遗留的 `bg-N.rc` 让新任务被 `readExitCodeFile` 读到上一世的退出码、直接判终态，随后
+  `p.wait()` 回收僵尸阻塞主循环 30s（回合从 0.2s 拖成 30s）；`bg-N.log` 因 Append 也会混入
+  旧输出。`start()` 在 launch 前调 `clearStaleBgFiles`。回归用例
+  `testStaleRcFileDoesNotFakeTerminal`。
+- **出站帧清单补 `bg_slots`**：`capabilityProtocolVersion()` 已到 7，`outboundEventNames()`
+  却仍缺该帧；新增 `testOutboundListCoversVersionedFrames` 守住「版本递增即补清单」。
+
+### 门禁
+
+`./scripts/test.sh` **696/696**、`./scripts/test_libs.sh` **235/235**（cjterm 130）、
+`python3 scripts/tui_pty_test.py` **83 通过 / 0 失败**、`cjpm build` 告警 **5**（仅 `--static`）、
+`--mock` 端到端 exit 0。产物：Linux tar.gz 6,143,193 B（GLIBC ≤ 2.34）/ Windows 单 exe zip
+5,161,063 B / 自包含 zip 8,222,226 B；`SHA256SUMS` 5/5 OK，`verify_dist.sh` 结论「产物一致」。
+
+## [v1.6.11] - 2026-11-07
+
+### 变更（后台任务并入会话流条目）
+
+- 三件套 `bash_start` / `bash_poll` / `bash_kill` 新增可选 `intent`（仅 schema，执行路径不看），
+  标题按 `intent` → `label`/命令首行 → 模板逐级回退
+- 调用输出改双行树形：`● 标题` + `└ BashStart(...)`；其余工具仍是单行卡片
+- 删除 `BgTaskPanel`（616 行）与 `bgH` 布局、淡出/心跳/渲染；槽位账与纯函数迁至
+  `libs/cjterm/src/bgslots.cj`，状态行只留 `bg N/8  agents M/4`
+- 任务转终态自动补一条 `✔ 完成 · 42s` / `✘ 失败（exit N） · 8s` / `⏱ 超时` / `⊘ 已取消`
+
+### 门禁
+
+`./scripts/test.sh` **693/693**、`./scripts/test_libs.sh` **235/235**、pty **83/0**、
+`cjpm build` 告警 5（仅 `--static`）、`--mock` 端到端通过。
+
 ## [Unreleased]
 
 ### 修复（后台任务把线程池吃满，界面整体卡死 100+ 秒）
