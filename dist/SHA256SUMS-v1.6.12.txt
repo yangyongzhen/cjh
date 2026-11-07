@@ -1,0 +1,5 @@
+028992bebc92e9bf9e92d063fdc20e1b21ae385f3cda4bbe507e0ff8c832dfbf  cjh-linux-x64
+2cb384f0cde35ab558c0dea6e4f07d4cc859e594c03da57e7d3d17da13b23cb7  cjh-windows-x64.exe
+c6557bd3a8e8f397db854a5a0dc800ebe4275d33869226f6cf6cdce8c9248c9d  cjh-v1.6.12-linux-x64.tar.gz
+3cf169c8bcbcb03808ea17243d5c2e86e32e261f2b86acc68fce70127336a2e4  cjh-v1.6.12-windows-x64.zip
+6b3fed386d5052cc721061c8894386e8307b809d8a17962682f7ad32d8e043fb  cjh-v1.6.12-windows-x64-selfcontained.zip
