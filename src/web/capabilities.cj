@@ -74,6 +74,10 @@ public func outboundEventNames(): ArrayList<String> {
     names.add("approval_request")  // 危险操作需人工确认（回合阻塞等 approval_response）
     names.add("tasks")
     names.add("bg_task")           // 后台任务状态（v6；bash_start/终态/kill 时推）
+    // 两本槽位账快照（v7；任务起停时推 + 新连接握手后补推）。
+    // 漏列会与 v7 注释和 web_channel 实际推送不一致：/api/capabilities 是客户端
+    // 唯一的探测入口，清单里没有，按白名单过滤的客户端就永远收不到槽位账。
+    names.add("bg_slots")
     names.add("history_messages")
     return names
 }

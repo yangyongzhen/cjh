@@ -143,6 +143,21 @@ public class CapabilitiesTest {
         }
     }
 
+    /**
+     * 出站清单必须覆盖每一版新增的帧
+     *
+     * 清单漏列不会报任何错：`/api/capabilities` 是客户端唯一的探测入口，按清单做
+     * 白名单过滤的客户端就永远收不到那个帧。v7 曾漏掉 `bg_slots`——注释与
+     * `web_channel` 都已在推，只有清单没写，而自洽型断言（清单 == 文档）抓不到。
+     */
+    @TestCase
+    public func testOutboundListCoversVersionedFrames(): Unit {
+        let outbound = outboundEventNames()
+        // v6 / v7 各自新增的出站帧
+        @Assert(nameListed(outbound, "bg_task"), true)
+        @Assert(nameListed(outbound, "bg_slots"), true)
+    }
+
     @TestCase
     public func testDerivedFeatureFlagsFollowFrameLists(): Unit {
         // 能从帧清单推导的能力位必须真的由清单推导：清单变了它就跟着变，
