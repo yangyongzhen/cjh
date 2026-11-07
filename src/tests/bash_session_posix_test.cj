@@ -1,6 +1,8 @@
 package cjh.tests
 
 import std.time.*
+import std.collection.*
+import std.fs.*
 import cjh.tools.*
 
 /**
@@ -54,5 +56,65 @@ public class BashSessionPosixTest {
         } finally {
             s.close()
         }
+    }
+
+    /**
+     * 命令自己退出（`exit N`）走 EOF 路径：会话要能重建，且不留下会话 pid 文件。
+     *
+     * 旧实现只在 killProcessTree 里 `rm -f`，EOF 路径只把 proc 置 None —— 于是
+     * 「命令带 exit / 会话崩溃」每条都在 /tmp 留一个 cjh-sess-*.pid（实测积了 8 个）。
+     * POSIX 现在根本不落这个文件（setsid ⇒ pgid == pid），所以断言用「目录计数不变」，
+     * 同时验证 EOF 收尾没把会话重建搞坏。
+     */
+    @TestCase
+    public func testExitCommandLeavesNoPgFileAndRebuilds(): Unit {
+        let before = countSessionPgFiles()
+        let s = BashSession()
+        try {
+            let (c1, _) = s.execute("exit 3", 10)
+            @Assert(c1, 3)
+            @Assert(countSessionPgFiles(), before)
+            let (c2, o2) = s.execute("echo rebuilt-after-eof", 10)
+            @Assert(c2, 0)
+            @Assert(o2.contains("rebuilt-after-eof"), true)
+        } finally {
+            s.close()
+        }
+        @Assert(countSessionPgFiles(), before)
+    }
+
+    /**
+     * POSIX 组杀不再依赖 pid 文件：会话跑着也不该在 /tmp 落 cjh-sess-*.pid。
+     * 修复前每次建会话都写一个，而清理只埋在 killProcessTree 里 —— 漏一次就永久留档。
+     */
+    @TestCase
+    public func testPosixSessionDoesNotCreatePgFile(): Unit {
+        let before = countSessionPgFiles()
+        let s = BashSession()
+        try {
+            let (c1, o1) = s.execute("echo pgfile-probe", 10)
+            @Assert(c1, 0)
+            @Assert(o1.contains("pgfile-probe"), true)
+            @Assert(countSessionPgFiles(), before)
+        } finally {
+            s.close()
+        }
+        @Assert(countSessionPgFiles(), before)
+    }
+
+    /** 数 /tmp 下遗留的会话 pid 文件（POSIX 侧应恒定不变） */
+    private static func countSessionPgFiles(): Int64 {
+        let found = ArrayList<String>()
+        try {
+            Directory.walk("/tmp", { fi =>
+                if (!fi.isDirectory() && fi.name.startsWith("cjh-sess-") && fi.name.endsWith(".pid")) {
+                    found.add(fi.name)
+                }
+                return true
+            })
+        } catch (e: Exception) {
+            ()
+        }
+        return found.size
     }
 }

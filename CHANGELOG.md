@@ -47,6 +47,21 @@ cjh 版本变更记录。依据 git tag 史 + 提交史整理；版本号规则�
 
 ## [Unreleased]
 
+### 修复（bash 会话超时收尾：pid 文件会漏清，POSIX 本不需要它）
+
+- **清理从 `killProcessTree` 提到 `killSession`**：`rm -f` 原先埋在收尾命令里，只有走
+  超时 / 中断 / `close` 才执行；命令带 `exit N` 的 EOF 路径只把 `proc` 置 `None`，于是每
+  重建一次会话就在 `/tmp` 留一个 `cjh-sess-*.pid`（本机实测积了 8 个）。现在
+  `cleanupPgFile()` 由 `killSession`（含 `proc == None` 分支）、EOF 路径、重建会话前统一调用。
+- **POSIX 不再依赖 pid 文件**：setsid 之后 `p.pid` 就是会话 shell 的 pid、且已是组长
+  （`pgid == pid`），`kill -9 -<pid>` 直接命中整组；文件只在 Windows 生成
+  （`sessionNeedsPgFile()`）。顺带消掉一个时序窗口：`echo $$ > file` 是异步排队的，收尾
+  抢在它前面就会 `cat` 到上一次的同名旧内容 → `kill -9 -<旧组>` 打到无关进程组。
+- **文件名加熵 + 写前先删**：`cjh-sess-<launcherPid>-<nonce>.pid`（nonce = 启动毫秒 +
+  计数器），写之前先 `rm -f` 同名文件，堵住 pid 复用读到陈旧组号。
+- 回归用例：`BashSessionPosixTest.testExitCommandLeavesNoPgFileAndRebuilds`、
+  `testPosixSessionDoesNotCreatePgFile`；Windows 侧同步 `sessionPgFile(pid, nonce)` 签名。
+
 ### 修复（后台任务把线程池吃满，界面整体卡死 100+ 秒）
 
 现象：连起几个 `bash_start` 长任务后再打字，整屏停帧几十秒到两分钟，随后又「自己好了」。
