@@ -96,6 +96,12 @@ jobs:
           WARN=$(cjpm build 2>&1 | sed -e 's/\x1b\[[0-9;]*m//g' | grep -c 'warning:' || true)
           [ "$WARN" = "5" ] || { echo "::warning::expected 5 --static notices, got $WARN"; }
 
+      - name: Debug example plugin hook output
+        run: |
+          CJH_HOOK_DATA='{"tool":"bash","content":"hello world"}' bash example/plugins/tool-result-banner/hooks/on_tool_result.sh | od -c | head -5
+          echo '--- with env -i (only CJH_HOOK_DATA):'
+          env -i CJH_HOOK_DATA='{"tool":"bash","content":"hello world"}' bash example/plugins/tool-result-banner/hooks/on_tool_result.sh | od -c | head -5
+
       - name: Main package tests (~600 cases)
         run: ./scripts/test.sh
 
