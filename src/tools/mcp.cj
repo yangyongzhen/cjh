@@ -3,14 +3,15 @@ package cjh.tools
 /**
  * MCP 客户端（Model Context Protocol）
  *
- * 传输层：stdio（启动子进程，JSON-RPC over stdin/stdout）
- * 协议：JSON-RPC 2.0，每条消息一行（\n 分隔）
+ * 传输层：
+ *   - stdio：启动子进程，JSON-RPC over stdin/stdout
+ *   - http ：Streamable HTTP，单次 POST JSON-RPC（无状态，不回传 Mcp-Session-Id）
  *
  * 生命周期：
- *   1. connect()：启动子进程，发送 initialize 握手
+ *   1. connect()：stdio 启动子进程 / http POST 握手
  *   2. listTools()：发送 tools/list，解析工具列表
  *   3. callTool(name, args)：发送 tools/call，返回结果
- *   4. disconnect()：关闭子进程
+ *   4. disconnect()：stdio 关闭子进程（http 无需收尾）
  *
  * 配置参考：docs/插件系统实现方案.md § 8.2
  * 协议参考：https://modelcontextprotocol.io/specification/2025-03-26
@@ -24,6 +25,10 @@ import stdx.encoding.json.*
 import cjcfg.McpServerConfig
 import cjllm.ToolSpec
 import cjutil.*
+
+// http 传输的单次超时（秒）与响应体上限（与 web_search 的远程 provider 同量级）
+const MCP_HTTP_TIMEOUT_SECONDS: Int64 = 30
+const MCP_HTTP_MAX_BODY_BYTES: Int64 = 1048576
 
 /**
  * MCP 客户端：管理单个 MCP 服务器的连接和通信
@@ -47,6 +52,9 @@ public class McpClient {
      * @return 连接成功返回 true，失败返回 false
      */
     public func connect(): Bool {
+        if (this.isHttp()) {
+            return this.connectHttp()
+        }
         if (this.config.transport != "stdio") {
             Log.warn("[MCP] 仅支持 stdio 传输，跳过 ${this.config.name}（transport=${this.config.transport}）")
             return false
@@ -108,16 +116,64 @@ public class McpClient {
     }
 
     /**
+     * http（Streamable）传输连接：POST initialize 握手 + initialized 通知。
+     *
+     * 无状态实现：不回传 Mcp-Session-Id（华为开发者知识库等主流远程 MCP
+     * 支持无状态调用；需要会话的服务器待 http_client 暴露响应头后补）。
+     */
+    private func connectHttp(): Bool {
+        if (this.config.url == "") {
+            Log.warn("[MCP] ${this.config.name} http 传输缺少 url 字段")
+            return false
+        }
+        match (this.httpPostRpc(this.buildRequest("initialize", this.initializeParams()))) {
+            case Some(r) =>
+                if (!r.containsKey("result")) {
+                    Log.warn("[MCP] ${this.config.name} initialize 响应无 result 字段")
+                    return false
+                }
+            case None =>
+                Log.warn("[MCP] ${this.config.name} initialize 无响应")
+                return false
+        }
+        this.httpPostRpc(this.buildNotification("notifications/initialized", JsonObject()))
+        Log.info("[MCP] 已连接服务器: ${this.config.name}")
+        return true
+    }
+
+    private func isHttp(): Bool {
+        return this.config.transport == "http"
+    }
+
+    /**
+     * http 传输：单次 POST JSON-RPC，返回解析后的响应对象（失败/无响应给 None）
+     */
+    private func httpPostRpc(msg: JsonObject): ?JsonObject {
+        var hdrs = HashMap<String, String>()
+        hdrs["Content-Type"] = "application/json"
+        hdrs["Accept"] = "application/json, text/event-stream"
+        let body = httpClientRequest("POST", this.config.url, MCP_HTTP_TIMEOUT_SECONDS,
+            MCP_HTTP_MAX_BODY_BYTES, "cjh/1.6.12 (Cangjie Coding Agent)",
+            "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7", Some(msg.toJsonString()), Some(hdrs))
+        return parseMcpHttpRpcBody(body)
+    }
+
+    /**
      * 查询工具列表（tools/list）
      * @return 工具定义列表；失败返回空列表
      */
     public func listTools(): ArrayList<McpToolDef> {
         let req = this.buildRequest("tools/list", JsonObject())
-        if (!this.send(req)) {
-            Log.warn("[MCP] ${this.config.name} 发送 tools/list 失败")
-            return ArrayList<McpToolDef>()
+        var resp: ?JsonObject = None
+        if (this.isHttp()) {
+            resp = this.httpPostRpc(req)
+        } else {
+            if (!this.send(req)) {
+                Log.warn("[MCP] ${this.config.name} 发送 tools/list 失败")
+                return ArrayList<McpToolDef>()
+            }
+            resp = this.recv()
         }
-        let resp = this.recv()
         match (resp) {
             case Some(r) =>
                 match (r.get("result")) {
@@ -165,10 +221,15 @@ public class McpClient {
         params.put("arguments", args)
 
         let req = this.buildRequest("tools/call", params)
-        if (!this.send(req)) {
-            return ToolResult("[MCP] 发送 tools/call 失败", true)
+        var resp: ?JsonObject = None
+        if (this.isHttp()) {
+            resp = this.httpPostRpc(req)
+        } else {
+            if (!this.send(req)) {
+                return ToolResult("[MCP] 发送 tools/call 失败", true)
+            }
+            resp = this.recv()
         }
-        let resp = this.recv()
         match (resp) {
             case Some(r) =>
                 // 检查 error 字段
@@ -259,6 +320,9 @@ public class McpClient {
      * 断开连接，关闭子进程
      */
     public func disconnect(): Unit {
+        if (this.isHttp()) {
+            return
+        }
         match (this.subProcess) {
             case Some(sp) =>
                 try {
@@ -561,5 +625,49 @@ public class McpManager {
      */
     public func getConnectedCount(): Int64 {
         return this.clients.size
+    }
+}
+
+/**
+ * 解析 MCP HTTP 响应体为 JSON-RPC 响应对象（http 传输与单测共用）。
+ *
+ * 兼容两种形态：
+ *   - 纯 JSON（主流，如华为开发者知识库 MCP）：整段就是一个 JSON-RPC 响应
+ *   - SSE 帧（部分服务器把 JSON-RPC 包在 "data:" 行里）：取最后一条可解析的 data 行
+ *
+ * 空串 / 非 JSON / 解析失败返回 None（调用方按"无响应"处理）。
+ */
+public func parseMcpHttpRpcBody(body: String): ?JsonObject {
+    if (body == "") {
+        return None
+    }
+    match (parseJsonObjectText(body)) {
+        case Some(o) => return Some(o)
+        case None => ()
+    }
+    var last: ?JsonObject = None
+    for (line in body.split("\n", -1)) {
+        let t = line.trimAscii()
+        if (!t.startsWith("data:")) {
+            continue
+        }
+        match (parseJsonObjectText(t[5..].trimAscii())) {
+            case Some(o) => last = Some(o)
+            case None => ()
+        }
+    }
+    return last
+}
+
+func parseJsonObjectText(text: String): ?JsonObject {
+    try {
+        let v = JsonValue.fromStr(text)
+        match (v.kind()) {
+            case JsonKind.JsObject => return v.asObject()
+            case _ => return None
+        }
+    } catch (e: Exception) {
+        let _ = e
+        return None
     }
 }

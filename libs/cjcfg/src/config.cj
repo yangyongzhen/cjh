@@ -22,7 +22,7 @@ public class ModelEntry {
  *
  * 支持两种传输：
  *   - stdio：启动子进程，JSON-RPC over stdin/stdout（MUST 支持）
- *   - sse  ：远程服务器，HTTP+SSE（可选，暂未实现）
+ *   - http ：远程服务器，Streamable HTTP（POST JSON-RPC，无状态）
  *
  * stdio 配置示例：
  *   "filesystem": {
@@ -33,10 +33,10 @@ public class ModelEntry {
  */
 public class McpServerConfig {
     public let name: String               // 服务器名（唯一标识）
-    public var transport: String = "stdio" // "stdio" | "sse"
+    public var transport: String = "stdio" // "stdio" | "http"
     public var command: String = ""        // stdio：可执行命令
     public var args: ArrayList<String> = ArrayList<String>()  // stdio：命令参数
-    public var url: String = ""            // sse：服务器 URL
+    public var url: String = ""            // http：服务器 URL
     public var env: HashMap<String, String> = HashMap<String, String>()  // 子进程环境变量
 
     public init(name: String) {
