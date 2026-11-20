@@ -1140,6 +1140,47 @@ public class TuiApp {
     }
 
     /**
+     * 清空当前对话画面（/new、/resume、/fork 切会话时调用）。
+     * 输出区清空后下一帧渲染自动回到欢迎页；不触碰 agent 历史。
+     */
+    public func clearConversation(): Unit {
+        this.outputLock.lock()
+        try {
+            this.outputView.clear()
+        } finally {
+            this.outputLock.unlock()
+        }
+        // 清空差分缓存：/new、/resume 后欢迎页通常比旧屏幕短，只靠差分
+        // 会留下上一会话的尾部行（Recent sessions 等）与新内容叠在一起。
+        this.canvas.invalidate()
+        this.markDirty()
+    }
+
+    /**
+     * 重置会话级 UI 状态：状态栏（含 Compacting…）、轮次/计时/token、
+     * Tasks 面板与待发送队列。切会话必须调用，否则上一会话的残留会串台。
+     */
+    public func resetSessionUiState(): Unit {
+        this.agentTokenLock.lock()
+        try {
+            this.agentPromptTokens = 0
+        } finally {
+            this.agentTokenLock.unlock()
+        }
+        this.agentRounds = 0
+        this.agentStartTime = DateTime.now()
+        this.statusBar.setStatus("")
+        this.tasksPanel.updateSnapshots(ArrayList<TaskSnapshot>())
+        this.inputQueueLock.lock()
+        try {
+            this.inputQueue = ArrayList<String>()
+        } finally {
+            this.inputQueueLock.unlock()
+        }
+        this.markDirty()
+    }
+
+    /**
      * 切换思考块展开/折叠（Ctrl+T）
      */
     public func toggleReasoning(): Unit {
@@ -1593,6 +1634,13 @@ public class TuiApp {
      */
     public func isSessionSelectMode(): Bool {
         return this.sessionSelect.visible
+    }
+
+    /**
+     * 当前终端列数（渲染前为 0；Markdown 表格/帮助页按此宽度折行）
+     */
+    public func cols(): Int64 {
+        return this.lastCols
     }
 
     public func markDirty(): Unit {
@@ -2193,7 +2241,7 @@ public class TuiApp {
     /**
      * 帮助视图内容（无边框全宽渲染）
      */
-    private func renderHelp(canvas: TuiCanvas, row: Int64, _: Int64, height: Int64): Unit {
+    private func renderHelp(canvas: TuiCanvas, row: Int64, width: Int64, height: Int64): Unit {
         let lines: ArrayList<String> = ArrayList<String>()
         lines.add(Ansi.fg(Ansi.THEME_ACCENT) + "可用命令：" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  /help          显示本帮助" + Ansi.reset())
@@ -2222,14 +2270,27 @@ public class TuiApp {
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  PageUp/Down    输出区滚动（Ctrl+U/D 亦可）" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Ctrl+C         空闲退出 / 忙时中断，再按强制退出" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Esc            关闭弹窗 / 退出编辑 / 回对话视图 / 忙时中断并立即发送排队消息" + Ansi.reset())
+        // 按终端宽度折行：旧实现超宽行被 canvas 截断，帮助说明后半句/快捷键
+        // 直接消失（用户反馈"命令后面内容被砍"）。表格无帮助内容，无需跳过。
+        let wrapW = if (width > 4) { width - 2 } else { width }
+        var wrapped = ArrayList<String>()
+        for (line in lines) {
+            for (seg in TuiCanvas.wrapAnsi(line, wrapW)) {
+                wrapped.add(seg)
+            }
+        }
+        let total = Int64(wrapped.size)
+        let maxScroll = if (total > height) { total - height } else { 0 }
+        if (this.helpScroll > maxScroll) {
+            this.helpScroll = maxScroll
+        }
         var r: Int64 = 0
         var idx: Int64 = this.helpScroll
-        while (idx < Int64(lines.size) && r < height) {
-            canvas.setLine(row + r, lines[idx])
+        while (idx < total && r < height) {
+            canvas.setLine(row + r, wrapped[idx])
             r += 1
             idx += 1
         }
-        // 滚动超出时标记（底部"更多"提示由状态栏滚动指示逻辑类似；简单截断）
     }
 }
 

@@ -61,22 +61,32 @@ public class WelcomeView <: Component {
         let vc = if (this.utf8) { "│" } else { "|" }
         let tc = if (this.utf8) { "┴" } else { "+" }
 
-        // 统一弹窗宽度 boxW（铺满 width 列；setLine 按 cols-1 截断，width==cols 时刚好）
-        let boxW = width
+        // 统一弹窗宽度 boxW：留 1 列防 setLine 截断（width==cols 时最后一列写不进去）
+        let boxW = if (width > 1) { width - 1 } else { width }
         // 两栏宽度：内容行结构 │ 左(leftW) │ 右(rightW) │
         //   总宽 = 1 + 1 + leftW + 1 + 1 + 1 + rightW + 1 + 1 = leftW + rightW + 7
-        //   令总宽 = boxW - 1（留 1 列防 setLine 截断），则 rightW = boxW - 2 - leftW
+        //   令总宽 = boxW，则 rightW = boxW - 7 - leftW。
+        // 旧式 rightW = boxW - 2 - leftW 少减 5，内容行/底边比顶边宽 5 列，
+        // 被 setLine 截断后右边框缺失、中间分隔竖线错位（用户截图实锤）。
+        // 窄终端（boxW < 51）放弃 24/20 的最小列宽，按比例分栏：
+        // 旧实现硬保最小宽，内容行总宽超过 boxW，右边框被 setLine 截掉。
+        let narrow = boxW < 51
         var leftW: Int64 = boxW * 38 / 100
-        if (leftW < 24) {
-            leftW = 24
+        let minLeft: Int64 = if (narrow) { 1 } else { 24 }
+        let minRight: Int64 = if (narrow) { 1 } else { 20 }
+        if (leftW < minLeft) {
+            leftW = minLeft
         }
-        var rightW = boxW - 2 - leftW
-        if (rightW < 20) {
-            rightW = 20
-            leftW = boxW - 2 - rightW
-            if (leftW < 10) {
-                leftW = 10
-            }
+        var rightW = boxW - 7 - leftW
+        if (rightW < minRight) {
+            rightW = minRight
+            leftW = boxW - 7 - rightW
+        }
+        if (leftW < 1) {
+            leftW = 1
+        }
+        if (rightW < 1) {
+            rightW = 1
         }
 
         // 行 0：顶边框 + 标题（标题后填充横线到 boxW-1，再接 ╮）
@@ -154,7 +164,8 @@ public class WelcomeView <: Component {
     private func leftLines(): ArrayList<String> {
         let lines = ArrayList<String>()
         lines.add("")
-        lines.add(Ansi.bold() + Ansi.fg(Ansi.THEME_ACCENT) + "Welcome back!" + Ansi.reset())
+        let greet = if (this.sessions.size > 0) { "Welcome back!" } else { "Welcome!" }
+        lines.add(Ansi.bold() + Ansi.fg(Ansi.THEME_ACCENT) + greet + Ansi.reset())
         lines.add("")
         let logo = Logo.renderLinesModern(this.utf8)
         for (l in logo) {
@@ -201,12 +212,20 @@ public class WelcomeView <: Component {
      */
     private static func padRight(s: String, w: Int64): String {
         let cur = TuiCanvas.displayWidth(s)
-        if (cur >= w) {
+        if (cur == w) {
             return s
         }
+        // 超宽必须裁到 w：旧实现原样返回，内容行比边框宽，setLine 截断后
+        // 右边框被吃掉；截断处补 reset 防止颜色泄漏到后续空格/边框。
+        // 宽字符放不下时 truncate 会提前停，仍要补空格到目标宽度。
+        let base = if (cur > w) { TuiCanvas.truncateText(s, w) + Ansi.reset() } else { s }
+        let baseCur = TuiCanvas.displayWidth(base)
+        if (baseCur >= w) {
+            return base
+        }
         var sb = StringBuilder()
-        sb.append(s)
-        for (_ in 0..(w - cur)) {
+        sb.append(base)
+        for (_ in 0..(w - baseCur)) {
             sb.append(" ")
         }
         return sb.toString()

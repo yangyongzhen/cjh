@@ -99,7 +99,18 @@ public class TasksPanel {
             return 0
         }
         let count: Int64 = Int64(this.snapshots.size)
+        var allCompleted = true
+        for (snap in this.snapshots) {
+            match (snap.status) {
+                case TaskState.Completed => ()
+                case _ => allCompleted = false
+            }
+        }
         this.lock.unlock()
+        // 全部完成：收成状态行上方的一行摘要，不再用 N+2 行的空面板长期占屏
+        if (allCompleted) {
+            return if (outH > 0) { 1 } else { 0 }
+        }
         let panelH: Int64 = count + 2
         let maxH: Int64 = if (outH / 2 > 0) { outH / 2 } else { 1 }
         return if (panelH > maxH) { maxH } else { panelH }
@@ -136,6 +147,23 @@ public class TasksPanel {
                 case TaskState.InProgress => inProgressCount += 1
                 case TaskState.Pending => openCount += 1
             }
+        }
+
+        // 全部完成：一行摘要（放在输出区最后一行、状态行上方），不再占 N+2 行。
+        // 旧行为：任务全完成后面板仍以完整边框常驻，回合早已结束却一直占屏。
+        if (openCount == 0 && inProgressCount == 0) {
+            if (outH <= 0) {
+                return 0
+            }
+            let startRow = availRow - 1
+            if (startRow < 0) {
+                return 0
+            }
+            let mark = if (this.utf8) { "✓" } else { "x" }
+            let label = "Tasks ${doneCount} 项全部完成 ${mark}"
+            let text = TuiCanvas.truncateText(label, if (cols > 2) { cols - 2 } else { cols })
+            canvas.setLine(startRow, Ansi.fg(Ansi.THEME_MUTED) + "  " + Ansi.fg(Ansi.THEME_OK) + text + Ansi.reset())
+            return 1
         }
 
         // 面板宽度：min(60, cols * 2 / 5)

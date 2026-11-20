@@ -587,6 +587,32 @@ public class MarkdownTableTest {
     }
 
     @TestCase
+    public func testTableWidthCappedToTerminal(): Unit {
+        // 终端窄：长表格总宽必须 <= maxWidth（旧实现按内容全宽渲染，
+        // 终端自动折行后表格错位/右边框消失）
+        let m = MarkdownRender()
+        m.setMaxWidth(40)
+        let out = m.process("| 序号 | 问题描述 | 修复方案 |\n") +
+            m.process("|---|---|---|\n") +
+            m.process("| 1 | 这是一个非常长的中文问题描述 | 这是同样很长的中文修复方案 |\n") +
+            m.process("| 2 | 短 | 短 |") + m.finish()
+        let lines = out.split("\n", -1)
+        var borderWidths = ArrayList<Int64>()
+        for (line in lines) {
+            let plain = stripAnsi(line)
+            if (plain.contains("┌") || plain.contains("└") || plain.contains("├") || plain.contains("│")) {
+                let w = TuiCanvas.displayWidth(plain)
+                @Assert(w <= 40, true)
+                borderWidths.add(w)
+            }
+        }
+        @Assert(borderWidths.size > 0, true)
+        for (w in borderWidths) {
+            @Assert(w, borderWidths[0])
+        }
+    }
+
+    @TestCase
     public func testTableEndOnPlainLine(): Unit {
         let m = MarkdownRender()
         // 表格后接普通文本：表格结束，普通文本正常

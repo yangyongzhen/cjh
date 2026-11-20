@@ -67,7 +67,10 @@ public class CompactThresholdTest {
             for (j in 0..contentLen) {
                 sb.append("x")
             }
-            history.add(ChatMessage("user", "消息 ${i}：" + sb.toString()))
+            // 交替 user/assistant：摘要只取 assistant 文本，纯 user 历史按契约
+            // 直接 no-op（防“空摘要 → 反复压缩”），故测试历史必须含 assistant
+            let role = if (i % 2 == 0) { "user" } else { "assistant" }
+            history.add(ChatMessage(role, "消息 ${i}：" + sb.toString()))
         }
         agent.loadHistory(history)
         return agent
@@ -83,9 +86,9 @@ public class CompactThresholdTest {
         let (compacted, b, a) = agent.compact(false)
         @Assert(compacted, true)
         @Assert(b, before)
-        // 用户消息全保留（失忆修复）：全用户合成历史上体积可能不缩反增，
-        // 压缩契约从"体积缩小"变为"assistant 文本进摘要、用户指令逐字保留"
-        @Assert(a, 6)
+        // 用户消息全保留（失忆修复）：user 指令逐字保留、assistant 文本进摘要。
+        // 历史 user/assistant 交替：1 system + 1 摘要 + 1 保留 user + 2 近期 = 5
+        @Assert(a, 5)
         // 压缩后应保留 [历史摘要] 标记
         var hasSummary = false
         for (m in agent.getMessages()) {
@@ -108,6 +111,30 @@ public class CompactThresholdTest {
     }
 
     @TestCase
+    public func testNoAssistantTextSkipsCompaction(): Unit {
+        // 纯 user 历史（如刚启动就手动 /compact）：可压缩区间没有 assistant 文本，
+        // 摘要请求会退化成"无内容"，随后反复触发压缩。契约：直接 no-op。
+        let agent = this.buildAgent(0, 0, 0, 0)
+        var history = ArrayList<ChatMessage>()
+        for (i in 0..10) {
+            history.add(ChatMessage("user", "纯用户消息 ${i}"))
+        }
+        agent.loadHistory(history)
+        let before = Int64(agent.getMessages().size)
+        let (compacted, b, a) = agent.compact(true)
+        @Assert(compacted, false)
+        @Assert(b, before)
+        @Assert(a, before)
+        var hasSummary = false
+        for (m in agent.getMessages()) {
+            if (m.content.contains("[历史摘要]")) {
+                hasSummary = true
+            }
+        }
+        @Assert(hasSummary, false)
+    }
+
+    @TestCase
     public func testBothDisabledNoCompaction(): Unit {
         // 两个阈值都为 0 = 完全禁用压缩（历史行为）
         let agent = this.buildAgent(0, 0, 10, 2000)
@@ -126,8 +153,8 @@ public class CompactThresholdTest {
 
         let (compacted, b, a) = agent.compact(false)
         @Assert(compacted, true)
-        // 用户消息全保留：10 条用户历史全数留下（system + 摘要 + 8 kept + 2 recent = 12）
-        @Assert(a, 12)
+        // user 全保留、assistant 进摘要：system + 摘要 + 4 kept user + 2 recent = 8
+        @Assert(a, 8)
     }
 
     @TestCase
@@ -138,9 +165,9 @@ public class CompactThresholdTest {
         let agent = this.buildAgent(0, 0, 0, 0)
         var history = ArrayList<ChatMessage>()
         history.add(ChatMessage("user", "任务目标：用 cj-tauri 开发 Cyclone DDS 调试助手，可发布订阅主题"))
+        history.add(ChatMessage("assistant", "已完成环境核实，正在规划下一步。"))
         history.add(ChatMessage("user", "进度：环境核实完毕，bg-1 sleep 120 已跑完"))
         history.add(ChatMessage("user", "追加任务：装 Cyclone DDS 后跑 DDS-native 全量测试"))
-        history.add(ChatMessage("assistant", "已完成环境核实，正在规划下一步。"))
         agent.loadHistory(history)
 
         let (compacted, b, a) = agent.compact(true)
@@ -171,14 +198,14 @@ public class CompactThresholdTest {
         // 纯字符估算触发不了压缩）：provider 返回真实 usage.promptTokens=30000，
         // 消息内容很短（估算远低于阈值），必须靠真实 token 触发。
         let stub = TextStubProvider(30000)
-        let agent = this.buildAgent(0, 100, 2, 20, stub)
+        let agent = this.buildAgent(0, 100, 2, 2000, stub)
         // 跑一轮让 agent 记录 provider 返回的真实 prompt token
         let _ = agent.run("测试任务")
         let before = Int64(agent.getMessages().size)
 
         let (compacted, b, a) = agent.compact(false)
         @Assert(compacted, true)
-        // 用户消息全保留（失忆修复）：2 条用户历史全数留下，体积不缩（system+摘要+2 kept+input+reply）
-        @Assert(a, before + 1)
+        // user 全保留、assistant 进摘要：system+摘要+1 kept user+input+reply = 5
+        @Assert(a, before)
     }
 }

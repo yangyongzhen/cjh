@@ -34,12 +34,74 @@ public class SessionStore {
             }
             return true
         })
+        // 按 created 倒序（旧实现按目录遍历顺序，Recent sessions 既不新也不旧）。
+        // 排序用插入排序：会话数量小，避免引入额外依赖/比较器。
+        var rows = ArrayList<(String, String, String)>()  // (id, summary, created)
         for (e in files) {
             let id = e[0..e.size - 5]
-            let summary = this.summary(e)
-            result.add((id, summary))
+            rows.add((id, this.summary(e), this.createdOf(e)))
+        }
+        for (i in 1..rows.size) {
+            let cur = rows[i]
+            var j = i
+            while (j > 0 && rows[j - 1][2].compare(cur[2]) == Ordering.LT) {
+                rows[j] = rows[j - 1]
+                j -= 1
+            }
+            rows[j] = cur
+        }
+        for (r in rows) {
+            result.add((r[0], r[1]))
         }
         return result
+    }
+
+    /** 会话创建时间字符串（缺失/损坏返回空，排序时排到最后） */
+    private func createdOf(file: String): String {
+        try {
+            let json = JsonValue.fromStr(String.fromUtf8(File.readFrom(this.dir + "/" + file)))
+            match (json.kind()) {
+                case JsonKind.JsObject =>
+                    let obj = json.asObject()
+                    if (let Some(c) <- obj.get("created")) {
+                        match (c.kind()) {
+                            case JsonKind.JsString => return c.asString().getValue()
+                            case _ => ()
+                        }
+                    }
+                case _ => ()
+            }
+        } catch (e: Exception) {
+            ()
+        }
+        return ""
+    }
+
+    /**
+     * 会话摘要安全截断：按 rune 截 40 个字符，控制字符转空格。
+     * 旧实现 `c[0..40]` 按字节切，中文 3 字节/字时切点落在字符中间 →
+     * cjh 启动读会话列表直接抛 UTF-8 异常，整个 TUI 起不来（用户实锤）。
+     */
+    private func clipSummary(raw: String): String {
+        let maxChars: Int64 = 40
+        var sb = StringBuilder()
+        var n: Int64 = 0
+        var truncated = false
+        for (r in raw.toRuneArray()) {
+            if (n >= maxChars) {
+                truncated = true
+                break
+            }
+            let ch = r.toString()
+            if (ch == "\n" || ch == "\r" || ch == "\t") {
+                sb.append(" ")
+            } else {
+                sb.append(ch)
+            }
+            n += 1
+        }
+        let text = sb.toString().trimAscii()
+        return if (truncated) { text + "…" } else { text }
     }
 
     private func summary(file: String): String {
@@ -54,7 +116,7 @@ public class SessionStore {
                             case JsonKind.JsString =>
                                 let name = t.asString().getValue()
                                 if (name.size > 0) {
-                                    return name
+                                    return this.clipSummary(name)
                                 }
                             case _ => ()
                         }
@@ -75,8 +137,7 @@ public class SessionStore {
                                                             match (content.kind()) {
                                                                 case JsonKind.JsString =>
                                                                     if (role.asString().getValue() == "user") {
-                                                                        let c = content.asString().getValue()
-                                                                        return if (c.size > 40) { c[0..40] + "…" } else { c }
+                                                                        return this.clipSummary(content.asString().getValue())
                                                                     }
                                                                 case _ => ()
                                                             }

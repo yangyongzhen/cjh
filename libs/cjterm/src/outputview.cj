@@ -53,6 +53,19 @@ public class OutputView <: Component {
     public init() {}
 
     /**
+     * 清空整段对话（/new、/resume、/fork 切会话时调用）。
+     * 思考历史、流式段、滚动位置一并重置；下一帧输出区为空 → 欢迎页重新出现。
+     */
+    public func clear(): Unit {
+        this.output = StringBuilder()
+        this.streamStartPos = -1
+        this.scrollOffset = 0
+        this.lineCache = ArrayList<String>()
+        this.cacheValid = true
+        this.clearThinking()
+    }
+
+    /**
      * 设置思考块内容（reasoning_content 累积）
      */
     public func setThinking(text: String, done: Bool): Unit {

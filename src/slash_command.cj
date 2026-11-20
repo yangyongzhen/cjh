@@ -180,11 +180,9 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
                 tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  base_url    ${cfg.baseUrl}" + Ansi.reset())
             }
         case "/new" =>
-            // 清空会话：重开 agent 历史（保留 system）
-            let history = agent.history()
-            while (history.size > 1) {
-                history.remove(history.size - 1..history.size)
-            }
+            // 清空会话：历史（保留 system）+ 压缩/任务/状态栏全量复位。
+            // 旧实现只删历史数组：Tasks 面板、Compacting…、轮次/计时都留在屏上，
+            // 用户看到"新会话"里挂着上一会话的待办与压缩态（实测反馈）。
             // 清理当前会话的落盘文件（工具结果截断 spill）
             if (SessionState.current.size > 0) {
                 let spillSessionDir = cfg.spillDir + "/" + SessionState.current
@@ -194,8 +192,12 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
                     // 清理失败不阻塞新会话
                 }
             }
+            agent.newSession()
             SessionState.current = ""
-            tui.appendOutput(Ansi.fg(Ansi.THEME_WARN) + "[新会话]" + Ansi.reset())
+            tui.clearConversation()
+            tui.resetSessionUiState()
+            // 给明确回执：旧实现切完后屏幕与欢迎页几乎一样，用户以为命令没生效
+            tui.appendOutput(Ansi.fg(Ansi.THEME_OK) + "[已开始新会话]" + Ansi.reset())
         case "/skills" =>
             // 列示技能（~/.cjh/skills/<name>.md）与启用状态
             listSkills(cfg.skillsDir, cfg.enabledSkills, tui)
@@ -295,13 +297,16 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
                 let id = parts[1]
                 let history = store.load(id)
                 if (history.size > 0) {
-                    // 清空当前历史后载入（保留 system）
+                    // 清空当前历史后载入（保留 system），并复位会话级状态
+                    agent.resetSessionRuntime()
                     let cur = agent.history()
                     while (cur.size > 1) {
                         cur.remove(cur.size - 1..cur.size)
                     }
                     agent.loadHistory(history)
                     SessionState.current = id
+                    tui.clearConversation()
+                    tui.resetSessionUiState()
                     tui.appendOutput(Ansi.fg(Ansi.THEME_WARN) + "[resumed ${id} (${history.size} msgs)]" + Ansi.reset())
                 } else {
                     tui.appendOutput(Ansi.fg(Ansi.THEME_ERR) + "[会话 ${id} 不存在]" + Ansi.reset())
@@ -355,6 +360,10 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
             let history = agent.history()
             let newId = store.saveFork(history, curId)
             SessionState.current = newId
+            // 分支后旧会话的压缩/任务/屏幕残留同样清掉（历史本身保留在 agent 里）
+            agent.resetSessionRuntime()
+            tui.clearConversation()
+            tui.resetSessionUiState()
             tui.appendOutput(Ansi.fg(Ansi.THEME_OK) + "[已分支为 ${newId}（parent=${curId}）]" + Ansi.reset())
         case "/ref" =>
             // 仓颉知识层语料面板：status/verify/rebuild/search 纯本地；update 联网须 --yes 二次确认

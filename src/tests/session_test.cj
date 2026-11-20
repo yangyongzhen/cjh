@@ -61,12 +61,14 @@ public class SessionStoreTest {
         Directory.create(this.dir, recursive: true)
         let store = this.buildStore()
         var msgs = ArrayList<ChatMessage>()
-        msgs.add(ChatMessage("user", "这是一个很长的用户消息，超过四十个字符用来测试摘要截断行为是否正确"))
+        // 49 个中文字符（>40），验证按 rune 截断而不是按字节切在字符中间
+        msgs.add(ChatMessage("user", "这是一个很长的用户消息，超过四十个字符用来测试摘要截断行为是否正确，补充更多文字确保超过四十个字符"))
         store.save(msgs)
 
         let list = store.list()
         @Assert(list.size, 1)
-        @Assert(list[0][1].size <= 41, true)  // 摘要截断到 40 字符 + …
+        @Assert(list[0][1].toRuneArray().size, 41)  // 40 字符 + …
+        @Assert(list[0][1].endsWith("…"), true)
 
         let tree = store.listTree()
         @Assert(tree.size, 1)

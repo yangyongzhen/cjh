@@ -894,13 +894,19 @@ func runTui(sessionId: String): Int64 {
                 // 流式结束：用最终完整文本（已整体修复 mojibake）整体渲染并重绘替换流式段
                 let md = MarkdownRender()
                 md.setUtf8(tui.isUtf8())  // 表格边框按终端能力降级
-                TuiBridge.endStream(indentReply(md.process(text) + md.finish()))
+                let outW = if (tui.cols() > 4) { tui.cols() - 2 } else { tui.cols() }
+                md.setMaxWidth(outW)  // 表格不超终端宽，避免折行错位
+                // 普通文本按显示宽度折行（表格/卡片跳过），旧实现超宽行被直接截断
+                TuiBridge.endStream(wrapRenderedText(indentReply(md.process(text) + md.finish()), outW))
                 StreamState.active = false
             } else {
                 // 非流式（旧协议全量返回）：整体渲染 markdown
                 let md = MarkdownRender()
                 md.setUtf8(tui.isUtf8())  // 表格边框按终端能力降级
-                TuiBridge.output(indentReply(md.process(text) + md.finish()))
+                let outW = if (tui.cols() > 4) { tui.cols() - 2 } else { tui.cols() }
+                md.setMaxWidth(outW)  // 表格不超终端宽，避免折行错位
+                // 普通文本按显示宽度折行（表格/卡片跳过），旧实现超宽行被直接截断
+                TuiBridge.output(wrapRenderedText(indentReply(md.process(text) + md.finish()), outW))
             }
             // 回复结束后加空行：与下一轮用户输入分隔
             TuiBridge.output("")
@@ -1090,13 +1096,16 @@ func runTui(sessionId: String): Int64 {
         tui.onSessionResume = { id =>
             let history = store.load(id)
             if (history.size > 0) {
-                // 清空当前历史后载入（保留 system）
+                // 清空当前历史后载入（保留 system），并复位会话级状态
+                agent.resetSessionRuntime()
                 let cur = agent.history()
                 while (cur.size > 1) {
                     cur.remove(cur.size - 1..cur.size)
                 }
                 agent.loadHistory(history)
                 SessionState.current = id
+                tui.clearConversation()
+                tui.resetSessionUiState()
                 tui.appendOutput(Ansi.fg(Ansi.THEME_WARN) + "[resumed ${id} (${history.size} msgs)]" + Ansi.reset())
             } else {
                 tui.appendOutput(Ansi.fg(Ansi.THEME_ERR) + "[会话 ${id} 不存在]" + Ansi.reset())

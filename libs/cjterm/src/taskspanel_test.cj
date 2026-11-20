@@ -168,6 +168,23 @@ public class TasksPanelTest {
     }
 
     @TestCase
+    public func testTasksPanelAllCompletedCollapses(): Unit {
+        // 全部完成后面板收成 1 行，不再占 3 行（长任务收尾不残留大面板）
+        let panel = TasksPanel()
+        panel.setUtf8(true)
+        var snaps = ArrayList<TaskSnapshot>()
+        snaps.add(TaskSnapshot(1, "统计文件数", TaskState.Completed))
+        snaps.add(TaskSnapshot(2, "读 cjpm.toml", TaskState.Completed))
+        panel.updateSnapshots(snaps)
+        @Assert(panel.shouldShow(), true)
+        @Assert(panel.height(16), 1)
+        let lines = this.renderLines(panel, 120, 16)
+        @Assert(lines.size, 1)
+        @Assert(lines[0].contains("Tasks 2 项全部完成"), true)
+        @Assert(lines[0].contains("✓"), true)
+    }
+
+    @TestCase
     public func testTasksPanelEmptyHidden(): Unit {
         // 无任务时面板不渲染（空面板不占屏）
         let panel = TasksPanel()

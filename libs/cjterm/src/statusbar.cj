@@ -83,7 +83,25 @@ public class StatusBar <: Component {
         } else {
             ""
         }
-        let content = modelPart + dirPart + sep + statusPart + hintPart
+        var content = modelPart + dirPart + sep + statusPart
+        // 右侧提示（滚动位置 48-71/6628）必须始终可见：先给它留宽度，再截左侧内容。
+        // 旧实现先按 budget 截断整行、再拼 hint，hint 永远落在截断点之后被丢弃。
+        let budget = width - 5
+        let hintW = TuiCanvas.displayWidth(hintPart)
+        if (hintW > 0 && budget > 0) {
+            if (hintW + 2 >= budget) {
+                // 极窄终端：只保留提示本身
+                content = StatusBar.truncateContent(hintPart, budget)
+            } else {
+                let leftBudget = budget - hintW
+                if (TuiCanvas.displayWidth(content) > leftBudget) {
+                    content = StatusBar.truncateContent(content, leftBudget)
+                }
+                content += hintPart
+            }
+        } else if (TuiCanvas.displayWidth(content) > budget && budget > 20) {
+            content = StatusBar.truncateContent(content, budget)
+        }
         var sb = StringBuilder()
         // 上边框：utf8 ┌─ / ascii +--（边框 THEME_BORDER 244，整行铺 bg 234）
         // 超长截断（v1.3.19）：Windows 长工作路径等场景 content 显示宽度可能
@@ -91,13 +109,8 @@ public class StatusBar <: Component {
         //（Linux 短路径不易触发，Windows 深层目录必现）。
         // 预算：行宽 - 前缀 3 列（┌─ + 空格）- 尾 1 列空格 - 1 列"…"
         // 旧实现不截断：content 超宽时终端折行叠到下一行（Windows 长路径必现）
-        let budget = width - 5
         sb.append(border + bx.stl + bx.hc + " ")
-        if (TuiCanvas.displayWidth(content) > budget && budget > 20) {
-            sb.append(StatusBar.truncateContent(content, budget))
-        } else {
-            sb.append(content)
-        }
+        sb.append(content)
         sb.append(border + " ")
         // 横线填充撑满到 width-1（truncate 保留 cols-1 可见，防终端折行的边距），
         // padBg 再铺整行 bg 234（可见宽度已 = width-1，padBg 不额外补空格）

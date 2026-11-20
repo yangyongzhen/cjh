@@ -84,6 +84,15 @@ public class TuiCanvas {
     }
 
     /**
+     * 清空差分缓存，强制下一帧全量重绘。
+     * 切会话/清屏后使用：否则上一屏残留行（欢迎页缩短、右栏会话列表消失）
+     * 不会被覆盖，用户会看到新旧内容叠在一起。
+     */
+    public func invalidate(): Unit {
+        this.prevLines = ArrayList<String>()
+    }
+
+    /**
      * 设置当前列偏移（内容区左侧预留列数；0 = 无偏移）。容器组件（Box）在委托
      * 子组件渲染前设置，渲染完成后恢复 0。
      */
@@ -236,6 +245,11 @@ public class TuiCanvas {
         return sb.toString()
     }
 
+    /** 实例形态的截断入口（组件内部与既有调用方沿用 canvas.truncate） */
+    public func truncate(text: String, cols: Int64): String {
+        return TuiCanvas.truncateText(text, cols)
+    }
+
     /**
      * 按列宽截断行（ANSI 感知 + 显示宽度感知）：
      * - ANSI 转义序列不计入可见宽度、整体复制；
@@ -248,7 +262,7 @@ public class TuiCanvas {
      *         UTF-8 序列；禁止逐字节 Rune(byte).toString() 拼回——
      *         那会把多字节字符按 Latin-1 误解码（"对话"→"å¯¹"乱码）。
      */
-    public func truncate(text: String, cols: Int64): String {
+    public static func truncateText(text: String, cols: Int64): String {
         // 允许恰好 cols 列可见字符（修实测"右对齐面板右边框被截"）：此前 maxVisible =
         // cols-1 的保守留白会把右对齐面板的最后一位（右边框 ╮/│）截掉。光标位置由
         // moveTo 显式定位、不依赖自然换行，写满最后一列是安全的
@@ -308,7 +322,7 @@ public class TuiCanvas {
                 ch = text[i..i + 1]
             }
             // 显示宽度：东亚宽字符=2 列，其余=1 列；放不下则停止（不切半字符）
-            let w = this.charWidth(ch)
+            let w = TuiCanvas.charWidth(ch)
             if (visible + w > maxVisible) {
                 break
             }
@@ -322,7 +336,7 @@ public class TuiCanvas {
     /**
      * 字符显示宽度：东亚宽字符（CJK/全角/谚文等）=2 列，其余=1 列
      */
-    private func charWidth(ch: String): Int64 {
+    public static func charWidth(ch: String): Int64 {
         let runes = ch.toRuneArray()
         if (runes.size == 0) {
             return 0
@@ -353,6 +367,113 @@ public class TuiCanvas {
         // "歧义宽度"区段，主流终端默认窄渲染。此前按 2 列算——用户终端实锤窄渲染，
         // 面板内容行（含 ✗/✓）右边框相对顶/底边系统性左移 1 列（"中间区域不对齐"）
         return false
+    }
+
+    /**
+     * 按显示宽度硬折行（ANSI 感知）：返回每段不超过 width 列的行。
+     * 保留 ANSI 序列；换行处补 reset，续行重放行首样式前缀（帮助页 muted 色不丢）。
+     * 与 truncate 同规则：CJK/emoji 按 2 列，宽字符放不下时整字移到下一行。
+     */
+    public static func wrapAnsi(text: String, width: Int64): ArrayList<String> {
+        var out = ArrayList<String>()
+        if (width <= 0) {
+            out.add(text)
+            return out
+        }
+        var line = StringBuilder()
+        var prefix = StringBuilder()
+        var visible: Int64 = 0
+        let n = text.size
+        var i: Int64 = 0
+        while (i < n) {
+            if (text[i] == 27u8) {
+                // ANSI 转义序列整体复制（不算可见宽度）
+                let start = i
+                i += 1
+                if (i < n && text[i] == 91u8 /* '[' */) {
+                    i += 1
+                    while (i < n) {
+                        let c = text[i]
+                        i += 1
+                        if (Int32(c) >= 0x40 && Int32(c) <= 0x7E) {
+                            break
+                        }
+                    }
+                } else if (i < n) {
+                    i += 1
+                }
+                let seq = text[start..i]
+                line.append(seq)
+                if (visible == 0) {
+                    prefix.append(seq)
+                }
+                continue
+            }
+            if (text[i] == 10u8 /* '\n' */) {
+                out.add(line.toString())
+                line = StringBuilder()
+                if (prefix.size > 0) {
+                    line.append(prefix.toString())
+                }
+                visible = 0
+                i += 1
+                continue
+            }
+            // 可见字符：按首字节取完整 UTF-8 序列
+            let b0 = Int32(text[i])
+            var len: Int64 = 1
+            if (b0 >= 0xF0) {
+                len = 4
+            } else if (b0 >= 0xE0) {
+                len = 3
+            } else if (b0 >= 0xC0) {
+                len = 2
+            }
+            if (i + len > n) {
+                len = n - i
+            }
+            var ch = ""
+            var ok = false
+            while (len > 0) {
+                try {
+                    ch = text[i..i + len]
+                    ok = true
+                    break
+                } catch (e: Exception) {
+                    len -= 1
+                }
+            }
+            if (!ok) {
+                ch = text[i..i + 1]
+                len = 1
+            }
+            var cp: UInt32 = UInt32(text[i])
+            try {
+                let runes = ch.toRuneArray()
+                if (runes.size > 0) {
+                    cp = UInt32(runes[0])
+                }
+            } catch (e: Exception) {
+                ()
+            }
+            let w = if (TuiCanvas.isWideCp(cp)) { 2 } else { 1 }
+            if (visible > 0 && visible + w > width) {
+                line.append(Ansi.reset())
+                out.add(line.toString())
+                line = StringBuilder()
+                if (prefix.size > 0) {
+                    line.append(prefix.toString())
+                }
+                visible = 0
+            }
+            line.append(ch)
+            visible += w
+            i += len
+        }
+        if (line.size > 0 || out.size == 0) {
+            out.add(line.toString())
+        }
+        return out
     }
 
     /**
@@ -426,4 +547,43 @@ public class TuiCanvas {
         }
         return sb.toString()
     }
+}
+
+/**
+ * 输出区文本按显示宽度折行：普通/说明文字硬折行，表格与卡片行保持原样。
+ * 表格行若被折行，边框和列对齐会彻底散架，所以按边框字符识别后跳过。
+ * 供 TUI 最终 markdown 渲染结果使用（流式阶段仍直出原始文本）。
+ */
+public func wrapRenderedText(text: String, width: Int64): String {
+    if (width <= 0) {
+        return text
+    }
+    let lines = text.split("\n", -1)
+    var sb = StringBuilder()
+    for (i in 0..lines.size) {
+        if (i > 0) {
+            sb.append("\n")
+        }
+        let line = lines[i]
+        // 表格/卡片边框行：不折行（折了比截断更糟）
+        let hasBox = line.contains("│") || line.contains("┌") || line.contains("└") ||
+            line.contains("├") || line.contains("╭") || line.contains("╰") ||
+            line.contains("┬") || line.contains("┴") || line.contains("┼") ||
+            line.contains("╮") || line.contains("╯") || line.contains("╰")
+        let trimmed = line.trimAscii()
+        let asciiTable = (trimmed.startsWith("+") && trimmed.contains("-")) ||
+            (trimmed.startsWith("|") && trimmed.endsWith("|"))
+        if (hasBox || asciiTable) {
+            sb.append(line)
+            continue
+        }
+        let segs = TuiCanvas.wrapAnsi(line, width)
+        for (j in 0..segs.size) {
+            if (j > 0) {
+                sb.append("\n")
+            }
+            sb.append(segs[j])
+        }
+    }
+    return sb.toString()
 }

@@ -883,6 +883,39 @@ public class Agent {
         this.onTodosChanged()
     }
 
+    /**
+     * 重置会话级运行状态（/new /resume /fork 与恢复会话时调用）：
+     * 压缩标记/后台 Future、真实 token 测量、待办任务。历史消息由调用方处理。
+     */
+    public func resetSessionRuntime(): Unit {
+        this.compactLock.lock()
+        try {
+            this.pendingCompact = None
+            this.compactPendingSince = None
+            this.compactAppliedOnce = false
+            this.compactTriggeredOnce = false
+            this.autoCompactMode = "None"
+            this.lastPromptTokens = 0
+            this.todos = ArrayList<TodoItem>()
+            this.nextTodoId = 1
+        } finally {
+            this.compactLock.unlock()
+        }
+        this.onTodosChanged()
+        // 复位状态栏：上一会话遗留的 Compacting… 不能跟到新会话
+        this.onCompact(false)
+    }
+
+    /**
+     * 开始新会话：清空历史（保留 system）并重置会话级状态。
+     */
+    public func newSession(): Unit {
+        while (this.messages.size > 1) {
+            this.messages.remove(this.messages.size - 1..this.messages.size)
+        }
+        this.resetSessionRuntime()
+    }
+
     // ==================== 续跑防护内部判据 ====================
 
     /** 未完成（非 Completed）待办快照 */
@@ -1414,55 +1447,18 @@ public class Agent {
      * 强制压缩实现（复用 maybeCompact 的摘要请求逻辑）
      */
     private func maybeCompactForce(keep: Int64): Bool {
-        let compactEnd = this.messages.size - keep
-        if (compactEnd <= 1) {
+        let req = this.buildSummaryRequest(keep)
+        // 无 assistant 纯文本可摘要：no-op（旧实现仍发一次空摘要请求，
+        // 模型回一句“无内容”就把“压缩完成”当成功，随后反复空转）。
+        if (req[2].size == 0) {
+            Log.info("compaction 跳过：可压缩区间没有 assistant 文本")
             return false
         }
-        var sb = StringBuilder()
-        sb.append("请把以下对话历史压缩成一段简洁的中文摘要（保留：任务目标、已完成的工具调用与关键结果、当前进度、尚未解决的问题）。不要遗漏重要事实。")
-        for (i in 1..compactEnd) {
-            let m = this.messages[i]
-            // 用户消息（任务目标/中途追加任务）+ 工具调用/结果保留原文（失忆修复）
-            if (m.role == "user" || m.role == "tool" || m.toolCalls.size > 0) {
-                continue
-            }
-            sb.append("\n[${m.role}] ${m.content}")
-        }
-        var summaryMsgs = ArrayList<ChatMessage>()
-        summaryMsgs.add(ChatMessage("user", sb.toString()))
-        var summary = ""
-        try {
-            let resp = this.provider.chatStream(summaryMsgs, ArrayList<ToolSpec>(), { _ => }, { _ => }, { _ => }, { => false })
-            summary = resp.text
-        } catch (e: Exception) {
-            return false
-        }
+        let summary = this.requestSummary(req[2])
         if (summary.size == 0) {
             return false
         }
-        var newMsgs = ArrayList<ChatMessage>()
-        if (this.messages.size > 0) {
-            newMsgs.add(this.messages[0])
-        }
-        newMsgs.add(ChatMessage("user", "[历史摘要] ${summary}"))
-        for (i in 1..compactEnd) {
-            let m = this.messages[i]
-            if (m.role == "user" || m.role == "tool" || m.toolCalls.size > 0) {
-                newMsgs.add(m)
-            }
-        }
-        for (i in compactEnd..this.messages.size) {
-            newMsgs.add(this.messages[i])
-        }
-        // P1b：换装持 compactLock——手动 /compact 在独立线程调用，与主循环后台
-        // 摘要任务的快照/换装共享 messages，锁串行化换装语句保证不交错写坏
-        this.compactLock.lock()
-        try {
-            this.messages = newMsgs
-        } finally {
-            this.compactLock.unlock()
-        }
-        return true
+        return this.applySummary(summary, req)
     }
 
     /**
@@ -1479,8 +1475,12 @@ public class Agent {
      * 用于压缩触发判断（无需精确，只需量级正确）。
      */
     private func estimateMessagesTokens(): Int64 {
+        return this.estimateTokensFor(this.messages)
+    }
+
+    private func estimateTokensFor(msgs: ArrayList<ChatMessage>): Int64 {
         var total: Int64 = 0
-        for (m in this.messages) {
+        for (m in msgs) {
             total += m.content.size / 4 + 8  // +8 近似 role/name/tool_call_id 开销
         }
         return total
@@ -1507,12 +1507,15 @@ public class Agent {
             return false
         }
         let req = this.buildSummaryRequest(keep)
+        if (req[2].size == 0) {
+            Log.info("compaction 跳过：可压缩区间没有 assistant 文本")
+            return false
+        }
         let summary = this.requestSummary(req[2])
         if (summary.size == 0) {
             return false
         }
-        this.applySummary(summary, req)
-        return true
+        return this.applySummary(summary, req)
     }
 
     /**
@@ -1538,8 +1541,15 @@ public class Agent {
         var kept = ArrayList<ChatMessage>()
         var sb = StringBuilder()
         sb.append("请把以下对话历史压缩成一段简洁的中文摘要（保留：任务目标、已完成的关键操作与结果、当前进度、尚未解决的问题）。不要遗漏重要事实。")
+        var hasAssistantText = false
         for (i in 1..compactEnd) {
             let m = this.messages[i]
+            if (isSummaryMessage(m)) {
+                // 旧摘要不再作为 kept 用户消息累积；把它的内容并入新摘要，
+                // 否则多轮压缩后 [历史摘要] 会一层层叠加、越压越大。
+                sb.append("\n[此前摘要] ${summaryBody(m.content)}")
+                continue
+            }
             // 用户消息（首条任务目标 + 中途下发的追加任务）+ 工具调用/结果：保留原文。
             // 任务目标进摘要会被"简洁转述"逐次稀释（多轮压缩后彻底丢失），
             // agent 因此失忆、任务半途而废——用户指令必须全部钉在历史里（用户实测反馈）
@@ -1547,12 +1557,31 @@ public class Agent {
                 kept.add(m)
             } else {
                 // assistant 文本：进摘要
+                hasAssistantText = true
                 sb.append("\n[${m.role}] ${m.content}")
             }
         }
         var summaryMsgs = ArrayList<ChatMessage>()
-        summaryMsgs.add(ChatMessage("user", sb.toString()))
+        if (hasAssistantText) {
+            summaryMsgs.add(ChatMessage("user", sb.toString()))
+        }
         return (compactEnd, kept, summaryMsgs)
+    }
+
+    /**
+     * 会话压缩生成的摘要消息（用户消息 + "[历史摘要] " 前缀）。
+     * 多轮压缩时这类消息不再作为 kept 累积，内容并入新摘要后整体替换。
+     */
+    private func isSummaryMessage(m: ChatMessage): Bool {
+        return m.role == "user" && m.content.startsWith("[历史摘要] ")
+    }
+
+    private func summaryBody(content: String): String {
+        let prefix = "[历史摘要] "
+        if (content.size <= prefix.size) {
+            return content
+        }
+        return content[prefix.size..]
     }
 
     /**
@@ -1574,10 +1603,11 @@ public class Agent {
      * 应用摘要（换装 messages）：system + 摘要 + 保留的工具链消息 + 最近 keep 条。
      * 在 compactLock 内执行，与后台任务的"快照→换装"互斥，避免换装旧列表。
      */
-    private func applySummary(summary: String, req: (Int64, ArrayList<ChatMessage>, ArrayList<ChatMessage>)): Unit {
+    private func applySummary(summary: String, req: (Int64, ArrayList<ChatMessage>, ArrayList<ChatMessage>)): Bool {
         let compactEnd = req[0]
         let kept = req[1]
         this.compactLock.lock()
+        var applied = false
         try {
             // 重建历史：system + 摘要 + 保留的工具链消息 + 最近 keep 条
             var newMsgs = ArrayList<ChatMessage>()
@@ -1591,14 +1621,23 @@ public class Agent {
             for (i in compactEnd..this.messages.size) {
                 newMsgs.add(this.messages[i])
             }
-            this.messages = newMsgs
-            // 重置真实 prompt token 记录：压缩后旧测量值已失真（>阈值），
-            // 不重置会导致下一轮基于陈旧值再次压缩（churn）
-            this.lastPromptTokens = 0
+            // 无收益回滚：摘要比被替换的 assistant 文本还长时不换装，
+            // 否则"压缩成功"了但 token 反而增长，下一轮继续超阈值（用户实测 churn）。
+            let oldTokens = this.estimateMessagesTokens()
+            let newTokens = this.estimateTokensFor(newMsgs)
+            if (newTokens >= oldTokens) {
+                Log.info("compaction 跳过：摘要无收益（${oldTokens} -> ${newTokens} tokens）")
+            } else {
+                this.messages = newMsgs
+                // 重置真实 prompt token 记录：压缩后旧测量值已失真（>阈值），
+                // 不重置会导致下一轮基于陈旧值再次压缩（churn）
+                this.lastPromptTokens = 0
+                applied = true
+            }
         } finally {
             this.compactLock.unlock()
         }
-
+        return applied
     }
 
     // ==================== P1b：compaction 后台异步化 ====================
@@ -1661,6 +1700,10 @@ public class Agent {
             }
         } finally {
             this.compactLock.unlock()
+        }
+        if (snapMsgs.size == 0) {
+            Log.info("compaction 跳过：可压缩区间没有 assistant 文本")
+            return
         }
         // let 接住不可变快照（spawn 闭包只能捕获不可量：快照列表此刻起不再变化）
         let snapSummaryMsgs = snapMsgs
@@ -1741,15 +1784,27 @@ public class Agent {
                 newMsgs.add(this.messages[0])  // system
             }
             newMsgs.add(ChatMessage("user", "[历史摘要] ${summary}"))
-            // kept（与同步路径同规则）：用户消息（任务目标/中途追加任务）+ 工具调用/结果保留原文
+            // kept（与同步路径同规则）：用户消息（任务目标/中途追加任务）+ 工具调用/结果保留原文。
+            // 旧 [历史摘要] 不重复累积——本轮新摘要已包含它。
             for (i in 1..compactEnd) {
                 let m = this.messages[i]
+                if (isSummaryMessage(m)) {
+                    continue
+                }
                 if (m.role == "user" || m.role == "tool" || m.toolCalls.size > 0) {
                     newMsgs.add(m)
                 }
             }
             for (i in compactEnd..this.messages.size) {
                 newMsgs.add(this.messages[i])
+            }
+            let oldTokens = this.estimateMessagesTokens()
+            let newTokens = this.estimateTokensFor(newMsgs)
+            if (newTokens >= oldTokens) {
+                Log.info("compaction 跳过：摘要无收益（${oldTokens} -> ${newTokens} tokens）")
+                this.lastPromptTokens = 0
+                this.onCompact(false)
+                return
             }
             this.messages = newMsgs
             // 重置真实 prompt token 记录：压缩后旧测量值已失真（>阈值），

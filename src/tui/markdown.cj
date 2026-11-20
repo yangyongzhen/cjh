@@ -66,6 +66,9 @@ public class MarkdownRender {
     private var tableData: ArrayList<String> = ArrayList<String>()    // 数据行缓冲（表格结束统一渲染，列宽=全部行最大值）
     // 终端 UTF-8 能力（false 时表格边框降级 +|-|；runTui 构造后接线）
     private var utf8: Bool = true
+    // 输出最大列宽（0=不限）：表格总宽超过时收缩列宽并截断单元格，
+    // 否则长表格被终端自动折行，TUI 输出区错位（用户长任务实测）
+    private var maxWidth: Int64 = 0
 
     public init() {}
 
@@ -74,6 +77,11 @@ public class MarkdownRender {
      */
     public func setUtf8(v: Bool): Unit {
         this.utf8 = v
+    }
+
+    /** 设置输出最大显示宽度（终端列数；0/负数=不限） */
+    public func setMaxWidth(w: Int64): Unit {
+        this.maxWidth = w
     }
 
     /**
@@ -357,6 +365,46 @@ public class MarkdownRender {
     }
 
     /**
+     * 表格总宽约束：总宽 = sum(列宽) + 3*cols + 1（边框/空格开销）。
+     * 超限时从最宽列逐列减 1（保底 1 列），最后单列内容由 renderBorderRow 截断。
+     */
+    private func capTableWidths(widths: ArrayList<Int64>): ArrayList<Int64> {
+        if (this.maxWidth <= 0 || widths.size == 0) {
+            return widths
+        }
+        let overhead = 3 * Int64(widths.size) + 1
+        var avail = this.maxWidth - overhead
+        if (avail < Int64(widths.size)) {
+            avail = Int64(widths.size)
+        }
+        var out = ArrayList<Int64>()
+        for (w in widths) {
+            out.add(if (w > 1) { w } else { 1 })
+        }
+        var sum: Int64 = 0
+        for (w in out) {
+            sum += w
+        }
+        while (sum > avail) {
+            // 找最宽列减 1；全部到 1 仍超限则停止（极窄终端无法完整显示）
+            var maxIdx: Int64 = 0
+            var maxW: Int64 = 0
+            for (i in 0..out.size) {
+                if (out[i] > maxW) {
+                    maxW = out[i]
+                    maxIdx = i
+                }
+            }
+            if (maxW <= 1) {
+                break
+            }
+            out[maxIdx] = out[maxIdx] - 1
+            sum -= 1
+        }
+        return out
+    }
+
+    /**
      * 渲染表头（边框 + 对齐 + 粗体）+ 分隔线
      */
     private func renderTableHeader(sb: StringBuilder): Unit {
@@ -435,6 +483,14 @@ public class MarkdownRender {
             if (i < cells.size) {
                 cell = cells[i]
             }
+            if (TuiCanvas.displayWidth(cell) > this.tableWidths[i]) {
+                let w = this.tableWidths[i]
+                cell = if (w > 1) {
+                    TuiCanvas.truncateText(cell, w - 1) + "…"
+                } else {
+                    TuiCanvas.truncateText(cell, w)
+                }
+            }
             let cw = TuiCanvas.displayWidth(cell)
             let pad = if (this.tableWidths[i] - cw > 0) {
                 this.tableWidths[i] - cw
@@ -473,7 +529,7 @@ public class MarkdownRender {
             for (d in this.tableData) {
                 allRows.add(d)
             }
-            this.tableWidths = this.calcWidths(allRows)
+            this.tableWidths = this.capTableWidths(this.calcWidths(allRows))
             this.renderTableTopBorder(sb)
             sb.append("\n")
             this.renderTableHeader(sb)

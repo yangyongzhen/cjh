@@ -190,7 +190,8 @@ func acBuildAgent(mainProvider: LlmProvider, tool: CjhTool,
         for (_ in 0..contentLen) {
             sb.append("y")
         }
-        history.add(ChatMessage("user", "历史 ${i}：" + sb.toString()))
+        let role = if (i % 2 == 0) { "user" } else { "assistant" }
+        history.add(ChatMessage(role, "历史 ${i}：" + sb.toString()))
     }
     agent.loadHistory(history)
     return agent
@@ -332,8 +333,8 @@ public class AsyncCompactionTest {
         let (done, b, a) = agent.compact(true)
         @Assert(done, true)
         @Assert(b, before)
-        // 用户消息全保留（失忆修复）：体积可能不缩（system + 摘要 + 3 kept + 2 recent = 7）
-        @Assert(a, before + 1)
+        // user 全保留、assistant 进摘要：system + 摘要 + 2 kept user + 2 recent = 6
+        @Assert(a, before)
         @Assert(acContainsSummary(agent), true)
         @Assert(agent.getCompactionMode(), "None")  // 手动路径不改 auto 模式
     }
