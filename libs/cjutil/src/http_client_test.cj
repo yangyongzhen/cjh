@@ -107,9 +107,16 @@ func startFetchMock(port: UInt16, mode: String, bodyText: String, probe: MockPro
                 } else {
                     ""
                 }
-                conn.write(("${statusLine}\r\n${sessionHeader}Content-Type: application/json\r\nContent-Length: ${bodyBytes.size}\r\n\r\n").toArray())
-                conn.write(bodyBytes)
-                waitEof(conn, probe)
+                if (mode == "sse") {
+                    // SSE 流场景：无 Content-Length，写完即服务端主动关闭（客户端读到 EOF 收尾）
+                    conn.write(("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n").toArray())
+                    conn.write(bodyText.toArray())
+                    probe.markEof()
+                } else {
+                    conn.write(("${statusLine}\r\n${sessionHeader}Content-Type: application/json\r\nContent-Length: ${bodyBytes.size}\r\n\r\n").toArray())
+                    conn.write(bodyBytes)
+                    waitEof(conn, probe)
+                }
             }
         } catch (e: Exception) {
             // 客户端提前关闭等异常忽略
@@ -164,6 +171,39 @@ func waitUntilTrue(cond: () -> Bool, timeoutMs: Int64): Bool {
         sleep(Duration.millisecond * 20)
     }
     return cond()
+}
+
+/** SSE 事件收集器（lambda 不能捕获可变局部变量 → 用类实例字段） */
+class SseEventCollector {
+    private let m = Mutex()
+    private let events = ArrayList<(String, String, String)>()
+
+    func add(id: String, ev: String, data: String): Unit {
+        m.lock()
+        try {
+            events.add((id, ev, data))
+        } finally {
+            m.unlock()
+        }
+    }
+
+    func size(): Int64 {
+        m.lock()
+        try {
+            return events.size
+        } finally {
+            m.unlock()
+        }
+    }
+
+    func at(i: Int64): (String, String, String) {
+        m.lock()
+        try {
+            return events[i]
+        } finally {
+            m.unlock()
+        }
+    }
 }
 
 // ==================== 用例 ====================
@@ -314,6 +354,34 @@ public class HttpClientFetchTest {
         }
         @Assert(sessionId.isSome(), true)
         @Assert(sessionId.getOrThrow(), "test-session-42")
+    }
+
+    /** SSE 流：事件逐条回调（id/event/data 解析）+ extraHeaders（如 Last-Event-ID）随请求发送 */
+    @TestCase
+    public func testSseStreamParsesEventsAndSendsHeaders(): Unit {
+        let port: UInt16 = 18928
+        let probe = MockProbe()
+        let sseBody = "id: 1\nevent: message\ndata: hello-A\n\n: comment line\nid: 2\ndata: hello-B\ndata: more-B\n\n"
+        let _ = startFetchMock(port, "sse", sseBody, probe)
+
+        let hdrs = HashMap<String, String>()
+        hdrs["Last-Event-ID"] = "42"
+        let events = SseEventCollector()
+        let status = httpClientSseStream(
+            "http://127.0.0.1:${probe.boundPort}/events", 5, "cjh-test", "en-US", Some(hdrs),
+            { id, ev, data => events.add(id, ev, data) })
+        @Assert(status, 200)
+        // 两个事件；注释行不产生事件；data 多行合并、缺省 event 为空串
+        @Assert(events.size(), 2)
+        @Assert(events.at(0)[0], "1")
+        @Assert(events.at(0)[1], "message")
+        @Assert(events.at(0)[2], "hello-A")
+        @Assert(events.at(1)[0], "2")
+        @Assert(events.at(1)[1], "")
+        @Assert(events.at(1)[2], "hello-B\nmore-B")
+        // 请求头随连接发出（ Last-Event-ID 恢复语义的载体）
+        @Assert(waitUntilTrue({ => probe.headers().size > 0 }, 3000), true)
+        @Assert(probe.headers().toAsciiLower().contains("last-event-id: 42"), true)
     }
 
     /** 纯函数边界：超时归一化（≤0 → 1s 下限；极大值 → 86400s 上限，防 Duration 乘法溢出） */

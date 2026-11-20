@@ -21,6 +21,7 @@ import std.collection.*
 import cjlog.*
 import std.process.*
 import std.io.*
+import std.sync.*
 import stdx.encoding.json.*
 import cjcfg.McpServerConfig
 import cjllm.ToolSpec
@@ -31,6 +32,10 @@ const MCP_HTTP_TIMEOUT_SECONDS: Int64 = 30
 const MCP_HTTP_MAX_BODY_BYTES: Int64 = 1048576
 // MCP 规范版本（Streamable HTTP：initialize 后的请求须携带 MCP-Protocol-Version 头）
 const MCP_PROTOCOL_VERSION: String = "2025-03-26"
+// GET 推送流：空闲上限（无字节到达判定连接死亡）与断线重连退避
+const MCP_PUSH_IDLE_SECONDS: Int64 = 75
+const MCP_PUSH_RETRY_MS: Int64 = 1500
+const MCP_USER_AGENT: String = "cjh/1.6.13 (Cangjie Coding Agent)"
 
 /**
  * MCP 客户端：管理单个 MCP 服务器的连接和通信
@@ -44,6 +49,11 @@ public class McpClient {
     // http 传输会话状态：initialize 响应的 Mcp-Session-Id 与握手完成标记
     private var sessionId: ?String = None
     private var initialized: Bool = false
+    // GET 推送流（SSE 长连接）状态：运行标记 + 断点续传 id + 已收事件
+    private let pushMutex = Mutex()
+    private var pushRunning: Bool = false
+    private var lastEventId: String = ""
+    private let pushedEvents: ArrayList<String> = ArrayList<String>()
 
     public init(config: McpServerConfig) {
         this.config = config
@@ -124,13 +134,14 @@ public class McpClient {
      * http 传输收尾：有会话时按规范 DELETE 终止（失败静默，不影响调用方）
      */
     private func disconnectHttp(): Unit {
+        this.stopPushStream()  // 先停推送流，再终止会话
         match (this.sessionId) {
             case Some(sid) =>
                 var hdrs = HashMap<String, String>()
                 hdrs["Mcp-Session-Id"] = sid
                 try {
                     let _ = httpClientFetch("DELETE", this.config.url, 5,
-                        MCP_HTTP_MAX_BODY_BYTES, "cjh/1.6.13 (Cangjie Coding Agent)",
+                        MCP_HTTP_MAX_BODY_BYTES, MCP_USER_AGENT,
                         "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7", None, Some(hdrs))
                 } catch (e: Exception) {
                     // 会话终止失败可忽略（服务器自行超时回收）
@@ -163,8 +174,105 @@ public class McpClient {
         }
         this.initialized = true
         this.httpPostRpc(this.buildNotification("notifications/initialized", JsonObject()))
+        this.startPushStream()
         Log.info("[MCP] 已连接服务器: ${this.config.name}")
         return true
+    }
+
+    /**
+     * 后台 GET 推送流（Streamable HTTP 规范）：
+     *   - initialize 后对同一 endpoint 发 GET（Accept: text/event-stream）打开 SSE
+     *     长连接，接收服务器主动推送的通知/请求
+     *   - 断线自动重连，回传 Last-Event-ID（从最后收到的事件 id 恢复）
+     *   - 405（服务器不支持推送流）/ 404（会话失效）停止重连
+     *   - disconnect 置停止标记，循环自然退出
+     */
+    private func startPushStream(): Unit {
+        this.pushMutex.lock()
+        this.pushRunning = true
+        this.pushMutex.unlock()
+        let client = this
+        let sidSnapshot = this.sessionId  // 会话 id 启动前快照（推送线程内只读）
+        spawn {
+            var status = 0
+            while (client.pushStillRunning()) {
+                var hdrs = HashMap<String, String>()
+                match (sidSnapshot) {
+                    case Some(sid) => hdrs["Mcp-Session-Id"] = sid
+                    case None => ()
+                }
+                hdrs["MCP-Protocol-Version"] = MCP_PROTOCOL_VERSION
+                let lastId = client.currentLastEventId()
+                if (lastId != "") {
+                    hdrs["Last-Event-ID"] = lastId
+                }
+                status = httpClientSseStream(client.config.url, MCP_PUSH_IDLE_SECONDS,
+                    MCP_USER_AGENT, "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7", Some(hdrs),
+                    { id, _, data => client.recordPushEvent(id, data) })
+                if (!client.pushStillRunning()) { break }
+                if (status == 405 || status == 404) {
+                    Log.debug("[MCP] ${client.config.name} 服务器不支持 GET 推送流（${status}），停止订阅")
+                    break
+                }
+                // 断线（EOF/异常/非 2xx）：退避后重连，Last-Event-ID 从断点续传
+                sleep(Duration.millisecond * MCP_PUSH_RETRY_MS)
+            }
+        }
+    }
+
+    private func pushStillRunning(): Bool {
+        this.pushMutex.lock()
+        try {
+            return this.pushRunning
+        } finally {
+            this.pushMutex.unlock()
+        }
+    }
+
+    private func stopPushStream(): Unit {
+        this.pushMutex.lock()
+        try {
+            this.pushRunning = false
+        } finally {
+            this.pushMutex.unlock()
+        }
+    }
+
+    /** 推送线程内更新断点 id（回调与重连同线程）并记录已收事件 */
+    private func recordPushEvent(id: String, data: String): Unit {
+        this.pushMutex.lock()
+        try {
+            if (id != "") {
+                this.lastEventId = id
+            }
+            this.pushedEvents.add(data)
+        } finally {
+            this.pushMutex.unlock()
+        }
+        Log.debug("[MCP] ${this.config.name} 收到推送事件: ${data}")
+    }
+
+    private func currentLastEventId(): String {
+        this.pushMutex.lock()
+        try {
+            return this.lastEventId
+        } finally {
+            this.pushMutex.unlock()
+        }
+    }
+
+    /** 已收到的推送事件快照（诊断/测试用） */
+    public func getPushedEvents(): ArrayList<String> {
+        this.pushMutex.lock()
+        try {
+            let out = ArrayList<String>()
+            for (e in this.pushedEvents) {
+                out.add(e)
+            }
+            return out
+        } finally {
+            this.pushMutex.unlock()
+        }
     }
 
     private func isHttp(): Bool {
@@ -188,7 +296,7 @@ public class McpClient {
             }
         }
         let result = httpClientFetch("POST", this.config.url, MCP_HTTP_TIMEOUT_SECONDS,
-            MCP_HTTP_MAX_BODY_BYTES, "cjh/1.6.13 (Cangjie Coding Agent)",
+            MCP_HTTP_MAX_BODY_BYTES, MCP_USER_AGENT,
             "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7", Some(msg.toJsonString()), Some(hdrs))
         if (!result.isOk()) {
             return None

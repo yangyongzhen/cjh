@@ -341,6 +341,148 @@ private func extractResponseHeaders(hdrs: HttpHeaders): HashMap<String, String> 
 }
 
 /**
+ * SSE 事件解析器（增量的行 → 事件状态机）
+ *
+ * 规范（WHATWG SSE）：字段 id / event / data，空行派发事件；":" 开头为注释行；
+ * data 多行以 \n 连接；id 仅在事件派发时生效（连同事件一起交给回调）。
+ */
+class SseEventParser {
+    private var curId = ""
+    private var curEvent = ""
+    private let dataLines = ArrayList<String>()
+
+    func feed(line: String, onEvent: (String, String, String) -> Unit): Unit {
+        if (line == "") {
+            this.dispatch(onEvent)
+            return
+        }
+        if (line.startsWith(":")) { return }  // 注释行
+        let idx = line.indexOf(":")
+        let field = if (idx.isSome()) { line[0..idx.getOrThrow()] } else { line }
+        let value = if (idx.isSome()) {
+            let v = line[(idx.getOrThrow() + 1)..line.size]
+            if (v.startsWith(" ")) { v[1..v.size] } else { v }
+        } else {
+            ""
+        }
+        if (field == "id") {
+            curId = value
+        } else if (field == "event") {
+            curEvent = value
+        } else if (field == "data") {
+            dataLines.add(value)
+        }
+    }
+
+    /** EOF 时收尾：未以空行终止的事件按规范外宽容派发 */
+    func finish(onEvent: (String, String, String) -> Unit): Unit {
+        this.dispatch(onEvent)
+    }
+
+    private func dispatch(onEvent: (String, String, String) -> Unit): Unit {
+        if (dataLines.size > 0) {
+            var data = ""
+            for (j in 0..dataLines.size) {
+                if (j > 0) { data += "\n" }
+                data += dataLines[j]
+            }
+            onEvent(curId, curEvent, data)
+        }
+        curId = ""
+        curEvent = ""
+        dataLines.clear()
+    }
+}
+
+/**
+ * 流式读取 SSE 响应体：每条完整事件回调一次（阻塞调用，适合放独立线程）
+ *
+ * 与 httpClientFetch 的差别：不整体读干响应体再返回，而是边读边解析
+ * （长连接场景：HTTP 逐块到达，事件即时回调）；EOF/读异常正常返回。
+ *
+ * 返回：HTTP 状态码（2xx 表示连接成功并已读到 EOF/异常中断；0 表示未拿到响应）
+ * 约束（readTimer WARN 规避，见文件头）：客户端 readTimeout = idleTimeoutSeconds + 10s，
+ * 所有出口 close 客户端；idleTimeoutSeconds 是"无字节到达"的空闲上限（连接死亡探测）。
+ */
+public func httpClientSseStream(
+    url: String,
+    idleTimeoutSeconds: Int64,
+    userAgent: String,
+    acceptLanguage: String,
+    extraHeaders: ?Map<String, String>,
+    onEvent: (String, String, String) -> Unit
+): Int64 {
+    let tlsConfig = buildTlsClientConfig(extractHostFromUrl(url))
+    let effectiveTimeout = normalizeTimeoutSeconds(idleTimeoutSeconds)
+    let client = ClientBuilder()
+        .tlsConfig(tlsConfig)
+        .readTimeout(Duration.second * (effectiveTimeout + 10))
+        .writeTimeout(Duration.second * 10)
+        .build()
+    let builder = HttpRequestBuilder()
+    builder.get()
+    builder.url(url)
+    builder.header("User-Agent", userAgent)
+    // SSE 流固定 Accept；Accept-Language 无默认覆盖问题，直接设
+    builder.header("Accept", "text/event-stream")
+    builder.header("Accept-Language", acceptLanguage)
+    match (extraHeaders) {
+        case Some(hdrs) =>
+            for ((k, v) in hdrs) {
+                builder.header(k, v)
+            }
+        case None => ()
+    }
+    let req = builder.build()
+    try {
+        let resp = client.send(req)
+        let status = Int64(resp.status)
+        if (status < 200 || status >= 300) {
+            return status
+        }
+        // 逐块读字节，按 0x0A 切行（字节级切分后再解码，避免 UTF-8 多字节被块边界劈坏）
+        let parser = SseEventParser()
+        let pending = ArrayList<Byte>()
+        let buf = Array<Byte>(8192, repeat: UInt8(0))
+        try {
+            while (true) {
+                let n = resp.body.read(buf)
+                if (n <= 0) { break }
+                for (i in 0..n) {
+                    let b = buf[i]
+                    if (b == UInt8(0x0A)) {
+                        parser.feed(decodeLine(pending), onEvent)
+                        pending.clear()
+                    } else if (b != UInt8(0x0D)) {  // \r 丢弃（兼容 \r\n 行尾）
+                        pending.add(b)
+                    }
+                }
+            }
+            if (pending.size > 0) {
+                parser.feed(decodeLine(pending), onEvent)
+            }
+        } catch (e: Exception) {
+            // 读中断（对端断开/空闲超时）：已收到的事件照常交付，交给调用方重连
+        }
+        parser.finish(onEvent)
+        return status
+    } catch (e: Exception) {
+        return 0
+    } finally {
+        try { client.close() } catch (e: Exception) {}
+    }
+}
+
+/** 行字节缓冲 → String（整行解码，规避逐字节 append 的十进制输出坑） */
+private func decodeLine(pending: ArrayList<Byte>): String {
+    let raw = Array<Byte>(pending.size, repeat: UInt8(0))
+    for (k in 0..pending.size) {
+        raw[k] = pending[k]
+    }
+    return safeFromUtf8(raw)
+}
+
+/**
  * 读取 HTTP 响应体（最多 maxBytes 字节）
  */
 private func readResponseBody(body: InputStream, maxBytes: Int64): Array<Byte> {
