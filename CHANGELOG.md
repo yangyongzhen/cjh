@@ -4,6 +4,17 @@ cjh 版本变更记录。依据 git tag 史 + 提交史整理；版本号规则�
 
 > 注：v1.0.0 / v1.1.0（首个 tag 前）/ v1.2.2 / v1.3.0 / v1.3.5 等版本未打 tag，日期与内容按提交史还原，以「无 tag」标注。
 
+## [v1.6.13] - 2026-11-20
+
+### 新增（MCP 客户端支持 Streamable HTTP 传输，PR #13 / issue #11）
+
+- MCP 客户端新增 `http` 传输：单次 POST JSON-RPC（无状态，不回传 Mcp-Session-Id），
+  可对接远程 HTTP 型 MCP 服务器（如华为鸿蒙开发者知识库）
+- `McpServerConfig.transport` 支持 `"stdio" | "http"`，http 配置须提供 `url`
+- 响应解析 `parseMcpHttpRpcBody` 兼容纯 JSON 与 SSE `data:` 帧两种形态；单次超时 30s、
+  响应体上限 1 MiB
+- 新增单测 `mcp_http_test.cj`（纯 JSON / SSE 帧 / 非法输入三例）
+
 ## [v1.6.12] - 2026-11-07
 
 ### 修复（斜杠命令回显不跟随选中项 / 后台任务残留 rc 造成假终态 / 出站帧清单漏列）

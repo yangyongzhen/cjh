@@ -153,7 +153,7 @@ public class McpClient {
         hdrs["Content-Type"] = "application/json"
         hdrs["Accept"] = "application/json, text/event-stream"
         let body = httpClientRequest("POST", this.config.url, MCP_HTTP_TIMEOUT_SECONDS,
-            MCP_HTTP_MAX_BODY_BYTES, "cjh/1.6.12 (Cangjie Coding Agent)",
+            MCP_HTTP_MAX_BODY_BYTES, "cjh/1.6.13 (Cangjie Coding Agent)",
             "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7", Some(msg.toJsonString()), Some(hdrs))
         return parseMcpHttpRpcBody(body)
     }
