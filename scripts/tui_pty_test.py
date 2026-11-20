@@ -204,7 +204,7 @@ def test_startup_and_input() -> None:
         # （工具调用行只显示路径 /tmp）；折叠态一条都不绘制，展开后视口内至少一条。
         tmpDirs = [n + "/" for n in os.listdir("/tmp")
                    if len(n) > 6 and os.path.isdir(os.path.join("/tmp", n))]
-        check("工具明细默认折叠（摘要带 Ctrl+O 提示）", "Ctrl+O" in dbg,
+        check("工具明细默认折叠（摘要带 Ctrl+O 切换提示）", "Ctrl+O 切换" in dbg,
               f"(buf尾部: {dbg[-200:]})")
         check("折叠态不绘制明细行", not any(n in dbg for n in tmpDirs),
               f"(buf尾部: {dbg[-200:]})")

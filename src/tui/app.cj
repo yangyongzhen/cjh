@@ -1456,7 +1456,9 @@ public class TuiApp {
     }
 
     /**
-     * 工具结果：首行摘要常显，其余行折叠（Ctrl+O 展开）。
+     * 工具结果：首行摘要常显，其余行折叠（Ctrl+O 切换）。
+     * 摘要尾提示写「切换」而不是「展开」：同一行在展开后不会重写，
+     * 写「展开」会让已展开的结果仍提示去展开（实测误导）。
      * 错误用红色，成功保持正文灰白；完整内容仍在 OutputView.content()。
      */
     public func appendToolResult(name: String, preview: String, isError: Bool): Unit {
@@ -1481,7 +1483,7 @@ public class TuiApp {
         var header = Ansi.fg(color) + "  ${mark} ${name}: ${first}" + Ansi.reset()
         if (detailCount > 0) {
             header = Ansi.fg(color) + "  ${mark} ${name}: ${first}" +
-                Ansi.fg(Ansi.THEME_MUTED) + "  [+${detailCount} 行 · Ctrl+O]" + Ansi.reset()
+                Ansi.fg(Ansi.THEME_MUTED) + "  [+${detailCount} 行 · Ctrl+O 切换]" + Ansi.reset()
         }
         let wrapped = wrapRenderedText(header, this.lastCols - 1)
         this.outputLock.lock()
