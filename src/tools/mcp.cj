@@ -5,13 +5,13 @@ package cjh.tools
  *
  * 传输层：
  *   - stdio：启动子进程，JSON-RPC over stdin/stdout
- *   - http ：Streamable HTTP，单次 POST JSON-RPC（无状态，不回传 Mcp-Session-Id）
+ *   - http ：Streamable HTTP，单次 POST JSON-RPC（会话：回传 Mcp-Session-Id）
  *
  * 生命周期：
  *   1. connect()：stdio 启动子进程 / http POST 握手
  *   2. listTools()：发送 tools/list，解析工具列表
  *   3. callTool(name, args)：发送 tools/call，返回结果
- *   4. disconnect()：stdio 关闭子进程（http 无需收尾）
+ *   4. disconnect()：stdio 关闭子进程 / http DELETE 终止会话（若有）
  *
  * 配置参考：docs/插件系统实现方案.md § 8.2
  * 协议参考：https://modelcontextprotocol.io/specification/2025-03-26
@@ -29,6 +29,8 @@ import cjutil.*
 // http 传输的单次超时（秒）与响应体上限（与 web_search 的远程 provider 同量级）
 const MCP_HTTP_TIMEOUT_SECONDS: Int64 = 30
 const MCP_HTTP_MAX_BODY_BYTES: Int64 = 1048576
+// MCP 规范版本（Streamable HTTP：initialize 后的请求须携带 MCP-Protocol-Version 头）
+const MCP_PROTOCOL_VERSION: String = "2025-03-26"
 
 /**
  * MCP 客户端：管理单个 MCP 服务器的连接和通信
@@ -39,6 +41,9 @@ public class McpClient {
     private var nextId: Int64 = 1
     // 已发现的工具列表（tools/list 结果）
     private var discoveredTools: ArrayList<McpToolDef> = ArrayList<McpToolDef>()
+    // http 传输会话状态：initialize 响应的 Mcp-Session-Id 与握手完成标记
+    private var sessionId: ?String = None
+    private var initialized: Bool = false
 
     public init(config: McpServerConfig) {
         this.config = config
@@ -116,10 +121,30 @@ public class McpClient {
     }
 
     /**
-     * http（Streamable）传输连接：POST initialize 握手 + initialized 通知。
+     * http 传输收尾：有会话时按规范 DELETE 终止（失败静默，不影响调用方）
+     */
+    private func disconnectHttp(): Unit {
+        match (this.sessionId) {
+            case Some(sid) =>
+                var hdrs = HashMap<String, String>()
+                hdrs["Mcp-Session-Id"] = sid
+                try {
+                    let _ = httpClientFetch("DELETE", this.config.url, 5,
+                        MCP_HTTP_MAX_BODY_BYTES, "cjh/1.6.13 (Cangjie Coding Agent)",
+                        "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7", None, Some(hdrs))
+                } catch (e: Exception) {
+                    // 会话终止失败可忽略（服务器自行超时回收）
+                }
+                this.sessionId = None
+            case None => ()
+        }
+    }
+
+    /**
+     * http（Streamable HTTP）传输连接：POST initialize 握手 + initialized 通知。
      *
-     * 无状态实现：不回传 Mcp-Session-Id（华为开发者知识库等主流远程 MCP
-     * 支持无状态调用；需要会话的服务器待 http_client 暴露响应头后补）。
+     * 会话语义：initialize 响应若带 Mcp-Session-Id 则保存，后续所有请求回传
+     * （规范 2025-03-26）；无状态服务器不回该头时同样可用（fail-open）。
      */
     private func connectHttp(): Bool {
         if (this.config.url == "") {
@@ -136,6 +161,7 @@ public class McpClient {
                 Log.warn("[MCP] ${this.config.name} initialize 无响应")
                 return false
         }
+        this.initialized = true
         this.httpPostRpc(this.buildNotification("notifications/initialized", JsonObject()))
         Log.info("[MCP] 已连接服务器: ${this.config.name}")
         return true
@@ -147,15 +173,34 @@ public class McpClient {
 
     /**
      * http 传输：单次 POST JSON-RPC，返回解析后的响应对象（失败/无响应给 None）
+     *
+     * initialize 之后回传 Mcp-Session-Id（若有）并携带 MCP-Protocol-Version 头。
      */
     private func httpPostRpc(msg: JsonObject): ?JsonObject {
         var hdrs = HashMap<String, String>()
         hdrs["Content-Type"] = "application/json"
         hdrs["Accept"] = "application/json, text/event-stream"
-        let body = httpClientRequest("POST", this.config.url, MCP_HTTP_TIMEOUT_SECONDS,
+        if (this.initialized) {
+            hdrs["MCP-Protocol-Version"] = MCP_PROTOCOL_VERSION
+            match (this.sessionId) {
+                case Some(sid) => hdrs["Mcp-Session-Id"] = sid
+                case None => ()
+            }
+        }
+        let result = httpClientFetch("POST", this.config.url, MCP_HTTP_TIMEOUT_SECONDS,
             MCP_HTTP_MAX_BODY_BYTES, "cjh/1.6.13 (Cangjie Coding Agent)",
             "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7", Some(msg.toJsonString()), Some(hdrs))
-        return parseMcpHttpRpcBody(body)
+        if (!result.isOk()) {
+            return None
+        }
+        // initialize 响应头带 Mcp-Session-Id 则记录会话（stdx 头名小写化 → 忽略大小写）
+        for ((k, v) in result.headers) {
+            if (k.toAsciiLower() == "mcp-session-id") {
+                this.sessionId = Some(v)
+                break
+            }
+        }
+        return parseMcpHttpRpcBody(result.body)
     }
 
     /**
@@ -321,6 +366,7 @@ public class McpClient {
      */
     public func disconnect(): Unit {
         if (this.isHttp()) {
+            this.disconnectHttp()
             return
         }
         match (this.subProcess) {

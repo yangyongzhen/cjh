@@ -70,6 +70,7 @@ class MockProbe {
  *   - "ok"    200 + bodyText
  *   - "500"   500 + bodyText（响应体不排空的早退场景）
  *   - "stall" 读到头后不发任何字节（响应头停滞）
+ *   - "session" 200 + Mcp-Session-Id 响应头（响应头采集场景）
  */
 func startFetchMock(port: UInt16, mode: String, bodyText: String, probe: MockProbe): TcpServerSocket {
     // 固定端口可能被宿主内嵌的 cjh web 实例占用（实测：ai-chat 拉起 --port 18923 恰撞测试段），
@@ -101,7 +102,12 @@ func startFetchMock(port: UInt16, mode: String, bodyText: String, probe: MockPro
                 } else {
                     "HTTP/1.1 200 OK"
                 }
-                conn.write(("${statusLine}\r\nContent-Type: application/json\r\nContent-Length: ${bodyBytes.size}\r\n\r\n").toArray())
+                let sessionHeader = if (mode == "session") {
+                    "Mcp-Session-Id: test-session-42\r\n"
+                } else {
+                    ""
+                }
+                conn.write(("${statusLine}\r\n${sessionHeader}Content-Type: application/json\r\nContent-Length: ${bodyBytes.size}\r\n\r\n").toArray())
                 conn.write(bodyBytes)
                 waitEof(conn, probe)
             }
@@ -287,6 +293,27 @@ public class HttpClientFetchTest {
         @Assert(timedOut, true)
         @Assert(ms < 5000, true)
         @Assert(probe.headers().contains("GET /stall"), true)
+    }
+
+    /** 边界：响应头采集 → 2xx 响应的自定义头（如 Mcp-Session-Id）能在结果里取到 */
+    @TestCase
+    public func testResponseHeadersCaptured(): Unit {
+        let port: UInt16 = 18927
+        let probe = MockProbe()
+        let _ = startFetchMock(port, "session", "{}", probe)
+
+        let r = httpClientFetch("POST", "http://127.0.0.1:${probe.boundPort}/mcp", 5, 65536, "cjh-test", "en-US", Some("{}"), None)
+        @Assert(r.status, 200)
+        // stdx 在线上把头名小写化 → 用小写键取值
+        @Assert(waitUntilTrue({ => probe.eof() }, 3000), true)
+        var sessionId: ?String = None
+        for ((k, v) in r.headers) {
+            if (k.toAsciiLower() == "mcp-session-id") {
+                sessionId = Some(v)
+            }
+        }
+        @Assert(sessionId.isSome(), true)
+        @Assert(sessionId.getOrThrow(), "test-session-42")
     }
 
     /** 纯函数边界：超时归一化（≤0 → 1s 下限；极大值 → 86400s 上限，防 Duration 乘法溢出） */

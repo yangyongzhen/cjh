@@ -55,10 +55,19 @@ import stdx.crypto.x509.X509Certificate
 public class HttpFetchResult {
     public let status: Int64
     public let body: String
+    /** 响应头（键保持服务器返回形态，stdx 实际会小写化；同名多头只保留首个值） */
+    public let headers: HashMap<String, String>
 
     public init(status: Int64, body: String) {
         this.status = status
         this.body = body
+        this.headers = HashMap<String, String>()
+    }
+
+    public init(status: Int64, body: String, headers: HashMap<String, String>) {
+        this.status = status
+        this.body = body
+        this.headers = headers
     }
 
     /** 是否 2xx 成功 */
@@ -204,12 +213,13 @@ public func httpClientFetch(
         try {
             let resp = client.send(req)
             let status = Int64(resp.status)
+            let respHeaders = extractResponseHeaders(resp.headers)
             if (status < 200 || status >= 300) {
                 // 非 2xx 不排空响应体；连接由下面的 close 统一回收
-                return HttpFetchResult(status, "")
+                return HttpFetchResult(status, "", respHeaders)
             }
             let respBody = readResponseBody(resp.body, maxDownloadBytes)
-            return HttpFetchResult(status, safeFromUtf8(respBody))
+            return HttpFetchResult(status, safeFromUtf8(respBody), respHeaders)
         } catch (_: Exception) {
             return HttpFetchResult(0, "")
         }
@@ -313,6 +323,21 @@ private func extractHostFromUrl(url: String): String {
 
     if (start >= end) { return "" }
     return url[start..end]
+}
+
+/**
+ * 采集响应头：HttpHeaders 是 Iterable<(String, Collection<String>)>，
+ * 同名多头只保留首个值（MCP 的 Mcp-Session-Id 等场景单值足够）
+ */
+private func extractResponseHeaders(hdrs: HttpHeaders): HashMap<String, String> {
+    let result = HashMap<String, String>()
+    for ((k, vs) in hdrs) {
+        let arr = vs.toArray()
+        if (arr.size > 0 && !result.contains(k)) {
+            result[k] = arr[0]
+        }
+    }
+    return result
 }
 
 /**
