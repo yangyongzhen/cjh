@@ -35,7 +35,7 @@ const MCP_PROTOCOL_VERSION: String = "2025-03-26"
 // GET 推送流：空闲上限（无字节到达判定连接死亡）与断线重连退避
 const MCP_PUSH_IDLE_SECONDS: Int64 = 75
 const MCP_PUSH_RETRY_MS: Int64 = 1500
-const MCP_USER_AGENT: String = "cjh/1.6.13 (Cangjie Coding Agent)"
+const MCP_USER_AGENT: String = "cjh/1.6.14 (Cangjie Coding Agent)"
 
 /**
  * MCP 客户端：管理单个 MCP 服务器的连接和通信
