@@ -83,7 +83,9 @@ public class CompactThresholdTest {
         let (compacted, b, a) = agent.compact(false)
         @Assert(compacted, true)
         @Assert(b, before)
-        @Assert(a < before, true)
+        // 用户消息全保留（失忆修复）：全用户合成历史上体积可能不缩反增，
+        // 压缩契约从"体积缩小"变为"assistant 文本进摘要、用户指令逐字保留"
+        @Assert(a, 6)
         // 压缩后应保留 [历史摘要] 标记
         var hasSummary = false
         for (m in agent.getMessages()) {
@@ -124,7 +126,43 @@ public class CompactThresholdTest {
 
         let (compacted, b, a) = agent.compact(false)
         @Assert(compacted, true)
-        @Assert(a < before, true)
+        // 用户消息全保留：10 条用户历史全数留下（system + 摘要 + 8 kept + 2 recent = 12）
+        @Assert(a, 12)
+    }
+
+    @TestCase
+    public func testFirstUserTaskKeptVerbatim(): Unit {
+        // 失忆缺陷回归：压缩时所有用户指令（首条任务目标 + 中途追加任务）
+        // 必须保留原文——进摘要会被"简洁转述"逐次稀释，多轮压缩后
+        // agent 忘记目标、任务半途而废
+        let agent = this.buildAgent(0, 0, 0, 0)
+        var history = ArrayList<ChatMessage>()
+        history.add(ChatMessage("user", "任务目标：用 cj-tauri 开发 Cyclone DDS 调试助手，可发布订阅主题"))
+        history.add(ChatMessage("user", "进度：环境核实完毕，bg-1 sleep 120 已跑完"))
+        history.add(ChatMessage("user", "追加任务：装 Cyclone DDS 后跑 DDS-native 全量测试"))
+        history.add(ChatMessage("assistant", "已完成环境核实，正在规划下一步。"))
+        agent.loadHistory(history)
+
+        let (compacted, b, a) = agent.compact(true)
+        @Assert(compacted, true)
+        // 原始任务指令与中途追加任务逐字保留在历史里（作为独立消息，而非摘要转述）
+        var foundFirst = false
+        var foundMid = false
+        var inSummary = false
+        for (m in agent.getMessages()) {
+            if (m.content == "任务目标：用 cj-tauri 开发 Cyclone DDS 调试助手，可发布订阅主题") {
+                foundFirst = true
+            }
+            if (m.content == "追加任务：装 Cyclone DDS 后跑 DDS-native 全量测试") {
+                foundMid = true
+            }
+            if (m.content.startsWith("[历史摘要]") && m.content.contains("cj-tauri")) {
+                inSummary = true
+            }
+        }
+        @Assert(foundFirst, true)
+        @Assert(foundMid, true)
+        @Assert(inSummary, false)
     }
 
     @TestCase
@@ -140,6 +178,7 @@ public class CompactThresholdTest {
 
         let (compacted, b, a) = agent.compact(false)
         @Assert(compacted, true)
-        @Assert(a < before, true)
+        // 用户消息全保留（失忆修复）：2 条用户历史全数留下，体积不缩（system+摘要+2 kept+input+reply）
+        @Assert(a, before + 1)
     }
 }

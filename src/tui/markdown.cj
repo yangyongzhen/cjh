@@ -46,6 +46,11 @@ public class MarkdownRender {
     private var hlNumOn: Bool = false
     private var pendingStar: Bool = false      // 等下一个 * 确认 **
     private var tickCount: Int64 = 0           // 未决反引号计数（跨帧累积，遇非反引号 flush）
+    // ===== 行首符号扩展（issue：TUI 输出美化）=====
+    // 行首 - + * > 的首字符缓冲（等第二字符判定是列表/引用还是普通文本；跨帧保留）
+    private var leadBuf: String = ""
+    // 代码块行首标记：true = 本行还没输出任何内容（输出 muted 左竖线前缀）
+    private var codeLineStart: Bool = false
 
     // ===== 表格状态 =====
     private var atLineStart: Bool = true       // 当前是否行首（\n 后）
@@ -83,6 +88,11 @@ public class MarkdownRender {
         for (r in delta.toRuneArray()) {
             let s = r.toString()
             if (s == "\n") {
+                // 行首符号缓冲未判定：原文 flush（如行尾单 "-"）
+                if (this.leadBuf != "") {
+                    sb.append(this.leadBuf)
+                    this.leadBuf = ""
+                }
                 // 标题行结束：判断是否为 ATX 标题并渲染（或原样输出）
                 if (this.headingMode) {
                     this.flushHeading(sb)
@@ -140,6 +150,29 @@ public class MarkdownRender {
             if (this.headingMode) {
                 this.headingLine += s
                 continue
+            }
+            // 行首 - + *：候选无序列表（"- " 等）；>：候选引用（"> "）
+            // 缓冲首字符等第二字符判定：空格 → 渲染符号；否则原文 flush 走行内处理
+            if (this.atLineStart && (s == "-" || s == "+" || s == "*" || s == ">")) {
+                this.leadBuf = s
+                this.atLineStart = false
+                continue
+            }
+            if (this.leadBuf != "") {
+                if (s == " ") {
+                    if (this.leadBuf == ">") {
+                        // 引用：muted ❯ 前缀
+                        sb.append(Ansi.fg(Ansi.THEME_MUTED) + "❯ " + Ansi.reset())
+                    } else {
+                        // 无序列表：accent 圆点
+                        sb.append(Ansi.fg(Ansi.THEME_ACCENT) + "• " + Ansi.reset())
+                    }
+                    this.leadBuf = ""
+                    continue
+                }
+                // 非列表/引用（如 **粗体**、-- 分隔线）：flush 原文按行内处理
+                this.processInline(this.leadBuf, sb)
+                this.leadBuf = ""
             }
             this.atLineStart = false
             // 普通行：原有 rune 处理（反引号/粗体）
@@ -577,6 +610,7 @@ public class MarkdownRender {
         this.langDone = false
         this.hlPendingSlash = false
         this.hlInBlockStar = false
+        this.codeLineStart = true  // 开块：首行还没输出内容
     }
 
     /**
@@ -587,6 +621,10 @@ public class MarkdownRender {
         if (!this.langDone) {
             this.codeBlockLang = this.langBuf.toString().trimAscii()
             this.langDone = true
+            // 代码块卡片：有语言标注时输出 muted 标签行（▎ python）
+            if (this.codeBlockLang.size > 0) {
+                sb.append(Ansi.fg(Ansi.THEME_MUTED) + "▎ " + this.codeBlockLang + Ansi.reset())
+            }
         }
         // 行注释：\n 结束
         if (this.hlState == "lineComment") {
@@ -602,6 +640,8 @@ public class MarkdownRender {
             sb.append(Ansi.fg(Ansi.THEME_ACCENT) + numStr + Ansi.reset())
         }
         // 字符串跨行：不关闭（多行字符串少见，保持着色直到闭合）
+        // 行结束：下一行内容需重新输出前缀
+        this.codeLineStart = true
     }
 
     /**
@@ -626,6 +666,11 @@ public class MarkdownRender {
         if (!this.langDone) {
             this.langBuf.append(s)
             return
+        }
+        // 代码块卡片：每行内容前 muted 左竖线（行首一次性输出）
+        if (this.codeLineStart) {
+            sb.append(Ansi.fg(Ansi.THEME_MUTED) + "❙ " + Ansi.reset())
+            this.codeLineStart = false
         }
         // 无语言标注：不逐词高亮（对齐 OMP 防误判），保持灰底
         if (this.codeBlockLang.size == 0) {

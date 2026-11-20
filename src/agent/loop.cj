@@ -1383,41 +1383,49 @@ public class Agent {
     public func compact(force: Bool): (Bool, Int64, Int64) {
         let before: Int64 = this.messages.size
         this.onCompact(true)
+        var applied: Bool = false
         if (force) {
             // 强制压缩：跳过阈值判断，但仍保留 system + 最近 keep 条
-            this.doCompact()
+            applied = this.doCompact()
         } else {
-            this.maybeCompact()
+            applied = this.maybeCompact()
         }
         this.onCompact(false)
         let after: Int64 = this.messages.size
-        return (after < before, before, after)
+        // applied = 摘要已应用（历史已重建）。用户消息全保留（失忆修复）后，
+        // 全用户合成历史上体积可能不缩，不能再用 after<before 作为压缩判据
+        return (applied, before, after)
     }
 
     /**
      * 实际执行压缩（force 路径）：无阈值判断，keep 至少 2 条
+     * @return 摘要是否已应用（历史已重建）
      */
-    private func doCompact(): Unit {
+    private func doCompact(): Bool {
         let keep = if (this.config.compactKeep >= 2) { this.config.compactKeep } else { 2 }
         if (this.messages.size <= keep + 1) {
             // 历史 + system 不足，无需压缩
-            return
+            return false
         }
-        this.maybeCompactForce(keep)
+        return this.maybeCompactForce(keep)
     }
 
     /**
      * 强制压缩实现（复用 maybeCompact 的摘要请求逻辑）
      */
-    private func maybeCompactForce(keep: Int64): Unit {
+    private func maybeCompactForce(keep: Int64): Bool {
         let compactEnd = this.messages.size - keep
         if (compactEnd <= 1) {
-            return
+            return false
         }
         var sb = StringBuilder()
         sb.append("请把以下对话历史压缩成一段简洁的中文摘要（保留：任务目标、已完成的工具调用与关键结果、当前进度、尚未解决的问题）。不要遗漏重要事实。")
         for (i in 1..compactEnd) {
             let m = this.messages[i]
+            // 用户消息（任务目标/中途追加任务）+ 工具调用/结果保留原文（失忆修复）
+            if (m.role == "user" || m.role == "tool" || m.toolCalls.size > 0) {
+                continue
+            }
             sb.append("\n[${m.role}] ${m.content}")
         }
         var summaryMsgs = ArrayList<ChatMessage>()
@@ -1427,16 +1435,22 @@ public class Agent {
             let resp = this.provider.chatStream(summaryMsgs, ArrayList<ToolSpec>(), { _ => }, { _ => }, { _ => }, { => false })
             summary = resp.text
         } catch (e: Exception) {
-            return
+            return false
         }
         if (summary.size == 0) {
-            return
+            return false
         }
         var newMsgs = ArrayList<ChatMessage>()
         if (this.messages.size > 0) {
             newMsgs.add(this.messages[0])
         }
         newMsgs.add(ChatMessage("user", "[历史摘要] ${summary}"))
+        for (i in 1..compactEnd) {
+            let m = this.messages[i]
+            if (m.role == "user" || m.role == "tool" || m.toolCalls.size > 0) {
+                newMsgs.add(m)
+            }
+        }
         for (i in compactEnd..this.messages.size) {
             newMsgs.add(this.messages[i])
         }
@@ -1448,6 +1462,7 @@ public class Agent {
         } finally {
             this.compactLock.unlock()
         }
+        return true
     }
 
     /**
@@ -1479,24 +1494,25 @@ public class Agent {
      * 供 compact(false) 手动路径使用（/compact 之外的非强制入口）；主循环自动压缩
      * 走 P1b 后台异步路径（maybeTriggerBackgroundCompact + checkPendingCompact）。
      */
-    private func maybeCompact(): Unit {
+    private func maybeCompact(): Bool {
         if (this.config.compactThreshold <= 0 && this.config.compactTokenThreshold <= 0) {
-            return
+            return false
         }
         // 双阈值触发判断（任一超限即压缩），与后台路径共用同一判定
         if (!this.compactionOverThreshold()) {
-            return
+            return false
         }
         let keep = if (this.config.compactKeep >= 2) { this.config.compactKeep } else { 2 }
         if (this.messages.size - keep <= 1) {
-            return
+            return false
         }
         let req = this.buildSummaryRequest(keep)
         let summary = this.requestSummary(req[2])
         if (summary.size == 0) {
-            return
+            return false
         }
         this.applySummary(summary, req)
+        return true
     }
 
     /**
@@ -1524,11 +1540,13 @@ public class Agent {
         sb.append("请把以下对话历史压缩成一段简洁的中文摘要（保留：任务目标、已完成的关键操作与结果、当前进度、尚未解决的问题）。不要遗漏重要事实。")
         for (i in 1..compactEnd) {
             let m = this.messages[i]
-            if (m.role == "tool" || m.toolCalls.size > 0) {
-                // 工具调用/结果消息：保留原文（信息完整性）
+            // 用户消息（首条任务目标 + 中途下发的追加任务）+ 工具调用/结果：保留原文。
+            // 任务目标进摘要会被"简洁转述"逐次稀释（多轮压缩后彻底丢失），
+            // agent 因此失忆、任务半途而废——用户指令必须全部钉在历史里（用户实测反馈）
+            if (m.role == "user" || m.role == "tool" || m.toolCalls.size > 0) {
                 kept.add(m)
             } else {
-                // assistant 文本 / 用户指令：进摘要
+                // assistant 文本：进摘要
                 sb.append("\n[${m.role}] ${m.content}")
             }
         }
@@ -1723,10 +1741,10 @@ public class Agent {
                 newMsgs.add(this.messages[0])  // system
             }
             newMsgs.add(ChatMessage("user", "[历史摘要] ${summary}"))
-            // kept 工具链消息（与同步路径同规则）：1..compactEnd 内的工具调用/结果保留原文
+            // kept（与同步路径同规则）：用户消息（任务目标/中途追加任务）+ 工具调用/结果保留原文
             for (i in 1..compactEnd) {
                 let m = this.messages[i]
-                if (m.role == "tool" || m.toolCalls.size > 0) {
+                if (m.role == "user" || m.role == "tool" || m.toolCalls.size > 0) {
                     newMsgs.add(m)
                 }
             }

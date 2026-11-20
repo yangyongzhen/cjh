@@ -246,9 +246,11 @@ public class AsyncCompactionTest {
         @Assert(gate.callCount, 1)  // 摘要请求恰好 1 次（递减 usage 防 churn）
         @Assert(agent.getCompactionMode(), "AsyncApplied")
         @Assert(acContainsSummary(agent), true)
-        // 未压缩上界 = before + 1(input) + toolRounds*2(asst+tool) + 1(末轮 asst)
+        // 用户消息全保留（失忆修复）：全用户合成历史上体积可能不缩反增，
+        // 旧的"size 小于未压缩上界"契约不再成立，换装成功与摘要存在即可
+        //（uncompacted = before + 1(input) + toolRounds*2(asst+tool) + 1(末轮 asst)）
         let uncompacted = before + 1 + 2 + 1
-        @Assert(Int64(agent.getMessages().size) < uncompacted, true)
+        @Assert(Int64(agent.getMessages().size) <= uncompacted + 5, true)
     }
 
     /**
@@ -330,7 +332,8 @@ public class AsyncCompactionTest {
         let (done, b, a) = agent.compact(true)
         @Assert(done, true)
         @Assert(b, before)
-        @Assert(a < before, true)
+        // 用户消息全保留（失忆修复）：体积可能不缩（system + 摘要 + 3 kept + 2 recent = 7）
+        @Assert(a, before + 1)
         @Assert(acContainsSummary(agent), true)
         @Assert(agent.getCompactionMode(), "None")  // 手动路径不改 auto 模式
     }

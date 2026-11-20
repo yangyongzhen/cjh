@@ -35,8 +35,9 @@ public class MarkdownRenderTest {
     public func testSingleStarLiteral(): Unit {
         let m = MarkdownRender()
         let out = m.process("* 列表项")
-        @Assert(stripAnsi(out), "* 列表项")  // 单 * 是普通字符
-        @Assert(out.contains(Ansi.fg(Ansi.COLOR_TEXT)), true)  // 普通文本素白
+        // 行首 "* " 渲染为无序列表（accent 圆点）——v1.6.14 输出美化
+        @Assert(stripAnsi(out), "• 列表项")
+        @Assert(out.contains(Ansi.fg(Ansi.THEME_ACCENT)), true)
     }
 
     @TestCase
@@ -56,13 +57,85 @@ public class MarkdownRenderTest {
     }
 
     @TestCase
+    public func testBulletList(): Unit {
+        // 行首 "- "/"* " 渲染为 accent 圆点（无序列表）
+        let m = MarkdownRender()
+        let out = m.process("- 项目一\n* 项目二\n") + m.finish()
+        @Assert(out.contains(Ansi.fg(Ansi.THEME_ACCENT) + "• "), true)
+        @Assert(stripAnsi(out).contains("• 项目一"), true)
+        @Assert(stripAnsi(out).contains("• 项目二"), true)
+        @Assert(stripAnsi(out).contains("- 项目"), false)
+    }
+
+    @TestCase
+    public func testPlusList(): Unit {
+        // 行首 "+ " 同为无序列表
+        let m = MarkdownRender()
+        let out = m.process("+ 项目\n")
+        @Assert(stripAnsi(out).contains("• 项目"), true)
+    }
+
+    @TestCase
+    public func testQuotePrefix(): Unit {
+        // 行首 "> " 渲染为 muted 引用前缀
+        let m = MarkdownRender()
+        let out = m.process("> 引用内容\n")
+        @Assert(out.contains(Ansi.fg(Ansi.THEME_MUTED) + "❯ "), true)
+        @Assert(stripAnsi(out).contains("引用内容"), true)
+    }
+
+    @TestCase
+    public func testLeadNonListFlushed(): Unit {
+        // 行首 - + * > 后非空格：原样输出（不是列表/引用）
+        let m = MarkdownRender()
+        let out = m.process("-- 分隔线\n*强调*词\n>3.0 版本\n")
+        @Assert(stripAnsi(out).contains("-- 分隔线"), true)
+        @Assert(stripAnsi(out).contains("*强调*词"), true)
+        @Assert(stripAnsi(out).contains(">3.0 版本"), true)
+    }
+
+    @TestCase
+    public func testCodeBlockCard(): Unit {
+        // 代码块卡片：语言标签行 + 内容行 muted 左竖线前缀
+        let m = MarkdownRender()
+        let out = m.process("```python\nprint(1)\nprint(2)\n```\n") + m.finish()
+        // 语言标签行（muted + 语言名）
+        @Assert(out.contains("▎ python"), true)
+        // 内容行前缀 ❙（每行一条，共 2 行内容 → 2 个前缀）
+        var count: Int64 = 0
+        var countContent: Int64 = 0
+        let rs = out.toRuneArray()
+        for (i in 0..(rs.size - 1)) {
+            let s = rs[i].toString()
+            if (s == "▎") {
+                count += 1
+            }
+            if (s == "❙") {
+                countContent += 1
+            }
+        }
+        @Assert(count, 1)
+        @Assert(countContent, 2)
+    }
+
+    @TestCase
+    public func testCodeBlockNoLangNoTag(): Unit {
+        // 无语言标注：无标签行，仅内容行前缀
+        let m = MarkdownRender()
+        let out = m.process("```\nplain\n```\n") + m.finish()
+        @Assert(out.contains("▎ "), false)
+        @Assert(out.contains("❙"), true)
+    }
+
+    @TestCase
     public func testCodeBlockRegression(): Unit {
         // 回归：``` 三连反引号必须正确开/关代码块（旧实现第 2 个开、第 3 个立即关）
         let m = MarkdownRender()
         let open = m.process("```\n")  // \n 触发 flush（3 反引号 → 开代码块）
         @Assert(open, Ansi.fg(Ansi.THEME_MUTED) + "\n")
         let body = m.process("fn main() {}\n")
-        @Assert(body, "fn main() {}\n")
+        // 代码块卡片：内容行带 muted 左竖线前缀（v1.6.14 输出美化）
+        @Assert(body, Ansi.fg(Ansi.THEME_MUTED) + "❙ " + Ansi.reset() + "fn main() {}\n")
         // 闭合反引号在帧尾：需 finish 或后续字符 flush
         let close = m.process("```") + m.finish()
         @Assert(close, Ansi.reset())
