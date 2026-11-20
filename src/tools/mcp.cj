@@ -19,6 +19,7 @@ package cjh.tools
 
 import std.collection.*
 import cjlog.*
+import std.env.*
 import std.process.*
 import std.io.*
 import std.sync.*
@@ -30,6 +31,9 @@ import cjterm.Logo
 
 // http 传输的单次超时（秒）与响应体上限（与 web_search 的远程 provider 同量级）
 const MCP_HTTP_TIMEOUT_SECONDS: Int64 = 30
+// stdio 握手/tools-list 的单步上限（秒）：服务器启动但不回包时不能永久占住连接线程，
+// 否则 connectAll 顺序循环会卡死，排在后面的 http 服务器永远轮不到（issue #15）
+const MCP_STDIO_TIMEOUT_SECONDS: Int64 = 30
 const MCP_HTTP_MAX_BODY_BYTES: Int64 = 1048576
 // MCP 规范版本（Streamable HTTP：initialize 后的请求须携带 MCP-Protocol-Version 头）
 const MCP_PROTOCOL_VERSION: String = "2025-03-26"
@@ -67,7 +71,7 @@ public class McpClient {
      * 3. 发送 initialized 通知
      * @return 连接成功返回 true，失败返回 false
      */
-    public func connect(): Bool {
+    public func connect(connectTimeoutSeconds!: Int64 = MCP_STDIO_TIMEOUT_SECONDS): Bool {
         if (this.isHttp()) {
             return this.connectHttp()
         }
@@ -85,11 +89,11 @@ public class McpClient {
         for (i in 0..this.config.args.size) {
             argv[i] = this.config.args[i]
         }
-        // 构建环境变量（继承当前进程 + config.env）
-        var env = HashMap<String, String>()
-        for ((k, v) in this.config.env) {
-            env.add(k, v)
-        }
+        // 构建环境变量：**真正继承当前进程**再叠加 config.env。
+        // launch 的 environment 参数是完整替换而非叠加：旧实现只传 config.env，
+        // 子进程连 PATH/HOME 都没有（实测 HOME 为空），Python/Node 型 MCP 服务器
+        // 因此启动即失败（issue #15）。
+        let env = mcpChildEnv(this.config.env)
 
         try {
             let sp = launch(this.config.command, argv,
@@ -105,7 +109,7 @@ public class McpClient {
                 Log.warn("[MCP] ${this.config.name} 发送 initialize 失败")
                 return false
             }
-            let initResp = this.recv()
+            let initResp = this.recvWithTimeout("initialize", connectTimeoutSeconds)
             match (initResp) {
                 case Some(r) =>
                     // 验证握手响应（至少有 result 字段）
@@ -316,7 +320,7 @@ public class McpClient {
      * 查询工具列表（tools/list）
      * @return 工具定义列表；失败返回空列表
      */
-    public func listTools(): ArrayList<McpToolDef> {
+    public func listTools(connectTimeoutSeconds!: Int64 = MCP_STDIO_TIMEOUT_SECONDS): ArrayList<McpToolDef> {
         let req = this.buildRequest("tools/list", JsonObject())
         var resp: ?JsonObject = None
         if (this.isHttp()) {
@@ -326,7 +330,7 @@ public class McpClient {
                 Log.warn("[MCP] ${this.config.name} 发送 tools/list 失败")
                 return ArrayList<McpToolDef>()
             }
-            resp = this.recv()
+            resp = this.recvWithTimeout("tools/list", connectTimeoutSeconds)
         }
         match (resp) {
             case Some(r) =>
@@ -487,8 +491,26 @@ public class McpClient {
                 } catch (e: Exception) {
                     // 忽略关闭错误
                 }
-                // 等待子进程退出（短超时）
-                sp.wait()
+                // 等待子进程退出（**带超时**：服务器不响应 EOF 时 wait 会永久挂住）
+                var exited = false
+                try {
+                    let _ = sp.wait(timeout: Duration.second * 3)
+                    exited = true
+                } catch (e: Exception) {
+                    // 超时或回收失败：强制终止再收尸
+                }
+                if (!exited) {
+                    try {
+                        sp.terminate(force: true)
+                    } catch (e: Exception) {
+                        ()
+                    }
+                    try {
+                        let _ = sp.wait(timeout: Duration.second * 2)
+                    } catch (e: Exception) {
+                        ()
+                    }
+                }
                 this.subProcess = None
                 Log.debug("[MCP] ${this.config.name} 已断开")
             case None => ()
@@ -546,7 +568,10 @@ public class McpClient {
         match (this.subProcess) {
             case Some(sp) =>
                 try {
-                    let jsonStr = msg.toJsonString() + "\n"
+                    // stdio 传输是**按行分隔**的 JSON-RPC：toJsonString() 输出多行 pretty JSON，
+                    // 服务器按行读到的都是半截对象（实测 initialize 永远无响应）。
+                    // toString() 才是单行紧凑 JSON（已验证：`{"a":1}`）。
+                    let jsonStr = msg.toString() + "\n"
                     let stdinPipe = sp.stdInPipe
                     let bytes = jsonStr.toArray()
                     var byteArr = Array<Byte>(bytes.size, repeat: 0)
@@ -610,6 +635,44 @@ public class McpClient {
                 }
             case None =>
                 return None
+        }
+    }
+
+    /**
+     * 带预算的 recv：stdio 服务器启动后不回包（脚本没 flush、卡在初始化、进程僵死）
+     * 时不能永久阻塞。超时即杀子进程并返回 None，让 connectAll 继续后面的服务器。
+     */
+    private func recvWithTimeout(label: String, timeoutSeconds: Int64): ?JsonObject {
+        let fut: Future<?JsonObject> = spawn { this.recv() }
+        try {
+            return fut.get(Duration.second * timeoutSeconds)
+        } catch (e: TimeoutException) {
+            Log.warn("[MCP] ${this.config.name} ${label} 超时（${timeoutSeconds}s），终止 stdio 进程")
+            this.killStdioProcess()
+            return None
+        } catch (e: Exception) {
+            Log.warn("[MCP] ${this.config.name} ${label} 等待异常: ${e}")
+            this.killStdioProcess()
+            return None
+        }
+    }
+
+    /** 终止并回收 stdio 子进程（超时/握手失败路径）；幂等 */
+    private func killStdioProcess(): Unit {
+        match (this.subProcess) {
+            case Some(sp) =>
+                this.subProcess = None
+                try {
+                    sp.terminate(force: true)
+                } catch (e: Exception) {
+                    ()
+                }
+                try {
+                    let _ = sp.wait(timeout: Duration.second * 2)
+                } catch (e: Exception) {
+                    ()
+                }
+            case None => ()
         }
     }
 
@@ -736,32 +799,59 @@ public class McpManager {
      * @param servers  MCP 服务器配置列表
      * @param registry 工具注册中心
      */
-    public func connectAll(servers: ArrayList<McpServerConfig>, registry: ToolRegistry): Unit {
+    public func connectAll(servers: ArrayList<McpServerConfig>, registry: ToolRegistry,
+        connectTimeoutSeconds!: Int64 = MCP_STDIO_TIMEOUT_SECONDS): Unit {
+        var okCount = 0
+        var failed = ArrayList<String>()
         for (i in 0..servers.size) {
             let serverCfg = servers[i]
             let client = McpClient(serverCfg)
-            if (!client.connect()) {
-                Log.warn("[MCP] 连接服务器 ${serverCfg.name} 失败，跳过")
-                continue
+            var registered = false
+            // 每个服务器独立 try-catch：任何一个的异常/超时都不许影响后面的服务器
+            // （issue #15：stdio 在前失败时，后面的 http 整组消失）
+            try {
+                if (!client.connect(connectTimeoutSeconds: connectTimeoutSeconds)) {
+                    Log.warn("[MCP] 连接服务器 ${serverCfg.name} 失败，跳过")
+                } else {
+                    // 查询工具列表
+                    let tools = client.listTools(connectTimeoutSeconds: connectTimeoutSeconds)
+                    // 注册每个工具
+                    for (j in 0..tools.size) {
+                        let toolDef = tools[j]
+                        let tool = McpTool(
+                            toolDef.name,
+                            toolDef.description,
+                            toolDef.inputSchema,
+                            toolDef.readOnly,
+                            client)
+                        registry.register(tool)
+                        Log.debug("[MCP] 注册工具: ${toolDef.name} (server=${serverCfg.name})")
+                    }
+                    this.clients.add(client)
+                    registered = true
+                    okCount += 1
+                    if (tools.size > 0) {
+                        Log.info("[MCP] ${serverCfg.name}: 已注册 ${tools.size} 个工具")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.warn("[MCP] 服务器 ${serverCfg.name} 初始化异常，已跳过: ${e}")
             }
-            // 查询工具列表
-            let tools = client.listTools()
-            // 注册每个工具
-            for (j in 0..tools.size) {
-                let toolDef = tools[j]
-                let tool = McpTool(
-                    toolDef.name,
-                    toolDef.description,
-                    toolDef.inputSchema,
-                    toolDef.readOnly,
-                    client)
-                registry.register(tool)
-                Log.debug("[MCP] 注册工具: ${toolDef.name} (server=${serverCfg.name})")
+            if (!registered) {
+                failed.add(serverCfg.name)
+                // 已启动但未成功注册的客户端要收干净（超时路径已自行 kill，这里是幂等兜底）
+                try {
+                    client.disconnect()
+                } catch (e: Exception) {
+                    ()
+                }
             }
-            this.clients.add(client)
-            if (tools.size > 0) {
-                Log.info("[MCP] ${serverCfg.name}: 已注册 ${tools.size} 个工具")
-            }
+        }
+        // 结果汇总：json 模式下 warn/info 不落盘时，至少 manager 侧有计数可查
+        if (failed.size > 0) {
+            Log.warn("[MCP] 连接完成：成功 ${okCount}/${servers.size}，失败 [${failed.toString()}]")
+        } else {
+            Log.info("[MCP] 连接完成：成功 ${okCount}/${servers.size}")
         }
     }
 
@@ -781,6 +871,23 @@ public class McpManager {
     public func getConnectedCount(): Int64 {
         return this.clients.size
     }
+}
+
+/**
+ * stdio MCP 子进程环境：当前进程全量环境 + config.env 覆盖。
+ *
+ * launch 的 environment 是完整替换；只传 config.env 会丢掉 PATH/HOME/PYTHONPATH 等
+ * 父进程变量（issue #15 实测子进程 HOME 为空）。保留为包内函数便于单测。
+ */
+func mcpChildEnv(extra: HashMap<String, String>): HashMap<String, String> {
+    let env = HashMap<String, String>()
+    for ((k, v) in getVariables()) {
+        env.add(k, v)
+    }
+    for ((k, v) in extra) {
+        env[k] = v
+    }
+    return env
 }
 
 /**
