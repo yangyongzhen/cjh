@@ -1,6 +1,7 @@
 package cjh.agent
 
 import std.collection.*
+import stdx.encoding.json.*
 import cjllm.*
 import cjh.tools.*
 import cjcfg.*
@@ -190,6 +191,55 @@ public class CompactThresholdTest {
         @Assert(foundFirst, true)
         @Assert(foundMid, true)
         @Assert(inSummary, false)
+    }
+
+    @TestCase
+    public func testToolHeavyHistoryCompactsWithoutAssistantText(): Unit {
+        // 长任务实测（54 轮 / 124 条 / 1.77M 累计 prompt）：53 条 assistant 全带
+        // tool_calls、只有最后一条纯文本。旧 kept 规则把工具链全部保留，可压缩
+        // 区间没有 assistant 文本 → 每次 no-op，上下文无界增长。回归：旧工具链
+        // 进摘要，用户任务逐字保留，并避免尾部出现孤立 tool 消息。
+        let agent = this.buildAgent(0, 0, 0, 0)
+        var history = ArrayList<ChatMessage>()
+        history.add(ChatMessage("user", "任务目标：实现资产台账"))
+        for (i in 0..10) {
+            let args = JsonObject()
+            args.put("cmd", JsonString("echo step${i}"))
+            let call = ToolCall("call${i}", "bash", args)
+            let calls = ArrayList<ToolCall>()
+            calls.add(call)
+            history.add(ChatMessage("assistant", "", calls))
+            history.add(ChatMessage("tool", "step${i} ok", "call${i}", "bash"))
+        }
+        history.add(ChatMessage("assistant", "全部完成"))
+        agent.loadHistory(history)
+        let before = Int64(agent.getMessages().size)
+
+        let (compacted, b, a) = agent.compact(true)
+        @Assert(compacted, true)
+        @Assert(a < before, true)
+        var foundTask = false
+        var hasSummary = false
+        for (m in agent.getMessages()) {
+            if (m.content == "任务目标：实现资产台账") {
+                foundTask = true
+            }
+            if (m.content.startsWith("[历史摘要]")) {
+                hasSummary = true
+            }
+        }
+        @Assert(foundTask, true)
+        @Assert(hasSummary, true)
+        // 尾部必须以 assistant tool_calls 开头，不能是孤立 tool 结果
+        let msgs = agent.getMessages()
+        var tailStart = 0
+        for (i in 0..msgs.size) {
+            if (msgs[i].content.startsWith("[历史摘要]")) {
+                tailStart = i + 1
+            }
+        }
+        @Assert(msgs[tailStart].role, "user")  // 保留的任务目标
+        @Assert(msgs[tailStart + 1].toolCalls.size > 0, true)
     }
 
     @TestCase

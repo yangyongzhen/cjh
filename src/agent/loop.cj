@@ -23,6 +23,19 @@ public func compactPendingStale(elapsedMs: Int64, timeoutMs: Int64): Bool {
 }
 
 /**
+ * 连续单工具轮次达到阈值时提示批量化（纯函数，便于单测）。
+ * 只提示、不阻断：模型若确实只有一步可做，继续单调用也不会被惩罚。
+ */
+public func shouldRemindSingleToolTurn(streak: Int64): Bool {
+    return streak >= 3
+}
+
+public func singleToolReminder(streak: Int64): String {
+    return "[System Notice] 你已连续 ${streak} 轮每轮只调用 1 个工具。如果还有彼此独立的读取/搜索，" +
+        "请在同一轮一次性发起（并行工具调用），不要一轮只做一件；只有存在真实依赖时才保持串行。"
+}
+
+/**
  * Agent 生命周期事件钩子（Claude Code 式，统一事件化）
  *
  * 事件触发点（Agent.run 内部）：
@@ -994,6 +1007,8 @@ public class Agent {
         var continuationNudges: Int64 = 0
         // 上一批工具调用里是否有失败（isError）：续跑闸门的结构性判据之一
         var lastToolFailed: Bool = false
+        // 连续「一轮只调一个工具」计数：独立读/搜仍串行时提示批量化。
+        var singleToolStreak: Int64 = 0
         // 轮次预算分段（见 ContinuationPolicy.capAction）：撞到本段预算时，若还有
         // 未完成待办且段数没用尽，就续一段预算接着做，而不是交一份"任务中止"总结。
         // 实测 2026-11-06：50 轮预算全花在探索 cspub 源码上（bash `sed -n` 59 次），
@@ -1201,8 +1216,8 @@ public class Agent {
                         var result = this.executeGuarded(tc.name, tc.arguments)
                         let toolMs = (DateTime.now() - toolT0).toMilliseconds()
                         Log.info("  工具 ${tc.name} | 耗时 ${toolMs}ms | 结果 ${result.content.size} chars | isError ${result.isError}")
-                        if (response.truncated && (tc.name == "write_file" || tc.name == "edit_file")) {
-                            result = ToolResult(result.content + "\n\n⚠ 截断警告：本轮 LLM 输出被 max_tokens 强制截断，上面写入的文件内容【不完整】。\n请【立即】按以下步骤修复（不要再用 write_file 重写整个文件，那会再次截断）：\n1. 调用 read_file 读取刚写入的文件，确认截断位置\n2. 调用 edit_file，old_string 填文件末尾最后几个有效字符，new_string 续写剩余部分\n3. 重复 1-2 直到文件完整闭合（HTML 需 </script></body></html>）\n务必分多次小段续写，每段 new_string 控制在 ~1500 字符以内。", true)
+                        if (response.truncated && (tc.name == "write_file" || tc.name == "edit")) {
+                            result = ToolResult(result.content + "\n\n⚠ 截断警告：本轮 LLM 输出被 max_tokens 强制截断，上面写入的文件内容【不完整】。\n请【立即】按以下步骤修复（不要再用 write_file 重写整个文件，那会再次截断）：\n1. 调用 read_file 读取刚写入的文件，确认截断位置\n2. 调用 edit，old_string 填文件末尾最后几个有效字符，new_string 续写剩余部分\n3. 重复 1-2 直到文件完整闭合（HTML 需 </script></body></html>）\n务必分多次小段续写，每段 new_string 控制在 ~1500 字符以内。", true)
                         }
                         results[i] = result
                     } else {
@@ -1243,8 +1258,8 @@ public class Agent {
                             let tc = toolCalls[idx]
                             Log.info("  工具 ${tc.name} (并发) | 耗时 ${dur}ms | 结果 ${result.content.size} chars | isError ${result.isError}")
                             var r = result
-                            if (response.truncated && (tc.name == "write_file" || tc.name == "edit_file")) {
-                                r = ToolResult(r.content + "\n\n⚠ 截断警告：本轮 LLM 输出被 max_tokens 强制截断，上面写入的文件内容【不完整】。\n请【立即】按以下步骤修复（不要再用 write_file 重写整个文件，那会再次截断）：\n1. 调用 read_file 读取刚写入的文件，确认截断位置\n2. 调用 edit_file，old_string 填文件末尾最后几个有效字符，new_string 续写剩余部分\n3. 重复 1-2 直到文件完整闭合（HTML 需 </script></body></html>）\n务必分多次小段续写，每段 new_string 控制在 ~1500 字符以内。", true)
+                            if (response.truncated && (tc.name == "write_file" || tc.name == "edit")) {
+                                r = ToolResult(r.content + "\n\n⚠ 截断警告：本轮 LLM 输出被 max_tokens 强制截断，上面写入的文件内容【不完整】。\n请【立即】按以下步骤修复（不要再用 write_file 重写整个文件，那会再次截断）：\n1. 调用 read_file 读取刚写入的文件，确认截断位置\n2. 调用 edit，old_string 填文件末尾最后几个有效字符，new_string 续写剩余部分\n3. 重复 1-2 直到文件完整闭合（HTML 需 </script></body></html>）\n务必分多次小段续写，每段 new_string 控制在 ~1500 字符以内。", true)
                             }
                             results[idx] = r
                         }
@@ -1281,7 +1296,7 @@ public class Agent {
                     this.messages.add(ChatMessage("tool", truncateToolResult(hookedContent, tc.name, tc.id), tc.id, tc.name))
                 }
 
-                // 截断打断：检测到被截断的 write_file/edit_file 路径，注入 [System Notice] 绝对指令
+                // 截断打断：检测到被截断的 write_file/edit 路径，注入 [System Notice] 绝对指令
                 if (response.truncatedPaths.size > 0) {
                     var notice = "\n[System Notice - ABSOLUTE DIRECTIVE, MUST EXECUTE]\n"
                     notice += "The previous write_file was truncated by the model's max_tokens. The file has been saved to disk but is INCOMPLETE.\n"
@@ -1298,6 +1313,19 @@ public class Agent {
                     notice += "Do NOT perform any other action until the above steps are complete."
                     this.messages.add(ChatMessage("user", notice))
                     this.onAssistantText("\n[System] Truncation detected, forced continuation directive injected\n")
+                }
+                // 效率提醒：连续 3 轮只调 1 个工具，提示模型合并独立调用。
+                // 放在工具结果与 steer 之间；注入后清零，避免每轮重复刷屏。
+                if (n == 1) {
+                    singleToolStreak += 1
+                } else {
+                    singleToolStreak = 0
+                }
+                if (shouldRemindSingleToolTurn(singleToolStreak)) {
+                    this.messages.add(ChatMessage("user", singleToolReminder(singleToolStreak)))
+                    this.onAssistantText("\n[System] 连续 ${singleToolStreak} 轮单工具调用，已提示并行批量化\n")
+                    Log.info("注入单工具串行提醒（连续 ${singleToolStreak} 轮）")
+                    singleToolStreak = 0
                 }
                 // 方案 2「边界 steer」：工具批次已全部回填历史，下一轮请求前是用户
                 // 补充要求的天然边界——取**一条**注入，补充要求不必等整回合结束。
@@ -1448,10 +1476,10 @@ public class Agent {
      */
     private func maybeCompactForce(keep: Int64): Bool {
         let req = this.buildSummaryRequest(keep)
-        // 无 assistant 纯文本可摘要：no-op（旧实现仍发一次空摘要请求，
+        // 没有可摘要内容（纯 user 历史）：no-op（旧实现仍发一次空摘要请求，
         // 模型回一句“无内容”就把“压缩完成”当成功，随后反复空转）。
         if (req[2].size == 0) {
-            Log.info("compaction 跳过：可压缩区间没有 assistant 文本")
+            Log.info("compaction 跳过：可压缩区间没有可摘要的 assistant/tool 内容")
             return false
         }
         let summary = this.requestSummary(req[2])
@@ -1508,7 +1536,7 @@ public class Agent {
         }
         let req = this.buildSummaryRequest(keep)
         if (req[2].size == 0) {
-            Log.info("compaction 跳过：可压缩区间没有 assistant 文本")
+            Log.info("compaction 跳过：可压缩区间没有可摘要的 assistant/tool 内容")
             return false
         }
         let summary = this.requestSummary(req[2])
@@ -1537,11 +1565,16 @@ public class Agent {
      * 返回 (compactEnd, kept 工具链消息, 摘要请求消息)。
      */
     private func buildSummaryRequest(keep: Int64): (Int64, ArrayList<ChatMessage>, ArrayList<ChatMessage>) {
-        let compactEnd = this.messages.size - keep
+        let compactEnd = this.compactTailStart(keep)
         var kept = ArrayList<ChatMessage>()
         var sb = StringBuilder()
         sb.append("请把以下对话历史压缩成一段简洁的中文摘要（保留：任务目标、已完成的关键操作与结果、当前进度、尚未解决的问题）。不要遗漏重要事实。")
-        var hasAssistantText = false
+        // 工具链（assistant tool_calls + tool 结果）也要进摘要：长任务实测 53 条
+        // assistant 全部带 tool_calls、只有最后一条纯文本，旧规则把它们全保留 →
+        // 可压缩区间没有 assistant 文本 → no-op，上下文无界增长。
+        // 这里把旧工具链压缩进摘要，只把用户指令与最近 keep 条原文留在历史里；
+        // 每条工具输出截断，避免摘要请求本身又变成超大 prompt。
+        var hasSummarizable = false
         for (i in 1..compactEnd) {
             let m = this.messages[i]
             if (isSummaryMessage(m)) {
@@ -1550,22 +1583,49 @@ public class Agent {
                 sb.append("\n[此前摘要] ${summaryBody(m.content)}")
                 continue
             }
-            // 用户消息（首条任务目标 + 中途下发的追加任务）+ 工具调用/结果：保留原文。
-            // 任务目标进摘要会被"简洁转述"逐次稀释（多轮压缩后彻底丢失），
-            // agent 因此失忆、任务半途而废——用户指令必须全部钉在历史里（用户实测反馈）
-            if (m.role == "user" || m.role == "tool" || m.toolCalls.size > 0) {
+            if (m.role == "user") {
+                // 用户消息（首条任务目标 + 中途下发的追加任务）逐字保留。
+                // 任务目标进摘要会被"简洁转述"逐次稀释（多轮压缩后彻底丢失），
+                // agent 因此失忆、任务半途而废——用户指令必须全部钉在历史里。
+                // 同时给摘要模型提供上下文，便于把后续工具结果对应到任务。
                 kept.add(m)
-            } else {
-                // assistant 文本：进摘要
-                hasAssistantText = true
-                sb.append("\n[${m.role}] ${m.content}")
+                sb.append("\n[user] ${m.content}")
+                continue
+            }
+            if (m.role == "tool") {
+                hasSummarizable = true
+                sb.append("\n[tool ${m.name}] ${truncateUtf8(m.content, 1200)}")
+                continue
+            }
+            hasSummarizable = true
+            if (m.content.size > 0) {
+                sb.append("\n[assistant] ${m.content}")
+            }
+            for (tc in m.toolCalls) {
+                sb.append("\n[tool_call ${tc.name}] ${truncateUtf8(tc.arguments.toJsonString(), 600)}")
             }
         }
         var summaryMsgs = ArrayList<ChatMessage>()
-        if (hasAssistantText) {
+        if (hasSummarizable) {
             summaryMsgs.add(ChatMessage("user", sb.toString()))
         }
         return (compactEnd, kept, summaryMsgs)
+    }
+
+    /**
+     * 摘要边界：最近 keep 条原文保留；若边界正好落在 tool 结果上，
+     * 向前扩到对应的 assistant tool_calls，避免换装后出现孤立的 tool 消息
+     * （OpenAI/Anthropic 都要求 tool 结果紧跟 tool_calls）。
+     */
+    private func compactTailStart(keep: Int64): Int64 {
+        var start = this.messages.size - keep
+        if (start < 1) {
+            start = 1
+        }
+        while (start > 1 && start < this.messages.size && this.messages[start].role == "tool") {
+            start -= 1
+        }
+        return start
     }
 
     /**
@@ -1600,7 +1660,7 @@ public class Agent {
     }
 
     /**
-     * 应用摘要（换装 messages）：system + 摘要 + 保留的工具链消息 + 最近 keep 条。
+     * 应用摘要（换装 messages）：system + 摘要 + 用户指令 + 最近 keep 条。
      * 在 compactLock 内执行，与后台任务的"快照→换装"互斥，避免换装旧列表。
      */
     private func applySummary(summary: String, req: (Int64, ArrayList<ChatMessage>, ArrayList<ChatMessage>)): Bool {
@@ -1609,7 +1669,7 @@ public class Agent {
         this.compactLock.lock()
         var applied = false
         try {
-            // 重建历史：system + 摘要 + 保留的工具链消息 + 最近 keep 条
+            // 重建历史：system + 摘要 + 用户指令 + 最近 keep 条
             var newMsgs = ArrayList<ChatMessage>()
             if (this.messages.size > 0) {
                 newMsgs.add(this.messages[0])  // system
@@ -1702,7 +1762,7 @@ public class Agent {
             this.compactLock.unlock()
         }
         if (snapMsgs.size == 0) {
-            Log.info("compaction 跳过：可压缩区间没有 assistant 文本")
+            Log.info("compaction 跳过：可压缩区间没有可摘要的 assistant/tool 内容")
             return
         }
         // let 接住不可变快照（spawn 闭包只能捕获不可量：快照列表此刻起不再变化）
@@ -1771,27 +1831,28 @@ public class Agent {
         }
         // 成功 → 换装（主线程独占写，锁守护快照/换装互斥）
         let keep = if (this.config.compactKeep >= 2) { this.config.compactKeep } else { 2 }
-        let compactEnd = this.messages.size - keep
-        if (compactEnd <= 1) {
-            // 当前历史不足（极端：run 期间被清空），丢弃摘要
-            this.onCompact(false)
-            return
-        }
+        var compactEnd: Int64 = 0
         this.compactLock.lock()
         try {
+            compactEnd = this.compactTailStart(keep)
+            if (compactEnd <= 1) {
+                // 当前历史不足（极端：run 期间被清空），丢弃摘要
+                this.onCompact(false)
+                return
+            }
             var newMsgs = ArrayList<ChatMessage>()
             if (this.messages.size > 0) {
                 newMsgs.add(this.messages[0])  // system
             }
             newMsgs.add(ChatMessage("user", "[历史摘要] ${summary}"))
-            // kept（与同步路径同规则）：用户消息（任务目标/中途追加任务）+ 工具调用/结果保留原文。
-            // 旧 [历史摘要] 不重复累积——本轮新摘要已包含它。
+            // kept（与同步路径同规则）：只保留用户消息（任务目标/中途追加任务）；
+            // 旧工具链已进摘要，不再逐条保留。旧 [历史摘要] 不重复累积——本轮新摘要已包含它。
             for (i in 1..compactEnd) {
                 let m = this.messages[i]
                 if (isSummaryMessage(m)) {
                     continue
                 }
-                if (m.role == "user" || m.role == "tool" || m.toolCalls.size > 0) {
+                if (m.role == "user") {
                     newMsgs.add(m)
                 }
             }
@@ -1830,7 +1891,7 @@ public class Agent {
      *
      * 资源识别规则（对齐 builtin.cj 工具参数）：
      *   - read_file/grep/list_dir → path, read
-     *   - write_file/append_file/edit_file → path, write
+     *   - write_file/append_file/edit → path, write
      *   - bash → command, write（保守：bash 可能改任意状态）
      *   - 其他工具 → "", write（保守：未知工具当写处理）
      *
@@ -1885,7 +1946,7 @@ public class Agent {
                     case Some(p) => out.add((p.asString().getValue(), false))
                     case None => out.add(("", false))
                 }
-            case "write_file" | "append_file" | "edit_file" | "hashline_edit" =>
+            case "write_file" | "append_file" | "edit" | "hashline_edit" =>
                 match (tc.arguments.get("path")) {
                     case Some(p) => out.add((p.asString().getValue(), true))
                     case None => out.add(("", true))
@@ -2066,14 +2127,14 @@ public class Agent {
         }
         let path = args.get("path")
         // 资源域检查覆盖全部带 path 参数的工具：
-        // 读：read_file/grep/list_dir/glob；写：write_file/append_file/edit_file/hashline_edit
-        // （原实现漏掉 append_file/edit_file/hashline_edit/glob，写文件只按读检查——安全缺口）
+        // 读：read_file/grep/list_dir/glob；写：write_file/append_file/edit/hashline_edit
+        // （原实现漏掉 append_file/edit/hashline_edit/glob，写文件只按读检查——安全缺口）
         if (path.isSome() && (name == "read_file" || name == "write_file" || name == "grep" ||
             name == "list_dir" || name == "glob" || name == "append_file" ||
-            name == "edit_file" || name == "hashline_edit")) {
+            name == "edit" || name == "hashline_edit")) {
             let p = path.getOrThrow().asString().getValue()
             let isWrite = (name == "write_file" || name == "append_file" ||
-                name == "edit_file" || name == "hashline_edit")
+                name == "edit" || name == "hashline_edit")
             match (cap.checkPath(p, isWrite)) {
                 case CapDecision.Allow => ()
                 case CapDecision.Deny(reason) =>
@@ -2202,7 +2263,7 @@ public class Agent {
             if (m.role == "tool") {
                 toolCount += 1
                 // 从工具消息内容提取路径（read/write/edit 结果含路径或内容）
-                if (m.name == "read_file" || m.name == "write_file" || m.name == "edit_file" ||
+                if (m.name == "read_file" || m.name == "write_file" || m.name == "edit" ||
                     m.name == "append_file" || m.name == "hashline_edit" || m.name == "grep" || m.name == "glob") {
                     // 常见格式："Written <path> ..." / "<path>:<line>: ..." / "=== <path> ==="
                     // 跨平台（Cangjie 1.2.0 迁移）：POSIX `/` 与 Windows `\` 都要认，

@@ -97,7 +97,7 @@ public class StreamAccumulator {
     public var cachedTokens: Int64 = 0
     // 输出被 max_tokens 截断（finish_reason=="length"）
     public var truncated: Bool = false
-    // 被截断的 write_file/edit_file 路径（agent loop 据此注入强制续写指令）
+    // 被截断的 write_file/edit 路径（agent loop 据此注入强制续写指令）
     public var truncatedPaths: ArrayList<String> = ArrayList<String>()
 
     /**
@@ -388,15 +388,15 @@ public class StreamAccumulator {
                     case Some(obj) => args = obj
                     case None =>
                         // tryParseJson 失败 = JSON 被截断（content 太长被 max_tokens 切断）
-                        // 标记 truncated，让 agent loop 给 write_file/edit_file 发续写提示
+                        // 标记 truncated，让 agent loop 给 write_file/edit 发续写提示
                         this.truncated = true
                         let repaired = repairTruncatedJson(raw)
                         match (tryParseJson(repaired)) {
                             case Some(obj) =>
                                 args = obj
-                                // 记录被截断的 write_file/edit_file 的 path
+                                // 记录被截断的 write_file/edit 的 path
                                 //（即使 repair 救回前半部分，content 仍不完整，需 append_file 续写）
-                                if (name == "write_file" || name == "edit_file") {
+                                if (name == "write_file" || name == "edit") {
                                     match (obj.get("path")) {
                                         case Some(p) =>
                                             match (p.kind()) {

@@ -199,6 +199,21 @@ public class OutputViewLineCacheTest {
     }
 
     @TestCase
+    public func testEndStreamEmptyDiscardsUnfinishedDelta(): Unit {
+        // 工具调用前结束流式段但最终 text 为空：必须把未定稿增量整体丢弃。
+        // 实测 DeepSeek 工具轮会先流一个孤立 `_`，onAssistantText 不触发，
+        // 旧实现只把 StreamState 置 false，`_` 就永久卡在工具行上方。
+        let ov = OutputView()
+        ov.append("前缀行")
+        ov.appendDelta("_")
+        @Assert(ov.content().contains("_"), true)
+        ov.endStream("")
+        @Assert(ov.content().contains("_"), false)
+        @Assert(ov.content(), "前缀行\n")
+        @Assert(sameLines(ov.cachedLines(), referenceLines(ov.content())), true)
+    }
+
+    @TestCase
     public func testMixedSequenceLongSession(): Unit {
         // 长会话混合序列：append / appendDelta / endStream / ensureNewline 交错，
         // 每步后缓存与参考一致（模拟真实流式回合）

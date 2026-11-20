@@ -48,6 +48,14 @@ public class OutputView <: Component {
     // render 不再每帧全量 split（旧实现每帧 O(总量)，长会话卡主循环）。
     // 不变式由 outputview_linecache_test 锁死（含尾/首空串边界语义）。
     private var lineCache: ArrayList<String> = ArrayList<String>()
+    // 可见行缓存：lineCache 去掉折叠的工具结果明细。render 只读它；
+    // content()/cachedLines() 仍返回完整 lineCache（会话存档不丢明细）。
+    private var displayLines: ArrayList<String> = ArrayList<String>()
+    // 折叠区间（lineCache 行下标，[start,end) 为明细行）；只追加、不清空，除非 clear。
+    private var foldRanges: ArrayList<(Int64, Int64)> = ArrayList<(Int64, Int64)>()
+    private var toolDetailsHidden: Bool = true
+    // 追加折叠明细时抑制 displayLines 同步（明细默认不显示）
+    private var suppressDisplay: Bool = false
     private var cacheValid: Bool = false
 
     public init() {}
@@ -61,6 +69,10 @@ public class OutputView <: Component {
         this.streamStartPos = -1
         this.scrollOffset = 0
         this.lineCache = ArrayList<String>()
+        this.displayLines = ArrayList<String>()
+        this.foldRanges = ArrayList<(Int64, Int64)>()
+        this.toolDetailsHidden = true
+        this.suppressDisplay = false
         this.cacheValid = true
         this.clearThinking()
     }
@@ -108,8 +120,8 @@ public class OutputView <: Component {
         if (blocks.size == 0) {
             return
         }
-        var a = this.lineCache.size
-        if (a > 0 && this.lineCache[a - 1].size == 0) {
+        var a = this.displayLines.size
+        if (a > 0 && this.displayLines[a - 1].size == 0) {
             a -= 1
         }
         if (a < 0) {
@@ -421,7 +433,70 @@ public class OutputView <: Component {
             lc.add(l)
         }
         this.lineCache = lc
+        this.rebuildDisplayCache()
         this.cacheValid = true
+    }
+
+    /** 按 foldRanges 过滤出可见行（折叠态跳过明细）；O(全历史)，仅重建/切换折叠时调用 */
+    private func rebuildDisplayCache(): Unit {
+        let dl = ArrayList<String>()
+        var fi = 0
+        for (i in 0..this.lineCache.size) {
+            while (fi < this.foldRanges.size && i >= this.foldRanges[fi][1]) {
+                fi += 1
+            }
+            var hidden = false
+            if (this.toolDetailsHidden && fi < this.foldRanges.size &&
+                i >= this.foldRanges[fi][0] && i < this.foldRanges[fi][1]) {
+                hidden = true
+            }
+            if (!hidden) {
+                dl.add(this.lineCache[i])
+            }
+        }
+        this.displayLines = dl
+    }
+
+    /**
+     * 追加「摘要行 + 可折叠明细」。摘要始终可见，明细行默认隐藏，
+     * 由 Ctrl+O 全局切换展开/折叠；完整内容仍在 lineCache/content()。
+     */
+    public func appendFoldable(summary: String, detail: String): Unit {
+        this.append(summary)
+        if (detail.size == 0) {
+            return
+        }
+        // append 保证尾部换行，此时 lineCache 末行是空行；下一条明细就写在这一行，
+        // 故折叠起点是 size-1，而不是 size（否则范围错位、明细折叠不掉）。
+        let start = if (this.lineCache.size > 0) { this.lineCache.size - 1 } else { 0 }
+        this.suppressDisplay = this.toolDetailsHidden
+        try {
+            this.append(detail)
+        } finally {
+            this.suppressDisplay = false
+        }
+        var end = this.lineCache.size
+        // append 保证尾部换行，末行是空行；不把它算进明细，否则下一条内容会写进隐藏行
+        if (end > start && this.lineCache[end - 1].size == 0) {
+            end -= 1
+        }
+        if (end > start) {
+            this.foldRanges.add((start, end))
+        }
+    }
+
+    /** Ctrl+O：展开/折叠所有工具结果明细 */
+    public func toggleToolFold(): Unit {
+        this.toolDetailsHidden = !this.toolDetailsHidden
+        if (!this.cacheValid) {
+            this.rebuildCache()
+        } else {
+            this.rebuildDisplayCache()
+        }
+    }
+
+    public func toolDetailsCollapsed(): Bool {
+        return this.toolDetailsHidden
     }
 
     /**
@@ -452,6 +527,17 @@ public class OutputView <: Component {
         // 其余段逐段 add（d 以 \n 结尾时末段为空 → 补空行）
         for (i in 1..parts.size) {
             this.lineCache.add(parts[i])
+        }
+        if (this.suppressDisplay) {
+            return
+        }
+        if (this.displayLines.size > 0) {
+            this.displayLines[this.displayLines.size - 1] = this.displayLines[this.displayLines.size - 1] + parts[0]
+        } else {
+            this.displayLines.add(parts[0])
+        }
+        for (i in 1..parts.size) {
+            this.displayLines.add(parts[i])
         }
     }
 
@@ -634,7 +720,7 @@ public class OutputView <: Component {
                 grpSrc.add(2)
                 grpFrom.add(0)
                 grpCount.add(1)
-                grpAnchor.add(this.lineCache.size)
+                grpAnchor.add(this.displayLines.size)
             }
         }
         var thinkLines: Int64 = 0
@@ -669,12 +755,12 @@ public class OutputView <: Component {
             segGrp.add(g)
             total += grpCount[g]
         }
-        if (cursor < this.lineCache.size) {
+        if (cursor < this.displayLines.size) {
             segStart.add(total)
-            segCount.add(this.lineCache.size - cursor)
+            segCount.add(this.displayLines.size - cursor)
             segBase.add(cursor)
             segGrp.add(-1)
-            total += this.lineCache.size - cursor
+            total += this.displayLines.size - cursor
         }
         // 段间空行：思考段与回复段交界处留 1 行（否则"想什么"与"答什么"贴在一起）；
         // 相邻行本身已是空行时不重复插，避免叠成两行
@@ -732,7 +818,7 @@ public class OutputView <: Component {
                 while (j < s1 && r < height) {
                     let off = j - s0
                     let line: String = if (segGrp[k] < 0) {
-                        this.lineCache[segBase[k] + off]
+                        this.displayLines[segBase[k] + off]
                     } else if (grpSrc[segGrp[k]] == 0) {
                         this.thinkFrozen[grpFrom[segGrp[k]] + off]
                     } else if (grpSrc[segGrp[k]] == 1) {
@@ -800,8 +886,8 @@ public class OutputView <: Component {
      */
     private func roundAnchor(b: ThinkingBlock): Int64 {
         var a = b.anchorLines
-        if (a < 0 || a > this.lineCache.size) {
-            a = this.lineCache.size
+        if (a < 0 || a > this.displayLines.size) {
+            a = this.displayLines.size
         }
         return a
     }

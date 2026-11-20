@@ -190,13 +190,13 @@ public class WelcomeView <: Component {
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  / 命令：/new /resume /model /help" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Tab / ←→   切换视图（对话/帮助）" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Ctrl+E      多行输入编辑" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Ctrl+O      展开/折叠工具明细" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Alt+Enter   多行编辑提交" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  y / n       审批弹窗确认/取消" + Ansi.reset())
-        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  ────────────────────────" + Ansi.reset())
-        lines.add(Ansi.bold() + Ansi.fg(Ansi.THEME_ACCENT) + "Recent sessions" + Ansi.reset())
-        if (this.sessions.size == 0) {
-            lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  • 暂无历史会话" + Ansi.reset())
-        } else {
+        // 无历史会话时整块隐藏：分隔线 + 标题 + “暂无”三行纯噪声，挤掉 Tips
+        if (this.sessions.size > 0) {
+            lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  ────────────────────────" + Ansi.reset())
+            lines.add(Ansi.bold() + Ansi.fg(Ansi.THEME_ACCENT) + "Recent sessions" + Ansi.reset())
             // 最多展示 6 条
             let maxShow = if (this.sessions.size > 6) { 6 } else { this.sessions.size }
             for (i in 0..maxShow) {

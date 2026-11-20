@@ -295,7 +295,8 @@ func runCli(sessionId: String): Int64 {
 
     // system prompt：全局配置 + 项目指令（AGENTS.md）+ 技能（Skills）
     let config = AgentConfig(
-        buildSystemPrompt(cjhCfg.systemPrompt, cjhCfg.skillsDir, cjhCfg.enabledSkills, cjhCfg.memoryDir),
+        buildSystemPrompt(cjhCfg.systemPrompt, cjhCfg.skillsDir, cjhCfg.enabledSkills, cjhCfg.memoryDir,
+            cjhCfg.promptAgentsMaxBytes, cjhCfg.promptSkillsMaxBytes, cjhCfg.promptMemoryMaxBytes),
         cjhCfg.maxIterations,
         cjhCfg.capability,
         cjhCfg.compactThreshold,
@@ -453,7 +454,8 @@ func runJson(prompt: String, sessionId: String): Int64 {
     let effectiveSessionId = if (sessionId.size > 0) { sessionId } else { SessionStore(cjhCfg.sessionsDir).newSessionId() }
 
     let config = AgentConfig(
-        buildSystemPrompt(cjhCfg.systemPrompt, cjhCfg.skillsDir, cjhCfg.enabledSkills, cjhCfg.memoryDir),
+        buildSystemPrompt(cjhCfg.systemPrompt, cjhCfg.skillsDir, cjhCfg.enabledSkills, cjhCfg.memoryDir,
+            cjhCfg.promptAgentsMaxBytes, cjhCfg.promptSkillsMaxBytes, cjhCfg.promptMemoryMaxBytes),
         cjhCfg.maxIterations,
         cjhCfg.capability,
         cjhCfg.compactThreshold,
@@ -638,7 +640,8 @@ func runTui(sessionId: String): Int64 {
 
     // system prompt：全局配置 + 项目指令（AGENTS.md）+ 技能（Skills）
     let config = AgentConfig(
-        buildSystemPrompt(cjhCfg.systemPrompt, cjhCfg.skillsDir, cjhCfg.enabledSkills, cjhCfg.memoryDir),
+        buildSystemPrompt(cjhCfg.systemPrompt, cjhCfg.skillsDir, cjhCfg.enabledSkills, cjhCfg.memoryDir,
+            cjhCfg.promptAgentsMaxBytes, cjhCfg.promptSkillsMaxBytes, cjhCfg.promptMemoryMaxBytes),
         cjhCfg.maxIterations,
         cjhCfg.capability,
         cjhCfg.compactThreshold,
@@ -834,7 +837,10 @@ func runTui(sessionId: String): Int64 {
             // 看门狗判据：工具在跑期间没有流式帧，但那不是模型停滞（见 app.cj watchdogAction）
             tui.toolStarted(name)
             if (StreamState.active) {
-                TuiBridge.delta("")
+                // 模型只吐了流式增量、最终 text 为空却直接发起工具调用时
+                // （onAssistantText 不会被调用），必须丢弃这段未定稿的流式段；
+                // 否则残留的增量（实测 DeepSeek 会留下一个孤立的 `_`）会卡在工具行上方。
+                TuiBridge.endStream("")
                 StreamState.active = false
             }
             TuiBridge.ensureNewline()
@@ -860,7 +866,7 @@ func runTui(sessionId: String): Int64 {
                 preview = truncateUtf8(preview, maxPreview) + "…"
             }
             TuiBridge.ensureNewline()
-            TuiBridge.output(Ansi.fg(Ansi.THEME_MUTED) + "  ↳ ${name}: ${preview}" + Ansi.reset())
+            TuiBridge.toolResult(name, preview, result.isError)
         }
         // 审批链：危险操作需人工确认时，在 TUI 内嵌审批（y/n）
         agent.onApproval = { name, args, reason =>

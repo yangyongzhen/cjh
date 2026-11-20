@@ -310,6 +310,23 @@ public class TuiAppKeyTest {
     }
 
     @TestCase
+    public func testLongUserLineWrapsInsteadOfTruncating(): Unit {
+        // 实机：427 字长任务提示词回显只有一行，后半段被 padBg 截断。
+        // 回归：用户回显与助手输出同样折行，尾部内容必须完整可见。
+        let (app, _) = this.buildApp()
+        app.testSetCols(40)
+        var body = StringBuilder()
+        for (_ in 0..200) {
+            body.append("x")
+        }
+        let tail = " 结尾标记完整可见"
+        app.appendUserLine("❯ " + body.toString() + tail)
+        let out = app.testOutputText()
+        @Assert(out.split("\n", -1).size > 1, true)
+        @Assert(out.contains("结尾标记完整可见"), true)
+    }
+
+    @TestCase
     public func testViewSwitchToHelp(): Unit {
         let (app, _) = this.buildApp()
         // Tab 切换视图（对话→帮助）；TabBar activeIndex 从 0 到 1（ch=9 即 Tab）

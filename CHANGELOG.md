@@ -1,5 +1,22 @@
 # CHANGELOG
-## [Unreleased] - 2026-11-20
+## [v1.6.15] - 2026-11-20
+
+### 改进(TUI 折叠与语义色/提示词预算/运行时提效)
+- **工具结果折叠**:结果首行摘要常显,明细默认收起;`Ctrl+O` 全局展开/折叠,摘要尾部提示 `[+N 行]`。完整内容仍进 `content()` 与会话存档。修复折叠起点取行缓存末尾空行导致的空范围。
+- **思考块配色**:改为正文灰白 + 斜体,与用户「灰白色、不亮眼」偏好一致。
+- **欢迎页**:无历史会话时隐藏 Recent sessions 整块(分隔线/标题/暂无),Tips 不再被挤掉。
+- **提示词预算可配**:`settings.json` 新增 `prompt_agents_max_bytes` / `prompt_skills_max_bytes` / `prompt_memory_max_bytes`(默认 6000/6000/4000);`AGENTS.md` 超限改为按小节压缩,优先保留规则/安全/测试/命令类小节,末尾标注省略段数与源文件。
+- **运行时提效提醒**:连续 3 个单工具调用轮次后,下一轮注入一次「可并行就并行」提醒。
+- **版本单一来源**:根 `VERSION` + `scripts/set_version.sh` 同步 `cjpm.toml` / `Logo.VERSION`;Web `/api/version`、MCP User-Agent 编译期派生。新增一致性测试。
+- 回归:cjterm 新增 `outputview_fold_test` / `welcome_test`(4 例),根包新增提示词压缩/预算/版本/提效提醒用例。
+
+### 重构(默认提示词英文化/紧凑化/环境注入/项目上下文限额)
+- **七段式英文提示词**:角色、环境、工具、工作循环、安全与优先级、输出契约、截断说明;删除事故故事与重复叮嘱,基准提示词约 3.5 KB。
+- **环境块**:自动注入 cwd / 平台 / shell / 日期,模型不再用 `pwd`、`uname` 等工具探测首轮环境。
+- **项目上下文限额**:`AGENTS.md` 6 KB、技能 6 KB、项目记忆 4 KB;超限保留头部并附源路径,提示模型用 `read_file` 读全文。cjh 自身 14 KB 的 `AGENTS.md` 不再全量塞入。
+- **项目记忆标记为过期上下文**:放在 `stale context` 段,避免与用户当前指令冲突时被优先执行。
+- 回归:`libs/cjcfg/src/default_prompt_test.cj` 锁七段结构与工具契约;`src/core_funcs_test.cj` 新增环境块、三段限额、截断来源提示测试。
+
 ### 修复(TUI 长任务实测:压缩空转、切会话残留、长行/表格溢出)
 - **Compaction 空转**:可压缩区间无 assistant 文本时 no-op;旧摘要并入新摘要不再累积;摘要无 token 收益时回滚,防止"压缩成功却越压越大"反复触发。
 - **会话摘要**:`SessionStore.summary` 按 Rune 安全截断 40 字符,避免中文 UTF-8 字节边界截断。

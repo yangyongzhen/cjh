@@ -52,6 +52,29 @@ public class StreamAccumulatorTest {
     }
 
     @TestCase
+    public func testTruncatedEditRecordsPath(): Unit {
+        // 回归(2026-11-20)：实际工具名是 `edit`，旧实现只记录
+        // `write_file | edit_file`，导致 edit 被截断时 agent 收不到续写提示。
+        let acc = StreamAccumulator()
+        var fn = JsonObject()
+        fn.put("name", JsonString("edit"))
+        // 故意不闭合 new_string，模拟 max_tokens 截断
+        fn.put("arguments", JsonString("{\"path\":\"/tmp/a.txt\",\"old_string\":\"x\",\"new_string\":\"y"))
+        var tc = JsonObject()
+        tc.put("id", JsonString("call_edit_trunc"))
+        tc.put("function", fn)
+        var arr = ArrayList<JsonValue>()
+        arr.add(tc)
+        var root = JsonObject()
+        root.put("tool_calls", JsonArray(arr))
+        acc.feed(root.toJsonString())
+        let resp = acc.finish()
+        @Assert(resp.truncated, true)
+        @Assert(resp.truncatedPaths.size, 1)
+        @Assert(resp.truncatedPaths[0], "/tmp/a.txt")
+    }
+
+    @TestCase
     public func testToolCallParallel(): Unit {
         // 并行工具调用（index 0/1）：两个 bash 调用，参数必须分别解析，
         // 不能被拼成一个非法 JSON（旧实现 bug → _raw 透传 → "缺少参数"）

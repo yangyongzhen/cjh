@@ -196,6 +196,23 @@ def test_startup_and_input() -> None:
         check("最终答复 FINAL-DONE 出现", True)
         s.expect("4 tools")       # 回合总结条：4 次工具调用（read_file+grep+grep+list_dir）
         check("总结条：4 次工具调用", True)
+        # 工具结果默认折叠：摘要行带 Ctrl+O 提示，明细行不绘制；
+        # Ctrl+O 展开后同一份明细必须出现在屏幕上（真实渲染，非单测行缓存）。
+        s.read_available(0.5)
+        dbg = strip_ansi(s.buf)
+        # list_dir 明细 = /tmp 前 50 项（读序不定）：目录项带 "/"，只会出现在明细里
+        # （工具调用行只显示路径 /tmp）；折叠态一条都不绘制，展开后视口内至少一条。
+        tmpDirs = [n + "/" for n in os.listdir("/tmp")
+                   if len(n) > 6 and os.path.isdir(os.path.join("/tmp", n))]
+        check("工具明细默认折叠（摘要带 Ctrl+O 提示）", "Ctrl+O" in dbg,
+              f"(buf尾部: {dbg[-200:]})")
+        check("折叠态不绘制明细行", not any(n in dbg for n in tmpDirs),
+              f"(buf尾部: {dbg[-200:]})")
+        s.send_key(15)  # Ctrl+O 展开全部工具明细
+        s.read_available(0.8)
+        delta = strip_ansi(s.buf)[len(dbg):]
+        check("Ctrl+O 展开明细", any(n in delta for n in tmpDirs),
+              f"(delta尾部: {delta[-300:]})")
         # Ctrl+C 退出
         s.send_key(3)  # 空闲：一次退出
         code = s.wait_exit()

@@ -329,6 +329,13 @@ class TuiBridge {
         }
     }
 
+    /** 工具结果（折叠明细 + 错误红色） */
+    public static func toolResult(name: String, preview: String, isError: Bool): Unit {
+        if (let Some(a) <- TuiBridge.app) {
+            a.appendToolResult(name, preview, isError)
+        }
+    }
+
     /**
      * 确保输出以换行结尾（工具调用提示前调用，避免拼到流式文字后面）
      */

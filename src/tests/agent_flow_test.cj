@@ -154,6 +154,66 @@ public class AgentFlowTest {
         // 写入生效（read 在 write 之后执行，读到 WRITTEN）
         @Assert(readTextFile(tmpPath("cjh_flow_a.txt")), "WRITTEN\n")
     }
+
+    @TestCase
+    public func testEditRespectsCapabilityPathScope(): Unit {
+        // 回归（2026-11-20）：实际编辑工具名是 `edit`，但 executeGuarded 只把
+        // `edit_file` 当写工具 → 严格 capability 下 edit 绕过 fs 白名单/排除规则。
+        // 本用例把白名单限定在 allowed/，调 edit 写 allowed 外的文件，必须被拒绝。
+        let dir = testTempDir("cap_edit_scope")
+        let allowed = dir + "/allowed"
+        Directory.create(allowed)
+        let outside = dir + "/outside.txt"
+        writeTextFile(outside, "SAFE\n")
+        let cap = Capability()
+        cap.enabled = true
+        cap.tools.add("edit")
+        cap.fsAllow.add(allowed + "/**")
+        let registry = ToolRegistry()
+        registry.register(EditTool())
+        let config = AgentConfig("cap edit", 5, cap, 0, 0, 6, 2000,
+            testTempDir("cap_edit_spill"), "sess-cap-edit")
+        let agent = Agent(EditScopeProvider(outside), registry, config)
+        let summary = agent.run("越界编辑")
+        @Assert(summary.reply.contains("cap edit done"), true)
+        // 文件必须原样（无修复时会被改成 PWNED）
+        @Assert(readTextFile(outside), "SAFE\n")
+        var denied = false
+        for (m in agent.getMessages()) {
+            if (m.role == "tool" && m.content.contains("路径不在 capability")) {
+                denied = true
+            }
+        }
+        @Assert(denied, true)
+    }
+}
+
+/**
+ * 越界编辑 provider：第一轮 edit 写 allowed 外文件，第二轮收场。
+ */
+class EditScopeProvider <: LlmProvider {
+    public let path: String
+    public var callCount: Int64 = 0
+
+    public init(path: String) {
+        this.path = path
+    }
+
+    public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
+        onDelta: (String) -> Unit, onReasoning: (String) -> Unit,
+        onTokenEstimate: (Int64) -> Unit, isCancelled: () -> Bool): ModelResponse {
+        callCount += 1
+        if (callCount == 1) {
+            var calls = ArrayList<ToolCall>()
+            var a = JsonObject()
+            a.put("path", JsonString(this.path))
+            a.put("old_string", JsonString("SAFE"))
+            a.put("new_string", JsonString("PWNED"))
+            calls.add(ToolCall("cap_e1", "edit", a))
+            return ModelResponse("越界写", calls)
+        }
+        return ModelResponse("cap edit done", ArrayList<ToolCall>())
+    }
 }
 
 /**
@@ -385,5 +445,26 @@ class ThrowingProvider <: LlmProvider {
         onDelta: (String) -> Unit, onReasoning: (String) -> Unit,
         onTokenEstimate: (Int64) -> Unit, isCancelled: () -> Bool): ModelResponse {
         throw LlmException("测试异常")
+    }
+}
+
+/**
+ * 连续单工具轮次提醒：阈值与文案（不阻塞执行）。
+ */
+@Test
+public class SingleToolEfficiencyReminderTest {
+    @TestCase
+    public func testReminderOnlyAfterThreeConsecutiveTurns(): Unit {
+        @Assert(shouldRemindSingleToolTurn(2), false)
+        @Assert(shouldRemindSingleToolTurn(3), true)
+        @Assert(shouldRemindSingleToolTurn(5), true)
+    }
+
+    @TestCase
+    public func testReminderMentionsBatching(): Unit {
+        let msg = singleToolReminder(3)
+        @Assert(msg.contains("3"), true)
+        @Assert(msg.contains("并行"), true)
+        @Assert(msg.contains("依赖"), true)
     }
 }

@@ -977,6 +977,8 @@ public class TuiApp {
     public func testThinkingActive(): Bool { return this.outputView.thinkingActive() }
     // 输出区全文本观测（单测用）：断言提交回显 / 命令输出
     public func testOutputText(): String { return this.outputView.content() }
+    // 折行宽度观测（单测用）：无 TTY 时 render 不会跑，手动注入列数
+    public func testSetCols(cols: Int64): Unit { this.lastCols = cols }
 
     /**
      * 设置 Agent 执行状态（方案 B：执行期间输入可编辑，提交时入队 + 提示）
@@ -1443,12 +1445,58 @@ public class TuiApp {
 
     /** 用户输入回显行（bg 237 整行卡片，≈ omp userMessageBg） */
     public func appendUserLine(text: String): Unit {
-        this.appendCard(text, Ansi.THEME_USER_BG)
+        // 长任务提示词常几百字：不折行会被 padBg 截断成一行，用户看不到后半段。
+        // 与助手输出同样走 ANSI/CJK 感知折行，保留完整提示词（每行再铺背景卡片）。
+        this.appendCard(wrapRenderedText(text, this.lastCols - 1), Ansi.THEME_USER_BG)
     }
 
     /** 工具调用/结果行（bg 236 整行卡片，≈ omp toolPendingBg） */
     public func appendToolLine(text: String): Unit {
         this.appendCard(text, Ansi.THEME_TOOL_BG)
+    }
+
+    /**
+     * 工具结果：首行摘要常显，其余行折叠（Ctrl+O 展开）。
+     * 错误用红色，成功保持正文灰白；完整内容仍在 OutputView.content()。
+     */
+    public func appendToolResult(name: String, preview: String, isError: Bool): Unit {
+        let color = if (isError) { Ansi.THEME_ERR } else { Ansi.THEME_MUTED }
+        let mark = if (isError) { "✗" } else { "↳" }
+        let lines = preview.split("\n", -1)
+        var first = if (lines.size > 0) { lines[0] } else { "" }
+        if (first.size == 0) {
+            first = "(empty)"
+        }
+        var detail = StringBuilder()
+        var detailCount: Int64 = 0
+        for (i in 1..lines.size) {
+            if (lines[i].size == 0 && i == lines.size - 1) {
+                continue
+            }
+            detail.append(Ansi.padBg(Ansi.fg(color) + "      " + lines[i] + Ansi.reset(),
+                this.lastCols - 1, Ansi.THEME_TOOL_BG))
+            detail.append("\n")
+            detailCount += 1
+        }
+        var header = Ansi.fg(color) + "  ${mark} ${name}: ${first}" + Ansi.reset()
+        if (detailCount > 0) {
+            header = Ansi.fg(color) + "  ${mark} ${name}: ${first}" +
+                Ansi.fg(Ansi.THEME_MUTED) + "  [+${detailCount} 行 · Ctrl+O]" + Ansi.reset()
+        }
+        let wrapped = wrapRenderedText(header, this.lastCols - 1)
+        this.outputLock.lock()
+        try {
+            if (detailCount > 0) {
+                this.outputView.appendFoldable(wrapped, detail.toString())
+            } else {
+                for (line in wrapped.split("\n", -1)) {
+                    this.outputView.append(Ansi.padBg(line, this.lastCols - 1, Ansi.THEME_TOOL_BG))
+                }
+            }
+        } finally {
+            this.outputLock.unlock()
+        }
+        this.markDirty()
     }
 
     /**
@@ -1799,6 +1847,14 @@ public class TuiApp {
                     }) + Ansi.reset())
                 return
             }
+            return
+        }
+        // Ctrl+O：展开/折叠所有工具结果明细（不改变会话存档）
+        if (key.ch == 15 && !key.isEsc) {
+            this.outputView.toggleToolFold()
+            this.markDirty()
+            this.safeLog("info", "Ctrl+O: 工具明细 " +
+                (if (this.outputView.toolDetailsCollapsed()) { "折叠" } else { "展开" }))
             return
         }
         // Ctrl+E：切换多行编辑模式（ch=5；Ctrl+U/D/C 已被占用）

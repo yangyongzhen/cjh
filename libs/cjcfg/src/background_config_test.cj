@@ -73,3 +73,53 @@ public class BackgroundConfigTest {
         cleanDir(dir)
     }
 }
+
+/**
+ * 提示词各段字节预算：可配置、缺省回退 6/6/4 KB、拒绝非整数。
+ */
+@Test
+public class PromptBudgetConfigTest {
+    private static func cleanDir(dir: String): Unit {
+        if (!exists(dir)) {
+            return
+        }
+        try {
+            removeIfExists(dir, recursive: true)
+        } catch (e: Exception) {
+            ()
+        }
+    }
+
+    @TestCase
+    public func testPromptBudgetsParsedAndSaved(): Unit {
+        let dir = testTmpPath("cjh_ut_prompt_budget")
+        cleanDir(dir)
+        Directory.create(dir)
+        File.writeTo("${dir}/settings.json",
+            "{\"model\": \"m\", \"base_url\": \"https://x/v1\", \"prompt_agents_max_bytes\": 1234, \"prompt_skills_max_bytes\": 2345, \"prompt_memory_max_bytes\": 3456}".toArray())
+        let cfg = CjhConfig(dir)
+        @Assert(cfg.promptAgentsMaxBytes, 1234)
+        @Assert(cfg.promptSkillsMaxBytes, 2345)
+        @Assert(cfg.promptMemoryMaxBytes, 3456)
+        cfg.saveAll()
+        let saved = String.fromUtf8(File.readFrom("${dir}/settings.json"))
+        @Assert(saved.contains("\"prompt_agents_max_bytes\" : 1234")
+            || saved.contains("\"prompt_agents_max_bytes\":1234")
+            || saved.contains("\"prompt_agents_max_bytes\": 1234"), true)
+        cleanDir(dir)
+    }
+
+    @TestCase
+    public func testPromptBudgetDefaultsAndBadType(): Unit {
+        let dir = testTmpPath("cjh_ut_prompt_budget_def")
+        cleanDir(dir)
+        Directory.create(dir)
+        File.writeTo("${dir}/settings.json",
+            "{\"model\": \"m\", \"prompt_memory_max_bytes\": \"4k\"}".toArray())
+        let cfg = CjhConfig(dir)
+        @Assert(cfg.promptAgentsMaxBytes, 6000)
+        @Assert(cfg.promptSkillsMaxBytes, 6000)
+        @Assert(cfg.promptMemoryMaxBytes, 4000)
+        cleanDir(dir)
+    }
+}

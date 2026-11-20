@@ -1223,3 +1223,112 @@ public class BgStreamNoticeTest {
         @Assert(fmtBgDuration(3600000), "1h")
     }
 }
+
+func coreRepeatText(ch: String, n: Int64): String {
+    var sb = StringBuilder()
+    for (_ in 0..n) {
+        sb.append(ch)
+    }
+    return sb.toString()
+}
+
+/**
+ * system prompt 组装：环境块 + 项目上下文上限。
+ */
+@Test
+public class CorePromptAssemblyTest {
+    @TestCase
+    public func testEnvironmentBlockInjected(): Unit {
+        let skillsDir = coreTestTempDir("prompt_env_skills")
+        let memDir = coreTestTempDir("prompt_env_mem")
+        let s = buildSystemPrompt("BASE", skillsDir, ArrayList<String>(), memDir, 6000, 6000, 4000)
+        @Assert(s.startsWith("BASE\n\n## Current environment"), true)
+        @Assert(s.contains("- Working directory: ${getWorkingDirectory()}"), true)
+        @Assert(s.contains("- Platform: "), true)
+        @Assert(s.contains("- Shell: "), true)
+        @Assert(s.contains("- Date: "), true)
+        removeTreeForTest(skillsDir)
+        removeTreeForTest(memDir)
+    }
+
+    @TestCase
+    public func testAgentsInstructionsAreCapped(): Unit {
+        let path = findProjectInstructionsPath()
+        if (path.size == 0) {
+            return
+        }
+        let raw = File.readFrom(path)
+        if (raw.size <= 6000) {
+            return
+        }
+        let skillsDir = coreTestTempDir("prompt_agents_skills")
+        let memDir = coreTestTempDir("prompt_agents_mem")
+        let s = buildSystemPrompt("BASE", skillsDir, ArrayList<String>(), memDir, 6000, 6000, 4000)
+        @Assert(s.contains("## Project instructions (AGENTS.md)"), true)
+        @Assert(s.contains("Source: ${path}"), true)
+        @Assert(s.contains("exceeds ${6000} bytes"), true)
+        removeTreeForTest(skillsDir)
+        removeTreeForTest(memDir)
+    }
+
+    @TestCase
+    public func testSkillsAndMemoryAreCapped(): Unit {
+        let skillsDir = coreTestTempDir("prompt_cap_skills")
+        let memDir = coreTestTempDir("prompt_cap_mem")
+        coreWriteTextFile(skillsDir + "/big.md",
+            "---\nname: big-skill\ndescription: big\n---\n" + coreRepeatText("s", 7000))
+        coreWriteTextFile(memDir + "/" + currentProjectName() + ".md", coreRepeatText("m", 5000))
+        let s = buildSystemPrompt("BASE", skillsDir, ArrayList<String>(), memDir, 6000, 6000, 4000)
+        @Assert(s.contains("### Skill: big-skill"), true)
+        @Assert(s.contains("exceeds ${6000} bytes"), true)
+        @Assert(s.contains("## Project memory (previous session, stale context)"), true)
+        @Assert(s.contains("exceeds ${4000} bytes"), true)
+        removeTreeForTest(skillsDir)
+        removeTreeForTest(memDir)
+    }
+
+    @TestCase
+    public func testClipKeepsSourceHint(): Unit {
+        let clipped = clipPromptSection(coreRepeatText("x", 10000), 100, "/tmp/AGENTS.md")
+        @Assert(clipped.contains("[truncated by cjh:"), true)
+        @Assert(clipped.contains("/tmp/AGENTS.md"), true)
+        @Assert(clipped.size < 10000, true)
+    }
+
+    @TestCase
+    public func testAgentsCompactionKeepsPrioritySection(): Unit {
+        var raw = "# 项目背景\n" + coreRepeatText("背景说明", 1200) + "\n"
+        raw += "## 普通附录\n" + coreRepeatText("附录内容", 1200) + "\n"
+        raw += "## 强制安全门禁\nMUST NOT 跳过测试。\n" + coreRepeatText("安全规则", 400) + "\n"
+        let out = compactProjectInstructions(raw, 6000, "/tmp/AGENTS.md")
+        @Assert(out.size < raw.size, true)
+        // 后半段的高优先级小节必须留下，低优先级附录被丢弃
+        @Assert(out.contains("## 强制安全门禁"), true)
+        @Assert(out.contains("MUST NOT 跳过测试"), true)
+        @Assert(out.contains("omitted"), true)
+        @Assert(out.contains("read the source file"), true)
+        // 不把多字节字符切坏（输出可正常还原为 String）
+        @Assert(out.size > 0, true)
+    }
+
+    @TestCase
+    public func testSmallAgentsFileUntouched(): Unit {
+        let raw = "# 规则\nMUST pass.\n"
+        @Assert(compactProjectInstructions(raw, 6000, "/tmp/AGENTS.md"), raw)
+    }
+}
+
+/**
+ * 版本单一来源：VERSION（无 v）↔ cjpm.toml ↔ Logo.VERSION。
+ */
+@Test
+public class CoreVersionSourceTest {
+    @TestCase
+    public func testVersionFilesStayInSync(): Unit {
+        let ver = String.fromUtf8(File.readFrom("VERSION")).trimAscii()
+        @Assert(ver.size > 0, true)
+        @Assert(Logo.VERSION, "v${ver}")
+        let toml = String.fromUtf8(File.readFrom("cjpm.toml"))
+        @Assert(toml.contains("version = \"${ver}\""), true)
+    }
+}

@@ -382,11 +382,19 @@ public class BashSession {
             } catch (e: Exception) {
                 code = -1
             }
-            var contentEnd = body.size - codeLine.size
-            if (contentEnd > 0 && body[contentEnd - 1] == 10u8) {  // '\n'
-                contentEnd -= 1
+            // 按 codeLine 的实际起点裁，而不是 `body.size - codeLine.size`：
+            // body 通常还带标记前的尾换行，按长度倒推会把 codeLine 的首字符
+            // （`__CJH_CODE…` 的第一个 `_`）留在输出里。实测 `echo hello`
+            // 返回 "hello\n_"，TUI 每条 bash 结果都多一个孤立下划线。
+            match (body.lastIndexOf(codeLine)) {
+                case Some(idx) =>
+                    var contentEnd = idx
+                    if (contentEnd > 0 && body[contentEnd - 1] == 10u8) {  // '\n'
+                        contentEnd -= 1
+                    }
+                    content = body[0..contentEnd]
+                case None => ()
             }
-            content = body[0..contentEnd]
         }
         return (code, content)
     }

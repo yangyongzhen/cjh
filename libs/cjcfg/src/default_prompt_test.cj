@@ -32,11 +32,13 @@ public class DefaultSystemPromptTest {
         // 空 settings.json（无 system_prompt）→ load() 应用默认提示词
         File.writeTo("${dir}/settings.json", "{\"model\": \"m\", \"base_url\": \"https://x/v1\"}".toArray())
         let cfg = CjhConfig(dir)
-        @Assert(cfg.systemPrompt.contains("## Task list (todo_write)"), true)
+        @Assert(cfg.systemPrompt.contains("## Tools"), true)
         // 状态纪律关键词（doing/done 即时标记，防批量补账）
-        @Assert(cfg.systemPrompt.contains("keep the list LIVE"), true)
-        // 与派发特性绑定：task 派发计入 todo 项
-        @Assert(cfg.systemPrompt.contains("Subagent dispatches (task) are todo items"), true)
+        @Assert(cfg.systemPrompt.contains("todo_write: for multi-step work"), true)
+        @Assert(cfg.systemPrompt.contains("mark it doing when started"), true)
+        @Assert(cfg.systemPrompt.contains("Never batch-complete at the end"), true)
+        // 与派发特性绑定：task 只用于真正独立的工作
+        @Assert(cfg.systemPrompt.contains("task: only for genuinely independent work"), true)
         cleanDir(dir)
     }
 
@@ -52,13 +54,35 @@ public class DefaultSystemPromptTest {
         Directory.create(dir)
         File.writeTo("${dir}/settings.json", "{\"model\": \"m\", \"base_url\": \"https://x/v1\"}".toArray())
         let cfg = CjhConfig(dir)
-        @Assert(cfg.systemPrompt.contains("## Intellectual honesty"), true)
+        @Assert(cfg.systemPrompt.contains("## Safety and precedence"), true)
         // 先质疑后执行（防迎合式照做）
-        @Assert(cfg.systemPrompt.contains("say so plainly with evidence BEFORE executing"), true)
-        // 完成宣称必须有本会话工具证据（防"测试都过了"嘴瓢）
-        @Assert(cfg.systemPrompt.contains("must come from a command you just ran"), true)
-        // 失败如实上报（防静默绕过）
-        @Assert(cfg.systemPrompt.contains("a silent workaround is worse than an honest error"), true)
+        @Assert(cfg.systemPrompt.contains("say so with evidence before executing"), true)
+        // 不得编造工具输出/测试结果（防"测试都过了"嘴瓢）
+        @Assert(cfg.systemPrompt.contains("Never fabricate tool output"), true)
+        // 未验证事项必须明说（防静默绕过）
+        @Assert(cfg.systemPrompt.contains("If something cannot be verified"), true)
+        cleanDir(dir)
+    }
+
+    /**
+     * 工具名/行为与实现对齐（2026-11-20）：
+     * - 实际编辑工具是 `edit`，旧提示词写 `edit_file`（模型可能调用不存在的工具）
+     * - read_file 无 offset/limit 时默认只返回 500 行，旧提示词说"加载整文件"
+     * - 语言跟随用户，而不是硬编码中文
+     */
+    @TestCase
+    public func testDefaultPromptMatchesToolContracts(): Unit {
+        let dir = testTmpPath("cjh_ut_default_prompt_contract")
+        cleanDir(dir)
+        Directory.create(dir)
+        File.writeTo("${dir}/settings.json", "{\"model\": \"m\", \"base_url\": \"https://x/v1\"}".toArray())
+        let cfg = CjhConfig(dir)
+        @Assert(cfg.systemPrompt.contains("edit: primary way to change an existing file"), true)
+        @Assert(cfg.systemPrompt.contains("edit_file"), false)
+        @Assert(cfg.systemPrompt.contains("read_file: primary file reader"), true)
+        @Assert(cfg.systemPrompt.contains("first 500 lines"), true)
+        @Assert(cfg.systemPrompt.contains("Reply in the user's language"), true)
+        @Assert(cfg.systemPrompt.contains("answer in Chinese"), false)
         cleanDir(dir)
     }
 
@@ -75,29 +99,52 @@ public class DefaultSystemPromptTest {
     }
 
     /**
-     * 读文件口径（修"轮次预算被 sed 分段扫吃光"问题）。
-     *
-     * 实测 2026-11-06 16:30：50 轮预算里 59 次 bash 几乎全是
-     * `sed -n '595,645p' src/oschina.cj`——每片烧一整轮，任务还没进写作就没预算了。
-     * 锁死三条：read_file 一次读完 / 禁止对仓库源码逐片 sed / 例外边界必须写明
-     * （管道过滤、超大日志切片、字段提取、脚本内部仍是 sed 的地盘，
-     * 一刀切会挡掉合法用法）。
+     * 读文件口径：禁止对仓库源码逐片 sed，但不写事故故事。
      */
     @TestCase
-    public func testDefaultPromptBansSliceReadingButKeepsSedExceptions(): Unit {
+    public func testDefaultPromptBansSliceReading(): Unit {
         let dir = testTmpPath("cjh_ut_default_prompt_readfile")
         cleanDir(dir)
         Directory.create(dir)
         File.writeTo("${dir}/settings.json", "{\"model\": \"m\", \"base_url\": \"https://x/v1\"}".toArray())
         let cfg = CjhConfig(dir)
-        // 正例：read_file 是读文件的主路径
-        @Assert(cfg.systemPrompt.contains("read_file is the PRIMARY way to read files"), true)
-        // 反例：逐片 sed 扫仓库源码被点名禁止（含"每片烧一整轮"的代价说明）
-        @Assert(cfg.systemPrompt.contains("NEVER page a repo source file slice by slice"), true)
-        @Assert(cfg.systemPrompt.contains("EVERY slice burns a whole LLM round"), true)
-        // 例外边界：禁令只针对"读文件"，不针对 sed 本身
-        @Assert(cfg.systemPrompt.contains("That ban is about READING files, not about sed itself"), true)
-        @Assert(cfg.systemPrompt.contains("sed as a pipe filter"), true)
+        @Assert(cfg.systemPrompt.contains("Never walk a repository source file with repeated `sed -n` slices"), true)
+        cleanDir(dir)
+    }
+
+    /**
+     * 环境块与最终汇报契约：模型不再靠 `pwd` 探测，交付有固定字段。
+     */
+    @TestCase
+    public func testDefaultPromptHasEnvironmentAndReportContract(): Unit {
+        let dir = testTmpPath("cjh_ut_default_prompt_contract2")
+        cleanDir(dir)
+        Directory.create(dir)
+        File.writeTo("${dir}/settings.json", "{\"model\": \"m\", \"base_url\": \"https://x/v1\"}".toArray())
+        let cfg = CjhConfig(dir)
+        @Assert(cfg.systemPrompt.contains("## Environment"), true)
+        @Assert(cfg.systemPrompt.contains("## Current environment"), true)
+        @Assert(cfg.systemPrompt.contains("## Output contract"), true)
+        @Assert(cfg.systemPrompt.contains("list what changed (files)"), true)
+        @Assert(cfg.systemPrompt.contains("what you verified (commands and results)"), true)
+        @Assert(cfg.systemPrompt.contains("anything you could not verify"), true)
+        cleanDir(dir)
+    }
+
+    /**
+     * 提示词保持英文、紧凑，不把历史事故原文写进系统提示。
+     */
+    @TestCase
+    public func testDefaultPromptStaysCompactAndEnglish(): Unit {
+        let dir = testTmpPath("cjh_ut_default_prompt_compact")
+        cleanDir(dir)
+        Directory.create(dir)
+        File.writeTo("${dir}/settings.json", "{\"model\": \"m\", \"base_url\": \"https://x/v1\"}".toArray())
+        let cfg = CjhConfig(dir)
+        @Assert(cfg.systemPrompt.size < 5000, true)
+        @Assert(cfg.systemPrompt.contains("59 such calls"), false)
+        @Assert(cfg.systemPrompt.contains("Every extra token costs time and money"), false)
+        @Assert(cfg.systemPrompt.contains("项目指令"), false)
         cleanDir(dir)
     }
 }

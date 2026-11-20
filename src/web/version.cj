@@ -1,5 +1,7 @@
 package cjh.web
 
+import cjterm.Logo
+
 /**
  * Web 接口对外自述的版本号
  *
@@ -8,4 +10,4 @@ package cjh.web
  * 发版时与根 cjpm.toml 的 version、cjterm 的 Logo.VERSION 一起同步
  * （`WebVersionSyncTest` 会断言它与 Logo.VERSION 一致，改漏会红）。
  */
-public let CJH_WEB_VERSION: String = "1.6.14"
+public let CJH_WEB_VERSION: String = Logo.VERSION[1..].toString()

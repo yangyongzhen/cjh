@@ -458,13 +458,38 @@ public class TuiCanvas {
             }
             let w = if (TuiCanvas.isWideCp(cp)) { 2 } else { 1 }
             if (visible > 0 && visible + w > width) {
-                line.append(Ansi.reset())
-                out.add(line.toString())
-                line = StringBuilder()
-                if (prefix.size > 0) {
-                    line.append(prefix.toString())
+                // 优先在最后一个空格处折行：避免把 "13509.05" 这类数字/单词
+                // 从中间劈开（实机回复里出现过 "13509.\n05"）。
+                // 尾部本身仍超宽（长 token）时退回按宽度硬折。
+                var broke = false
+                let full = line.toString()
+                match (full.lastIndexOf(" ")) {
+                    case Some(cut) =>
+                        if (cut > 0) {
+                            let tail = full[(cut + 1)..]
+                            let tailWidth = displayWidth(tail)
+                            if (tailWidth + w <= width) {
+                                out.add(full[0..cut] + Ansi.reset())
+                                line = StringBuilder()
+                                if (prefix.size > 0) {
+                                    line.append(prefix.toString())
+                                }
+                                line.append(tail)
+                                visible = tailWidth
+                                broke = true
+                            }
+                        }
+                    case None => ()
                 }
-                visible = 0
+                if (!broke) {
+                    line.append(Ansi.reset())
+                    out.add(line.toString())
+                    line = StringBuilder()
+                    if (prefix.size > 0) {
+                        line.append(prefix.toString())
+                    }
+                    visible = 0
+                }
             }
             line.append(ch)
             visible += w

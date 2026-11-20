@@ -18,22 +18,16 @@ import cjterm.*
 import cjutil.*
 
 /**
- * 加载项目指令（AGENTS.md）：从当前目录向上逐级查找，最多 8 层
+ * 查找项目指令（AGENTS.md）：从当前目录向上逐级查找，最多 8 层。
+ * 返回绝对路径，空串表示未找到。
  */
-func loadProjectInstructions(): String {
+func findProjectInstructionsPath(): String {
     var dir = getWorkingDirectory()
     var depth: Int64 = 0
     while (depth < 8) {
         let p = dir.toString() + "/AGENTS.md"
         if (exists(p)) {
-            try {
-                let content = safeFromUtf8(File.readFrom(p))
-                if (content.size > 0) {
-                    return content
-                }
-            } catch (e: Exception) {
-                ()
-            }
+            return p
         }
         let parent = dir.parent
         if (parent.toString() == dir.toString()) {
@@ -265,7 +259,7 @@ public func loadSkills(skillsDir: String, enabled: ArrayList<String>): String {
             if (count > 0) {
                 sb.append("\n\n")
             }
-            sb.append("### 技能：${name}\n")
+            sb.append("### Skill: ${name}\n")
             sb.append(body)
             count += 1
         } catch (e: Exception) {
@@ -373,11 +367,179 @@ func loadSkillTools(skillsDir: String, registry: ToolRegistry, enabled: ArrayLis
 }
 
 /**
- * 组装 system prompt：全局配置 + 项目指令（AGENTS.md）+ 技能（Skills）
+ * 项目上下文注入上限（字节）。AGENTS.md/技能/记忆都可能很大，
+ * 全量拼进 system prompt 会稀释规则、挤占上下文；超限时保留头部 + 源路径。
  */
+
 /**
- * 当前项目名（记忆文件隔离用）：cwd 的 basename
+ * 截断注入段并附来源提示，保证模型仍可通过 read_file 读全文。
  */
+func clipPromptSection(text: String, maxBytes: Int64, source: String): String {
+    if (text.size <= maxBytes) {
+        return text
+    }
+    return truncateUtf8(text, maxBytes) +
+        "\n\n… [truncated by cjh: ${source} exceeds ${maxBytes} bytes; read the source file for the full text]"
+}
+
+/**
+ * 项目指令按「节」压缩：优先保留规则/安全/测试/构建/命令类小节，再按原文顺序填充。
+ *
+ * 纯头部截断会把 AGENTS.md 后半段的强制门禁整段丢掉（实测 14 KB 文件 6 KB 上限只留前 43%）。
+ * 按小节整段取舍既保住高优先级规则，也不把代码块/列表切一半。
+ */
+func compactProjectInstructions(text: String, maxBytes: Int64, source: String): String {
+    if (text.size <= maxBytes) {
+        return text
+    }
+    let lines = text.split("\n", -1)
+    let preamble = StringBuilder()
+    let sections = ArrayList<String>()
+    var seenHeading = false
+    var current = StringBuilder()
+    for (i in 0..lines.size) {
+        let line = lines[i]
+        let trimmed = line.trimAscii()
+        if (trimmed.startsWith("#")) {
+            if (seenHeading) {
+                sections.add(current.toString())
+            } else if (current.toString().size > 0) {
+                preamble.append(current.toString())
+            }
+            current = StringBuilder()
+            current.append(line)
+            current.append("\n")
+            seenHeading = true
+        } else {
+            current.append(line)
+            current.append("\n")
+        }
+    }
+    if (seenHeading) {
+        sections.add(current.toString())
+    } else {
+        return clipPromptSection(text, maxBytes, source)
+    }
+    let chosen = ArrayList<Bool>()
+    for (_ in 0..sections.size) {
+        chosen.add(false)
+    }
+    var used: Int64 = 0
+    let pre = preamble.toString()
+    if (pre.size <= maxBytes / 3) {
+        used = pre.size
+    }
+    // 第一遍只给高优先级小节留位；第二遍用剩余预算按原顺序补普通小节。
+    for (i in 0..sections.size) {
+        if (!chosen[i] && isPriorityPromptSection(sections[i]) && used + sections[i].size <= maxBytes) {
+            chosen[i] = true
+            used += sections[i].size
+        }
+    }
+    for (i in 0..sections.size) {
+        if (!chosen[i] && used + sections[i].size <= maxBytes) {
+            chosen[i] = true
+            used += sections[i].size
+        }
+    }
+    var kept = 0
+    for (i in 0..chosen.size) {
+        if (chosen[i]) {
+            kept += 1
+        }
+    }
+    if (kept == 0) {
+        return clipPromptSection(text, maxBytes, source)
+    }
+    let sb = StringBuilder()
+    if (used > 0 && pre.size <= maxBytes / 3) {
+        sb.append(pre)
+    }
+    for (i in 0..sections.size) {
+        if (chosen[i]) {
+            sb.append(sections[i])
+        }
+    }
+    let omitted = sections.size - kept
+    sb.append("\n… [cjh: ${source} exceeds ${maxBytes} bytes; kept ${kept}/${sections.size} sections")
+    if (omitted > 0) {
+        sb.append(", omitted ${omitted} lower-priority sections")
+    }
+    sb.append("; read the source file for the full text]")
+    return sb.toString()
+}
+
+func isPriorityPromptSection(section: String): Bool {
+    let l = section.toAsciiLower()
+    let keywords = ["rule", "safety", "security", "must", "never", "forbid", "test", "build",
+        "command", "workflow", "contract", "gate", "禁止", "必须", "安全", "测试", "构建", "命令", "规则", "约束"]
+    for (i in 0..keywords.size) {
+        if (l.contains(keywords[i])) {
+            return true
+        }
+    }
+    return false
+}
+
+@When[os == "Windows"]
+func promptPlatform(): String {
+    return "Windows"
+}
+
+@When[os != "Windows"]
+func promptPlatform(): String {
+    return "POSIX"
+}
+
+func promptShell(): String {
+    match (readEnv("SHELL")) {
+        case Some(s) => if (s.size > 0) { s } else { "unknown" }
+        case None => "unknown"
+    }
+}
+
+/**
+ * 组装 system prompt：基础规则 + 当前环境 + 项目指令 + 技能 + 项目记忆。
+ * 项目上下文均有字节上限，避免 14 KB 的 AGENTS.md 之类把基础规则挤出注意力。
+ */
+func buildSystemPrompt(base: String, skillsDir: String, enabled: ArrayList<String>, memoryDir: String,
+    agentsMaxBytes: Int64, skillsMaxBytes: Int64, memoryMaxBytes: Int64): String {
+    var s = base
+    s += "\n\n## Current environment\n"
+    s += "- Working directory: ${getWorkingDirectory()}\n"
+    s += "- Platform: ${promptPlatform()}\n"
+    s += "- Shell: ${promptShell()}\n"
+    s += "- Date: ${DateTime.now()}"
+    let instrPath = findProjectInstructionsPath()
+    if (instrPath.size > 0) {
+        try {
+            let instr = safeFromUtf8(File.readFrom(instrPath))
+            if (instr.size > 0) {
+                s += "\n\n## Project instructions (AGENTS.md)\nSource: ${instrPath}\n\n" +
+                    compactProjectInstructions(instr, agentsMaxBytes, instrPath)
+            }
+        } catch (e: Exception) {
+            ()
+        }
+    }
+    let skills = loadSkills(skillsDir, enabled)
+    if (skills.size > 0) {
+        s += "\n\n## Available skills (load on demand)\n" +
+            clipPromptSection(skills, skillsMaxBytes, skillsDir)
+    }
+    // 跨会话项目记忆（P1-6）：上次会话的关键信息，帮助快速恢复上下文
+    let memory = loadProjectMemory(memoryDir)
+    if (memory.size > 0) {
+        s += "\n\n## Project memory (previous session, stale context)\nSource: ${memoryDir}/" +
+            currentProjectName() + ".md\n\n" +
+            clipPromptSection(memory, memoryMaxBytes, memoryDir + "/" + currentProjectName() + ".md")
+    }
+    // 工具结果截断与回溯（对标 Pi spill extension）
+    s += "\n\n## Tool result truncation\nLong tool results are shortened by cjh: head and tail are kept, "
+    s += "and the omitted middle is saved to disk. The marker shows the path. Read that path with read_file "
+    s += "(using offset/limit) when the middle matters."
+    return s
+}
 func currentProjectName(): String {
     let cwd = getWorkingDirectory().toString()
     let slash = cwd.lastIndexOf("/")
@@ -426,25 +588,4 @@ func loadProjectMemory(memoryDir: String): String {
     }
 }
 
-func buildSystemPrompt(base: String, skillsDir: String, enabled: ArrayList<String>, memoryDir: String): String {
-    var s = base
-    let instr = loadProjectInstructions()
-    if (instr.size > 0) {
-        s += "\n\n## 项目指令（AGENTS.md）\n" + instr
-    }
-    let skills = loadSkills(skillsDir, enabled)
-    if (skills.size > 0) {
-        s += "\n\n## 可用技能（Skills，按需使用）\n" + skills
-    }
-    // 跨会话项目记忆（P1-6）：上次会话的关键信息，帮助快速恢复上下文
-    let memory = loadProjectMemory(memoryDir)
-    if (memory.size > 0) {
-        s += "\n\n## 项目记忆（上次会话）\n" + memory
-    }
-    // 工具结果截断与回溯（对标 Pi spill extension）
-    s += "\n\n## 工具结果截断\n当工具返回的结果过长时，cjh 会自动截断：保留结果的头部和尾部，"
-    s += "中间被截断的部分会保存到磁盘文件。省略标记里会显示完整结果的保存路径。\n"
-    s += "如果你需要查看被截断的中间部分，请使用 read_file 工具读取省略标记中提到的文件路径。"
-    s += "你可以指定 offset 和 limit 参数来读取特定区段。"
-    return s
-}
+

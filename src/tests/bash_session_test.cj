@@ -71,6 +71,24 @@ public class BashSessionTest {
     }
 
     @TestCase
+    public func testOutputDoesNotLeakCodeLine(): Unit {
+        // 回归（2026-11-20 实机）：`echo hello` 的工具输出多一行 "_"。
+        // __CJH_CODE_N__ 行前有换行，按 body.size - codeLine.size 倒推会把
+        // codeLine 的首字符 `_` 留在正文里；TUI 每条 bash 结果都带这个脏字符。
+        let s = BashSession()
+        try {
+            let (c1, o1) = s.execute("echo hello", 10)
+            @Assert(c1, 0)
+            @Assert(o1, "hello")
+            let (c2, o2) = s.execute("printf 'a\\nb\\n'", 10)
+            @Assert(c2, 0)
+            @Assert(o2, "a\nb")
+        } finally {
+            s.close()
+        }
+    }
+
+    @TestCase
     public func testTimeoutKillsAndRecreates(): Unit {
         let s = BashSession()
         try {

@@ -125,7 +125,7 @@ public class ModelResponse {
     public let toolCalls: ArrayList<ToolCall>
     public var usage: TokenUsage = TokenUsage()
     public var truncated: Bool = false   // finish_reason=="length"：输出被 max_tokens 截断
-    // 被截断的 write_file/edit_file 的 path 列表（agent loop 据此注入 [System Notice]）
+    // 被截断的 write_file/edit 的 path 列表（agent loop 据此注入 [System Notice]）
     public var truncatedPaths: ArrayList<String> = ArrayList<String>()
     // SSE 空闲超时（网络卡住 60s 无新数据）：已收文本/tool_calls 保留，但流被切断
     public var timedOut: Bool = false

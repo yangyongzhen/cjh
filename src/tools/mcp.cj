@@ -26,6 +26,7 @@ import stdx.encoding.json.*
 import cjcfg.McpServerConfig
 import cjllm.ToolSpec
 import cjutil.*
+import cjterm.Logo
 
 // http 传输的单次超时（秒）与响应体上限（与 web_search 的远程 provider 同量级）
 const MCP_HTTP_TIMEOUT_SECONDS: Int64 = 30
@@ -35,7 +36,7 @@ const MCP_PROTOCOL_VERSION: String = "2025-03-26"
 // GET 推送流：空闲上限（无字节到达判定连接死亡）与断线重连退避
 const MCP_PUSH_IDLE_SECONDS: Int64 = 75
 const MCP_PUSH_RETRY_MS: Int64 = 1500
-const MCP_USER_AGENT: String = "cjh/1.6.14 (Cangjie Coding Agent)"
+let MCP_USER_AGENT: String = "cjh/" + Logo.VERSION[1..] + " (Cangjie Coding Agent)"
 
 /**
  * MCP 客户端：管理单个 MCP 服务器的连接和通信

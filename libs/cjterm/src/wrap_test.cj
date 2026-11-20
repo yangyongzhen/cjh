@@ -35,6 +35,34 @@ public class WrapAnsiTest {
     }
 
     @TestCase
+    public func testWrapAnsiPrefersWordBoundary(): Unit {
+        // 实机回复出现 "13509.\n05"：数字被硬折劈开。优先在空格处折行后，
+        // 完整 token 必须落在同一行内。
+        let segs = TuiCanvas.wrapAnsi("金额 13509.05 元", 10)
+        var found = false
+        for (s in segs) {
+            @Assert(TuiCanvas.displayWidth(s) <= 10, true)
+            if (stripAnsi(s).contains("13509.05")) {
+                found = true
+            }
+        }
+        @Assert(found, true)
+    }
+
+    @TestCase
+    public func testWrapAnsiLongTokenStillHardBreaks(): Unit {
+        // 没有空格可退（超长 token）时不能死循环/溢出，仍按宽度硬折
+        let segs = TuiCanvas.wrapAnsi("abcdefghij", 4)
+        var joined = ""
+        for (s in segs) {
+            @Assert(TuiCanvas.displayWidth(s) <= 4, true)
+            joined += stripAnsi(s)
+        }
+        @Assert(joined, "abcdefghij")
+        @Assert(segs.size, 3)
+    }
+
+    @TestCase
     public func testWrapAnsiKeepsAnsiPrefix(): Unit {
         let prefix = Ansi.fg(Ansi.THEME_MUTED)
         let text = prefix + "0123456789abcdef" + Ansi.reset()
