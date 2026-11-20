@@ -7,6 +7,7 @@ import stdx.encoding.json.*
 import cjcfg.*
 import cjllm.*
 import cjh.gateway.*
+import cjh.agent.*
 import cjh.tools.*
 import cjh.web.*
 
@@ -515,6 +516,49 @@ public class GatewayControlFrameTest {
         gateway.handleSwitchModel("test", "chat1", "m-x", "https://custom.example.com/v1", "sk-x")
         @Assert(ch.acks.size, 1)
         @Assert(ch.acks[0].baseUrl, "https://custom.example.com/v1")
+    }
+
+    @TestCase
+    public func testAgentHonorsConfiguredCompactTokenThreshold(): Unit {
+        // Web/IM 网关构建 agent 时必须透传 token 压缩阈值，不能退回构造函数默认值
+        let dir = testTempDir("gw_compact_threshold")
+        let cfg = CjhConfig()
+        cfg.systemPrompt = "阈值透传测试"
+        cfg.maxIterations = 1
+        cfg.compactThreshold = 0
+        cfg.compactTokenThreshold = 32000
+        let gateway = ChannelGateway(cfg, MockProvider(dir + "/mock.txt"),
+            ToolRegistry(), None)
+        let ch = CaptureChannel()
+        gateway.registerChannel("test", ch)
+        gateway.handleUserMessage("test", "chat1", "hi")
+        var agent: ?Agent = None
+        var waited: Int64 = 0
+        while (waited < 5000) {
+            agent = gateway.getAgent("test", "chat1")
+            match (agent) {
+                case Some(_) => break
+                case None => ()
+            }
+            sleep(Duration.millisecond * 10)
+            waited += 10
+        }
+        @Assert(agent.isSome(), true)
+        @Assert(agent.getOrThrow().getCompactTokenThreshold(), 32000)
+    }
+
+    @TestCase
+    public func testWebSessionAgentHonorsConfiguredCompactTokenThreshold(): Unit {
+        // WebSessionManager 同样必须透传阈值（它是 Web/WS 的会话入口）
+        let cfg = CjhConfig()
+        cfg.systemPrompt = "阈值透传测试"
+        cfg.maxIterations = 1
+        cfg.compactThreshold = 0
+        cfg.compactTokenThreshold = 32000
+        let mgr = WebSessionManager(cfg, MockProvider(tmpPath("mock_web_thr.txt")),
+            ToolRegistry())
+        let agent = mgr.createSession("ws-threshold")
+        @Assert(agent.getCompactTokenThreshold(), 32000)
     }
 
     @TestCase

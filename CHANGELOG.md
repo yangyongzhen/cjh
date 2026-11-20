@@ -26,6 +26,14 @@
 - **状态栏**:输出区上滚时右侧显示 `↕ ↑N行`,左侧内容不再挤掉提示。
 - **Tasks 面板**:全部完成后收成一行摘要,不再常驻占屏。
 
+### 修复(同批 todo_write 并发竞态)
+- **任务列表丢项/串号**:同一轮并行多个 `todo_write add` 时,`todo_write` 无文件路径,DAG 视为无资源依赖而并发执行,`nextTodoId` 自增与列表追加竞态,导致任务丢失、id 撞号、后续 `done` 标错项。现返回进程内哨兵 `#tool:todo_write`(写访问),同批 todo 写按 LLM 顺序串行,与文件读/命令仍可并发;哨兵不入 `touchedFiles` 简报。
+- 回归:`testTodoWritesSerializeWithinBatch` / `testTodoWriteDoesNotSerializeIndependentReads`。
+
+### 调整(压缩阈值默认 32000 / 网关透传)
+- **默认阈值 8000 → 32000**:v1.6.15 注入 AGENTS/技能/记忆后静态提示词变大,8000 会在短任务里频繁压缩并稀释目标;`AgentConfig` 兜底构造同步改为 32000。
+- **Web/网关透传**:`WebSessionManager` 与 `ChannelGateway` 构建 agent 时漏传 `compactTokenThreshold`,只能落回构造函数默认值;现按 `settings.json` 透传。回归:`testAgentHonorsConfiguredCompactTokenThreshold` / `testWebSessionAgentHonorsConfiguredCompactTokenThreshold`。
+
 ### 修复(MCP stdio 实测不可用:多行帧/环境丢失/单服务器挂死)
 - **多行帧**:`send` 用 `toJsonString()`(pretty 多行)写 stdio,服务器按行读取只能拿到半截 JSON,`initialize` 永远无响应;改用 `toString()`(紧凑单行)。这意味着**此前的 stdio MCP 实际完全不可用**。
 - **环境继承**:`launch` 的 `environment` 是完整替换,旧实现只传 `config.env`,子进程没有 `PATH`/`HOME`,Python/Node 型服务器启动即失败;改为父进程全量环境 + `config.env` 覆盖。

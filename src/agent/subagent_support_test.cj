@@ -333,4 +333,51 @@ public class SubagentSupportTest {
         @Assert(deps[2][0], 0)
         @Assert(deps[3].size, 3)                 // 哨兵与全部 writer 串行
     }
+
+    // ── todo_write 进程内状态：同批 add 必须串行（否则 nextTodoId 竞态） ──
+
+    private func todoCall(content: String): ToolCall {
+        var a = JsonObject()
+        a.put("action", JsonString("add"))
+        a.put("content", JsonString(content))
+        return ToolCall("t", "todo_write", a)
+    }
+
+    @TestCase
+    public func testTodoWritesSerializeWithinBatch(): Unit {
+        let agent = this.buildAgent(SubNoopProvider())
+        let access = agent.extractResourceAccesses(this.todoCall("步骤 A"))
+        @Assert(access.size, 1)
+        @Assert(access[0][0], "#tool:todo_write")
+        @Assert(access[0][1], true)
+
+        var calls = ArrayList<ToolCall>()
+        calls.add(this.todoCall("步骤 A"))
+        calls.add(this.todoCall("步骤 B"))
+        calls.add(this.todoCall("步骤 C"))
+        let deps = agent.buildDependencyGraph(calls)
+        // 同批多个 add：按 LLM 顺序串行，#2 依赖 #0/#1
+        @Assert(deps[0].size, 0)
+        @Assert(deps[1].size, 1)
+        @Assert(deps[1][0], 0)
+        @Assert(deps[2].size, 2)
+        @Assert(deps[2][0], 0)
+        @Assert(deps[2][1], 1)
+    }
+
+    @TestCase
+    public func testTodoWriteDoesNotSerializeIndependentReads(): Unit {
+        // 与 todo 无关的只读调用不能被哨兵拖成串行
+        let agent = this.buildAgent(SubNoopProvider())
+        var calls = ArrayList<ToolCall>()
+        calls.add(this.todoCall("步骤 A"))
+        var r = JsonObject()
+        r.put("path", JsonString("/tmp/a.txt"))
+        calls.add(ToolCall("r1", "read_file", r))
+        calls.add(this.todoCall("步骤 B"))
+        let deps = agent.buildDependencyGraph(calls)
+        @Assert(deps[1].size, 0)
+        @Assert(deps[2].size, 1)   // 只依赖 #0，不依赖读
+        @Assert(deps[2][0], 0)
+    }
 }

@@ -121,7 +121,7 @@ public class AgentConfig {
         this.maxIterations = maxIterations
         this.capability = Capability()
         this.compactThreshold = 0
-        this.compactTokenThreshold = 8000
+        this.compactTokenThreshold = 32000
         this.compactKeep = 6
         this.toolResultMaxChars = 6000
         this.spillDir = ""
@@ -133,7 +133,7 @@ public class AgentConfig {
         this.maxIterations = maxIterations
         this.capability = capability
         this.compactThreshold = 0
-        this.compactTokenThreshold = 8000
+        this.compactTokenThreshold = 32000
         this.compactKeep = 6
         this.toolResultMaxChars = 6000
         this.spillDir = ""
@@ -146,7 +146,7 @@ public class AgentConfig {
         this.maxIterations = maxIterations
         this.capability = capability
         this.compactThreshold = compactThreshold
-        this.compactTokenThreshold = 8000
+        this.compactTokenThreshold = 32000
         this.compactKeep = compactKeep
         this.toolResultMaxChars = 6000
         this.spillDir = ""
@@ -160,7 +160,7 @@ public class AgentConfig {
         this.maxIterations = maxIterations
         this.capability = capability
         this.compactThreshold = compactThreshold
-        this.compactTokenThreshold = 8000
+        this.compactTokenThreshold = 32000
         this.compactKeep = compactKeep
         this.toolResultMaxChars = toolResultMaxChars
         this.spillDir = spillDir
@@ -885,6 +885,15 @@ public class Agent {
      */
     public func getTodos(): ArrayList<TodoItem> {
         return this.todos
+    }
+
+    /**
+     * 压缩 token 阈值（只读配置快照）。
+     * 网关/诊断用它核对 settings.json 的阈值是否真的传到了 Agent，
+     * 无需暴露可变 AgentConfig。
+     */
+    public func getCompactTokenThreshold(): Int64 {
+        return this.config.compactTokenThreshold
     }
 
     /**
@@ -1956,6 +1965,12 @@ public class Agent {
                     case Some(c) => out.add((c.asString().getValue(), true))
                     case None => out.add(("", true))
                 }
+            case "todo_write" =>
+                // 进程内状态，没有文件路径可当资源键。返回空 path 会被 DAG 当作
+                // "无边"→ 同批多个 add 并发执行，nextTodoId/ArrayList 竞态会丢任务、
+                // 撞 id（模型随后 done 错项）。给进程内哨兵，让同批 todo 写按 LLM
+                // 顺序串行；不同工具（read/bash/web）之间仍可并发。
+                out.add(("#tool:todo_write", true))
             case _ =>
                 out.add(("", true))
         }
@@ -2239,7 +2254,9 @@ public class Agent {
         try {
             for (tc in toolCalls) {
                 let (path, _) = this.extractResourceAccess(tc)
-                if (path.size > 0) {
+                // "#tool:..." 是进程内状态哨兵（如 todo_write），不是文件路径，
+                // 不能进子代理简报的触碰文件表。
+                if (path.size > 0 && !path.startsWith("#tool:")) {
                     this.touchedFiles.add(path)
                 }
             }

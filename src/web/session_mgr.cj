@@ -110,6 +110,7 @@ public class WebSessionManager {
             this.config.maxIterations,
             this.config.capability,
             this.config.compactThreshold,
+            this.config.compactTokenThreshold,
             this.config.compactKeep,
             this.config.toolResultMaxChars,
             this.config.spillDir,

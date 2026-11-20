@@ -113,11 +113,12 @@ public class CjhConfig {
     public var capability: Capability = Capability.fromJson(None)
     // Compaction：消息条数超阈值触发 LLM 摘要压缩早期历史（0=禁用，对齐 pi 自动摘要）
     public var compactThreshold: Int64 = 30
-    // Compaction token 阈值：估算 prompt token 超阈值也触发压缩（0=禁用）
-    // 消息条数阈值对长 tool_result 不敏感，token 估算兜底避免 prompt 膨胀
-    public var compactTokenThreshold: Int64 = 8000
-    // 压缩时保留的最近消息条数（token 阈值 8000 下保留 12 条会导致压缩只删 0-4 条、
-    // prompt 无法重置——实测压缩后仍 8-13K 继续爬升；6 条可重置到 3-4K）
+    // Compaction token 阈值：估算 prompt token 超过该值也触发压缩（0=禁用）
+    // 消息条数阈值对长 tool_result 不敏感，token 估算兜底避免 prompt 膨胀。
+    // 32000：系统提示词 + 工具 schema + AGENTS/技能/记忆已占数 K token，8000 会在
+    // 短任务里频繁压缩并稀释任务目标（2026-11-21 实测）。
+    public var compactTokenThreshold: Int64 = 32000
+    // 压缩时保留的最近消息条数（阈值 32000 下保留 6 条，压缩后回到基线 + 最近上下文）
     public var compactKeep: Int64 = 6
     // 启用的技能白名单（settings.json "enabled_skills": [...]；空=全部启用）
     public var enabledSkills: ArrayList<String> = ArrayList<String>()
@@ -298,7 +299,7 @@ public class CjhConfig {
   "theme": "starfrost",
   "tool_result_max_chars": 6000,
   "compact_threshold": 0,
-  "compact_token_threshold": 8000,
+  "compact_token_threshold": 32000,
   "compact_keep": 6,
 
   "enabled_skills": [],
