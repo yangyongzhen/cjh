@@ -208,6 +208,11 @@ public func httpClientFetch(
 
     let req = builder.build()
 
+    // TCP 快速探活：不可达目标在建连阶段就快速判死，不等系统级 connect 超时（issue #14）
+    if (!fastProbeUrl(url)) {
+        return HttpFetchResult(0, "")
+    }
+
     // spawn 子线程发送请求
     let future: Future<HttpFetchResult> = spawn {
         try {
@@ -434,6 +439,10 @@ public func httpClientSseStream(
         case None => ()
     }
     let req = builder.build()
+    // TCP 快速探活：不可达目标在建连阶段就快速判死，不等系统级 connect 超时（issue #14）
+    if (!fastProbeUrl(url)) {
+        return 0
+    }
     try {
         let resp = client.send(req)
         let status = Int64(resp.status)

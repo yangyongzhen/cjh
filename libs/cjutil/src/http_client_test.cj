@@ -384,6 +384,48 @@ public class HttpClientFetchTest {
         @Assert(probe.headers().toAsciiLower().contains("last-event-id: 42"), true)
     }
 
+    /** TCP 探活：监听端口可连（true）与无人监听端口快速判死（false，本地拒绝即刻返回） */
+    @TestCase
+    public func testTcpFastProbeOpenAndClosed(): Unit {
+        let port: UInt16 = 18929
+        let probe = MockProbe()
+        let _ = startFetchMock(port, "ok", "{}", probe)
+
+        @Assert(tcpFastProbe("127.0.0.1", probe.boundPort, 1000), true)
+        // 本地拒绝是即刻失败，远低于探活预算；以宽松上界防偶发抖动假红
+        let t0 = DateTime.now()
+        @Assert(tcpFastProbe("127.0.0.1", UInt16(1), 1000), false)
+        let elapsed = (DateTime.now() - t0).toMilliseconds()
+        @Assert(elapsed < 1000, true)
+    }
+
+    /** TCP 探活：host/port 解析 —— 显式端口、缺省端口、非法 URL 三类 */
+    @TestCase
+    public func testParseHostPortFromUrl(): Unit {
+        let a = parseHostPortFromUrl("https://example.com:8443/api/x")
+        @Assert(a.isSome(), true)
+        @Assert(a.getOrThrow()[0], "example.com")
+        @Assert(a.getOrThrow()[1], UInt16(8443))
+
+        let b = parseHostPortFromUrl("http://example.com/x?q=1")
+        @Assert(b.getOrThrow()[0], "example.com")
+        @Assert(b.getOrThrow()[1], UInt16(80))
+
+        let c = parseHostPortFromUrl("https://example.com:8443/api/x")
+        @Assert(c.getOrThrow()[1], UInt16(8443))
+
+        @Assert(parseHostPortFromUrl("ftp://example.com").isNone(), true)
+    }
+
+    /** 集成：httpClientFetch 对无人监听端口经探活快速判死返回 0（不等系统级 connect 超时） */
+    @TestCase
+    public func testHttpClientFetchUnreachableHostFastFail(): Unit {
+        let t0 = DateTime.now()
+        let r = httpClientFetch("POST", "http://127.0.0.1:1/mcp", 5, 65536, "cjh-test", "en-US", Some("{}"), None)
+        @Assert(r.status, 0)
+        @Assert((DateTime.now() - t0).toMilliseconds() < 1500, true)
+    }
+
     /** 纯函数边界：超时归一化（≤0 → 1s 下限；极大值 → 86400s 上限，防 Duration 乘法溢出） */
     @TestCase
     public func testNormalizeTimeoutSeconds(): Unit {
