@@ -37,3 +37,6 @@ dist/*.tar.gz
 # npm 平台包里的二进制由 scripts/npm_publish.sh 从 dist/ 拷入，不入版本库
 npm/cli-linux-x64/bin/cjh
 npm/cli-win32-x64/bin/cjh.exe
+
+# Windows 裸产物同理：本地留存，随归档包上传 release，不入版本库
+dist/cjh-windows-x64.exe
