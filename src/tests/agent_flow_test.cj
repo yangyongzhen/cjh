@@ -60,6 +60,32 @@ class FlowProvider <: LlmProvider {
     }
 }
 
+/**
+ * 单工具串行 provider：每轮只返回一个 read_file，用于验证效率提醒的内部性。
+ */
+class SerialToolProvider <: LlmProvider {
+    public var callCount: Int64 = 0
+    private let paths: ArrayList<String>
+
+    public init(paths: ArrayList<String>) {
+        this.paths = paths
+    }
+
+    public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
+        onDelta: (String) -> Unit, onReasoning: (String) -> Unit,
+        onTokenEstimate: (Int64) -> Unit, isCancelled: () -> Bool): ModelResponse {
+        callCount += 1
+        if (callCount <= Int64(paths.size)) {
+            var calls = ArrayList<ToolCall>()
+            var args = JsonObject()
+            args.put("path", JsonString(paths[callCount - 1]))
+            calls.add(ToolCall("serial_${callCount}", "read_file", args))
+            return ModelResponse("step ${callCount}", calls)
+        }
+        return ModelResponse("serial done", ArrayList<ToolCall>())
+    }
+}
+
 @Test
 public class AgentFlowTest {
 
@@ -153,6 +179,36 @@ public class AgentFlowTest {
         @Assert(summary.parallelBatches, 0)
         // 写入生效（read 在 write 之后执行，读到 WRITTEN）
         @Assert(readTextFile(tmpPath("cjh_flow_a.txt")), "WRITTEN\n")
+    }
+
+    @TestCase
+    public func testSingleToolReminderStaysInternalAndFiresOnce(): Unit {
+        // 回归（2026-11-21）：连续单工具轮次的提效提醒曾被 onAssistantText
+        // 直接打到用户对话里，长任务每 3 轮刷一次 “[System] 连续 3 轮…”。
+        // 提醒只应进模型上下文，且同一回合最多一次。
+        let paths = ArrayList<String>()
+        for (i in 0..7) {
+            let p = tmpPath("cjh_serial_${i}.txt")
+            writeTextFile(p, "x\n")
+            paths.add(p)
+        }
+        let provider = SerialToolProvider(paths)
+        let agent = this.buildAgent(provider, testTempDir("serialspill"), "sess-serial-nudge")
+        let visible = ArrayList<String>()
+        agent.onAssistantText = { text => visible.add(text) }
+        let summary = agent.run("串行测试")
+        @Assert(summary.reply.contains("serial done"), true)
+        @Assert(provider.callCount, 8)  // 7 轮单工具 + 1 轮收场
+        var reminders = 0
+        for (m in agent.getMessages()) {
+            if (m.content.contains("你已连续")) {
+                reminders += 1
+            }
+        }
+        @Assert(reminders, 1)
+        for (t in visible) {
+            @Assert(t.contains("[System]"), false)
+        }
     }
 
     @TestCase
@@ -455,9 +511,12 @@ class ThrowingProvider <: LlmProvider {
 public class SingleToolEfficiencyReminderTest {
     @TestCase
     public func testReminderOnlyAfterThreeConsecutiveTurns(): Unit {
-        @Assert(shouldRemindSingleToolTurn(2), false)
-        @Assert(shouldRemindSingleToolTurn(3), true)
-        @Assert(shouldRemindSingleToolTurn(5), true)
+        @Assert(shouldRemindSingleToolTurn(2, false), false)
+        @Assert(shouldRemindSingleToolTurn(3, false), true)
+        @Assert(shouldRemindSingleToolTurn(5, false), true)
+        // 同一回合已提醒过：之后不再重复注入
+        @Assert(shouldRemindSingleToolTurn(3, true), false)
+        @Assert(shouldRemindSingleToolTurn(9, true), false)
     }
 
     @TestCase

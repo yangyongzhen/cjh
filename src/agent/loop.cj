@@ -26,8 +26,8 @@ public func compactPendingStale(elapsedMs: Int64, timeoutMs: Int64): Bool {
  * 连续单工具轮次达到阈值时提示批量化（纯函数，便于单测）。
  * 只提示、不阻断：模型若确实只有一步可做，继续单调用也不会被惩罚。
  */
-public func shouldRemindSingleToolTurn(streak: Int64): Bool {
-    return streak >= 3
+public func shouldRemindSingleToolTurn(streak: Int64, alreadyReminded: Bool): Bool {
+    return streak >= 3 && !alreadyReminded
 }
 
 public func singleToolReminder(streak: Int64): String {
@@ -1046,6 +1046,8 @@ public class Agent {
         var lastToolFailed: Bool = false
         // 连续「一轮只调一个工具」计数：独立读/搜仍串行时提示批量化。
         var singleToolStreak: Int64 = 0
+        // 同一回合只注入一次：长任务串行是常态，反复刷提醒既吵又浪费上下文。
+        var singleToolReminded: Bool = false
         // 轮次预算分段（见 ContinuationPolicy.capAction）：撞到本段预算时，若还有
         // 未完成待办且段数没用尽，就续一段预算接着做，而不是交一份"任务中止"总结。
         // 实测 2026-11-06：50 轮预算全花在探索 cspub 源码上（bash `sed -n` 59 次），
@@ -1351,17 +1353,18 @@ public class Agent {
                     this.messages.add(ChatMessage("user", notice))
                     this.onAssistantText("\n[System] Truncation detected, forced continuation directive injected\n")
                 }
-                // 效率提醒：连续 3 轮只调 1 个工具，提示模型合并独立调用。
-                // 放在工具结果与 steer 之间；注入后清零，避免每轮重复刷屏。
+                // 效率提醒：连续 3 轮只调 1 个工具，向模型上下文注入一次批量化提示。
+                // 只进 messages、不进 onAssistantText——内部调度提示不该出现在用户对话里；
+                // 同一回合最多一次，避免长任务每 3 轮刷一遍。
                 if (n == 1) {
                     singleToolStreak += 1
                 } else {
                     singleToolStreak = 0
                 }
-                if (shouldRemindSingleToolTurn(singleToolStreak)) {
+                if (shouldRemindSingleToolTurn(singleToolStreak, singleToolReminded)) {
                     this.messages.add(ChatMessage("user", singleToolReminder(singleToolStreak)))
-                    this.onAssistantText("\n[System] 连续 ${singleToolStreak} 轮单工具调用，已提示并行批量化\n")
-                    Log.info("注入单工具串行提醒（连续 ${singleToolStreak} 轮）")
+                    singleToolReminded = true
+                    Log.info("注入单工具串行提醒（连续 ${singleToolStreak} 轮，本回合仅一次）")
                     singleToolStreak = 0
                 }
                 // 方案 2「边界 steer」：工具批次已全部回填历史，下一轮请求前是用户
