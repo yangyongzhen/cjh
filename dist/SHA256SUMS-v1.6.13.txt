@@ -1,3 +1,0 @@
-f6372c406f12c5a1f4e09cc29472e03c097bfcf52e9f2f2c73d8be17d38d295f  cjh-v1.6.13-linux-x64.tar.gz
-0cd9f07c359f38228978b97cea7572568ad8f45a433d01f7f37ba63a29c5b9f0  cjh-v1.6.13-windows-x64.zip
-649b0b0b1925ab7a64029548255ec044d383a9f18e03f1bd1bf2c6eaff66bb7a  cjh-v1.6.13-windows-x64-selfcontained.zip
