@@ -14,6 +14,7 @@ import std.env.*
 import std.fs.*
 import std.convert.Parsable
 import std.time.*
+import std.sync.*
 import stdx.encoding.json.*
 import cjllm.*
 import cjh.agent.*
@@ -184,6 +185,19 @@ func runWeb(args: Array<String>): Int64 {
 
     // 启动 Web 服务器（注入模型工厂：会话级切模型 / 单次模型覆盖可用）
     let server = WebServer(cjhCfg, provider, registry, Some(ModelProviderFactory(cjhCfg)))
+    // 每个 Web 会话一份 SubagentScheduler + task/todo（与 TUI 行为对齐）。
+    // 工具表是浅拷贝：bash 会话/后台任务/MCP 仍进程级共享，owner 工具只进本会话。
+    SubagentRouting.set(cjhCfg.subagentMode)
+    server.agentSetup = Some({ agent, sessionRegistry, agentConfig, _ =>
+        let scheduler = SubagentScheduler(cjhCfg.maxSubagents, cjhCfg.maxTasksPerTurn,
+            cjhCfg.subagentTokenBudget, cjhCfg.subagentTimeoutMs)
+        agent.subagentScheduler = Some(scheduler)
+        sessionRegistry.register(makeTodoWriteTool(agent))
+        sessionRegistry.register(TaskTool({ description, prompt, subagentType, scope =>
+            spawnSubagent(makeSubagentProvider(cjhCfg), sessionRegistry, agent, agentConfig,
+                description, prompt, subagentType, scope)
+        }))
+    })
     return server.serve()
 }
 
@@ -1369,23 +1383,49 @@ func spawnSubagent(provider: LlmProvider, parentRegistry: ToolRegistry, parent: 
     parentConfig: AgentConfig, description: String, prompt: String, subagentType: String,
     scope: ArrayList<String>): TaskSpawnResult {
     // S4 边界闸门：配额满 → 结构化 budget_exceeded（文案告诉模型改策略）；
-    // 并发名额满则排队（排队中父中断 → cancelled，不丢任务不挂死）
+    // 并发名额满则排队（排队中父中断 → cancelled，排队超过墙钟 → timeout）
     var slotAcquired = false
+    let spawnStarted = DateTime.now()
+    let timeoutMs: Int64 = match (parent.subagentScheduler) {
+        case Some(s) => s.timeoutMs
+        case None => 0
+    }
     match (parent.subagentScheduler) {
         case Some(sched) =>
-            // S3 复核 #7：原子闸门（判定+计数同锁）——旧用法 allowSpawn→acquire→recordSpawn
-            // 三步分离，DAG 同批并发派发时多线程可同时通过判定，实际派生数越过 max_tasks_per_turn
-            if (!sched.tryBeginSpawn()) {
+            // 原子闸门：判定+计数+token 预占同锁；并发派发不会在第一批回来前
+            // 把预算全部放行。排队也计入同一个墙钟 deadline。
+            let admitted = sched.admitSpawn({ => parent.isInterrupted() }, timeoutMs)
+            if (admitted == "budget") {
                 return TaskSpawnResult(
                     "子代理配额已满（本回合派生上限或 token 预算用尽）。请直接处理本任务，勿再派发。",
                     0, 0, 0, "budget_exceeded")
             }
-            if (!sched.acquire({ => parent.isInterrupted() })) {
-                sched.undoSpawn()  // 名额没拿到：回退计数，不白占回合配额
+            if (admitted == "interrupted") {
                 return TaskSpawnResult("子代理排队等待并发名额时被中断", 0, 0, 0, "cancelled")
+            }
+            if (admitted == "timeout") {
+                return TaskSpawnResult(
+                    "子代理排队等待并发名额超时（${timeoutMs}ms），未起跑", 0, 0, 0, "timeout")
             }
             slotAcquired = true
         case None => ()
+    }
+    // 排队已耗掉一部分墙钟：子代理本体只能用剩余时间，避免总耗时翻倍
+    var runTimeoutMs = timeoutMs
+    if (timeoutMs > 0) {
+        let used = (DateTime.now() - spawnStarted).toMilliseconds()
+        runTimeoutMs = timeoutMs - used
+        if (runTimeoutMs <= 0) {
+            if (slotAcquired) {
+                match (parent.subagentScheduler) {
+                    case Some(sched) =>
+                        sched.release()
+                        sched.abandonAdmission()
+                    case None => ()
+                }
+            }
+            return TaskSpawnResult("子代理排队耗尽墙钟（${timeoutMs}ms），未起跑", 0, 0, 0, "timeout")
+        }
     }
     // D1 简报：子任务指令 + 父会话上下文块（taskBriefContext 内部限长 ~1500 字符）
     let brief = prompt + "\n\n" + parent.taskBriefContext()
@@ -1442,11 +1482,6 @@ func spawnSubagent(provider: LlmProvider, parentRegistry: ToolRegistry, parent: 
 
     // 中断传播：登记 → 跑 → finally 注销（异常路径也注销，防登记表泄漏）
     parent.registerChild(subAgent)
-    // S4：墙钟超时（0=不限；来自 scheduler 配置）
-    let timeoutMs: Int64 = match (parent.subagentScheduler) {
-        case Some(s) => s.timeoutMs
-        case None => 0
-    }
     // 错峰派发：并发起跑按 staggerMs 间隔错开，摊平 provider 请求洪峰
     //（修实测"5 路并发派发撞限流全灭"；顺序派发时自动等 0，无额外开销）
     match (parent.subagentScheduler) {
@@ -1454,7 +1489,7 @@ func spawnSubagent(provider: LlmProvider, parentRegistry: ToolRegistry, parent: 
         case None => ()
     }
     try {
-        let summary = runSubagentWithTimeout(subAgent, brief, timeoutMs)
+        let summary = runSubagentWithTimeout(subAgent, brief, runTimeoutMs)
         var status = "ok"
         finState = AgentNodeState.Ok
         if (summary.errorCode.size > 0) {
@@ -1520,7 +1555,7 @@ func spawnSubagent(provider: LlmProvider, parentRegistry: ToolRegistry, parent: 
         match (parent.subagentScheduler) {
             case Some(sched) =>
                 sched.finish(subAgent.agentId, finState, finIterations, finPrompt, finCompletion)
-                sched.addTokens(finPrompt + finCompletion)
+                sched.settleAdmission(finPrompt + finCompletion)
             case None => ()
         }
         // S4：释放并发名额（闸门通过后才持有）
@@ -1577,35 +1612,77 @@ func runSubagentWithTimeout(agent: Agent, brief: String, timeoutMs: Int64): RunS
     if (timeoutMs <= 0) {
         return agent.run(brief)
     }
-    // 仓颉 lambda 不能捕获可变局部变量：ArrayList 包装哨兵
+    // 仓颉 lambda 不能捕获可变局部变量：ArrayList 包装哨兵。
+    // 主线程与 runner 线程会同时读写这两个列表，必须加锁；否则 size 读取与 add
+    // 并发是数据竞争（CJK 调度下可能读到半更新状态，且无 happens-before 保证）。
+    let doneLock = Mutex()
     let out = ArrayList<RunSummary>()
     let errs = ArrayList<Exception>()
     let runner = spawn {
         try {
-            out.add(agent.run(brief))
+            let r = agent.run(brief)
+            doneLock.lock()
+            try {
+                out.add(r)
+            } finally {
+                doneLock.unlock()
+            }
         } catch (e: Exception) {
-            errs.add(e)
+            doneLock.lock()
+            try {
+                errs.add(e)
+            } finally {
+                doneLock.unlock()
+            }
+        }
+    }
+    let isDone = { =>
+        doneLock.lock()
+        try {
+            out.size > 0 || errs.size > 0
+        } finally {
+            doneLock.unlock()
         }
     }
     var elapsed: Int64 = 0
-    while (out.size == 0 && errs.size == 0 && elapsed < timeoutMs) {
+    while (!isDone() && elapsed < timeoutMs) {
         sleep(Duration.millisecond * 25)
         elapsed += 25
     }
-    if (out.size == 0 && errs.size == 0) {
-        // 超时：中断子代理（runLoop 尽快退出），等 5s 宽限后放弃引用
+    if (!isDone()) {
+        // 超时：先放弃（关闭新工具副作用），再中断（尽快退出），等 5s 宽限后放弃引用。
+        // 顺序不能反：interrupt 会让 runLoop 退出，但若线程正卡在工具边界，
+        // 先置 abandon 才能保证它醒来后不会再执行下一个写工具。
+        agent.abandon()
         agent.interrupt()
         var grace: Int64 = 0
-        while (out.size == 0 && errs.size == 0 && grace < 5000) {
+        while (!isDone() && grace < 5000) {
             sleep(Duration.millisecond * 50)
             grace += 50
         }
         throw SubagentTimeoutException("子代理运行超时（${timeoutMs}ms）")
     }
-    if (errs.size > 0) {
-        throw errs[0]  // 保持原异常路径（failed 出口）
+    // 完成后在锁内取结果（异常路径与正常路径只会有一条）
+    doneLock.lock()
+    var failure: Option<Exception> = None
+    var result: Option<RunSummary> = None
+    try {
+        if (errs.size > 0) {
+            failure = Some(errs[0])
+        } else if (out.size > 0) {
+            result = Some(out[0])
+        }
+    } finally {
+        doneLock.unlock()
     }
-    return out[0]
+    match (failure) {
+        case Some(e) => throw e  // 保持原异常路径（failed 出口）
+        case None => ()
+    }
+    match (result) {
+        case Some(r) => return r
+        case None => throw SubagentTimeoutException("子代理未返回结果（${timeoutMs}ms）")
+    }
 }
 
 /**

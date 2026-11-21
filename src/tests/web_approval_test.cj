@@ -125,6 +125,33 @@ func buildApprovalGateway(dir: String, timeoutMs: Int64): (ChannelGateway, Captu
 public class ApprovalChannelTest {
 
     @TestCase
+    public func testGatewaySessionSetupUsesIsolatedRegistry(): Unit {
+        // Web 会话级装配：每个会话拿到自己的浅拷贝表（可追加 owner 工具），
+        // 但基表保持干净；sessionId 也要传给装配层（任务/转录归账要用）。
+        let cfg = approvalConfig()
+        let base = ToolRegistry()
+        base.register(ReadTool())
+        let seen = ArrayList<ToolRegistry>()
+        let ids = ArrayList<String>()
+        let gateway = ChannelGateway(cfg, ReadCallProvider("/tmp/cjh_ut_setup.txt"), base, None,
+            Some({ _, reg, _, sid =>
+                seen.add(reg)
+                ids.add(sid)
+                if (seen.size == 1) {
+                    reg.register(GlobTool())   // 只给 A 会话装，验证 B 看不到
+                }
+            }))
+        let _ = gateway.createSession("test", "chat-a")
+        let _ = gateway.createSession("test", "chat-b")
+        @Assert(seen.size, 2)
+        @Assert(seen[0].has("read_file"), true)
+        @Assert(seen[0].has("glob"), true)
+        @Assert(seen[1].has("glob"), false)
+        @Assert(base.has("glob"), false)
+        @Assert(ids[0] != ids[1], true)
+    }
+
+    @TestCase
     public func testApproveLetsToolRun(): Unit {
         let dir = testTempDir("gw_approval_allow")
         let (gateway, ch) = buildApprovalGateway(dir, 8000)

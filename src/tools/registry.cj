@@ -92,6 +92,26 @@ public class ToolRegistry {
         }
     }
 
+    /**
+     * 复制一份工具表（共享同一批工具实例，槽位/会话状态仍互通）。
+     *
+     * Web 每个会话需要往表里追加 agent 专属的 task/todo 工具，
+     * 但 bash 会话、后台任务表、MCP 连接必须仍是进程级共享——所以是浅拷贝工具实例，
+     * 不是复制工具内部状态。
+     */
+    public func cloneTools(): ToolRegistry {
+        let copy = ToolRegistry()
+        this.lock.lock()
+        try {
+            for ((_, t) in this.tools) {
+                copy.register(t)
+            }
+        } finally {
+            this.lock.unlock()
+        }
+        return copy
+    }
+
     public func has(name: String): Bool {
         lock.lock()
         try {

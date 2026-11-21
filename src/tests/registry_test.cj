@@ -58,6 +58,19 @@ public class RegistryTest {
     }
 
     @TestCase
+    public func testCloneToolsIsolatesRegistrations(): Unit {
+        // Web 每个会话在浅拷贝上追加 task/todo，不能污染进程级基表
+        // （否则 A 会话的 todo 会绑到 A 的 agent，B 会话调到就是串台）
+        let base = ToolRegistry()
+        base.register(ReadTool())
+        let session = base.cloneTools()
+        @Assert(session.has("read_file"), true)
+        session.register(GlobTool())
+        @Assert(session.has("glob"), true)
+        @Assert(base.has("glob"), false)
+    }
+
+    @TestCase
     public func testReadOnlyClassification(): Unit {
         let registry = ToolRegistry()
         registry.register(ReadTool())     // 纯读 → true

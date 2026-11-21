@@ -291,6 +291,40 @@ public class SubagentSupportTest {
         @Assert(sched.tokensUsed(), 0)
     }
 
+    @TestCase
+    public func testAdmitSpawnReservesBudgetAtomically(): Unit {
+        // 并发派发不能在第一份 token 回来前全部放行：admit 立刻预占一份预算，
+        // 否则 5 路并发会各自看到"预算还够"全部起跑，实际用量超支数倍。
+        let sched = SubagentScheduler(1, 0, 100, 0)
+        @Assert(sched.admitSpawn({ => false }, 0), "ok")
+        @Assert(sched.admitSpawn({ => false }, 0), "budget")
+        // 收尾：预占退还，实际用量入账（30），预算 100 又能派 1 个
+        sched.release()
+        sched.settleAdmission(30)
+        @Assert(sched.tokensUsed(), 30)
+        @Assert(sched.admitSpawn({ => false }, 0), "ok")
+    }
+
+    @TestCase
+    public func testAdmitSpawnQueueTimeoutRefundsSlot(): Unit {
+        // 排队超过墙钟必须返回 timeout 并回滚派生计数/预占，
+        // 否则父回合被墙钟打断后，名额永久漏账，下一批派生全被误拒。
+        let sched = SubagentScheduler(1, 0, 0, 0)
+        @Assert(sched.admitSpawn({ => false }, 0), "ok")
+        @Assert(sched.admitSpawn({ => false }, 100), "timeout")
+        sched.release()
+        @Assert(sched.admitSpawn({ => false }, 0), "ok")
+    }
+
+    @TestCase
+    public func testAdmitSpawnInterruptedRefundsSlot(): Unit {
+        let sched = SubagentScheduler(1, 0, 0, 0)
+        @Assert(sched.admitSpawn({ => false }, 0), "ok")
+        @Assert(sched.admitSpawn({ => true }, 1000), "interrupted")
+        sched.release()
+        @Assert(sched.admitSpawn({ => false }, 0), "ok")
+    }
+
     // ── S6：task scope → DAG 冲突消解（internal 方法，包内直测） ──
 
     private func taskCall(scope: String): ToolCall {

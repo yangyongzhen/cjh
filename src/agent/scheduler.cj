@@ -88,6 +88,9 @@ public class SubagentScheduler {
     // 本回合归账：token 累计 + 派生次数（闸门数据源）
     private var tokensThisTurn: Int64 = 0
     private var spawnedThisTurn: Int64 = 0
+    // 已派发但尚未收尾的子代理预占的 token。只靠"已完成实际用量"判定预算时，
+    // 并发派发会在第一批还没回来前全部通过闸门，实际用量可达预算的数倍。
+    private var reservedTokens: Int64 = 0
     // S7：低效派生计数（事后纠偏 [路由提示] 触发时 +1；总结条 ⚠N）
     private var wastedThisTurn: Int64 = 0
 
@@ -128,7 +131,8 @@ public class SubagentScheduler {
     public func tryBeginSpawn(): Bool {
         this.lock.lock()
         let overTurns: Bool = this.maxPerTurn > 0 && this.spawnedThisTurn >= this.maxPerTurn
-        let overBudget: Bool = this.tokenBudget > 0 && this.tokensThisTurn >= this.tokenBudget
+        let overBudget: Bool = this.tokenBudget > 0 &&
+            this.tokensThisTurn + this.reservedTokens >= this.tokenBudget
         if (overTurns || overBudget) {
             this.lock.unlock()
             return false
@@ -136,6 +140,97 @@ public class SubagentScheduler {
         this.spawnedThisTurn += 1
         this.lock.unlock()
         return true
+    }
+
+    /**
+     * 每个派生预占的 token。取 tokenBudget / 并发上限：这样 N 个并发派生
+     * 合计预占不会超过预算，同时仍允许小预算下至少派 1 个。
+     */
+    private func reservePerSpawn(): Int64 {
+        if (this.tokenBudget <= 0) {
+            return 0
+        }
+        let lanes = if (this.maxConcurrent > 0) { this.maxConcurrent } else { 4 }
+        let per = this.tokenBudget / lanes
+        return if (per > 0) { per } else { 1 }
+    }
+
+    /**
+     * 原子派发 + 排队（带墙钟 deadline 与 token 预占）。
+     *
+     * 与旧 `tryBeginSpawn + acquire` 的区别：
+     * - 预算按"预占 + 已完成"判定，并发派发不会在第一批回来前全部放行；
+     * - 排队超过 deadline 返回 timeout，而不是无限等并发槽（父回合的墙钟
+     *   应该包含排队时间，否则 5 个各 300s 的任务排队能拖到 1500s）。
+     *
+     * @return "ok" / "budget" / "interrupted" / "timeout"
+     */
+    public func admitSpawn(isInterrupted: () -> Bool, timeoutMs: Int64): String {
+        let reserve = this.reservePerSpawn()
+        let queueStart = DateTime.now()
+        this.lock.lock()
+        let overTurns: Bool = this.maxPerTurn > 0 && this.spawnedThisTurn >= this.maxPerTurn
+        // 判定看"已用 + 已预占"：并发派发在首批 token 回来前，每人预占一份份额，
+        // 不会全部放行。不把本次 reserve 加进判定，否则预算花剩一点时永远派不动。
+        let overBudget: Bool = this.tokenBudget > 0 &&
+            this.tokensThisTurn + this.reservedTokens >= this.tokenBudget
+        if (overTurns || overBudget) {
+            this.lock.unlock()
+            return "budget"
+        }
+        this.spawnedThisTurn += 1
+        this.reservedTokens += reserve
+        this.lock.unlock()
+        match (this.sem) {
+            case Some(s) =>
+                while (true) {
+                    if (s.tryAcquire()) {
+                        return "ok"
+                    }
+                    if (isInterrupted()) {
+                        this.undoAdmission(reserve)
+                        return "interrupted"
+                    }
+                    if (timeoutMs > 0 &&
+                        (DateTime.now() - queueStart).toMilliseconds() >= timeoutMs) {
+                        this.undoAdmission(reserve)
+                        return "timeout"
+                    }
+                    sleep(Duration.millisecond * 50)
+                }
+            case None => return "ok"
+        }
+        return "timeout"
+    }
+
+    /** 回滚一次 admitSpawn 占下的名额/预占（未拿到并发槽或未起跑时用） */
+    public func undoAdmission(reserve: Int64): Unit {
+        this.lock.lock()
+        if (this.spawnedThisTurn > 0) {
+            this.spawnedThisTurn -= 1
+        }
+        this.reservedTokens -= reserve
+        if (this.reservedTokens < 0) {
+            this.reservedTokens = 0
+        }
+        this.lock.unlock()
+    }
+
+    /** 起跑前放弃：回滚派生计数与本派生预占（调用方已负责 release 并发槽） */
+    public func abandonAdmission(): Unit {
+        this.undoAdmission(this.reservePerSpawn())
+    }
+
+    /** 子代理收尾：释放预占，把实际 token 计入本回合 */
+    public func settleAdmission(actualTokens: Int64): Unit {
+        let reserve = this.reservePerSpawn()
+        this.lock.lock()
+        this.reservedTokens -= reserve
+        if (this.reservedTokens < 0) {
+            this.reservedTokens = 0
+        }
+        this.tokensThisTurn += actualTokens
+        this.lock.unlock()
     }
 
     /**
@@ -312,6 +407,7 @@ public class SubagentScheduler {
         this.lock.lock()
         this.tokensThisTurn = 0
         this.spawnedThisTurn = 0
+        this.reservedTokens = 0
         this.wastedThisTurn = 0
         this.nodes.clear()
         let cb = this.changedCb

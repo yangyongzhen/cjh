@@ -17,6 +17,7 @@ package cjh.web
 import stdx.encoding.json.*
 import stdx.net.http.*
 import cjh.gateway.*
+import cjh.agent.*
 import cjcfg.CjhConfig
 import cjllm.LlmProvider
 import cjh.tools.ToolRegistry
@@ -30,6 +31,8 @@ public class WebServer {
     private let registry: ToolRegistry
     // 模型覆盖工厂（装配层注入）：会话级切模型 / 单次模型覆盖用
     private let providerFactory: ?ProviderFactory
+    // 会话级工具/调度器装配（runWeb 注入）：None = 旧行为（无 task/todo）
+    public var agentSetup: Option<(Agent, ToolRegistry, AgentConfig, String) -> Unit> = None
 
     public init(config: CjhConfig, provider: LlmProvider, registry: ToolRegistry) {
         this.config = config
@@ -58,7 +61,8 @@ public class WebServer {
         let bindAddr = this.config.webBindAddr
 
         // 构建请求分发器（自定义实现 HttpRequestDistributor 接口）
-        let distributor = WebDistributor(this.config, this.provider, this.registry, this.providerFactory)
+        let distributor = WebDistributor(this.config, this.provider, this.registry, this.providerFactory,
+            this.agentSetup)
 
         // 构建并启动服务器
         let server = ServerBuilder()
@@ -99,17 +103,18 @@ public class WebDistributor <: HttpRequestDistributor {
     private let restApi: RestApi
     // 后台任务广播器（v6 bg_task 帧）：装配一次，WsHandler 与任务表共用
     private let bgBroadcaster: BgTaskBroadcaster
+    private let agentSetup: Option<(Agent, ToolRegistry, AgentConfig, String) -> Unit>
 
     public init(config: CjhConfig, provider: LlmProvider, registry: ToolRegistry) {
         this.config = config
         this.provider = provider
         this.registry = registry
+        this.agentSetup = None
         // ChannelGateway：渠道网关，负责会话路由 + Agent 生命周期 + 事件分发
         this.gateway = ChannelGateway(this.config, this.provider, this.registry)
         // 后台任务事件 → bg_task 帧广播（订阅进程级任务表；无表时静默）
         this.bgBroadcaster = BgTaskBroadcaster()
-        // 槽位上限（v7 账）：bg 取配置；agents 传 0 —— Web 模式不建 SubagentScheduler，
-        // 传 max_subagents 会画出一个永不变化的假账，客户端见上限 0 即省略该段
+        // 旧构造无 agentSetup：不建 SubagentScheduler，agents 上限传 0
         this.bgBroadcaster.setLimits(this.config.maxBackgroundTasks, 0)
         this.bgBroadcaster.subscribe()
         // WsHandler 实例（WebSocket 端点，只负责帧读写 + JSON 解析）
@@ -128,12 +133,12 @@ public class WebDistributor <: HttpRequestDistributor {
         this.config = config
         this.provider = provider
         this.registry = registry
+        this.agentSetup = None
         // ChannelGateway：渠道网关，负责会话路由 + Agent 生命周期 + 事件分发
         this.gateway = ChannelGateway(this.config, this.provider, this.registry, providerFactory)
         // 后台任务事件 → bg_task 帧广播（订阅进程级任务表；无表时静默）
         this.bgBroadcaster = BgTaskBroadcaster()
-        // 槽位上限（v7 账）：bg 取配置；agents 传 0 —— Web 模式不建 SubagentScheduler，
-        // 传 max_subagents 会画出一个永不变化的假账，客户端见上限 0 即省略该段
+        // 旧构造无 agentSetup：不建 SubagentScheduler，agents 上限传 0
         this.bgBroadcaster.setLimits(this.config.maxBackgroundTasks, 0)
         this.bgBroadcaster.subscribe()
         // WsHandler 实例（WebSocket 端点，只负责帧读写 + JSON 解析）
@@ -142,6 +147,28 @@ public class WebDistributor <: HttpRequestDistributor {
         this.webHandler = WebHandler(this.config)
         // RestApi 实例（/api/* 路由）；registry 供工作区切换重置 bash 会话
         this.restApi = RestApi(this.config, this.registry)
+    }
+
+    /**
+     * @param agentSetup 会话级装配（task/todo/bash_start owner/scheduler）
+     */
+    public init(config: CjhConfig, provider: LlmProvider, registry: ToolRegistry,
+        providerFactory: ?ProviderFactory,
+        agentSetup: Option<(Agent, ToolRegistry, AgentConfig, String) -> Unit>) {
+        this.config = config
+        this.provider = provider
+        this.registry = registry
+        this.agentSetup = agentSetup
+        this.gateway = ChannelGateway(this.config, this.provider, this.registry, providerFactory,
+            this.agentSetup)
+        this.bgBroadcaster = BgTaskBroadcaster()
+        // Web 现在每会话一个 SubagentScheduler：agents 账有了真实数据源
+        this.bgBroadcaster.setLimits(this.config.maxBackgroundTasks, this.config.maxSubagents)
+        this.bgBroadcaster.subscribe()
+        this.wsHandler = WsHandler(this.config, this.gateway, this.bgBroadcaster)
+        this.webHandler = WebHandler(this.config)
+        this.restApi = RestApi(this.config, this.registry)
+        this.bgBroadcaster.agentUsedProvider = { => this.gateway.activeSubagentCount() }
     }
     /**
      * 分发请求：按 path 查路由表，未找到返回 404

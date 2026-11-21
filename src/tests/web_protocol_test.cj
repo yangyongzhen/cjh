@@ -35,6 +35,7 @@ public class CaptureChannel <: Channel {
     public var dones: Int64 = 0
     public var histories: Int64 = 0
     public var tasks: Int64 = 0
+    public var taskJson: ArrayList<String> = ArrayList<String>()
     // 回合级事件携带的帧身份（按到达顺序记录，用于断言"同一回合同一组 id"）
     public var metas: ArrayList<FrameMeta> = ArrayList<FrameMeta>()
     // done 的结束原因（按到达顺序）
@@ -113,8 +114,9 @@ public class CaptureChannel <: Channel {
         this.histories += 1
     }
 
-    public func sendTasks(_: String, _: JsonArray): Unit {
+    public func sendTasks(_: String, tasks: JsonArray): Unit {
         this.tasks += 1
+        this.taskJson.add(tasks.toString())
     }
 
     public func sendApprovalRequest(_: String, info: ApprovalRequestInfo): Unit {
@@ -647,6 +649,66 @@ public class GatewayControlFrameTest {
         waitForEvents(ch, 10000)
         @Assert(ch.errors.size, 0)
         @Assert(ch.dones > 0, true)
+    }
+
+    @TestCase
+    public func testTodoChangesPushTasksFrame(): Unit {
+        // 每个 Web 会话装上 todo 工具后，改动必须推到 tasks 帧——
+        // 否则 Web 侧永远看不到任务清单（TUI 有 onTodosChanged 直连面板，Web 没有）。
+        let cfg = CjhConfig()
+        cfg.systemPrompt = "tasks 帧测试"
+        cfg.maxIterations = 3
+        let gateway = ChannelGateway(cfg, AddTodoProvider(), ToolRegistry(), None,
+            Some({ agent, reg, _, _ => reg.register(AddTodoTool(agent)) }))
+        let ch = CaptureChannel()
+        gateway.registerChannel("test", ch)
+        gateway.handleUserMessage("test", "chat1", "加任务", None)
+        waitForEvents(ch, 3000)
+        @Assert(ch.dones, 1)
+        @Assert(ch.tasks > 0, true)
+        @Assert(ch.taskJson[ch.taskJson.size - 1].contains("Web 可见任务"), true)
+    }
+}
+
+/**
+ * 任务工具替身：调用即向 agent 待办表追加一条（无需真实 TodoWriteTool 回调）
+ */
+public class AddTodoTool <: CjhTool {
+    private let agent: Agent
+    public init(agent: Agent) {
+        this.agent = agent
+    }
+
+    public func spec(): ToolSpec {
+        return ToolSpec("todo_write", "add a task for UI test", JsonObject())
+    }
+
+    public func execute(_: JsonObject): ToolResult {
+        let _ = this.agent.addTask("Web 可见任务")
+        return ToolResult("added", false)
+    }
+
+    public func isReadOnly(): Bool {
+        return false
+    }
+}
+
+/** 第一轮调用 todo_write，第二轮收尾 */
+public class AddTodoProvider <: LlmProvider {
+    public var calls: Int64 = 0
+
+    public func chatStream(_: ArrayList<ChatMessage>, _: ArrayList<ToolSpec>,
+        _: (String) -> Unit, _: (String) -> Unit, _: (Int64) -> Unit,
+        _: () -> Bool): ModelResponse {
+        this.calls += 1
+        if (this.calls == 1) {
+            var args = JsonObject()
+            args.put("action", JsonString("add"))
+            var list = ArrayList<ToolCall>()
+            list.add(ToolCall("call_todo", "todo_write", args))
+            return ModelResponse("加个任务", list)
+        }
+        return ModelResponse("完成", ArrayList<ToolCall>())
     }
 }
 

@@ -14,8 +14,8 @@ if ! [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
 fi
 root="$(cd "$(dirname "$0")/.." && pwd)"
 printf '%s\n' "$ver" > "$root/VERSION"
-sed -i -E "s/^version = \"[^\"]+\"/version = \"$ver\"/" "$root/cjpm.toml"
+sed -i -E "s/^([[:space:]]*version[[:space:]]*=[[:space:]]*\")[^\"]+/\1$ver/" "$root/cjpm.toml"
 sed -i -E "s/(public static const VERSION: String = \")v[^\"]+(\")/\1v$ver\2/" "$root/libs/cjterm/src/logo.cj"
 echo "version -> $ver"
-grep -E '^version = ' "$root/cjpm.toml"
+grep -E '^[[:space:]]*version[[:space:]]*=' "$root/cjpm.toml"
 grep -E 'public static const VERSION' "$root/libs/cjterm/src/logo.cj"

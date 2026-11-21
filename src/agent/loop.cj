@@ -481,6 +481,10 @@ public class Agent {
     // 线程安全（主线程 handleKey 设置，agent 线程轮询检查）。
     private var interruptFlag: Bool = false
     private var interruptLock: Mutex = Mutex()
+    // 被父回合放弃（S4 墙钟超时）：线程杀不掉，但必须阻止它在超时后继续起新工具
+    // （否则写文件/起进程会在父已收场后落地）。与 interrupt 分开：中断是"尽快收场"，
+    // 放弃是"结果已无人接收，禁止再产生副作用"。
+    private var abandonFlag: Bool = false
     // P1b：messages 换装锁——后台摘要任务持锁做"快照 → 换装"，
     // 主循环 loadHistory/换装同样持锁，保证快照与换装的原子性（避免换装旧列表）
     private var compactLock: Mutex = Mutex()
@@ -707,6 +711,30 @@ public class Agent {
         this.interruptLock.lock()
         try {
             return this.interruptFlag
+        } finally {
+            this.interruptLock.unlock()
+        }
+    }
+
+    /**
+     * 父回合已超时收场：放弃该子代理，禁止其继续产生工具副作用。
+     *
+     * 仓颉线程无法安全 kill；这里只关"新工具"这扇门。已在执行的工具无法撤销
+     * （例如 bash 已起的进程），调用方仍需配合 interrupt + 收尾。
+     */
+    public func abandon(): Unit {
+        this.interruptLock.lock()
+        try {
+            this.abandonFlag = true
+        } finally {
+            this.interruptLock.unlock()
+        }
+    }
+
+    public func isAbandoned(): Bool {
+        this.interruptLock.lock()
+        try {
+            return this.abandonFlag
         } finally {
             this.interruptLock.unlock()
         }
@@ -2111,6 +2139,9 @@ public class Agent {
      * 未配置 capability 时（宽松模式）全部放行，行为与旧版一致
      */
     private func executeGuarded(name: String, args: JsonObject): ToolResult {
+        if (this.isAbandoned()) {
+            return ToolResult("子代理已被父回合放弃（超时收场），本次工具调用未执行：${name}", true)
+        }
         let cap = this.config.capability
         // 后台任务三件套并到 bash 单一授权面（B-1）：用户配 tools: ["bash"] 即涵盖后台执行，
         // 无需为新工具补白名单条目；审批 reason 里出现的也是 bash（同一授权面才好解释）

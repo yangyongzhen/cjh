@@ -1,4 +1,17 @@
 # CHANGELOG
+## [v1.6.16] - 2026-11-21
+
+### 修复(子代理墙钟 / Web 会话能力对齐)
+- **排队也计入墙钟**:子代理的 `timeoutMs` 原先只包住 `agent.run()`,排队等并发槽可把父回合拖长数倍;新增原子 `admitSpawn(isInterrupted, timeoutMs)`,排队超时直接返回 `timeout`,已消耗时间从子代理本体预算扣除。
+- **并发 token 预占**:按 `tokenBudget / maxConcurrent` 预占,并发派发不会在首批 token 回来前全部通过预算闸门;收尾释放预占并计入实际用量。
+- **超时后禁止新副作用**:`Agent.abandon()` + `executeGuarded` 关掉新工具入口,避免父回合收场后子代理继续写文件/起进程;已在执行的进程无法撤销(仓颉线程不可 kill),文档已注明。
+- **竞态修复**:`runSubagentWithTimeout` 的 `out`/`errs` 改为 `Mutex` 保护,主线程轮询与 runner 写入不再数据竞争。
+- **Web 会话对齐 TUI**:每个 Web 会话独立 `SubagentScheduler` + `todo_write` + `TaskTool`;工具表浅拷贝,`bash` 会话/后台任务/MCP 仍进程级共享。
+- **Web tasks 帧**:`onTodosChanged` 接到渠道,新增 `tasks` 帧(`pending|doing|done`),Web 面板能看到任务清单变化。
+- **agents 槽位真实计数**:Web 的 `bg_task` agents 上限/占用改由网关 `activeSubagentCount()` 提供,不再恒为 0。
+- **版本脚本修复**:`scripts/set_version.sh` 兼容 `cjpm.toml` 的缩进 `version` 行(旧脚本只匹配行首,实际漏改),本次 1.6.15→1.6.16 已验证三处一致。
+- 回归:根包新增排队超时/token 预占/工具表隔离/Web 装配/tasks 帧等 6 例。
+
 ## [v1.6.15] - 2026-11-21
 
 ### 改进(TUI 折叠与语义色/提示词预算/运行时提效)

@@ -43,6 +43,26 @@ import cjh.agent.*
 import cjh.tools.*
 
 /**
+ * Agent 任务清单 → tasks 帧 JSON（pending|doing|done 与 Web 客户端约定一致）
+ */
+func todosToJson(items: ArrayList<TodoItem>): JsonArray {
+    var arr = JsonArray()
+    for (item in items) {
+        var obj = JsonObject()
+        obj.put("id", JsonInt(item.id))
+        obj.put("content", JsonString(item.content))
+        let status = match (item.status) {
+            case TodoStatus.Completed => "done"
+            case TodoStatus.InProgress => "doing"
+            case TodoStatus.Pending => "pending"
+        }
+        obj.put("status", JsonString(status))
+        arr.add(obj)
+    }
+    return arr
+}
+
+/**
  * Channel 接口：抽象一个消息渠道（Web/IM/TUI）
  *
  * 每个渠道实现此接口，ChannelGateway 通过它推送事件。
@@ -363,12 +383,16 @@ public class ChannelGateway {
     public var approvalTimeoutMs: Int64 = 300000
     // provider 工厂（装配层注入）；缺省 = 不支持切模型，此时明确回错而非静默
     private let providerFactory: ?ProviderFactory
+    // 会话级工具/调度器装配（Web 入口注入）：agent 建好后追加 task/todo 与
+    // 独立 SubagentScheduler。None = 不追加（测试/旧调用方保持原行为）。
+    private let agentSetup: Option<(Agent, ToolRegistry, AgentConfig, String) -> Unit>
 
     public init(config: CjhConfig, provider: LlmProvider, registry: ToolRegistry) {
         this.config = config
         this.provider = provider
         this.registry = registry
         this.providerFactory = None
+        this.agentSetup = None
     }
 
     /**
@@ -380,6 +404,20 @@ public class ChannelGateway {
         this.provider = provider
         this.registry = registry
         this.providerFactory = providerFactory
+        this.agentSetup = None
+    }
+
+    /**
+     * @param agentSetup 会话级装配（Web 入口）：参数 = (agent, 会话工具表, 配置, sessionId)
+     */
+    public init(config: CjhConfig, provider: LlmProvider, registry: ToolRegistry,
+        providerFactory: ?ProviderFactory,
+        agentSetup: Option<(Agent, ToolRegistry, AgentConfig, String) -> Unit>) {
+        this.config = config
+        this.provider = provider
+        this.registry = registry
+        this.providerFactory = providerFactory
+        this.agentSetup = agentSetup
     }
 
     /**
@@ -418,6 +456,30 @@ public class ChannelGateway {
             this.mutex.unlock()
         }
         return agent
+    }
+
+    /** 当前所有 Web 会话里 Pending/Running 的子代理数（bg_task 槽位账用） */
+    public func activeSubagentCount(): Int64 {
+        var used: Int64 = 0
+        this.mutex.lock()
+        try {
+            for ((_, agent) in this.agents) {
+                match (agent.subagentScheduler) {
+                    case Some(sched) =>
+                        for (node in sched.snapshot()) {
+                            match (node.state) {
+                                case AgentNodeState.Pending => used += 1
+                                case AgentNodeState.Running => used += 1
+                                case _ => ()
+                            }
+                        }
+                    case None => ()
+                }
+            }
+        } finally {
+            this.mutex.unlock()
+        }
+        return used
     }
 
     /**
@@ -862,6 +924,11 @@ public class ChannelGateway {
         agent.onToolResult = { name: String, result: ToolResult =>
             channel.sendToolResult(chatId, meta, name, result.content, result.isError, result.diff)
         }
+        // 任务清单：todo_write 改动 → tasks 帧（Web 面板）。TUI 走 onTodosChanged
+        // 直连面板；Web 没有 TUI 对象，必须把同一事件接到渠道。
+        agent.onTodosChanged = { =>
+            channel.sendTasks(chatId, todosToJson(agent.getTodos()))
+        }
         // 审批链：危险操作经渠道请人工确认（阻塞本回合，不阻塞 WS 读循环）
         agent.onApproval = { name: String, args: JsonObject, reason: String =>
             this.requestApproval(channel, channelId, chatId, meta, name, args, reason)
@@ -1188,7 +1255,14 @@ public class ChannelGateway {
             sessionId
         )
 
-        let agent = Agent(this.provider, this.registry, agentConfig)
+        // 每个会话一份浅拷贝工具表：agent 专属 task/todo 只进本会话，
+        // 但 bash 会话、后台任务表、MCP 连接仍共享同一批工具实例。
+        let sessionRegistry = this.registry.cloneTools()
+        let agent = Agent(this.provider, sessionRegistry, agentConfig)
+        match (this.agentSetup) {
+            case Some(setup) => setup(agent, sessionRegistry, agentConfig, sessionId)
+            case None => ()
+        }
         return agent
     }
 
