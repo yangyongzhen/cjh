@@ -12,7 +12,8 @@ import std.collection.*
  * - 内置主题可扩展：themes 表 + apply(name) 查表写入
  *
  * 内置主题：
- * - starfrost（星霜青，默认）：鸿蒙生态同源品牌色，低饱和雾面青
+ * - omp-dark（默认）：对齐 oh-my-pi dark 主题，蓝/青/琥珀 + 中性灰
+ * - starfrost（星霜青）：鸿蒙生态同源品牌色，低饱和雾面青
  * - classic（经典亮青）：旧版高饱和亮青配色，向后兼容
  *
  * 配色体系详见 docs/cjh-TUI主题设计方案.md
@@ -33,13 +34,17 @@ public class Palette {
     public var highlight: Int64 = 179   // 浅琥珀金（选中行 / 预览卡片高亮）
     public var text: Int64 = 254        // 素白（基础文本层）
     public var bg: Int64 = 235          // 深炭灰（背景层，暂未启用）
-    // P2b 视觉层次（中性灰阶背景卡片 + 边框 + 链接，跨主题一致，个别主题可覆盖）
-    public var statusBg: Int64 = 234    // 状态栏整行背景
-    public var userBg: Int64 = 237      // 用户输入回显行背景
-    public var toolBg: Int64 = 236      // 工具调用/结果行背景
-    public var thinkingBg: Int64 = 233  // 思考块背景
+    // P2b 视觉层次（背景卡片 + 边框 + 链接）
+    // 卡片底色统一用近背景中性灰阶：用户卡片 235（≈ omp userMessageBg #221d1a 的
+    // 提亮近似），状态栏 233（≈ omp statusLineBg #121212）。工具/思考行不再铺
+    // 整行背景（见 TuiApp.appendToolLine / OutputView.thinkingLine），
+    // toolBg/thinkingBg 仅保留给插件或后续自定义卡片。
+    public var statusBg: Int64 = 233    // 状态栏整行背景
+    public var userBg: Int64 = 235      // 用户输入回显行背景
+    public var toolBg: Int64 = 235      // 工具卡片背景（内置工具行已不用）
+    public var thinkingBg: Int64 = 233  // 思考卡片背景（内置思考块已不用）
     public var codeBg: Int64 = 236      // 行内代码芯片背景
-    public var link: Int64 = 51         // 链接色
+    public var link: Int64 = 33         // 链接色（omp #0088fa 近似）
     public var border: Int64 = 244      // 边框实线色
 
     public init() {}
@@ -47,7 +52,7 @@ public class Palette {
 
 public class Theme {
     // 当前生效的主题名
-    public static var currentName: String = "starfrost"
+    public static var currentName: String = "omp-dark"
 
     // 主题注册表：name -> Palette
     private static var themes: HashMap<String, Palette> = Theme.buildInbuiltThemes()
@@ -58,7 +63,32 @@ public class Theme {
     private static func buildInbuiltThemes(): HashMap<String, Palette> {
         var map = HashMap<String, Palette>()
 
-        // starfrost：星霜青（默认，鸿蒙生态同源）
+        // omp-dark：oh-my-pi dark 主题的 xterm-256 近似（默认）
+        // 目标色见 omp packages/coding-agent/src/modes/theme/dark.json：
+        // accent #febc38 / primary #178fb9 / success #89d281 / error #fc3a4b /
+        // muted #777d88 / link #0088fa / text #e5e5e7。
+        let ompDark = Palette()
+        ompDark.primary = 31         // 品牌蓝 #178fb9
+        ompDark.accent = 214         // 琥珀 #febc38
+        ompDark.purple = 74          // 代码关键字 #569CD6
+        ompDark.ok = 114             // 成功绿 #89d281
+        ompDark.warn = 178           // 警告黄 #e4c00f
+        ompDark.err = 203            // 错误红 #fc3a4b
+        ompDark.muted = 243          // 次要灰 #777d88
+        ompDark.info = 103           // 上下文淡蓝灰 #8787af
+        ompDark.highlight = 214      // 选中行高亮
+        ompDark.text = 254           // 正文 #e5e5e7
+        ompDark.bg = 235             // 深炭灰
+        ompDark.statusBg = 233       // #121212
+        ompDark.userBg = 235         // #221d1a 的提亮近似
+        ompDark.toolBg = 235         // #1d2129 近似（内置工具行已不用）
+        ompDark.thinkingBg = 233     // #141414 近似（内置思考块已不用）
+        ompDark.codeBg = 236
+        ompDark.link = 33            // #0088fa
+        ompDark.border = 31          // #178fb9
+        map["omp-dark"] = ompDark
+
+        // starfrost：星霜青（鸿蒙生态同源品牌色，保留为可选主题）
         let starfrost = Palette()
         starfrost.primary = 67       // 雾面深青蓝
         starfrost.accent = 73        // 星霜青
@@ -231,11 +261,11 @@ public class Theme {
 
     /**
      * 应用指定主题：查表 → 写回 Ansi.THEME_* 静态变量
-     * @param name 主题名（starfrost / classic）；未知名回退 starfrost
+     * @param name 主题名（omp-dark / starfrost / classic / ...）；空或未知名回退 omp-dark
      * @return 实际生效的主题名
      */
     public static func apply(name: String): String {
-        let key = if (name.size == 0) { "starfrost" } else { name }
+        let key = if (name.size == 0) { "omp-dark" } else { name }
         if (let Some(p) <- Theme.themes.get(key)) {
             Ansi.THEME_PRIMARY = p.primary
             Ansi.THEME_ACCENT = p.accent
@@ -258,8 +288,8 @@ public class Theme {
             Theme.currentName = key
             return key
         }
-        // 未知主题名：回退默认 starfrost
-        return Theme.apply("starfrost")
+        // 未知主题名：回退默认 omp-dark
+        return Theme.apply("omp-dark")
     }
 
     /**

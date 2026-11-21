@@ -1,4 +1,24 @@
 # CHANGELOG
+## [Unreleased] - 2026-11-21
+
+### 修复(忙时斜杠命令被当成消息 / 中文输入法全角斜杠)
+- **忙时命令不再进 steer 队列**：模型执行期间提交 `/theme` 等命令，旧实现按普通消息入队（`steer=true`），在工具批次边界被注入当前回合，变成对话内容。现命令单独入队（`steer=false`），当前回合结束后由 `entries.cj` 统一分发；命令后紧跟的普通消息会继续出队执行，不会卡死。
+- **命令输入归一化**：全角斜杠 `／`（U+FF0F）、行首 ASCII/全角空格与 NBSP 统一按命令识别；TUI 候选补全与提交分发使用同一判据。未归一化时这些输入会走 `agent.run()`。
+- 回归：根包 3 例归一化 + `TuiAppKeyTest` 忙时命令队列 + `QueueHintTest` 命令提示；PTY 场景 2b/2c 真实终端覆盖全角/行首空格/忙时命令与排队消息续跑。
+
+### 修复(TUI 中途输入不丢：立即发送 / 新任务排队 / 轮次预算)
+- **忙时 Alt+Enter 立即发送**：输入直接排到队首并请求中断当前回合，当前回合停止后立即作为新 turn 发送；多行编辑器里的 Alt+Enter 走同一路径（旧实现忙时直接 `onSubmit`，绕过队列）。Ctrl+Enter（Kitty 协议）等价。
+- **Ctrl+N 下一条作为新任务排队**：`steer=false` 标记，不并入当前回合、不被后续普通消息插队；当前回合结束（或被中断）后才作为新 turn 发送，再按一次取消。状态行显示「下条新任务」。
+- **队列区分 steer 语义**：`QueuedInput{text, steer}`；回合内边界注入只取 steer=true 的队首，遇到 steer=false 立即停止，避免新任务污染当前上下文；回合结束路径仍取任意队首。
+- **收尾硬顶从实际收尾点起算**：旧算法 `maxIterations × 3 + 10` 在第二段就收尾时把窗口放大到 60 轮；现注入收尾指令时钉为「当前轮 + 10 轮」。
+- **续段续跑额度按本段累计预算**：`iterations < maxIterations × segmentsDone`，修正第 2/3 段前 50 轮内即使有待办也不续跑的问题。
+- 回归：`ContinuationGuardTest` 新增 `testHardCapTiedToWrapUp` / `testNudgeWorksInsideExtendedSegment`；`TuiAppKeyTest` 新增 Alt+Enter（单行/多行）、Ctrl+N、队首阻塞、立即插队 5 例；PTY 新增场景 11b/11c 驱动真实终端按键。
+
+### 调整(TUI 对齐 oh-my-pi：默认 omp-dark / 工具与思考去整行背景)
+- **默认主题改为 `omp-dark`**（对齐 oh-my-pi dark）：品牌蓝 `#178fb9`、琥珀 accent `#febc38`、成功绿 `#89d281`、错误红 `#fc3a4b`、链接蓝 `#0088fa`；`starfrost` 保留为可选主题。空主题名与未知主题名统一回退 `omp-dark`，`settings.json` 模板同步。
+- **去掉工具行/思考块的整行背景**：全宽色块与内容不贴合，改为前景色 + 加粗/斜体（工具名强调、参数次要灰；思考灰斜体），对齐 omp 内置工具行与 thinkingText。用户回显与状态栏仍保留整行卡片（`userBg=235` / `statusBg=233`）。
+- 回归：cjterm 新增 `theme_test`（3 例：空/未知名回退、omp-dark 调色、主题表包含）与输出思考无背景断言；根包新增工具行/结果无整行背景断言。
+
 ## [v1.6.17] - 2026-11-21
 
 ### 修复(单工具提效提醒污染对话)

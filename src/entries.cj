@@ -289,7 +289,7 @@ func runCli(sessionId: String): Int64 {
     // 配置加载
     let cjhCfg = CjhConfig()
     cjhCfg.ensureDirs()
-    // 应用 TUI 主题（settings.json "theme" 字段；默认 starfrost 星霜青）
+    // 应用 TUI 主题（settings.json "theme" 字段；默认 omp-dark）
     Theme.apply(cjhCfg.theme)
     // 注册 web_search + web_fetch 工具
     registerWebTools(cjhCfg, registry)
@@ -450,7 +450,7 @@ func runJson(prompt: String, sessionId: String): Int64 {
     let cjhCfg = CjhConfig()
     cjhCfg.ensureDirs()
     warnCapabilitySilent(cjhCfg)
-    // 应用 TUI 主题（settings.json "theme" 字段；默认 starfrost 星霜青）
+    // 应用 TUI 主题（settings.json "theme" 字段；默认 omp-dark）
     Theme.apply(cjhCfg.theme)
     // 注册 web_search + web_fetch 工具
     registerWebTools(cjhCfg, registry)
@@ -629,7 +629,7 @@ func runTui(sessionId: String): Int64 {
     cjhCfg.ensureDirs()
     warnCapabilitySilent(cjhCfg)
     mark("CjhConfig loaded")
-    // 应用 TUI 主题（settings.json "theme" 字段；默认 starfrost 星霜青）
+    // 应用 TUI 主题（settings.json "theme" 字段；默认 omp-dark）
     Theme.apply(cjhCfg.theme)
     mark("theme applied")
     // 注册 web_search + web_fetch 工具
@@ -833,9 +833,10 @@ func runTui(sessionId: String): Int64 {
         }
         // 方案 2「边界 steer」：Agent 每跑完一批工具、下一轮请求前，从这里取一条
         // 排队消息注入当前回合（策略见 SteerPolicy）——用户补充要求不必等整回合结束。
-        // 一次只取一条，首轮（还没跑工具）与中断后都不取；回合结束后仍未消费的消息
-        // 由下方 dequeueInput 出队作新回合发送。两条路径共用同一个 FIFO 队列，不重复发送。
-        agent.queuedInputSource = { => tui.dequeueInput() }
+        // 一次只取一条，且只取 steer=true 的队首；首轮（还没跑工具）与中断后都不取。
+        // steer=false（Ctrl+N 新任务 / Alt+Enter 立即消息）会挡住队首，边界注入停下，
+        // 由下方 dequeueInput 在当前回合结束后出队作新回合发送。
+        agent.queuedInputSource = { => tui.dequeueSteerableInput() }
         agent.onTokens = { tokens =>
             tui.addAgentTokens(tokens)
         }
@@ -858,15 +859,17 @@ func runTui(sessionId: String): Int64 {
                 StreamState.active = false
             }
             TuiBridge.ensureNewline()
-            // 工具调用行 bg 236 整行卡片（P2b）：行内只用 fg 改色、禁止中途 reset（保背景）
+            // 工具调用行：无整行背景（对齐 omp 内置工具行；全宽色块与内容不贴合）。
+            // 强调色只给标记，工具名用加粗正文，参数用次要灰。
             if (isBgTool(name)) {
                 // 后台三件套：命令往往很长、结果又要等，先用一句话说清"这次在干嘛"，
                 // 第二行才给工具名与参数（atomcode 的 ● / └ 式）。标题三级回退见 bgToolTitle
-                TuiBridge.tool(Ansi.fg(Ansi.THEME_OK) + "● " + bgToolTitle(name, args))
+                TuiBridge.tool(Ansi.fg(Ansi.THEME_ACCENT) + "● " + Ansi.bold() + bgToolTitle(name, args) + Ansi.reset())
                 TuiBridge.output(Ansi.fg(Ansi.THEME_MUTED) + "  └ " + displayToolName(name) +
                     "(" + formatToolArgs(name, args) + ")" + Ansi.reset())
             } else {
-                TuiBridge.tool(Ansi.fg(Ansi.THEME_OK) + "▶ ${name} " + Ansi.fg(Ansi.THEME_MUTED) + formatToolArgs(name, args))
+                TuiBridge.tool(Ansi.fg(Ansi.THEME_ACCENT) + "▶ " + Ansi.bold() + name + Ansi.reset() +
+                    " " + Ansi.fg(Ansi.THEME_MUTED) + formatToolArgs(name, args) + Ansi.reset())
             }
             tui.setAgentState("Running ${name}…")
         }
@@ -1049,8 +1052,11 @@ func runTui(sessionId: String): Int64 {
         }
         tui.onSubmit = { input =>
             // slash 命令（对齐 pi：/help /new /resume /quit /model /settings）
-            if (input.startsWith("/")) {
-                handleSlashCommand(input, agent, store, tui, cjhCfg)
+            // 归一化后再判前缀：中文输入法可能产出全角斜杠 `／`，或行首带全角空格。
+            // 不归一化时这些输入会走下面的 agent.run()，被当成普通消息发给模型。
+            let commandInput = normalizeSlashCommand(input)
+            if (commandInput.startsWith("/")) {
+                handleSlashCommand(commandInput, agent, store, tui, cjhCfg)
                 return
             }
             // 异步执行 agent（TUI 主循环持续渲染，避免阻塞）
@@ -1103,11 +1109,29 @@ func runTui(sessionId: String): Int64 {
                 // 自动处理队列下一条（如果有）
                 // 注意：不在 echo "❯ next"——提交时 inputBox.onSubmit 已回显过，
                 // 这里再 echo 会重复（排队消息在入队瞬间已有一条回显）
-                if (let Some(next) <- tui.dequeueInput()) {
-                    // 先置忙再提交：关闭 dequeue→spawn 调度间隙
-                    // （否则该窗口提交的消息看到 busy=false 而绕过队列并发执行）
-                    tui.setAgentRunning(true)
-                    tui.onSubmit(next)
+                // 连续命令一次排空：命令不跑 agent 回合，如果不继续出队，
+                // 排在命令后面的普通消息会一直卡在队列里（没有下一次 run 来触发）。
+                var drainMore = true
+                while (drainMore) {
+                    if (let Some(next) <- tui.dequeueInput()) {
+                        let commandText = normalizeSlashCommand(next)
+                        if (commandText.startsWith("/")) {
+                            // 斜杠命令不是对话内容：直接分发执行；
+                            // 不能 setAgentRunning(true)（命令不跑 agent 回合，否则忙态永不释放）。
+                            tui.onSubmit(next)
+                            if (commandText.split(" ", -1)[0] == "/quit") {
+                                drainMore = false
+                            }
+                        } else {
+                            // 先置忙再提交：关闭 dequeue→spawn 调度间隙
+                            // （否则该窗口提交的消息看到 busy=false 而绕过队列并发执行）
+                            tui.setAgentRunning(true)
+                            tui.onSubmit(next)
+                            drainMore = false
+                        }
+                    } else {
+                        drainMore = false
+                    }
                 }
             }
         }
@@ -1228,7 +1252,7 @@ func applyProvider(cfg: CjhConfig, agent: Agent, tui: TuiApp, label: String, bas
 func listSessions(): Int64 {
     let cjhCfg = CjhConfig()
     cjhCfg.ensureDirs()
-    // 应用 TUI 主题（settings.json "theme" 字段；默认 starfrost 星霜青）
+    // 应用 TUI 主题（settings.json "theme" 字段；默认 omp-dark）
     Theme.apply(cjhCfg.theme)
     let store = SessionStore(cjhCfg.sessionsDir)
     let sessions = store.list()

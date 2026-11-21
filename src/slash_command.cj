@@ -20,8 +20,9 @@ import cjcfg.*
  * TUI slash 命令分发（对齐 pi 基础命令：/help /new /resume /quit /model /settings）
  */
 func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: TuiApp, cfg: CjhConfig): Unit {
-    let cmd = input.trimAscii().split(" ", -1)[0]
-    let args = input.trimAscii()
+    let normalized = normalizeSlashCommand(input)
+    let cmd = normalized.split(" ", -1)[0]
+    let args = normalized
     match (cmd) {
         case "/help" =>
             tui.appendOutput(Ansi.fg(Ansi.THEME_ACCENT) + "可用命令：" + Ansi.reset())
@@ -37,7 +38,7 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
             tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /fork          从当前会话分支新会话" + Ansi.reset())
             tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /settings      查看采样参数（temp/max_tokens）" + Ansi.reset())
             tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /task          任务管理（add/done/doing/clear/list）" + Ansi.reset())
-            tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /theme [name] TUI 主题切换（starfrost|classic）" + Ansi.reset())
+            tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /theme [name] TUI 主题切换（omp-dark|starfrost|classic|...）" + Ansi.reset())
             tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /quit          退出" + Ansi.reset())
         case "/provider" =>
             // provider 预设切换：/provider [name] [api_key]
@@ -389,7 +390,7 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
             // 退出由主循环处理；先短暂刷新再退出
             spawn { tui.quit() }
         case "/theme" =>
-            // /theme [name]：切换 TUI 主题（starfrost|classic）；无参数弹出交互式 picker
+            // /theme [name]：切换 TUI 主题（omp-dark|starfrost|classic|...）；无参数弹出交互式 picker
             let parts = args.split(" ", -1)
             if (parts.size > 1 && parts[1].size > 0) {
                 let applied = Theme.apply(parts[1])

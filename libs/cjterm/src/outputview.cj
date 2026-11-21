@@ -218,11 +218,10 @@ public class OutputView <: Component {
         return sb.toString()
     }
 
-    // 思考块整行背景卡片（P2b，≈ omp thinkingBg #141414）：
-    // 内容行只用 fg/italic/bold 改色、禁止 reset（reset 会清背景使卡片断裂），
-    // 本函数统一铺 bg 233 并按 displayWidth 补空格到 w，行尾 reset 由 padBg 补。
-    private func thinkingCard(inner: String, w: Int64): String {
-        return Ansi.padBg(inner, w - 1, Ansi.THEME_THINKING_BG)
+    // 思考行：灰斜体正文，无背景（对齐 omp thinkingText；整行色块会与内容不贴合）。
+    // 行尾统一 reset，防止斜体/前景色泄漏到后续输出。
+    private func thinkingLine(inner: String): String {
+        return inner + Ansi.reset()
     }
 
     /**
@@ -279,14 +278,14 @@ public class OutputView <: Component {
     private var activeFold: ThinkingActiveFoldCache = ThinkingActiveFoldCache()
 
     /**
-     * 内容行渲染：两格缩进 + 行内 Markdown + 卡片补白（整轮/增量两条路径共用）。
+     * 内容行渲染：两格缩进 + 行内 Markdown（整轮/增量两条路径共用）。
      *
      * 曾用 `› ` 前缀逐行标记，但每行一个 `>` 状符号在长思考下噪音大、观感差；
-     * 块身份已由 💭 头部 + 灰斜体 + 背景卡片表达，故只留缩进。
+     * 块身份已由 💭 头部 + 灰斜体表达，故只留缩进。
      * 缩进宽度与原前缀一致（均为 2 显示列），折行宽度 thinkingContentWidth 不受影响。
      */
-    private func thinkingContentLine(raw: String, width: Int64): String {
-        return this.thinkingCard(Ansi.fg(249) + Ansi.italic() + "  " + this.renderInlineMd(raw), width)
+    private func thinkingContentLine(raw: String): String {
+        return this.thinkingLine(Ansi.fg(249) + Ansi.italic() + "  " + this.renderInlineMd(raw))
     }
 
     /**
@@ -325,7 +324,7 @@ public class OutputView <: Component {
                     let headAll = foldThinkingSpans(runes, 0, contentW)
                     var k: Int64 = 0
                     while (k < headAll.lines.size && headAll.starts[k] < headRunes) {
-                        cache.headLines.add(this.thinkingContentLine(headAll.lines[k], width))
+                        cache.headLines.add(this.thinkingContentLine(headAll.lines[k]))
                         k += 1
                     }
                     cache.headRunes = headRunes
@@ -340,18 +339,18 @@ public class OutputView <: Component {
         // 除最后一行外都已断行完成：渲染一次后进入缓存，后续帧不再重折/重渲染
         if (n > 0) {
             for (i in 0..(n - 1)) {
-                cache.lines.add(this.thinkingContentLine(spans.lines[i], width))
+                cache.lines.add(this.thinkingContentLine(spans.lines[i]))
                 rendered += 1
             }
         }
         let out = ArrayList<String>()
-        // 头部卡片行（与整轮折行一致，必须每帧产出且置顶）
-        out.add(this.thinkingCard(Ansi.fg(244) + this.thinkingHeader(b, this.thinkLog.roundCount()), width))
+        // 头部行（与整轮折行一致，必须每帧产出且置顶）
+        out.add(this.thinkingLine(Ansi.fg(244) + this.thinkingHeader(b, this.thinkLog.roundCount())))
         this.appendLines(out, cache.headLines)
         this.appendLines(out, cache.lines)
         // 最后一行可能尚未完成（还可能被追加），每帧重渲染；下一帧从它的起点续折
         if (n > 0) {
-            out.add(this.thinkingContentLine(spans.lines[n - 1], width))
+            out.add(this.thinkingContentLine(spans.lines[n - 1]))
             rendered += 1
         }
         cache.tailStart = spans.lastStart
@@ -362,10 +361,10 @@ public class OutputView <: Component {
     /** 整轮一次性折行（轮次结束后的冻结路径）：断行规则与增量路径共用 thinking_fold.cj */
     private func foldThinkingBlock(b: ThinkingBlock, width: Int64): ArrayList<String> {
         let lines = ArrayList<String>()
-        lines.add(this.thinkingCard(Ansi.fg(244) + this.thinkingHeader(b, this.thinkLog.roundCount()), width))
+        lines.add(this.thinkingLine(Ansi.fg(244) + this.thinkingHeader(b, this.thinkLog.roundCount())))
         let spans = foldThinkingSpans(b.runeArray(), 0, thinkingContentWidth(width))
         for (raw in spans.lines) {
-            lines.add(this.thinkingContentLine(raw, width))
+            lines.add(this.thinkingContentLine(raw))
         }
         return lines
     }

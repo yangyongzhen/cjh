@@ -43,28 +43,28 @@ public class Ansi {
     public static let COLOR_BLUE: Int64 = 39
     public static let COLOR_DARK: Int64 = 240
     // 主题色（运行时可变，Theme.apply(name) 切换；详见 docs/cjh-TUI主题设计方案.md）
-    // 初始值 = starfrost 星霜青配色，由 Theme.apply 在启动时写入
-    public static var THEME_PRIMARY: Int64 = 67    // 雾面深青蓝（鸿蒙蓝灰调，品牌辅色）
-    public static var THEME_ACCENT: Int64 = 73     // 星霜青（低饱和雾面青，品牌主色）
-    public static var THEME_PURPLE: Int64 = 141    // 紫
-    public static var THEME_OK: Int64 = 108        // 低饱和鼠尾草绿（成功 / 就绪）
-    public static var THEME_WARN: Int64 = 179      // 浅琥珀金（警告 / 高亮交互 / 状态栏边框）
-    public static var THEME_ERR: Int64 = 167       // 低饱和暖红（错误 / 崩溃栈）
-    public static var THEME_MUTED: Int64 = 245     // 中性灰（静音 / 分隔线 / 次要文本）
-    public static var THEME_INFO: Int64 = 103      // 淡灰蓝（次要信息 / 后台状态）
-    public static var THEME_HIGHLIGHT: Int64 = 179 // 浅琥珀金（选中行 / 预览卡片高亮，与 THEME_WARN 同色码）
-    public static var COLOR_TEXT: Int64 = 254      // 素白（基础文本层，#E8EAEF 近似）
-    public static var COLOR_BG: Int64 = 235        // 深炭灰（背景层，#1A1F26 近似，暂未启用背景色）
+    // 初始值 = omp-dark 配色，由 Theme.apply 在启动时写入
+    public static var THEME_PRIMARY: Int64 = 31    // 品牌蓝（omp #178fb9 近似）
+    public static var THEME_ACCENT: Int64 = 214    // 琥珀（omp #febc38 近似）
+    public static var THEME_PURPLE: Int64 = 74     // 代码关键字（omp #569CD6 近似）
+    public static var THEME_OK: Int64 = 114        // 成功绿（omp #89d281 近似）
+    public static var THEME_WARN: Int64 = 178      // 警告黄（omp #e4c00f 近似）
+    public static var THEME_ERR: Int64 = 203       // 错误红（omp #fc3a4b 近似）
+    public static var THEME_MUTED: Int64 = 243     // 次要灰（omp #777d88 近似）
+    public static var THEME_INFO: Int64 = 103      // 上下文淡蓝灰（omp #8787af）
+    public static var THEME_HIGHLIGHT: Int64 = 214 // 选中行高亮（与 THEME_ACCENT 同色码）
+    public static var COLOR_TEXT: Int64 = 254      // 正文（omp #e5e5e7 近似）
+    public static var COLOR_BG: Int64 = 235        // 深炭灰（背景层，暂未启用背景色）
 
-    // ===== P2b 视觉层次：背景卡片色 + 边框色 + 链接色（参考 omp dark.json，xterm-256 近似）=====
-    // 背景卡片为中性灰阶（跨主题一致）、边框/链接为固定色——均由 Theme.apply 写入（跟随主题切换）
-    public static var THEME_STATUS_BG: Int64 = 234   // 状态栏整行背景（≈ omp statusLineBg #121212）
-    public static var THEME_USER_BG: Int64 = 237     // 用户输入回显行背景（≈ omp userMessageBg #221d1a）
-    public static var THEME_TOOL_BG: Int64 = 236     // 工具调用/结果行背景（≈ omp toolPendingBg #1d2129）
-    public static var THEME_THINKING_BG: Int64 = 233 // 思考块背景（≈ omp thinkingBg #141414）
+    // ===== 视觉层次：背景卡片色 + 边框色 + 链接色（参考 omp dark.json，xterm-256 近似）=====
+    // 仅用户回显与状态栏铺整行背景；工具/思考行改为无背景（避免与内容不贴合的色块）。
+    public static var THEME_STATUS_BG: Int64 = 233   // 状态栏整行背景（≈ omp statusLineBg #121212）
+    public static var THEME_USER_BG: Int64 = 235     // 用户输入回显行背景（≈ omp userMessageBg #221d1a 提亮）
+    public static var THEME_TOOL_BG: Int64 = 235     // 工具卡片背景（内置工具行已不用）
+    public static var THEME_THINKING_BG: Int64 = 233 // 思考卡片背景（内置思考块已不用）
     public static var THEME_CODE_BG: Int64 = 236     // 行内代码芯片背景（≈ omp mdCodeBlock）
-    public static var THEME_LINK: Int64 = 51         // 链接色（≈ omp #56B6C2）
-    public static var THEME_BORDER: Int64 = 244      // 边框实线色（U+2500，亮于旧 240）
+    public static var THEME_LINK: Int64 = 33         // 链接色（≈ omp #0088fa）
+    public static var THEME_BORDER: Int64 = 31       // 边框实线色（≈ omp border #178fb9）
 
     // NO_COLOR（标准语义）：设了则所有颜色/样式转义返回空串（纯文本输出，管道/CI 干净）
     // static var（非 let）：测试可切换；默认读 NO_COLOR 环境变量

@@ -13,7 +13,7 @@
 | **差分渲染** | `TuiCanvas` 全量声明 + 增量输出（帧间 diff），低开销刷新，自动感知 resize 清缓存 |
 | **原始模式输入** | 逐键读取（含 UTF-8 多字节/方向键/功能键/鼠标 SGR/粘贴），与平台无关的 `KeyEvent` 语义 |
 | **组件化** | `Component` 接口 + Box/InputBox/MultiLineEditor/FormDialog/ConfirmDialog/OutputView/Spinner/StatusBar/TabBar/TasksPanel/ListSelect/ListPicker/Logo |
-| **主题** | 6 套内置配色（starfrost/classic/catppuccin/rose-pine/solarized/monokai） |
+| **主题** | 11 套内置配色（omp-dark 默认 / starfrost / classic / dracula / nord / gruvbox / tokyo-night / catppuccin / rose-pine / solarized / monokai） |
 
 ## 快速开始
 

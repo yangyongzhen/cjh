@@ -3,8 +3,6 @@
  */
 package cjterm
 
-import std.collection.*
-
 @Test
 public class OutputViewFoldTest {
     private func stripAnsi(s: String): String {
@@ -27,6 +25,13 @@ public class OutputViewFoldTest {
         canvas.begin(rows, cols, true)
         let _ = view.render(canvas, 0, cols, rows)
         return stripAnsi(canvas.flush())
+    }
+
+    private func renderRaw(view: OutputView, rows: Int64, cols: Int64): String {
+        let canvas = TuiCanvas()
+        canvas.begin(rows, cols, true)
+        let _ = view.render(canvas, 0, cols, rows)
+        return canvas.flush()
     }
 
     @TestCase
@@ -58,5 +63,23 @@ public class OutputViewFoldTest {
         let folded = this.renderText(view, 6, 50)
         @Assert(folded.contains("SUMMARY only"), true)
         @Assert(folded.contains("NEXT line"), true)
+    }
+
+    @TestCase
+    public func testExpandedThinkingHasNoRowBackground(): Unit {
+        // 用户反馈：思考块整行色块与内容不贴合。对齐 omp thinkingText 后
+        // 只保留灰斜体，不再铺 THEME_THINKING_BG。
+        let prevNoColor = Ansi.noColor
+        Ansi.noColor = false
+        try {
+            let view = OutputView()
+            view.setThinking("第一行思考\n第二行思考", true)
+            view.toggleThinking()
+            let raw = this.renderRaw(view, 10, 60)
+            @Assert(raw.contains("第一行思考"), true)
+            @Assert(raw.contains(Ansi.bg(Ansi.THEME_THINKING_BG)), false)
+        } finally {
+            Ansi.noColor = prevNoColor
+        }
     }
 }

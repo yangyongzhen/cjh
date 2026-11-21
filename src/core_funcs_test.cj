@@ -14,6 +14,7 @@ import cjcfg.*
 import cjutil.*
 import cjh.tools.*
 import cjh.agent.*
+import cjh.tui.*
 import cjterm.*
 import stdx.crypto.keys.*
 
@@ -1330,5 +1331,33 @@ public class CoreVersionSourceTest {
         @Assert(Logo.VERSION, "v${ver}")
         let toml = String.fromUtf8(File.readFrom("cjpm.toml"))
         @Assert(toml.contains("version = \"${ver}\""), true)
+    }
+}
+
+/**
+ * 斜杠命令输入归一化（中文输入法全角斜杠 / 行首空白）。
+ */
+@Test
+public class SlashCommandNormalizeTest {
+    @TestCase
+    public func testFullWidthSlashBecomesAscii(): Unit {
+        @Assert(normalizeSlashCommand("／theme"), "/theme")
+        @Assert(normalizeSlashCommand("／"), "/")
+    }
+
+    @TestCase
+    public func testLeadingWhitespaceStripped(): Unit {
+        @Assert(normalizeSlashCommand(" /theme"), "/theme")
+        @Assert(normalizeSlashCommand("\t／new"), "/new")
+        @Assert(normalizeSlashCommand("　/theme"), "/theme")  // 全角空格
+        @Assert(normalizeSlashCommand("\u{00A0}/theme"), "/theme")  // NBSP
+    }
+
+    @TestCase
+    public func testNormalMessageUnaffected(): Unit {
+        @Assert(normalizeSlashCommand("hello"), "hello")
+        @Assert(normalizeSlashCommand("  hello"), "hello")
+        @Assert(normalizeSlashCommand("/theme "), "/theme ")
+        @Assert(normalizeSlashCommand("   "), "")
     }
 }

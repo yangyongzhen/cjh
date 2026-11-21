@@ -658,8 +658,8 @@ public class MarkdownHighlightTest {
         // 无关键字紫色（141）、无字符串绿（108）
         @Assert(out.contains("38;5;141"), false)
         @Assert(out.contains("38;5;108"), false)
-        // 灰底（代码块默认 245）
-        @Assert(out.contains("38;5;245"), true)
+        // 无语言标注：不高亮，使用 muted 正文色（不再硬编码旧 starfrost 245）
+        @Assert(out.contains(Ansi.fg(Ansi.THEME_MUTED)), true)
     }
 
     @TestCase
@@ -723,9 +723,9 @@ public class ThinkingMdTest {
         out.render(canvas, 0, 80, 5)
         // 无法直接取行文本——用 flush 检查 ANSI
         let flushed = canvas.flush()
-        // 粗体（ESC[1m）与行内代码（青 38;5;73）应出现
+        // 粗体（ESC[1m）与行内代码（accent 色）应出现
         @Assert(flushed.contains(Ansi.bold()), true)
-        @Assert(flushed.contains("38;5;73"), true)
+        @Assert(flushed.contains(Ansi.fg(Ansi.THEME_ACCENT)), true)
     }
 }
 

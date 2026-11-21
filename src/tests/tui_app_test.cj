@@ -327,6 +327,28 @@ public class TuiAppKeyTest {
     }
 
     @TestCase
+    public func testToolRowsHaveNoFullWidthBackground(): Unit {
+        // 用户反馈：工具调用/结果的整行色块与内容不贴合。对齐 omp 内置工具行后，
+        // 工具行只保留前景色，不再铺 THEME_TOOL_BG 背景。
+        let (app, _) = this.buildApp()
+        let prevNoColor = Ansi.noColor
+        Ansi.noColor = false
+        try {
+            app.testSetCols(80)
+            app.appendToolLine(Ansi.fg(Ansi.THEME_ACCENT) + "▶ bash " + Ansi.reset() +
+                Ansi.fg(Ansi.THEME_MUTED) + "echo hi" + Ansi.reset())
+            app.appendToolResult("bash", "hi\nsecond line", false)
+            let out = app.testOutputText()
+            @Assert(out.contains("▶ bash"), true)
+            @Assert(out.contains("↳ bash: hi"), true)
+            @Assert(out.contains("second line"), true)
+            @Assert(out.contains(Ansi.bg(Ansi.THEME_TOOL_BG)), false)
+        } finally {
+            Ansi.noColor = prevNoColor
+        }
+    }
+
+    @TestCase
     public func testViewSwitchToHelp(): Unit {
         let (app, _) = this.buildApp()
         // Tab 切换视图（对话→帮助）；TabBar activeIndex 从 0 到 1（ch=9 即 Tab）
@@ -413,6 +435,26 @@ public class TuiAppKeyTest {
     }
 
     @TestCase
+    public func testSlashCommandWhileBusyQueuesOutsideSteer(): Unit {
+        // 用户实测：模型干活时输入 /theme，旧实现按普通消息入队（steer=true），
+        // 在工具批次边界被注入模型，变成对话内容。命令必须 steer=false，
+        // 当前回合结束后由 entries.cj 分发。
+        let (app, submitted) = this.buildApp()
+        app.setAgentRunning(true)
+        for (r in "/theme".toRuneArray()) {
+            app.handleKey(KeyEvent(Int32(UInt32(r)), r.toString()))
+        }
+        app.handleKey(KeyEvent(13))       // Enter
+        @Assert(submitted.size, 0)        // 忙时不在提交回调里直接执行
+        @Assert(app.queueLength(), 1)
+        @Assert(app.dequeueSteerableInput().isNone(), true)  // 不得边界注入
+        let next = app.dequeueInput()
+        @Assert(next.isSome(), true)
+        @Assert(next.getOrThrow(), "/theme")
+        app.setAgentRunning(false)
+    }
+
+    @TestCase
     public func testQueuedMessagesDequeueInFifoOrder(): Unit {
         // 忙时连发两条（用户实测场景）→ 都留在队列里，回合结束后按 FIFO
         // 逐条出队，各自作新回合发送（不合并、不乱序）
@@ -467,6 +509,104 @@ public class TuiAppKeyTest {
         app.handleKey(KeyEvent(13))       // Enter
         @Assert(submitted.size, 0)        // 不直接提交
         @Assert(app.queueLength(), 2)     // 追加入队
+    }
+
+    @TestCase
+    public func testAltEnterWhileBusyQueuesImmediateAndInterrupts(): Unit {
+        // 忙时 Alt+Enter：输入不丢、不并入当前回合，插到队首并请求中断，
+        // 当前回合停止后 entries.cj 立即把它作为新回合发送。
+        let app = TuiApp()
+        let submitted = ArrayList<String>()
+        let interrupts = ArrayList<String>()
+        app.onSubmit = { line => submitted.add(line) }
+        app.onInterrupt = { => interrupts.add("yes") }
+        app.setAgentRunning(true)
+        app.handleKey(this.keyChar(117))  // u
+        app.handleKey(this.keyChar(114))  // r
+        app.handleKey(KeyEvent(27, TermEsc.ESC + "\r"))  // Alt+Enter
+        @Assert(submitted.size, 0)        // 不直接提交
+        @Assert(interrupts.size, 1)       // 请求中断当前回合
+        @Assert(app.queueLength(), 1)     // 已插队
+        @Assert(app.testInputText(), "")  // 输入框已清空
+        // steer=false：回合内边界注入不得取走
+        @Assert(app.dequeueSteerableInput().isNone(), true)
+        let next = app.dequeueInput()
+        @Assert(next.isSome(), true)
+        @Assert(next.getOrThrow(), "ur")
+        app.setAgentRunning(false)
+    }
+
+    @TestCase
+    public func testAltEnterInEditorWhileBusyQueuesImmediate(): Unit {
+        // 多行编辑器同样走统一入队路径：旧实现直接 onSubmit，忙时会绕过队列
+        let app = TuiApp()
+        let interrupts = ArrayList<String>()
+        app.onInterrupt = { => interrupts.add("yes") }
+        app.setAgentRunning(true)
+        app.handleKey(KeyEvent(5))        // Ctrl+E 进入多行编辑
+        @Assert(app.testEditMode(), true)
+        app.handleKey(this.keyChar(109))  // m
+        app.handleKey(KeyEvent(27, TermEsc.ESC + "\r"))  // Alt+Enter
+        @Assert(interrupts.size, 1)
+        @Assert(app.testEditMode(), false)
+        @Assert(app.queueLength(), 1)
+        @Assert(app.dequeueSteerableInput().isNone(), true)
+        let next = app.dequeueInput()
+        @Assert(next.isSome(), true)
+        @Assert(next.getOrThrow(), "m")
+        app.setAgentRunning(false)
+    }
+
+    @TestCase
+    public func testCtrlNQueuesNextAsNewTask(): Unit {
+        // Ctrl+N 标记后，忙时 Enter 入队为 steer=false；当前回合结束后才发送。
+        let app = TuiApp()
+        let submitted = ArrayList<String>()
+        app.onSubmit = { line => submitted.add(line) }
+        app.setAgentRunning(true)
+        app.handleKey(KeyEvent(14))       // Ctrl+N
+        app.handleKey(this.keyChar(108))  // l
+        app.handleKey(this.keyChar(97))   // a
+        app.handleKey(this.keyChar(116))  // t
+        app.handleKey(this.keyChar(101))  // e
+        app.handleKey(this.keyChar(114))  // r
+        app.handleKey(KeyEvent(13))       // Enter
+        @Assert(submitted.size, 0)
+        @Assert(app.queueLength(), 1)
+        @Assert(app.dequeueSteerableInput().isNone(), true)
+        let next = app.dequeueInput()
+        @Assert(next.isSome(), true)
+        @Assert(next.getOrThrow(), "later")
+        app.setAgentRunning(false)
+    }
+
+    @TestCase
+    public func testDequeueSteerableStopsAtNewTaskHead(): Unit {
+        // 队首是 steer=false 时，不能越过它去取后面的 steer 消息，
+        // 否则新任务会被后续普通消息"插队"提前注入当前回合。
+        let app = TuiApp()
+        app.enqueueInputNewTask("新任务")
+        app.enqueueInput("补充要求")
+        @Assert(app.dequeueSteerableInput().isNone(), true)
+        let first = app.dequeueInput()
+        @Assert(first.isSome(), true)
+        @Assert(first.getOrThrow(), "新任务")
+        let second = app.dequeueSteerableInput()
+        @Assert(second.isSome(), true)
+        @Assert(second.getOrThrow(), "补充要求")
+    }
+
+    @TestCase
+    public func testImmediateInputJumpsQueue(): Unit {
+        let app = TuiApp()
+        app.enqueueInput("先前普通消息")
+        app.enqueueInputImmediate("立即消息")
+        let first = app.dequeueInput()
+        @Assert(first.isSome(), true)
+        @Assert(first.getOrThrow(), "立即消息")  // 插到队首
+        let rest = app.dequeueSteerableInput()
+        @Assert(rest.isSome(), true)
+        @Assert(rest.getOrThrow(), "先前普通消息")
     }
 
     // ==================== 忙时入队 + Esc = 中断并立即发送 ====================
@@ -775,5 +915,29 @@ public class QueueHintTest {
         let s = queueStatusText(2)
         @Assert(s.contains("2 条"))
         @Assert(s.contains("Esc"))
+    }
+
+    @TestCase
+    public func testNewTaskNoticeExplainsDeferral(): Unit {
+        let s = queueNewTaskNoticeText(2)
+        @Assert(s.contains("新任务"))
+        @Assert(s.contains("第 2 条"))
+        @Assert(s.contains("当前回合结束"))
+    }
+
+    @TestCase
+    public func testCommandNoticeExplainsNoModelSend(): Unit {
+        let s = queueCommandNoticeText(2)
+        @Assert(s.contains("命令"))
+        @Assert(s.contains("第 2 条"))
+        @Assert(s.contains("不会发给模型"))
+    }
+
+    @TestCase
+    public func testImmediateNoticeExplainsInterrupt(): Unit {
+        let s = queueImmediateNoticeText(2)
+        @Assert(s.contains("队首"))
+        @Assert(s.contains("中断"))
+        @Assert(s.contains("立即发送"))
     }
 }

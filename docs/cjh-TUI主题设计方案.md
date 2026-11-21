@@ -1,8 +1,38 @@
-# cjh TUI 主题设计方案：星霜青配色体系
+# cjh TUI 主题设计方案：omp-dark 默认 + 星霜青备选
 
-> 最后更新：2026-08-24
+> 最后更新：2026-11-21
 > 性质：TUI 配色规范与实施依据
-> 目标：给仓颉语言配套的终端 AI Agent 做 TUI 配色，不要选普通亮青作为主色，优先选用「鸿蒙生态同源的星霜青」作为品牌主色，搭配「素白、深炭灰、浅琥珀」做分层辅助色。
+> 当前默认：**omp-dark**（对齐 oh-my-pi dark）；`starfrost`（星霜青）保留为可选主题。
+
+---
+
+## 〇、当前默认：omp-dark（2026-11-21）
+
+默认从 `starfrost` 切到 `omp-dark`，目标是与 oh-my-pi dark 的终端观感一致：
+品牌蓝边框、琥珀强调、低饱和成功/错误色。`Theme.apply("")` 与未知主题名都回退
+`omp-dark`，`settings.json` 的 `theme` 字段不填即用此默认；`starfrost` 仍可显式选择。
+
+| 角色 | 常量 | 色码 | 目标色 |
+|------|------|------|--------|
+| 品牌主色 | `THEME_PRIMARY` | 31 | `#178fb9` 品牌蓝 |
+| 强调色 | `THEME_ACCENT` / `THEME_HIGHLIGHT` | 214 | `#febc38` 琥珀 |
+| 代码关键字 | `THEME_PURPLE` | 74 | `#569CD6` 近似 |
+| 成功 | `THEME_OK` | 114 | `#89d281` |
+| 警告 | `THEME_WARN` | 178 | `#e4c00f` |
+| 错误 | `THEME_ERR` | 203 | `#fc3a4b` |
+| 静音 | `THEME_MUTED` | 243 | `#777d88` |
+| 次要信息 | `THEME_INFO` | 103 | `#8787af` |
+| 正文 | `COLOR_TEXT` | 254 | `#e5e5e7` |
+| 用户卡片 / 状态栏背景 | `THEME_USER_BG` / `THEME_STATUS_BG` | 235 / 233 | 近背景中性灰 |
+| 链接 | `THEME_LINK` | 33 | `#0088fa` |
+| 边框 | `THEME_BORDER` | 31 | `#178fb9` |
+
+**背景使用约定**：只有用户输入回显与状态栏铺整行背景。工具调用/结果与思考块
+**不再铺整行背景**——全宽色块与内容长度不贴合，改为前景色 + 加粗/斜体（对齐
+omp 内置工具行与 thinkingText）。`toolBg` / `thinkingBg` 字段保留给插件或自定义卡片。
+
+> 以下第二～六章是 `starfrost`（星霜青）历史设计方案，仍适用于显式选择
+> `/theme starfrost` 的用户；默认主题以本章 omp-dark 为准。
 
 ---
 

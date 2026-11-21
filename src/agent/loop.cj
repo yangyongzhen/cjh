@@ -1058,8 +1058,11 @@ public class Agent {
         // 长任务可在当前工作线程自然收尾；超过 wrapUpRounds 仍未结束才强制停止
         var wrapUpInjected: Bool = false
         let wrapUpRounds: Int64 = 10
-        // 硬顶 = 全部段数用尽 + 收尾窗口
-        let hardCap: Int64 = this.config.maxIterations * maxSegments + wrapUpRounds
+        // 硬顶 = 实际收尾起点 + 收尾窗口。**不能**用
+        // maxIterations * maxSegments + wrapUpRounds 预先算死：第三段之前就收尾时
+        // （maxIterations=50，第二段 100 轮已够用）旧算法仍允许跑到 160 轮，
+        // 收尾窗口被放大成 60 轮。收尾一旦注入，就把硬顶钉在"当前轮 + 10"。
+        var hardCap: Int64 = this.config.maxIterations * maxSegments + wrapUpRounds
         while (iterations < hardCap) {
             // 段内软顶：撞到本段预算时由 capAction 决定「续一段」还是「收尾」
             if (iterations >= this.config.maxIterations * segmentsDone && !wrapUpInjected) {
@@ -1075,9 +1078,11 @@ public class Agent {
                             ContinuationPolicy.segmentNotice(openSeg, segmentsDone, maxSegments, segCap)))
                     case CapAction.WrapUp =>
                         wrapUpInjected = true
+                        // 收尾窗口从**当前轮**起算 10 轮，不是从全部段数用尽处起算
+                        hardCap = iterations + wrapUpRounds
                         this.messages.add(ChatMessage("user",
-                            "[System Notice] 任务已执行 ${iterations} 轮（预算 ${this.config.maxIterations} × ${maxSegments} 段），请立即结束：不要再调用任何工具，直接给出最终总结答复（如任务确未完成，简述剩余步骤）。"))
-                        this.onAssistantText("\n[System] 已达轮次上限（${iterations} 轮），要求模型收尾总结\n")
+                            "[System Notice] 任务已执行 ${iterations} 轮（段预算已用尽），请立即结束：不要再调用任何工具，直接给出最终总结答复（如任务确未完成，简述剩余步骤）。最多再 ${wrapUpRounds} 轮将强制结束。"))
+                        this.onAssistantText("\n[System] 已达轮次预算（${iterations} 轮），要求模型收尾总结（最多再 ${wrapUpRounds} 轮）\n")
                 }
             }
             // P0-2：用户 Ctrl+C 中断——轮次间检查，保留已完成工作
@@ -1425,12 +1430,14 @@ public class Agent {
             // 续跑闸门（「任务没做完就收场」）：纯文本收束但活儿没干完 → 注入指令继续跑。
             // 只有文本、没有 tool_calls 的答复会被当作回合正常完成（实测 h5 会话
             // `正常结束: 2 rounds, 1 tools`，待办 #3 还挂着 InProgress 就交卷了）。
-            // 预算硬上限 ContinuationPolicy.MAX_NUDGES；`iterations < maxIterations`
-            // 顺带把"轮次软顶已要求收尾"的情形排除——达到软顶时不再续跑，
-            // 免得"要求收尾"与"要求继续"两条指令打架。
+            // 预算上限 ContinuationPolicy.MAX_NUDGES；`iterations < 本段累计预算`
+            // （maxIterations * segmentsDone）把"轮次软顶已要求收尾"的情形排除——
+            // 达到本段预算时不再续跑，免得"要求收尾"与"要求继续"两条指令打架。
+            // 旧代码写死 `iterations < maxIterations`：进入第 2/3 段后，前 50 轮
+            // 内即使有未完成待办也不会续跑，白丢本段的续跑额度。
             if (response.text.size > 0 &&
                 continuationNudges < ContinuationPolicy.MAX_NUDGES &&
-                iterations < this.config.maxIterations) {
+                iterations < this.config.maxIterations * segmentsDone) {
                 if (ContinuationPolicy.needsContinuation(response.text, this.hasInProgressTodo(), lastToolFailed)) {
                     continuationNudges += 1
                     let open = this.openTodoItems()
@@ -1459,8 +1466,8 @@ public class Agent {
             Log.warn("Agent.run 正常结束: ${iterations} rounds, ${summary.toolCalls} tools, ${durationMs}ms")
             return summary
         }
-        // 超过软顶 + wrapUpRounds 仍未收尾：强制结束（保留已完成工作）
-        Log.warn("已达硬顶 ${hardCap} 轮（软顶 ${this.config.maxIterations} + ${wrapUpRounds}）仍未收尾，强制结束回合")
+        // 超过收尾窗口仍未收尾：强制结束（保留已完成工作）
+        Log.warn("已达硬顶 ${hardCap} 轮（收尾窗口 ${wrapUpRounds} 轮）仍未收尾，强制结束回合")
         let durationMsMax = (DateTime.now() - startTime).toMilliseconds()
         summary.durationMs = durationMsMax
         summary.reply = "[已达最大迭代次数 ${hardCap}]"

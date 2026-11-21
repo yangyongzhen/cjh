@@ -179,6 +179,62 @@ class EmptyThenTextProvider <: LlmProvider {
     }
 }
 
+/** 每轮都调工具的 provider：模拟模型无视"收尾"指令继续干活，用于验证硬顶 */
+class AlwaysToolProvider <: LlmProvider {
+    public var callCount: Int64 = 0
+    public var lastMessages: ArrayList<ChatMessage> = ArrayList<ChatMessage>()
+    private let toolName: String
+
+    public init(toolName: String) {
+        this.toolName = toolName
+    }
+
+    public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
+        onDelta: (String) -> Unit, onReasoning: (String) -> Unit,
+        onTokenEstimate: (Int64) -> Unit, isCancelled: () -> Bool): ModelResponse {
+        this.callCount += 1
+        this.lastMessages = ArrayList<ChatMessage>()
+        for (m in messages) {
+            this.lastMessages.add(m)
+        }
+        let calls = ArrayList<ToolCall>()
+        calls.add(ToolCall("always_${this.callCount}", this.toolName, JsonObject()))
+        return ModelResponse("", calls)
+    }
+}
+
+/** 前 N 轮调工具，之后纯文本：用于验证续段后的续跑额度 */
+class ToolRoundsThenTextProvider <: LlmProvider {
+    public var callCount: Int64 = 0
+    public var lastMessages: ArrayList<ChatMessage> = ArrayList<ChatMessage>()
+    private let toolName: String
+    private let toolRounds: Int64
+    private let text: String
+
+    public init(toolName: String, toolRounds: Int64, text: String) {
+        this.toolName = toolName
+        this.toolRounds = toolRounds
+        this.text = text
+    }
+
+    public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
+        onDelta: (String) -> Unit, onReasoning: (String) -> Unit,
+        onTokenEstimate: (Int64) -> Unit, isCancelled: () -> Bool): ModelResponse {
+        this.callCount += 1
+        this.lastMessages = ArrayList<ChatMessage>()
+        for (m in messages) {
+            this.lastMessages.add(m)
+        }
+        if (this.callCount <= this.toolRounds) {
+            let calls = ArrayList<ToolCall>()
+            calls.add(ToolCall("tr_${this.callCount}", this.toolName, JsonObject()))
+            return ModelResponse("", calls)
+        }
+        onDelta(this.text)
+        return ModelResponse(this.text, ArrayList<ToolCall>())
+    }
+}
+
 @Test
 public class ContinuationGuardTest {
 
@@ -393,6 +449,50 @@ public class ContinuationGuardTest {
         @Assert(provider.callCount, 2)
         @Assert(this.lastUserText(provider.lastMessages).contains("previous response was empty"), true)
         @Assert(summary.reply.contains("任务完成"), true)
+        agent.clearTodos()
+    }
+
+    /**
+     * 契约 12：续段后的续跑额度按**本段累计预算**判断，而不是死写 maxIterations。
+     *
+     * maxIterations=2：前两轮工具调用撞软顶 → 因有 InProgress 待办续到第 2 段
+     * （segCap=4）；第 3 轮纯文本（承接句）发生在 iterations=3，旧条件
+     * `iterations < maxIterations`（3<2）直接把续跑额度吞掉，任务当场收场。
+     */
+    @TestCase
+    public func testNudgeWorksInsideExtendedSegment(): Unit {
+        let provider = ToolRoundsThenTextProvider("okprobe", 2, "现在运行验证：")
+        let registry = ToolRegistry()
+        registry.register(OkProbeTool())
+        let config = AgentConfig("test system", 2, Capability(), 0, 0, 6, 6000, "", "contguard")
+        let agent = Agent(provider, registry, config)
+        agent.clearTodos()
+        let id = agent.addTask("跑测试验证合并规则")
+        agent.updateTaskStatus(id, TodoStatus.InProgress)
+        agent.run("生成 h5 小游戏")
+        // 2 轮工具 + 第 2 段纯文本承接句 + 续跑后的文本收尾（旧代码只有前三次）
+        @Assert(provider.callCount, 4)
+        @Assert(this.lastUserText(provider.lastMessages).contains("还没有完成"), true)
+        agent.clearTodos()
+    }
+
+    /**
+     * 契约 13：收尾窗口从**实际收尾点**起算，不是从全部段数用尽处起算。
+     *
+     * maxIterations=2、无待办：第 2 轮撞软顶即 WrapUp，硬顶应为 2+10=12；
+     * 旧算法 `2*3+10=16` 会允许模型在收尾后继续干 14 轮（收尾窗口被放大）。
+     */
+    @TestCase
+    public func testHardCapTiedToWrapUp(): Unit {
+        let provider = AlwaysToolProvider("okprobe")
+        let registry = ToolRegistry()
+        registry.register(OkProbeTool())
+        let config = AgentConfig("test system", 2, Capability(), 0, 0, 6, 6000, "", "contguard")
+        let agent = Agent(provider, registry, config)
+        agent.clearTodos()
+        let summary = agent.run("一直调工具，不要收尾")
+        @Assert(provider.callCount, 12)     // 2 轮正常预算 + 10 轮收尾窗口
+        @Assert(summary.reply.contains("12"), true)
         agent.clearTodos()
     }
 }

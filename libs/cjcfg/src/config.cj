@@ -122,8 +122,8 @@ public class CjhConfig {
     public var compactKeep: Int64 = 6
     // 启用的技能白名单（settings.json "enabled_skills": [...]；空=全部启用）
     public var enabledSkills: ArrayList<String> = ArrayList<String>()
-    // TUI 主题（settings.json "theme": "starfrost"|"classic"|...；空=starfrost 默认）
-    public var theme: String = "starfrost"
+    // TUI 主题（settings.json "theme": "omp-dark"|"starfrost"|"classic"|...；空=omp-dark 默认）
+    public var theme: String = "omp-dark"
     // 工具结果截断阈值（字符数，0 或负数=禁用截断）
     // 超过阈值的工具结果保留头尾 + 中间省略标记，完整结果落盘到 spillDir
     public var toolResultMaxChars: Int64 = 6000
@@ -296,7 +296,7 @@ public class CjhConfig {
   "max_tokens": 16384,
   "system_prompt": "",
 
-  "theme": "starfrost",
+  "theme": "omp-dark",
   "tool_result_max_chars": 6000,
   "compact_threshold": 0,
   "compact_token_threshold": 32000,
@@ -908,7 +908,7 @@ public class CjhConfig {
                             case _ => ()
                         }
                     }
-                    // TUI 主题（starfrost|classic|...；未配置=starfrost 默认）
+                    // TUI 主题（omp-dark|starfrost|classic|...；未配置=omp-dark 默认）
                     if (let Some(v) <- obj.get("theme")) {
                         match (v.kind()) {
                             case JsonKind.JsString => this.theme = v.asString().getValue()

@@ -56,11 +56,11 @@ public class StatusBar <: Component {
     }
 
     public override func render(canvas: TuiCanvas, row: Int64, width: Int64, _: Int64): Int64 {
-        let border = Ansi.fg(Ansi.THEME_BORDER)   // 边框实线色（244，U+2500 连续实线，P2b）
+        let border = Ansi.fg(Ansi.THEME_BORDER)   // 边框实线色（omp-dark 蓝；U+2500 连续实线）
         let muted = Ansi.fg(Ansi.THEME_MUTED)
         let bx = BoxChars(this.utf8)
         let hc = bx.hc
-        // 整行背景卡片（P2b，≈ omp statusLineBg #121212）：行内只用 fg 改色、禁止 reset
+        // 整行背景卡片（≈ omp statusLineBg #121212）：行内只用 fg 改色、禁止 reset
         //（reset 会清掉背景使卡片断裂），行尾 reset 由 padBg 统一补。
         let sep = muted + " > "
         // 分段 1：模型名（# accent 色）
@@ -103,7 +103,7 @@ public class StatusBar <: Component {
             content = StatusBar.truncateContent(content, budget)
         }
         var sb = StringBuilder()
-        // 上边框：utf8 ┌─ / ascii +--（边框 THEME_BORDER 244，整行铺 bg 234）
+        // 上边框：utf8 ┌─ / ascii +--（边框 THEME_BORDER，整行铺状态栏背景）
         // 超长截断（v1.3.19）：Windows 长工作路径等场景 content 显示宽度可能
         // 超过行宽——终端会把超长行自动折行叠到下一行，挤乱布局
         //（Linux 短路径不易触发，Windows 深层目录必现）。
@@ -113,7 +113,7 @@ public class StatusBar <: Component {
         sb.append(content)
         sb.append(border + " ")
         // 横线填充撑满到 width-1（truncate 保留 cols-1 可见，防终端折行的边距），
-        // padBg 再铺整行 bg 234（可见宽度已 = width-1，padBg 不额外补空格）
+        // padBg 再铺整行状态栏背景（可见宽度已 = width-1，padBg 不额外补空格）
         let used = TuiCanvas.displayWidth(sb.toString())
         var fillN = (width - 1) - used
         if (fillN < 0) {

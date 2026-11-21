@@ -244,6 +244,99 @@ def test_slash_completion() -> None:
         s.close()
 
 
+def test_fullwidth_slash_dispatch() -> None:
+    """[场景2b] 全角斜杠 / 行首空格：应识别为命令，不得发给模型
+
+    中文输入法下敲 `/` 常得到全角 `／`（U+FF0F），行首也可能带全角空格；
+    旧实现只认 ASCII 前缀，这类输入会作为普通消息发给模型（现象：发完跑一轮 mock 任务）。
+    """
+    print("[场景2b] 全角斜杠 / 行首空格命令分发")
+    cfg = make_config_dir()
+    s = PtuSession(cfg)
+    try:
+        s.expect("cjh")
+        time.sleep(1.2)
+        s.send("／theme dracula\r")
+        s.expect("[主题已切换: dracula]", timeout=15)
+        check("全角 ／theme 被识别为命令", True)
+        time.sleep(0.6)
+        s.read_available(0.3)
+        buf = strip_ansi(s.buf)
+        check("全角命令未发给 agent（无 FINAL-DONE）", "FINAL-DONE" not in buf,
+              f"(buf尾部: {buf[-200:]})")
+        with open(os.path.join(cfg, "settings.json"), encoding="utf-8") as f:
+            theme = json.load(f).get("theme")
+        check("全角命令写入 settings", theme == "dracula", f"(theme={theme})")
+        # 行首空格 + /help：候选与分发都必须按归一化文本识别
+        s.send(" /help\r")
+        s.expect_count("/theme [name]", 1, timeout=15)
+        check("行首空格 /help 被识别为命令", True)
+        # 仅输入全角斜杠：候选菜单应弹出，Enter 选中 /help 并执行（第二份帮助）
+        s.send("／\r")
+        s.expect_count("/theme [name]", 2, timeout=15)
+        check("仅 ／ 触发候选并执行 /help", True)
+        s.read_available(0.3)
+        buf = strip_ansi(s.buf)
+        check("全程未触发 agent 回合", "FINAL-DONE" not in buf, f"(buf尾部: {buf[-200:]})")
+        s.send_key(3)
+        code = s.wait_exit()
+        check("退出码 0", code == 0, f"(实际 {code})")
+    finally:
+        s.close()
+
+
+def test_busy_slash_command_dispatch() -> None:
+    """[场景2c] 模型忙时 /theme：必须排队为命令，不得作为用户消息注入回合
+
+    用户实测：空闲时 `/theme` 正常，模型干活时输入却被当成内容发出去。
+    旧实现忙时所有提交都进 steer 队列，工具批次边界直接注入模型。
+    """
+    print("[场景2c] 忙时 /theme 命令排队（不发给模型）")
+    cfg = make_config_dir()
+    s = PtuSession(cfg, extra_env={"CJH_MOCK_DELAY_MS": "1000"})
+    try:
+        s.expect("cjh")
+        time.sleep(1.0)
+        s.send("慢任务\n")
+        time.sleep(1.5)  # 进入执行态（mock 每轮延迟中）
+        s.send("/theme dracula\r")
+        s.expect("命令已排队", timeout=10)
+        check("忙时 /theme 进入命令队列", True)
+        # 命令后面紧跟普通消息：命令执行后必须继续出队，否则消息会永久卡住
+        s.send("第二个任务\n")
+        s.read_available(0.3)
+        buf = strip_ansi(s.buf)
+        check("命令未在当前回合立即执行", "[主题已切换" not in buf, f"(buf尾部: {buf[-200:]})")
+        s.expect("[主题已切换: dracula]", timeout=30)
+        check("当前回合结束后命令执行", True)
+        with open(os.path.join(cfg, "settings.json"), encoding="utf-8") as f:
+            theme = json.load(f).get("theme")
+        check("忙时命令写入 settings", theme == "dracula", f"(theme={theme})")
+        # 第二个任务应作为新回合执行并落会话（命令排空后不能把后续消息留在队列）
+        deadline = time.time() + 25
+        ran_second = False
+        while time.time() < deadline and not ran_second:
+            for root, _, files in os.walk(os.path.join(cfg, "sessions")):
+                for fn in files:
+                    try:
+                        with open(os.path.join(root, fn), encoding="utf-8", errors="ignore") as f:
+                            if "第二个任务" in f.read():
+                                ran_second = True
+                                break
+                    except OSError:
+                        pass
+                if ran_second:
+                    break
+            if not ran_second:
+                time.sleep(0.3)
+        check("命令后的排队消息继续执行", ran_second)
+        s.send_key(3)
+        code = s.wait_exit()
+        check("退出码 0", code == 0, f"(实际 {code})")
+    finally:
+        s.close()
+
+
 def test_help_view() -> None:
     print("[场景3] 帮助视图：Tab 切换 + Esc 返回")
     cfg = make_config_dir()
@@ -519,7 +612,7 @@ def test_queue_and_autodequeue() -> None:
         time.sleep(1.2)  # 等进入执行态（Thinking/Streaming）
         # 执行中提交第二条：只入队、不打断当前回合
         s.send("任务二\n")
-        s.expect("排队 1 条待并入", timeout=15)
+        s.expect("排队 1 条待发送", timeout=15)
         check("忙时入队显示排队提示（状态行）", True)
         # 第一回合作答完毕（4 轮工具链 + 最终答复）
         s.expect("FINAL-DONE", timeout=45)
@@ -565,7 +658,7 @@ def test_esc_interrupt_sends_queue() -> None:
         time.sleep(1.2)  # 进入执行态
         # 忙时 Enter：只入队不打断
         s.send("任务二\n")
-        s.expect("排队 1 条待并入", timeout=15)
+        s.expect("排队 1 条待发送", timeout=15)
         # 裸 Esc：中断当前回合（不退出 TUI）
         s.send_esc_seq("\x1b")
         s.expect("已中断", timeout=30)
@@ -577,6 +670,63 @@ def test_esc_interrupt_sends_queue() -> None:
         buf = strip_ansi(s.buf)
         check("中断路径同样不在回合内注入", "收到排队输入" not in buf, f"(buf尾部: {buf[-300:]})")
         s.send_key(3)  # 空闲：一次退出
+        s.wait_exit()
+    finally:
+        os.environ.pop("CJH_MOCK_DELAY_MS", None)
+        s.close()
+
+
+def test_alt_enter_immediate_send() -> None:
+    """[场景12] 忙时 Alt+Enter：入队到队首并中断当前回合，随后立即作为新 turn 发送。
+    验证真实终端的 ESC+CR 序列不会被当成裸 Esc 丢掉输入。"""
+    print("[场景11b] Alt+Enter 忙时立即发送 → 队首 + 中断 + 新 turn 发送")
+    cfg = make_config_dir()
+    os.environ["CJH_MOCK_DELAY_MS"] = "2500"
+    s = PtuSession(cfg)
+    try:
+        s.expect("cjh")
+        time.sleep(1.0)
+        s.send("任务一\n")
+        time.sleep(1.2)  # 进入执行态
+        s.send("立即任务")
+        time.sleep(0.2)
+        s.send_esc_seq("\x1b\r")  # Alt+Enter
+        s.expect("已排到队首", timeout=15)
+        check("Alt+Enter 入队到队首并提示立即发送", True)
+        s.expect("已中断", timeout=30)
+        buf = strip_ansi(s.buf)
+        check("Alt+Enter 不把 ESC+CR 当裸 Esc 丢输入", "立即任务" in buf, f"(buf尾部: {buf[-300:]})")
+        s.expect("FINAL-DONE", timeout=60)
+        check("立即任务在中断后作为新 turn 执行", True)
+        s.send_key(3)
+        s.wait_exit()
+    finally:
+        os.environ.pop("CJH_MOCK_DELAY_MS", None)
+        s.close()
+
+
+def test_ctrl_n_new_task_deferral() -> None:
+    """[场景11c] Ctrl+N：下一条消息作为新任务排队，不并入当前回合；当前回合结束后
+    再作为新 turn 发送（出现第二条回合总结条，且无"已中断"）。"""
+    print("[场景11c] Ctrl+N 新任务排队 → 当前回合结束后另起 turn")
+    cfg = make_config_dir()
+    os.environ["CJH_MOCK_DELAY_MS"] = "2500"
+    s = PtuSession(cfg)
+    try:
+        s.expect("cjh")
+        time.sleep(1.0)
+        s.send("任务一\n")
+        time.sleep(1.2)  # 进入执行态
+        s.send_key(14)    # Ctrl+N
+        time.sleep(0.2)
+        s.send("新任务\n")
+        s.expect("已作为新任务排队", timeout=15)
+        check("Ctrl+N 标记后入队提示为「新任务」", True)
+        s.expect_count("rounds · ", 2, timeout=90)
+        buf = strip_ansi(s.buf)
+        check("新任务不并入当前回合（无中断）", "已中断" not in buf, f"(buf尾部: {buf[-300:]})")
+        check("新任务另起 turn（两条回合总结条）", True)
+        s.send_key(3)
         s.wait_exit()
     finally:
         os.environ.pop("CJH_MOCK_DELAY_MS", None)
@@ -818,6 +968,8 @@ def main() -> None:
     print(f"cjh TUI PTY 集成测试（{BIN}）\n")
     test_startup_and_input()
     test_slash_completion()
+    test_fullwidth_slash_dispatch()
+    test_busy_slash_command_dispatch()
     test_help_view()
     test_approval_yes()
     test_approval_queue()
@@ -829,6 +981,8 @@ def main() -> None:
     test_provider_paste()
     test_queue_and_autodequeue()
     test_esc_interrupt_sends_queue()
+    test_alt_enter_immediate_send()
+    test_ctrl_n_new_task_deferral()
     test_interrupt_releases_busy()
     test_history_and_paste_multiline()
     test_bracketed_paste_chinese()

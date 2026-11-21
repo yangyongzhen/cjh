@@ -19,6 +19,21 @@ import cjutil.*
 foreign func _exit(code: Int32): Unit
 
 /**
+ * 队列项：text = 待发送内容，steer = 是否允许在**当前回合**的工具批次边界并入。
+ * steer=false 的消息（用户标记的新任务 / 立即发送）必须等当前回合结束再发，
+ * 避免无关任务污染当前上下文，也保证"立即"消息不会在中断前被边界注入抢跑。
+ */
+class QueuedInput {
+    public let text: String
+    public let steer: Bool
+
+    public init(text: String, steer: Bool) {
+        this.text = text
+        this.steer = steer
+    }
+}
+
+/**
  * TUI 应用：对话界面（组件化编排）
  *
  * 布局（0-based 行，TuiCanvas 差分渲染）：
@@ -73,9 +88,13 @@ public class TuiApp {
     private var reasoningLock: Mutex = Mutex()
     // 思考块展开状态（Ctrl+T 切换）
     private var reasoningExpanded: Bool = false
-    // 输入队列：Agent 执行期间提交的消息排队，执行完毕后自动处理
-    private var inputQueue: ArrayList<String> = ArrayList<String>()
+    // 输入队列：Agent 执行期间提交的消息排队，执行完毕后自动处理。
+    // steer=true 的项可在回合内工具批次边界并入（见 SteerPolicy）；
+    // steer=false 的项（新任务 / 立即发送）不得并入当前回合。
+    private var inputQueue: ArrayList<QueuedInput> = ArrayList<QueuedInput>()
     private var inputQueueLock: Mutex = Mutex()
+    // 下一条消息是否强制作为新任务（Ctrl+N 切换；仅忙时入队路径生效）
+    private var nextAsNewTask: Bool = false
     // 文件日志（TUI stderr 被屏蔽，写文件排查按键/下拉框问题）
     private var logger: Logger = NoopLogger()
     // 流式加载指示器（agent 回复中显示）
@@ -274,80 +293,141 @@ public class TuiApp {
         }
         // 提交（Enter）→ 下拉确认 + 输出回显 + 外部 onSubmit
         this.inputBox.onSubmit = { line =>
-            // /theme 交互式选择：picker 选中后确认当前预览主题
-            if (this.themePickerMode) {
-                this.themePickerMode = false
-                let cur = this.picker.current()
-                this.inputBox.clear()
-                this.picker.hide()
-                if (cur.size > 0) {
-                    // 预览已 apply，这里只需持久化
-                    Theme.apply(cur)
-                    this.onThemeApply(cur)
-                    this.appendOutput(Ansi.fg(Ansi.THEME_OK) +
-                        "[主题已切换: ${cur}]" + Ansi.reset())
-                }
-                this.markDirty()
-                return
-            }
-            // 下拉框可见时：Enter 确认当前选中项（否则提交原始输入）
-            var finalLine = line
-            var pickedFromList = false
-            if (this.picker.isVisible()) {
-                let cur = this.picker.current()
-                if (cur.size > 0) {
-                    finalLine = cur
-                    pickedFromList = (cur != line)
-                }
-                this.safeLog("debug", "enter+pick: 选中项='${cur}' -> inputLine='${finalLine}'")
-            }
+            this.submitLine(line, false)
+        }
+    }
+
+    /**
+     * 统一提交入口（Enter / 多行 Alt+Enter / 忙时立即提交共用）。
+     *
+     * 与旧实现的差别：**决定是否入队、入哪种队**不再藏在 InputBox 回调里，
+     * 而是显式参数 + `nextAsNewTask` 标记，保证多行编辑与单行输入走同一套
+     * 回显/历史/队列语义（旧多行路径直接 onSubmit，忙时会绕过队列）。
+     *
+     * @param line      待提交文本（InputBox 的 expandedText 或编辑器全文）
+     * @param immediate 忙时立即发送：入队到队首且 steer=false，并请求中断当前回合；
+     *                  空闲时等价普通提交。终端支持修饰 Enter 时也可用 Ctrl+Enter。
+     */
+    private func submitLine(line: String, immediate: Bool): Unit {
+        // /theme 交互式选择：picker 选中后确认当前预览主题
+        if (this.themePickerMode) {
+            this.themePickerMode = false
+            this.nextAsNewTask = false
+            let cur = this.picker.current()
             this.inputBox.clear()
             this.picker.hide()
-            if (finalLine.size > 0) {
-                // 回显与历史跟随选中项：Enter 时输入框记下的是原文（如 "/"），
-                // 真正执行的是选中项（如 "/model"）——不修正就会"无论选哪条命令，
-                // 屏幕上都只看到默认的 /"
-                if (pickedFromList) {
-                    this.inputBox.overrideLastSubmission(line, finalLine)
-                }
-                this.safeLog("info", "submit: '${finalLine}'")
-                this.appendOutput("")  // 空行：与上一轮回复分隔
-                // 回显：提交的文本原样（多行内容按输出区自动软换行显示），
-                // 完整内容随提交进入 agent 会话；历史持久化
-                let echoLine = this.inputBox.lastEchoText()
-                // 行内卡片只用 fg 改色（❯ accent → 正文素白），不用 reset（保整行 bg）
-                // 图标与输入框提示符同判据：conhost 缺 ❯ 字形时回显也用 "> "
-                this.appendUserLine(Ansi.fg(Ansi.THEME_ACCENT) + this.echoIcon() + Ansi.fg(Ansi.COLOR_TEXT) +
-                    (if (echoLine.size > 0) { echoLine } else { finalLine }))
-                this.saveHistory()
-                this.appendOutput("")  // 空行：分隔用户输入与 Agent 回复
-                // 方案 B：Agent 执行期间提交的消息入队，执行完毕后自动处理。
-                // 不在 transcript 追加"已入队"提示（处理后残留误导，且污染会话存档）——
-                // 排队状态由动态状态行实时显示（"排队 N 条待并入"），agent 结束自动消失。
-                // busy || 队列非空都入队：堵住 run 结束→下一条启动的窗口期
-                // （否则该窗口提交的消息绕过队列、与续跑消息并发执行同一 Agent）。
-                // 忙时提交只入队、不打断当前回合。消费有两条路径，共用同一 FIFO 队列：
-                //   1. 回合内边界注入（方案 2，见 SteerPolicy）：每批工具执行完、下一轮
-                //      请求前取**一条**并入当前回合——首轮（还没跑工具）与中断后都不取；
-                //   2. 回合结束后 entries.cj 出队作**新回合**发送（到这时仍未消费的）。
-                // （v1.6.9 曾整段关掉路径 1：旧 steer 在每轮请求前排空队列、第 1 轮也注入，
-                // 连发两条时先发的任务被后一条顶掉，实测丢任务。）
-                // 想夺回输入权：Esc（中断当前回合，队列消息作新回合立即发送）或 Ctrl+C 两级中断。
-                if (this.isAgentBusy() || this.queueLength() > 0) {
+            if (cur.size > 0) {
+                // 预览已 apply，这里只需持久化
+                Theme.apply(cur)
+                this.onThemeApply(cur)
+                this.appendOutput(Ansi.fg(Ansi.THEME_OK) +
+                    "[主题已切换: ${cur}]" + Ansi.reset())
+            }
+            this.markDirty()
+            return
+        }
+        // 下拉框可见时：Enter 确认当前选中项（否则提交原始输入）
+        // 立即发送（Alt+Enter）不应被下拉框劫持，调用方已保证 picker 不可见；
+        // 这里只处理普通 Enter。
+        var finalLine = line
+        var pickedFromList = false
+        if (this.picker.isVisible()) {
+            let cur = this.picker.current()
+            if (cur.size > 0) {
+                finalLine = cur
+                pickedFromList = (cur != line)
+            }
+            this.safeLog("debug", "enter+pick: 选中项='${cur}' -> inputLine='${finalLine}'")
+        }
+        this.inputBox.clear()
+        this.picker.hide()
+        if (finalLine.size > 0) {
+            // 回显与历史跟随选中项：Enter 时输入框记下的是原文（如 "/"），
+            // 真正执行的是选中项（如 "/model"）——不修正就会"无论选哪条命令，
+            // 屏幕上都只看到默认的 /"
+            if (pickedFromList) {
+                this.inputBox.overrideLastSubmission(line, finalLine)
+            } else {
+                // 多行编辑器/立即提交不走 InputBox.onSubmit，需要在这里补历史；
+                // 普通 Enter 已经由 InputBox.addToHistory 记过，重复调用会自动去重。
+                this.inputBox.addToHistory(finalLine)
+            }
+            this.safeLog("info", "submit: '${finalLine}' immediate=${immediate}")
+            this.appendOutput("")  // 空行：与上一轮回复分隔
+            // 回显：提交的文本原样（多行内容按输出区自动软换行显示），
+            // 完整内容随提交进入 agent 会话；历史持久化
+            // 行内卡片只用 fg 改色（❯ accent → 正文素白），不用 reset（保整行 bg）
+            // 图标与输入框提示符同判据：conhost 缺 ❯ 字形时回显也用 "> "
+            this.appendUserLine(Ansi.fg(Ansi.THEME_ACCENT) + this.echoIcon() + Ansi.fg(Ansi.COLOR_TEXT) +
+                finalLine)
+            this.saveHistory()
+            this.appendOutput("")  // 空行：分隔用户输入与 Agent 回复
+            // 斜杠命令不是对话内容：忙时必须单独排队，回合结束后由 entries.cj
+            // 分发执行；若按普通消息入队，steer=true 会在工具批次边界被注入模型。
+            let isCommand = normalizeSlashCommand(finalLine).startsWith("/")
+            // 方案 B：Agent 执行期间提交的消息入队，执行完毕后自动处理。
+            // busy || 队列非空都入队：堵住 run 结束→下一条启动的窗口期
+            // （否则该窗口提交的消息绕过队列、与续跑消息并发执行同一 Agent）。
+            // 消费有两条路径，共用同一 FIFO 队列：
+            //   1. 回合内边界注入（SteerPolicy）：每批工具执行完、下一轮请求前取
+            //      **队首且 steer=true** 的一条并入当前回合；
+            //   2. 回合结束后 entries.cj 出队作**新回合**发送（dequeueInput 取任意队首）。
+            // steer=false 的项（Ctrl+N 标记的新任务 / Alt+Enter 立即发送）会挡住队首，
+            // 保证不会被后续边界注入绕过，也不会污染当前回合。
+            if (this.isAgentBusy() || this.queueLength() > 0) {
+                if (isCommand) {
+                    // 命令绝不进 steer 通道：普通 Enter 也强制 steer=false，
+                    // 避免回合内边界注入把 `/theme` 当用户消息发给模型。
+                    let seq = if (immediate) {
+                        this.enqueueInputImmediate(finalLine)
+                    } else {
+                        this.enqueueInputCommand(finalLine)
+                    }
+                    if (immediate && this.isAgentBusy()) {
+                        this.onInterrupt()
+                    }
+                    this.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + queueCommandNoticeText(seq) + Ansi.reset())
+                    this.safeLog("info", "slash 命令忙时排队（不发给模型）: '${finalLine}'")
+                } else if (immediate) {
+                    let seq = this.enqueueInputImmediate(finalLine)
+                    if (this.isAgentBusy()) {
+                        this.onInterrupt()
+                    }
+                    this.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + queueImmediateNoticeText(seq) + Ansi.reset())
+                    this.safeLog("info", "Alt+Enter/Ctrl+Enter: 立即发送（队首，中断当前回合）")
+                } else if (this.nextAsNewTask) {
+                    let seq = this.enqueueInputNewTask(finalLine)
+                    this.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + queueNewTaskNoticeText(seq) + Ansi.reset())
+                    this.safeLog("info", "Ctrl+N: 作为新任务排队（不并入当前回合）")
+                } else {
                     let seq = this.enqueueInput(finalLine)
                     // 回显一行确认（只进输出区，不进会话存档）：收下第几条 + 怎么立刻发。
-                    // 原先刻意不加提示，怕"处理后残留误导"——但连发时没有任何确认，
-                    // 用户会以为没发出去；文案写明"已入队"，不承诺"即将发送"。
+                    // 文案写明"已入队"，不承诺"即将发送"。
                     this.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + queueNoticeText(seq) + Ansi.reset())
                     if (this.isAgentBusy()) {
                         this.safeLog("info", "Enter: 忙时入队（不打断，回合边界自动处理）")
                     }
-                } else {
-                    this.onSubmit(finalLine)
                 }
+                // 标记只作用于下一次提交：无论这次走普通/新任务/立即，提交后复位。
+                this.nextAsNewTask = false
+            } else {
+                this.nextAsNewTask = false
+                this.onSubmit(finalLine)
             }
-            this.markDirty()
         }
+        this.markDirty()
+    }
+
+    /**
+     * 提交输入框当前内容（Alt+Enter / Ctrl+Enter 忙时立即发送）。
+     * 用 expandedText：粘贴折叠 marker 必须展开成原文，不能把 `[Paste #N]` 发给模型。
+     */
+    private func submitCurrentInput(immediate: Bool): Unit {
+        let text = this.inputBox.expandedText()
+        if (text.size == 0) {
+            return
+        }
+        this.submitLine(text, immediate)
     }
 
     /**
@@ -1173,9 +1253,10 @@ public class TuiApp {
         this.agentStartTime = DateTime.now()
         this.statusBar.setStatus("")
         this.tasksPanel.updateSnapshots(ArrayList<TaskSnapshot>())
+        this.nextAsNewTask = false
         this.inputQueueLock.lock()
         try {
-            this.inputQueue = ArrayList<String>()
+            this.inputQueue = ArrayList<QueuedInput>()
         } finally {
             this.inputQueueLock.unlock()
         }
@@ -1254,31 +1335,89 @@ public class TuiApp {
     }
 
     /**
-     * 入队待发送消息（Agent 执行期间提交的输入）
+     * 入队待发送消息（Agent 执行期间提交的普通输入，可在工具批次边界并入当前回合）
      * @return 队列长度（用于提示"前面还有 N 条"）
      */
     public func enqueueInput(text: String): Int64 {
+        this.enqueueQueuedInput(QueuedInput(text, true), false)
+    }
+
+    /**
+     * 入队新任务消息（Ctrl+N 标记）：必须在当前回合**结束后**作为新回合发送。
+     * steer=false 让它挡住队首，后续普通消息也无法插到它前面被边界注入。
+     */
+    public func enqueueInputNewTask(text: String): Int64 {
+        this.enqueueQueuedInput(QueuedInput(text, false), false)
+    }
+
+    /**
+     * 入队斜杠命令（Agent 执行期间提交）：steer=false，当前回合结束后
+     * 由 entries.cj 识别并分发，绝不作为用户消息注入当前回合。
+     */
+    public func enqueueInputCommand(text: String): Int64 {
+        this.enqueueQueuedInput(QueuedInput(text, false), false)
+    }
+
+    /**
+     * 立即发送（Alt+Enter / Ctrl+Enter）：插到队首且 steer=false。
+     * 调用方在忙时同时 onInterrupt()，保证当前回合停止后队列头就是它。
+     */
+    public func enqueueInputImmediate(text: String): Int64 {
+        this.enqueueQueuedInput(QueuedInput(text, false), true)
+    }
+
+    private func enqueueQueuedInput(item: QueuedInput, front: Bool): Int64 {
         this.inputQueueLock.lock()
-        this.inputQueue.add(text)
-        let len: Int64 = Int64(this.inputQueue.size)
-        this.inputQueueLock.unlock()
+        var len: Int64 = 0
+        try {
+            if (front && this.inputQueue.size > 0) {
+                var next = ArrayList<QueuedInput>()
+                next.add(item)
+                for (i in 0..this.inputQueue.size) {
+                    next.add(this.inputQueue[i])
+                }
+                this.inputQueue = next
+            } else {
+                this.inputQueue.add(item)
+            }
+            len = Int64(this.inputQueue.size)
+        } finally {
+            this.inputQueueLock.unlock()
+        }
         return len
     }
 
     /**
-     * 出队下一条待发送消息（FIFO）
+     * 出队下一条待发送消息（回合结束后 entries.cj 使用）。
+     * 不区分 steer：新任务/立即消息也会在这里作为新回合发出。
      * @return Some(text) 有消息；None 队列为空
      */
     public func dequeueInput(): Option<String> {
+        return this.dequeueInputInternal(false)
+    }
+
+    /**
+     * 出队下一条**可并入当前回合**的消息（工具批次边界 SteerPolicy 使用）。
+     * 仅当队首 steer=true 时返回；队首是新任务/立即消息时返回 None，
+     * 让边界注入停下来，等当前回合结束再处理，避免绕过用户"新任务"意图。
+     */
+    public func dequeueSteerableInput(): Option<String> {
+        return this.dequeueInputInternal(true)
+    }
+
+    private func dequeueInputInternal(steerOnly: Bool): Option<String> {
         this.inputQueueLock.lock()
         var result: Option<String> = None
         try {
             if (this.inputQueue.size == 0) {
                 result = None
+            } else if (steerOnly && !this.inputQueue[0].steer) {
+                // 队首是当前回合不可消费的消息：不越过它去取后面的 steer 消息
+                result = None
             } else {
-                let first: String = this.inputQueue[0]
+                let first: String = this.inputQueue[0].text
                 // 移除首元素：重建列表（ArrayList 无 removeAt）
-                var rest: ArrayList<String> = ArrayList<String>()
+                var rest: ArrayList<QueuedInput> = ArrayList<QueuedInput>()
                 for (i in 1..this.inputQueue.size) {
                     rest.add(this.inputQueue[i])
                 }
@@ -1427,7 +1566,8 @@ public class TuiApp {
     }
 
     /**
-     * 整行背景卡片追加（P2b）：text 按行铺 bg(code) 卡片（padBg 补空格到 lastCols-1）。
+     * 整行背景卡片追加：text 按行铺 bg(code) 卡片（padBg 补空格到 lastCols-1）。
+     * 仅用户输入回显使用（对齐 omp userMessageBg）；工具/思考行不再铺背景。
      * 约束：行内内容只能用 fg 改色、禁止中途 reset（否则背景被截断），行尾 reset 由 padBg 补。
      */
     private func appendCard(text: String, bgCode: Int64): Unit {
@@ -1443,16 +1583,16 @@ public class TuiApp {
         this.markDirty()
     }
 
-    /** 用户输入回显行（bg 237 整行卡片，≈ omp userMessageBg） */
+    /** 用户输入回显行（bg 235 整行卡片，≈ omp userMessageBg） */
     public func appendUserLine(text: String): Unit {
         // 长任务提示词常几百字：不折行会被 padBg 截断成一行，用户看不到后半段。
         // 与助手输出同样走 ANSI/CJK 感知折行，保留完整提示词（每行再铺背景卡片）。
         this.appendCard(wrapRenderedText(text, this.lastCols - 1), Ansi.THEME_USER_BG)
     }
 
-    /** 工具调用/结果行（bg 236 整行卡片，≈ omp toolPendingBg） */
+    /** 工具调用行：无整行背景，只在行尾补 reset（避免颜色泄漏到下一行） */
     public func appendToolLine(text: String): Unit {
-        this.appendCard(text, Ansi.THEME_TOOL_BG)
+        this.appendOutput(text + Ansi.reset())
     }
 
     /**
@@ -1475,8 +1615,7 @@ public class TuiApp {
             if (lines[i].size == 0 && i == lines.size - 1) {
                 continue
             }
-            detail.append(Ansi.padBg(Ansi.fg(color) + "      " + lines[i] + Ansi.reset(),
-                this.lastCols - 1, Ansi.THEME_TOOL_BG))
+            detail.append(Ansi.fg(color) + "      " + lines[i] + Ansi.reset())
             detail.append("\n")
             detailCount += 1
         }
@@ -1491,9 +1630,7 @@ public class TuiApp {
             if (detailCount > 0) {
                 this.outputView.appendFoldable(wrapped, detail.toString())
             } else {
-                for (line in wrapped.split("\n", -1)) {
-                    this.outputView.append(Ansi.padBg(line, this.lastCols - 1, Ansi.THEME_TOOL_BG))
-                }
+                this.outputView.append(wrapped)
             }
         } finally {
             this.outputLock.unlock()
@@ -1801,6 +1938,36 @@ public class TuiApp {
             }
             return
         }
+        // Ctrl+N：切换"下一条作为新任务排队"（仅忙时/有队列时生效）。
+        // 新任务不并入当前回合：当前回合结束（或被中断）后才作为新回合发送，
+        // 避免当前任务上下文污染新需求。再按一次取消。
+        if (key.ch == 14 && !key.isEsc) {
+            if (this.isAgentBusy() || this.queueLength() > 0) {
+                this.nextAsNewTask = !this.nextAsNewTask
+                this.appendOutput(Ansi.fg(Ansi.THEME_MUTED) +
+                    (if (this.nextAsNewTask) {
+                        "🧷 下一条消息将作为新任务排队（当前回合结束后发送；再按 Ctrl+N 取消）"
+                    } else {
+                        "🧷 已取消新任务标记"
+                    }) + Ansi.reset())
+                this.safeLog("info", "Ctrl+N: 下条新任务=${this.nextAsNewTask}")
+            } else {
+                this.appendOutput(Ansi.fg(Ansi.THEME_MUTED) +
+                    "Ctrl+N 仅在 Agent 执行中生效（下一条作为新任务排队）" + Ansi.reset())
+            }
+            this.markDirty()
+            return
+        }
+        // Alt+Enter（忙时）/ Ctrl+Enter（终端支持修饰 Enter 时）：立即发送。
+        // Alt+Enter 在裸 ESC 分支之前处理，否则会被当成 Esc 中断而丢掉输入。
+        // Ctrl+Enter 依赖 Kitty 键盘协议；传统终端会把它压成普通 Enter，
+        // 此时仍可用 Alt+Enter 达到同一效果。
+        let isAltEnter = key.escapeSeq == TermEsc.ESC + "\r" || key.escapeSeq == TermEsc.ESC + "\n"
+        let isCtrlEnter = key.escapeSeq == "\u{1b}[13;5u" || key.escapeSeq == "\u{1b}[13;5~"
+        if ((isAltEnter || isCtrlEnter) && !this.editMode && this.viewMode == 0) {
+            this.submitCurrentInput(true)
+            return
+        }
         // 文件日志：记录每个按键的完整形态（排查方向键/下拉框问题）
         // 用 safeLog：Backspace(ch=127) 等字符曾触发 stdx logger 越界崩 TUI
         this.safeLog("debug",
@@ -1871,9 +2038,10 @@ public class TuiApp {
         }
         // 多行编辑模式：Alt+Enter（ESC \r 序列）提交；其余键交 MultiLineEditor
         if (this.editMode) {
-            // Alt+Enter：ESC 后跟 \r（readKey 中 escapeSeq = "\x1b\r"）
-            if (key.escapeSeq == TermEsc.ESC + "\r") {
-                this.editorSubmit()
+            // Alt+Enter：ESC 后跟 \r（readKey 中 escapeSeq = "\x1b\r"）。
+            // 忙时=立即发送（中断当前回合），空闲时等价普通提交。
+            if (key.escapeSeq == TermEsc.ESC + "\r" || key.escapeSeq == TermEsc.ESC + "\n") {
+                this.editorSubmit(this.isAgentBusy())
                 return
             }
             if (this.editor.handleKey(key)) {
@@ -1989,16 +2157,17 @@ public class TuiApp {
     }
 
     /**
-     * 多行编辑提交：Alt+Enter → 回显 + 外部 onSubmit（与输入框提交同路径）
+     * 多行编辑提交：Alt+Enter → 统一 submitLine（回显/历史/队列语义与单行一致）。
+     * @param immediate 忙时立即发送（中断当前回合；空闲时等价普通提交）
      */
-    private func editorSubmit(): Unit {
+    private func editorSubmit(immediate: Bool): Unit {
         let text = this.editor.text()
         this.editMode = false
+        this.editor.setText("")
         this.inputBox.clear()
         if (text.size > 0) {
-            this.safeLog("info", "editor submit: '${text}'")
-            this.appendUserLine(Ansi.fg(Ansi.THEME_ACCENT) + this.echoIcon() + Ansi.fg(Ansi.COLOR_TEXT) + text)
-            this.onSubmit(text)
+            this.safeLog("info", "editor submit: '${text}' immediate=${immediate}")
+            this.submitLine(text, immediate)
         }
         this.markDirty()
     }
@@ -2017,7 +2186,9 @@ public class TuiApp {
      * 根据当前输入刷新 / 命令下拉候选（输入以 "/" 开头且无空格时弹出）
      */
     private func refreshCandidates(): Unit {
-        let line = this.inputBox.text()
+        // 用归一化文本判命令前缀：全角 `／` 与行首全角空格也应弹出补全，
+        // 否则用户会以为菜单没出来，直接回车把 `/theme` 当成消息发走。
+        let line = normalizeSlashCommand(this.inputBox.text())
         if (line.startsWith("/") && !line.contains(" ")) {
             var list = ArrayList<String>()
             for (cmd in TuiApp.SLASH_COMMANDS) {
@@ -2267,6 +2438,9 @@ public class TuiApp {
         if (qLen > 0) {
             line += Ansi.fg(Ansi.THEME_MUTED) + " " + Ansi.reset() +
                 Ansi.fg(Ansi.THEME_ACCENT) + queueStatusText(qLen) + Ansi.reset()
+            if (this.nextAsNewTask) {
+                line += Ansi.fg(Ansi.THEME_MUTED) + " · 下条新任务" + Ansi.reset()
+            }
         }
         // S3 修实测"干活时主界面啥也没有"：状态行追加聚合心跳
         //（如 3 agents (2/5 4/5 1/5) ↑3.2k  2 bg (2 running)）；每秒 tick 刷新，零刷屏成本
@@ -2322,7 +2496,8 @@ public class TuiApp {
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  长粘贴         软换行显示 + 超5行/400字折叠 [Paste #N]（回车展开提交）" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_ACCENT) + "快捷键：" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Tab / ←→       切换视图（对话/帮助）" + Ansi.reset())
-        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Ctrl+E         多行输入编辑（Alt+Enter 提交）" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Ctrl+E         多行输入编辑（Alt+Enter 提交；忙时 Alt+Enter 中断并立即发送）" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Ctrl+N         下一条消息作为新任务排队（忙时；再按取消，不并入当前回合）" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Ctrl+T         思考过程展开/折叠（推理模型），展开后可上滚回看多轮历史" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Ctrl+G         循环切换焦点（父 → 子代理 → 父），焦点子代理的工具行进入主流" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  PageUp/Down    输出区滚动（Ctrl+U/D 亦可）" + Ansi.reset())
@@ -2424,7 +2599,22 @@ public func watchdogAction(idleSecs: Int64, timeoutSecs: Int64, toolsInFlight: I
 
 /** 入队后回显到输出区的一行（纯文本；色彩由调用方加） */
 public func queueNoticeText(seq: Int64): String {
-    "已入队 第 ${seq} 条  ·  Esc 立即中断并发送"
+    "已入队 第 ${seq} 条  ·  Esc/Alt+Enter 立即发送  ·  Ctrl+N 下条新任务"
+}
+
+/** 新任务排队提示（Ctrl+N 后提交） */
+public func queueNewTaskNoticeText(seq: Int64): String {
+    "已作为新任务排队 第 ${seq} 条  ·  当前回合结束后发送（Ctrl+N 取消下条）"
+}
+
+/** 忙时斜杠命令排队提示（命令不是消息，回合结束后执行） */
+public func queueCommandNoticeText(seq: Int64): String {
+    "命令已排队 第 ${seq} 条  ·  当前回合结束后执行（不会发给模型）"
+}
+
+/** 立即发送提示（Alt+Enter / Ctrl+Enter 忙时提交） */
+public func queueImmediateNoticeText(seq: Int64): String {
+    "已排到队首 第 ${seq} 条  ·  正在中断当前回合，随后立即发送"
 }
 
 /** 状态行里的排队片段（纯文本；0 条返回空串 = 不显示） */
@@ -2432,5 +2622,5 @@ public func queueStatusText(qLen: Int64): String {
     if (qLen <= 0) {
         return ""
     }
-    return "· 📥 排队 ${qLen} 条待并入  Esc 立即发送"
+    return "· 📥 排队 ${qLen} 条待发送  Esc/Alt+Enter 立即发送"
 }
