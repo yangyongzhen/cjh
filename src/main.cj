@@ -179,7 +179,7 @@ main(args: Array<String>): Int64 {
         return runTui(args[1])
     }
     if (args.size > 0 && args[0] == "--list") {
-        return listSessions()
+        return listSessions(args.size > 1 && args[1] == "--all")
     }
     // V3 Step 3：信任管理 CLI（逻辑在 tools/trust.cj，可单测）
     if (args.size > 0 && (args[0] == "trust" || args[0] == "untrust" || args[0] == "trust-list")) {

@@ -75,7 +75,13 @@ public class StaticAssets {
                 <div id="tab-sessions" class="sidebar-panel active">
                     <div class="sidebar-header">
                         <span>历史会话</span>
-                        <button id="new-session-btn" class="btn-icon" title="新建会话">+</button>
+                        <div class="sidebar-actions">
+                            <select id="session-scope" class="session-scope" title="会话显示范围">
+                                <option value="project" selected>本项目</option>
+                                <option value="all">全部</option>
+                            </select>
+                            <button id="new-session-btn" class="btn-icon" title="新建会话">+</button>
+                        </div>
                     </div>
                     <div id="session-list" class="session-list">
                         <div class="loading">加载中...</div>
@@ -249,6 +255,9 @@ public class StaticAssets {
 // ====== 全局状态 ======
 let ws = null;
 let currentSessionId = null;
+// 会话列表范围：project=当前工作区（默认），all=全部工作区。
+// 旧版本没有这个开关，890 条跨项目历史会全部铺开（用户实锤）。
+var sessionScope = localStorage.getItem('cjh-session-scope') || 'project';
 let isExecuting = false;
 // 当前生效模型（以服务端 ack 为准）+ 切换中待确认的模型（失败用于回滚选项）
 let currentModelId = null;
@@ -453,7 +462,7 @@ function sendAbort() {
  * 从 /api/sessions 加载会话列表，渲染到侧边栏
  */
 function loadSessions() {
-    apiFetch('/api/sessions')
+    apiFetch('/api/sessions?scope=' + encodeURIComponent(sessionScope))
         .then(r => r.json())
         .then(data => {
             let list = document.getElementById('session-list');
@@ -608,6 +617,7 @@ function switchWorkspace(path, name) {
                 el.classList.toggle('active', el.dataset.path === path);
             });
             tip.textContent = '✓ 已切换至「' + name + '」';
+            loadSessions();  // 会话列表跟随新工作区
         } else {
             tip.style.color = 'var(--error)';
             tip.textContent = '切换失败: ' + (data.error || '未知错误');
@@ -1870,6 +1880,15 @@ document.addEventListener('DOMContentLoaded', function() {
         approvalDenyBtn.addEventListener('click', function() { sendApprovalResponse(false); });
     }
 
+    // 会话范围切换（本项目 / 全部）
+    let scopeSelect = document.getElementById('session-scope');
+    scopeSelect.value = sessionScope;
+    scopeSelect.addEventListener('change', function() {
+        sessionScope = this.value;
+        localStorage.setItem('cjh-session-scope', sessionScope);
+        loadSessions();
+    });
+
     // 新建会话
     document.getElementById('new-session-btn').addEventListener('click', function() {
         if (ws && ws.readyState === WebSocket.OPEN) {
@@ -2135,6 +2154,23 @@ body {
     padding: 12px 16px;
     border-bottom: 1px solid var(--border);
     font-weight: bold;
+}
+
+.sidebar-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.session-scope {
+    background: var(--accent-dim);
+    color: var(--accent);
+    border: none;
+    border-radius: 4px;
+    height: 24px;
+    padding: 0 4px;
+    font-size: 11px;
+    cursor: pointer;
 }
 
 .btn-icon {

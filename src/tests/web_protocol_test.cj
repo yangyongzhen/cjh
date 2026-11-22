@@ -3,6 +3,7 @@ package cjh.tests
 import cjutil.*
 
 import std.collection.*
+import std.fs.*
 import stdx.encoding.json.*
 import cjcfg.*
 import cjllm.*
@@ -547,6 +548,52 @@ public class GatewayControlFrameTest {
         }
         @Assert(agent.isSome(), true)
         @Assert(agent.getOrThrow().getCompactTokenThreshold(), 32000)
+    }
+
+    @TestCase
+    public func testDestroySessionPersistsUsageUnderOriginalId(): Unit {
+        let dir = testTempDir("gw_usage_persist")
+        removeTree(dir)
+        let cfg = CjhConfig(dir)
+        cfg.systemPrompt = "用量持久化测试"
+        cfg.maxIterations = 1
+        let gateway = ChannelGateway(cfg, MockProvider(tmpPath("mock_gw_usage.txt")),
+            ToolRegistry(), None)
+        let ch = CaptureChannel()
+        gateway.registerChannel("test", ch)
+        gateway.handleUserMessage("test", "chat1", "hi")
+        waitForEvents(ch, 8000)
+        @Assert(ch.dones > 0, true)
+        gateway.destroySession("test", "chat1")
+
+        let store = SessionStore(cfg.sessionsDir)
+        let sessions = store.list()
+        @Assert(sessions.size, 1)
+        let sid = sessions[0][0]
+        match (store.usageOf(sid)) {
+            case Some(u) =>
+                @Assert(u.rounds > 0, true)
+            case None => @Assert("网关回合应持久化 usage", "")
+        }
+    }
+
+    @TestCase
+    public func testDestroySessionSavesUnderPreallocatedId(): Unit {
+        // 断连保存必须沿用会话 ID：旧实现每次断连都生成新 ID，历史里堆重复会话。
+        let dir = testTempDir("web_sess_identity")
+        removeTree(dir)
+        let cfg = CjhConfig(dir)
+        let mgr = WebSessionManager(cfg, MockProvider(tmpPath("mock_web_sid.txt")),
+            ToolRegistry())
+        let _ = mgr.createSession("ws-sid")
+        let sid = mgr.getSessionId("ws-sid").getOrThrow()
+        mgr.destroySession("ws-sid")
+        let store = SessionStore(cfg.sessionsDir)
+        @Assert(store.list().size, 1)
+        @Assert(store.list()[0][0], sid)
+        // 再销毁一次不得产生第二条
+        mgr.destroySession("ws-sid")
+        @Assert(store.list().size, 1)
     }
 
     @TestCase

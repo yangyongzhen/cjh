@@ -4,13 +4,59 @@ import std.fs.*
 import stdx.encoding.json.*
 import std.collection.*
 import std.time.*
+import std.env.*
 import cjllm.*
+
+/**
+ * 会话级用量快照（持久化到会话文件根的 usage 字段）
+ *
+ * 不是账单单据，只保留跨回合累计最常用的 6 个数：恢复会话后仍能看到
+ * 这轮/历史花了多少 token、跑了几轮工具。字段名与 --mode json/Web done 对齐。
+ */
+public class SessionUsage {
+    public var promptTokens: Int64 = 0
+    public var completionTokens: Int64 = 0
+    public var cachedTokens: Int64 = 0
+    public var rounds: Int64 = 0
+    public var tools: Int64 = 0
+    public var durationMs: Int64 = 0
+
+    public init() {}
+
+    public init(promptTokens: Int64, completionTokens: Int64, cachedTokens: Int64,
+        rounds: Int64, tools: Int64, durationMs: Int64) {
+        this.promptTokens = promptTokens
+        this.completionTokens = completionTokens
+        this.cachedTokens = cachedTokens
+        this.rounds = rounds
+        this.tools = tools
+        this.durationMs = durationMs
+    }
+
+    /** 是否有可展示的数据（全零视为未记录，不写 usage 字段） */
+    public func hasData(): Bool {
+        return this.promptTokens > 0 || this.completionTokens > 0 ||
+            this.cachedTokens > 0 || this.rounds > 0 || this.tools > 0 ||
+            this.durationMs > 0
+    }
+
+    public func toJson(): JsonObject {
+        var obj = JsonObject()
+        obj.put("prompt_tokens", JsonInt(this.promptTokens))
+        obj.put("completion_tokens", JsonInt(this.completionTokens))
+        obj.put("cached_tokens", JsonInt(this.cachedTokens))
+        obj.put("rounds", JsonInt(this.rounds))
+        obj.put("tools", JsonInt(this.tools))
+        obj.put("duration_ms", JsonInt(this.durationMs))
+        return obj
+    }
+}
 
 /**
  * 会话持久化：agent 消息历史保存/恢复
  *
  * 存储：~/.cjh/sessions/<会话ID>.json
- * 格式：{"id": "...", "created": "...", "messages": [{role, content, tool_call_id?, name?}, ...]}
+ * 格式：{"id": "...", "created": "...", "cwd": "...", "usage": {...}, "messages": [{role, content, tool_call_id?, name?}, ...]}
  */
 public class SessionStore {
     private let dir: String
@@ -178,6 +224,13 @@ public class SessionStore {
         var root = JsonObject()
         root.put("id", JsonString(id))
         root.put("created", JsonString(DateTime.now().toString()))
+        // 工作区归属：Web/TUI 的会话列表按此过滤，避免在项目 A 看到项目 B 的
+        // 上百条历史（用户实锤：890 条混在一起）。旧会话无 cwd 字段，按 legacy 处理。
+        try {
+            root.put("cwd", JsonString(getWorkingDirectory().toString()))
+        } catch (e: Exception) {
+            ()
+        }
         if (parent.size > 0) {
             root.put("parent", JsonString(parent))
         }
@@ -188,6 +241,141 @@ public class SessionStore {
         root.put("messages", JsonArray(msgArr))
         File.writeTo(path, root.toJsonString().toArray())
         return id
+    }
+
+    /**
+     * 新建会话并写入用量快照，返回会话 ID。
+     */
+    public func saveWithUsage(messages: ArrayList<ChatMessage>, usage: SessionUsage): String {
+        let id = this.newSessionId()
+        let _ = this.saveWithIdUsage(id, messages, usage)
+        return id
+    }
+
+    /**
+     * 按指定 ID 覆盖保存消息（保留 created/cwd/title/parent 等根字段）。
+     *
+     * 恢复会话必须走这里：旧实现无论新会话还是恢复都调 save()，每次都生成
+     * 新 ID，导致一次 --resume 就多出一条重复历史（890 条会话的成因之一）。
+     * 文件不存在时创建（Web 侧会话 ID 是预生成的）。
+     */
+    public func saveWithId(id: String, messages: ArrayList<ChatMessage>): Bool {
+        return this.saveWithIdUsage(id, messages, SessionUsage())
+    }
+
+    /**
+     * 按指定 ID 覆盖保存消息 + 用量；usage 全零时保留文件里已有的 usage。
+     */
+    public func saveWithIdUsage(id: String, messages: ArrayList<ChatMessage>,
+        usage: SessionUsage): Bool {
+        if (id.size == 0) {
+            return false
+        }
+        this.ensureDir()
+        let path = this.dir + "/" + id + ".json"
+        var root = JsonObject()
+        if (exists(path)) {
+            try {
+                let json = JsonValue.fromStr(String.fromUtf8(File.readFrom(path)))
+                match (json.kind()) {
+                    case JsonKind.JsObject => root = json.asObject()
+                    case _ => ()
+                }
+            } catch (e: Exception) {
+                // 损坏文件按新文件重写（消息仍以当前内存历史为准）
+            }
+        }
+        root.put("id", JsonString(id))
+        if (root.get("created").isNone()) {
+            root.put("created", JsonString(DateTime.now().toString()))
+        }
+        if (root.get("cwd").isNone()) {
+            try {
+                root.put("cwd", JsonString(getWorkingDirectory().toString()))
+            } catch (e: Exception) {
+                ()
+            }
+        }
+        var msgArr = ArrayList<JsonValue>()
+        for (m in messages) {
+            msgArr.add(m.toOpenAiJson())
+        }
+        root.put("messages", JsonArray(msgArr))
+        if (usage.hasData()) {
+            // 会话级累计：恢复后继续对话不会把总用量清零
+            var merged = this.parseUsage(root)
+            merged.promptTokens += usage.promptTokens
+            merged.completionTokens += usage.completionTokens
+            merged.cachedTokens += usage.cachedTokens
+            merged.rounds += usage.rounds
+            merged.tools += usage.tools
+            merged.durationMs += usage.durationMs
+            root.put("usage", merged.toJson())
+        }
+        try {
+            File.writeTo(path, root.toJsonString().toArray())
+            return true
+        } catch (e: Exception) {
+            eprintln("[cjh] 会话 ${id} 保存失败: ${e}")
+            return false
+        }
+    }
+
+    /**
+     * 读取会话用量快照；无 usage 字段/文件不存在返回 None。
+     */
+    public func usageOf(id: String): ?SessionUsage {
+        let path = this.dir + "/" + id + ".json"
+        if (!exists(path)) {
+            return None
+        }
+        try {
+            let json = JsonValue.fromStr(String.fromUtf8(File.readFrom(path)))
+            match (json.kind()) {
+                case JsonKind.JsObject =>
+                    let obj = json.asObject()
+                    // 缺 usage 字段 = 未记录，返回 None（不伪造成全零）
+                    if (obj.get("usage").isNone()) {
+                        return None
+                    }
+                    return Some(this.parseUsage(obj))
+                case _ => ()
+            }
+        } catch (e: Exception) {
+            ()
+        }
+        return None
+    }
+
+    /**
+     * 解析会话根对象的 usage 字段（缺失/类型不符按全零）
+     */
+    private func parseUsage(root: JsonObject): SessionUsage {
+        var usage = SessionUsage()
+        if (let Some(u) <- root.get("usage")) {
+            match (u.kind()) {
+                case JsonKind.JsObject =>
+                    let uo = u.asObject()
+                    usage.promptTokens = this.intField(uo, "prompt_tokens")
+                    usage.completionTokens = this.intField(uo, "completion_tokens")
+                    usage.cachedTokens = this.intField(uo, "cached_tokens")
+                    usage.rounds = this.intField(uo, "rounds")
+                    usage.tools = this.intField(uo, "tools")
+                    usage.durationMs = this.intField(uo, "duration_ms")
+                case _ => ()
+            }
+        }
+        return usage
+    }
+
+    private func intField(obj: JsonObject, key: String): Int64 {
+        if (let Some(v) <- obj.get(key)) {
+            match (v.kind()) {
+                case JsonKind.JsInt => return v.asInt().getValue()
+                case _ => ()
+            }
+        }
+        return 0
     }
 
     /**
@@ -237,6 +425,52 @@ public class SessionStore {
             let summary = this.summary(e)
             let parent = this.parentOf(id)
             result.add((id, summary, parent))
+        }
+        return result
+    }
+
+    /**
+     * 会话所属工作区（保存时的 cwd）；旧会话/损坏返回 ""。
+     */
+    public func cwdOf(id: String): String {
+        let path = this.dir + "/" + id + ".json"
+        if (!exists(path)) {
+            return ""
+        }
+        try {
+            let json = JsonValue.fromStr(String.fromUtf8(File.readFrom(path)))
+            match (json.kind()) {
+                case JsonKind.JsObject =>
+                    let obj = json.asObject()
+                    if (let Some(c) <- obj.get("cwd")) {
+                        match (c.kind()) {
+                            case JsonKind.JsString => return c.asString().getValue()
+                            case _ => ()
+                        }
+                    }
+                case _ => ()
+            }
+        } catch (e: Exception) {
+            ()
+        }
+        return ""
+    }
+
+    /**
+     * 按工作区列出会话（按时间倒序）：(id, 摘要)。
+     *
+     * includeLegacy=true 时包含没有 cwd 字段的旧会话（升级后不丢历史）；
+     * 新会话一律带 cwd，因此不会再把其它项目的会话混进来。
+     */
+    public func listScoped(cwd: String, includeLegacy: Bool): ArrayList<(String, String)> {
+        var result = ArrayList<(String, String)>()
+        let all = this.list()
+        let normalized = if (cwd.size > 0) { cwd } else { "" }
+        for ((id, summary) in all) {
+            let owner = this.cwdOf(id)
+            if (owner == normalized || (includeLegacy && owner.size == 0)) {
+                result.add((id, summary))
+            }
         }
         return result
     }

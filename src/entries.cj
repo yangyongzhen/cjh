@@ -401,13 +401,14 @@ func runCli(sessionId: String): Int64 {
                 continue
             }
             try {
-                let _ = agent.run(input)
-                // 保存会话
+                let summary = agent.run(input)
+                // 保存会话（恢复的会话覆盖原文件，不再每次新建）
+                let usage = sessionUsageOf(summary)
                 if (CliSession.id.size == 0) {
-                    CliSession.id = store.save(agent.history())
+                    CliSession.id = store.saveWithUsage(agent.history(), usage)
                     eprintln("[session saved: ${CliSession.id}, use --resume ${CliSession.id}]")
                 } else {
-                    let _ = store.save(agent.history())
+                    let _ = store.saveWithIdUsage(CliSession.id, agent.history(), usage)
                 }
             } catch (e: Exception) {
                 println("错误: ${e}")
@@ -434,6 +435,54 @@ class JsonState {
     static var toolCalls: ArrayList<(String, String, String)> = ArrayList<(String, String, String)>()
 }
 
+/**
+ * 回合用量 → 会话用量快照（字段与 Web done / --mode json 完全一致）
+ */
+func sessionUsageOf(summary: RunSummary): SessionUsage {
+    return SessionUsage(summary.promptTokens, summary.completionTokens, summary.cachedTokens,
+        summary.rounds, summary.toolCalls, summary.durationMs)
+}
+
+/**
+ * --mode json 的稳定输出契约：stdout 只有这一个 JSON 文档（可跨行，jq 可直接解析）。
+ *
+ * 失败不能只塞进 reply 文本——脚本/CI 需要可判定的 error_code 与非零退出码。
+ * usage 每轮累计（与 Web done 帧同源），便于调用方核算成本。
+ */
+func jsonResultOf(summary: RunSummary, sessionId: String,
+    calls: ArrayList<(String, String, String)>): JsonObject {
+    var out = JsonObject()
+    out.put("reply", JsonString(summary.reply))
+    out.put("session_id", JsonString(sessionId))
+    out.put("error", JsonString(summary.errorMessage))
+    out.put("error_code", JsonString(summary.errorCode))
+    out.put("retryable", JsonBool(summary.errorRetryable))
+    out.put("truncated", JsonBool(summary.truncated))
+    var usage = JsonObject()
+    usage.put("prompt_tokens", JsonInt(summary.promptTokens))
+    usage.put("completion_tokens", JsonInt(summary.completionTokens))
+    usage.put("cached_tokens", JsonInt(summary.cachedTokens))
+    usage.put("rounds", JsonInt(summary.rounds))
+    usage.put("tools", JsonInt(summary.toolCalls))
+    usage.put("duration_ms", JsonInt(summary.durationMs))
+    out.put("usage", usage)
+    var tcArr = ArrayList<JsonValue>()
+    for (tc in calls) {
+        var t = JsonObject()
+        t.put("name", JsonString(tc[0]))
+        t.put("args", JsonString(tc[1]))
+        t.put("result", JsonString(tc[2]))
+        tcArr.add(t)
+    }
+    out.put("tool_calls", JsonArray(tcArr))
+    return out
+}
+
+/** 无头模式退出码：结构化失败必须非零，避免脚本把失败当成功。 */
+func jsonExitCodeOf(summary: RunSummary): Int64 {
+    return if (summary.errorCode.size > 0) { 1 } else { 0 }
+}
+
 func runJson(prompt: String, sessionId: String): Int64 {
     let registry = ToolRegistry()
     registry.register(BashTool())
@@ -449,7 +498,9 @@ func runJson(prompt: String, sessionId: String): Int64 {
 
     let cjhCfg = CjhConfig()
     cjhCfg.ensureDirs()
-    warnCapabilitySilent(cjhCfg)
+    // stdout 只能有最终 JSON：提示走 stderr，否则 --mode json 的消费者
+    //（jq / CI）会在第一行遇到非 JSON 文本直接失败。
+    warnCapabilitySilentErr(cjhCfg)
     // 应用 TUI 主题（settings.json "theme" 字段；默认 omp-dark）
     Theme.apply(cjhCfg.theme)
     // 注册 web_search + web_fetch 工具
@@ -539,46 +590,32 @@ func runJson(prompt: String, sessionId: String): Int64 {
 
         if (prompt.size == 0) {
             // 无 prompt：输出会话摘要 JSON（--mode json --resume <id> 查历史）
-            var out = JsonObject()
-            out.put("reply", JsonString(""))
-            out.put("session_id", JsonString(curId))
-            out.put("error", JsonString("empty prompt"))
-            println(out.toJsonString())
+            var emptySummary = RunSummary()
+            emptySummary.errorCode = "empty_prompt"
+            emptySummary.errorMessage = "empty prompt"
+            println(jsonResultOf(emptySummary, curId, JsonState.toolCalls).toJsonString())
             return 1
         }
 
         let summary = agent.run(prompt)
 
-        // 保存会话：新会话用 store.save；恢复的会话更新原文件（删旧建新以更新消息）
+        // 保存会话：新会话写新文件；恢复的会话覆盖原文件（不再新建重复条目）
+        let usage = sessionUsageOf(summary)
         if (curId.size == 0) {
-            curId = store.save(agent.history())
+            curId = store.saveWithUsage(agent.history(), usage)
         } else {
-            let _ = store.save(agent.history())
+            let _ = store.saveWithIdUsage(curId, agent.history(), usage)
         }
 
-        // 输出 JSON 结果
-        var out = JsonObject()
-        out.put("reply", JsonString(summary.reply))
-        out.put("session_id", JsonString(curId))
-        var tcArr = ArrayList<JsonValue>()
-        for (tc in JsonState.toolCalls) {
-            var t = JsonObject()
-            t.put("name", JsonString(tc[0]))
-            t.put("args", JsonString(tc[1]))
-            t.put("result", JsonString(tc[2]))
-            tcArr.add(t)
-        }
-        out.put("tool_calls", JsonArray(tcArr))
         // 收尾回收后台任务（无头模式同样不该留下孤儿进程），再打印结果
         shutdownBackgroundTasks()
-        println(out.toJsonString())
-        return 0
+        println(jsonResultOf(summary, curId, JsonState.toolCalls).toJsonString())
+        return jsonExitCodeOf(summary)
     } catch (e: Exception) {
-        var err = JsonObject()
-        err.put("reply", JsonString(""))
-        err.put("session_id", JsonString(sessionId))
-        err.put("error", JsonString(e.toString()))
-        println(err.toJsonString())
+        var failed = RunSummary()
+        failed.errorCode = "exception"
+        failed.errorMessage = e.toString()
+        println(jsonResultOf(failed, sessionId, JsonState.toolCalls).toJsonString())
         return 1
     }
 }
@@ -770,8 +807,9 @@ func runTui(sessionId: String): Int64 {
 
         // 会话：恢复历史 / 新会话
         let store = SessionStore(cjhCfg.sessionsDir)
-        // 欢迎视图右栏：最近会话摘要（id 不显示，仅摘要）
-        let sessionList = store.list()
+        // 欢迎视图右栏：只显示当前工作区（含无 cwd 的旧会话），
+        // 否则在多项目机器上百条历史会全部堆进来（用户实锤 890 条）。
+        let sessionList = store.listScoped(getWorkingDirectory().toString(), true)
         let sessionSummaries = ArrayList<String>()
         for (s in sessionList) {
             sessionSummaries.add(s[1])
@@ -1078,12 +1116,13 @@ func runTui(sessionId: String): Int64 {
                             "⚠ 本回合执行失败（${summary.errorCode}）：${summary.errorMessage}" +
                             Ansi.reset())
                     }
-                    // 保存会话（含首轮时创建 ID）
+                    // 保存会话（含首轮时创建 ID）；恢复的会话覆盖原文件，避免重复历史
+                    let usage = sessionUsageOf(summary)
                     if (SessionState.current.size == 0) {
-                        SessionState.current = store.save(agent.history())
+                        SessionState.current = store.saveWithUsage(agent.history(), usage)
                         TuiBridge.status("[saved ${SessionState.current}, --resume ${SessionState.current}]")
                     } else {
-                        let _ = store.save(agent.history())
+                        let _ = store.saveWithIdUsage(SessionState.current, agent.history(), usage)
                     }
                 } catch (e: Exception) {
                     TuiBridge.output(Ansi.fg(Ansi.THEME_ERR) + "错误: ${e}" + Ansi.reset())
@@ -1249,18 +1288,21 @@ func applyProvider(cfg: CjhConfig, agent: Agent, tui: TuiApp, label: String, bas
 /**
  * 列出已保存的会话（--list 入口）
  */
-func listSessions(): Int64 {
+func listSessions(all: Bool): Int64 {
     let cjhCfg = CjhConfig()
     cjhCfg.ensureDirs()
     // 应用 TUI 主题（settings.json "theme" 字段；默认 omp-dark）
     Theme.apply(cjhCfg.theme)
     let store = SessionStore(cjhCfg.sessionsDir)
-    let sessions = store.list()
+    // 默认只看当前工作区；--all 才列出全部（旧会话无 cwd，始终包含）。
+    let cwd = getWorkingDirectory().toString()
+    let sessions = if (all) { store.list() } else { store.listScoped(cwd, true) }
     if (sessions.size == 0) {
-        println("暂无会话。运行 cjh 开始新会话，退出后自动保存。")
+        println("当前工作区暂无会话。运行 cjh 开始新会话，退出后自动保存；cjh --list --all 查看全部。")
         return 0
     }
-    println("已保存的会话（${sessions.size} 个）：")
+    let scopeLabel = if (all) { "全部工作区" } else { cwd }
+    println("已保存的会话（${sessions.size} 个，${scopeLabel}）：")
     println("--------------------------------")
     for ((id, summary) in sessions) {
         println("  ${id}  |  ${summary}")
@@ -1772,6 +1814,14 @@ func extractSubagentResult(subAgent: Agent): String {
 func warnCapabilitySilent(cfg: CjhConfig): Unit {
     match (cfg.capability.silentPermissiveHint()) {
         case Some(msg) => println(msg)
+        case None => ()
+    }
+}
+
+/** 同 warnCapabilitySilent，但写 stderr——无头 JSON 模式的 stdout 必须干净。 */
+func warnCapabilitySilentErr(cfg: CjhConfig): Unit {
+    match (cfg.capability.silentPermissiveHint()) {
+        case Some(msg) => eprintln(msg)
         case None => ()
     }
 }

@@ -2,9 +2,11 @@ package cjh.tests
 
 import std.collection.*
 import std.fs.*
+import std.env.*
 import stdx.encoding.json.*
 import cjllm.*
 import cjcfg.*
+import cjh.web.*
 
 /**
  * SessionStore 单元测试：保存/恢复/列出/父会话
@@ -159,5 +161,102 @@ public class SessionStoreTest {
         broken.add(ChatMessage("tool", "半截结果", "call_missing", "bash"))
         let bid = store.save(broken)
         @Assert(store.defectCount(bid), 1)
+    }
+
+    @TestCase
+    public func testSaveRecordsCwdAndListScoped(): Unit {
+        removeTree(this.dir)
+        Directory.create(this.dir, recursive: true)
+        let store = this.buildStore()
+        let cwd = getWorkingDirectory().toString()
+
+        var msgs = ArrayList<ChatMessage>()
+        msgs.add(ChatMessage("user", "本项目会话"))
+        let mine = store.save(msgs)
+        @Assert(store.cwdOf(mine), cwd)
+        @Assert(store.cwdOf("s0.0.0"), "")  // 不存在
+
+        // 旧会话（无 cwd）+ 其它工作区会话：用文件直接构造，模拟升级前数据
+        File.writeTo(this.dir + "/s1.1.1.json",
+            ("{\"id\":\"s1.1.1\",\"created\":\"2026-01-01T00:00:00\",\"messages\":[{\"role\":\"user\",\"content\":\"legacy\"}]}").toArray())
+        File.writeTo(this.dir + "/s2.2.2.json",
+            ("{\"id\":\"s2.2.2\",\"created\":\"2026-01-02T00:00:00\",\"cwd\":\"/other/project\",\"messages\":[{\"role\":\"user\",\"content\":\"other\"}]}").toArray())
+
+        // 本项目 + 旧会话；不含其它项目
+        let scoped = store.listScoped(cwd, true)
+        @Assert(scoped.size, 2)
+        let strict = store.listScoped(cwd, false)
+        @Assert(strict.size, 1)
+        @Assert(strict[0][0], mine)
+        // 切到其它项目：包含它自己 + 无归属旧会话
+        let other = store.listScoped("/other/project", true)
+        @Assert(other.size, 2)
+        // 不存在的项目：只剩旧会话（includeLegacy=false 时为空）
+        @Assert(store.listScoped("/nope", true).size, 1)
+        @Assert(store.listScoped("/nope", false).size, 0)
+    }
+
+    @TestCase
+    public func testSaveWithIdDoesNotDuplicateAndKeepsUsage(): Unit {
+        removeTree(this.dir)
+        Directory.create(this.dir, recursive: true)
+        let store = this.buildStore()
+        let id = store.newSessionId()
+        var msgs = ArrayList<ChatMessage>()
+        msgs.add(ChatMessage("user", "第一轮"))
+
+        // 新会话 + 用量：一次落盘
+        @Assert(store.saveWithIdUsage(id, msgs, SessionUsage(120, 30, 60, 2, 1, 2500)), true)
+        @Assert(store.list().size, 1)
+        let cwd = store.cwdOf(id)
+        @Assert(cwd.size > 0, true)
+
+        // 恢复后再保存：必须覆盖同一文件，且不传 usage 时保留已记录用量
+        msgs.add(ChatMessage("assistant", "第二轮"))
+        @Assert(store.saveWithId(id, msgs), true)
+        @Assert(store.list().size, 1)
+        @Assert(store.load(id).size, 2)
+        @Assert(store.cwdOf(id), cwd)
+        match (store.usageOf(id)) {
+            case Some(u) =>
+                @Assert(u.promptTokens, 120)
+                @Assert(u.completionTokens, 30)
+                @Assert(u.cachedTokens, 60)
+                @Assert(u.rounds, 2)
+                @Assert(u.tools, 1)
+                @Assert(u.durationMs, 2500)
+            case None => @Assert("usage 应已持久化", "")
+        }
+
+        // 未记录用量的会话：缺键而非全零
+        let plain = store.newSessionId()
+        @Assert(store.saveWithId(plain, msgs), true)
+        match (store.usageOf(plain)) {
+            case Some(_) => @Assert("无 usage 的会话不应伪造数据", "")
+            case None => @Assert(true, true)
+        }
+
+        // 累计语义：同一会话再跑一轮，用量相加而不是覆盖
+        @Assert(store.saveWithIdUsage(id, msgs, SessionUsage(10, 5, 0, 1, 0, 100)), true)
+        match (store.usageOf(id)) {
+            case Some(u) =>
+                @Assert(u.promptTokens, 130)
+                @Assert(u.completionTokens, 35)
+                @Assert(u.rounds, 3)
+            case None => @Assert("累计用量应保留", "")
+        }
+        @Assert(store.saveWithId("", msgs), false)
+    }
+
+    @TestCase
+    public func testWebQueryAndSessionTimestamp(): Unit {
+        @Assert(queryParamOf(Some("scope=project&x=1"), "scope"), "project")
+        @Assert(queryParamOf(Some("x=1&scope=all"), "scope"), "all")
+        @Assert(queryParamOf(Some("scope="), "scope"), "")
+        @Assert(queryParamOf(None, "scope"), "")
+        @Assert(sessionCreatedAt("s1787665309"), 1787665309)
+        @Assert(sessionCreatedAt("s1787665309.123.4"), 1787665309)
+        @Assert(sessionCreatedAt("garbage"), 0)
+        @Assert(sessionCreatedAt("s"), 0)
     }
 }

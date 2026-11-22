@@ -118,11 +118,21 @@ public class RestApi <: HttpRequestHandler {
      * GET /api/sessions → 列出历史会话
      *
      * 返回格式：
-     * { "sessions": [ {"id": "s1787665309", "title": "hello", "created_at": 1787665309}, ... ] }
+     * { "sessions": [ {"id": "s1787665309", "title": "hello", "created_at": 1787665309,
+     *   "corrupted": false, "defects": 0, "usage": {...}}, ... ] }
+     *
+     * usage 为可选键：仅记录过用量的会话才有（旧会话无此键，勿当 0 处理）。
      */
     private func handleListSessions(ctx: HttpContext): Unit {
         let store = SessionStore(this.config.sessionsDir)
-        let sessions = store.list()
+        // 默认保持旧行为（全部）；Web 侧默认传 scope=project。
+        // 旧会话无 cwd，project 模式下仍包含，升级不丢历史。
+        let scope = queryParamOf(ctx.request.url.query, "scope")
+        let sessions = if (scope == "project") {
+            store.listScoped(getWorkingDirectory().toString(), true)
+        } else {
+            store.list()
+        }
 
         var sessionsArr = JsonArray()
         for (i in 0..sessions.size) {
@@ -130,19 +140,17 @@ public class RestApi <: HttpRequestHandler {
             var sessionObj = JsonObject()
             sessionObj.put("id", JsonString(id))
             sessionObj.put("title", JsonString(title))
-            // 从 ID 提取时间戳（格式 s<timestamp>）
-            var timestamp: Int64 = 0
-            if (id.startsWith("s") && id.size > 1) {
-                try {
-                    timestamp = Int64.parse(id[1..])
-                } catch (e: Exception) {}
-            }
-            sessionObj.put("created_at", JsonInt(timestamp))
+            // 从 ID 提取秒级时间戳：旧格式 s<sec>，新格式 s<sec>.<ms>.<counter>
+            sessionObj.put("created_at", JsonInt(sessionCreatedAt(id)))
             // 会话健康：被打断的回合会留下孤儿 tool 消息，历史残缺的会话发消息必 400。
             // 提前标记，客户端可在恢复前提示「建议修复/删除」而不是撞上 400 才知道。
             let defects = store.defectCount(id)
             sessionObj.put("corrupted", JsonBool(defects > 0))
             sessionObj.put("defects", JsonInt(defects))
+            // 用量快照（旧会话/Web 尚未记录时缺键 = 未记录，不虚报 0）
+            if (let Some(u) <- store.usageOf(id)) {
+                sessionObj.put("usage", u.toJson())
+            }
             sessionsArr.add(sessionObj)
         }
 
@@ -157,7 +165,7 @@ public class RestApi <: HttpRequestHandler {
     /**
      * /api/sessions/{id} → 单个会话
      *
-     *   GET    → {id, title, created_at, messages, corrupted, defects}
+     *   GET    → {id, title, created_at, messages, corrupted, defects, usage?}
      *   PATCH  → 重命名（body: {"title": "新标题"}）
      *   DELETE → 删除该会话文件
      *
@@ -182,6 +190,9 @@ public class RestApi <: HttpRequestHandler {
                 let defects = historyDefectCount(msgs)
                 obj.put("corrupted", JsonBool(defects > 0))
                 obj.put("defects", JsonInt(defects))
+                if (let Some(u) <- store.usageOf(id)) {
+                    obj.put("usage", u.toJson())
+                }
                 res.body(obj.toJsonString().toArray())
             case "PATCH" =>
                 let bodyStr = readBody(ctx)
@@ -957,6 +968,52 @@ public func fsListDirFromQuery(query: Option<String>, cwd: String): String {
         }
     }
     return cwd
+}
+
+/**
+ * 读取 query 参数（未提供/空值返回 ""）。只做按 & 切分，不处理 URL 转义——
+ * 当前调用方（scope=project|all）均为 ASCII 枚举值，够用且不引入解码歧义。
+ */
+public func queryParamOf(query: Option<String>, key: String): String {
+    if (query.isNone()) {
+        return ""
+    }
+    let prefix = key + "="
+    for (part in query.getOrThrow().split("&")) {
+        if (part.startsWith(prefix) && part.size > prefix.size) {
+            return part[prefix.size..]
+        }
+    }
+    return ""
+}
+
+/**
+ * 从会话 ID 取秒级时间戳。
+ *
+ * ID 格式已从 s<sec> 演进到 s<sec>.<ms>.<counter>；旧实现直接 Int64.parse
+ * 整个后缀，遇到点号必抛异常 → Web 侧所有会话显示空时间（实测）。
+ * 这里只取第一个点号之前的部分，新旧格式都兼容；非法 ID 返回 0。
+ */
+public func sessionCreatedAt(id: String): Int64 {
+    if (!id.startsWith("s") || id.size <= 1) {
+        return 0
+    }
+    let raw = id[1..]
+    var end = raw.size
+    for (i in 0..raw.size) {
+        if (raw[i] == 46u8) {  // '.'
+            end = i
+            break
+        }
+    }
+    if (end == 0) {
+        return 0
+    }
+    try {
+        return Int64.parse(raw[0..end])
+    } catch (e: Exception) {
+        return 0
+    }
 }
 
 /**

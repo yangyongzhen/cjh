@@ -9,6 +9,7 @@ package cjh
 
 import std.collection.*
 import std.convert.Parsable
+import std.env.*
 import std.fs.*
 import cjh.agent.*
 import cjh.tools.refCliMain
@@ -314,7 +315,8 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
                 }
             } else {
                 // 列出会话
-                let sessions = store.list()
+                // 当前工作区优先；无 cwd 的旧会话仍可见，避免升级后历史消失
+                let sessions = store.listScoped(getWorkingDirectory().toString(), true)
                 if (sessions.size == 0) {
                     tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "[暂无会话]" + Ansi.reset())
                 } else {
@@ -324,7 +326,17 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
             }
         case "/tree" =>
             // 树形会话列示：按 parent 链展示分支（pi /tree 能力）
-            let nodes = store.listTree()
+            // 与 /resume 同口径：只看当前工作区 + 旧会话（无 cwd）
+            let allNodes = store.listTree()
+            let treeCwd = getWorkingDirectory().toString()
+            var scopedNodes = ArrayList<(String, String, String)>()
+            for ((id, summary, parent) in allNodes) {
+                let owner = store.cwdOf(id)
+                if (owner == treeCwd || owner.size == 0) {
+                    scopedNodes.add((id, summary, parent))
+                }
+            }
+            let nodes = scopedNodes
             if (nodes.size == 0) {
                 tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "[暂无会话]" + Ansi.reset())
             } else {

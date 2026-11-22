@@ -1,4 +1,17 @@
 # CHANGELOG
+## [Unreleased] - 2026-11-22
+
+### 修复(会话恢复重复 / 按工作区隔离 / 用量持久化)
+- **恢复会话不再新建重复历史**:`--resume`、TUI 恢复、Web 断连保存原先都调 `SessionStore.save()`，每次生成新 ID；现统一走 `saveWithId/saveWithIdUsage` 覆盖原文件（保留 `created/cwd/title/parent`），恢复+保存后会话数不变。
+- **会话列表按工作区过滤**:`--list` 默认只看当前 cwd（旧会话无 `cwd` 仍可见），`--list --all` 查看全部；TUI 欢迎页与 `/resume` 的树形列表同口径。Web `/api/sessions?scope=project` 继续使用 `listScoped`。
+- **草稿按工作区隔离**:`draftFilePath(configDir, cwd)` 用 cwd 的 SHA-256 作文件名，`~/.cjh/drafts/<hash>.draft`；旧实现用 `String.replace("history","draft")`，多个项目共用一份草稿，且配置目录名含 `history` 会被改坏。
+- **用量随会话落盘**:`SessionUsage`（prompt/completion/cached/rounds/tools/duration_ms）累加写入会话根 `usage`；TUI/CLI/JSON/Web 网关断连保存都会带上。Web `/api/sessions` 与 `/api/sessions/{id}` 回可选 `usage` 键（旧会话缺键 = 未记录，不伪报 0）。
+- **JSON 模式输出契约**:`--mode json` 的 stdout 只有最终 JSON 文档，能力配置提示等改走 stderr；失败带 `error_code/retryable` 且退出码非零。
+
+### 测试
+- 根包新增：会话覆盖保存/用量累计、草稿路径隔离、Web 会话 ID 复用、网关断连用量落盘。
+- 全量门禁：根包 **766/766**、libs **261/261**、TUI PTY **105/105**、`--mock` 端到端通过。
+
 ## [v1.6.18] - 2026-11-21
 
 ### 修复(忙时斜杠命令被当成消息 / 中文输入法全角斜杠)
