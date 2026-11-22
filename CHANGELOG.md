@@ -12,6 +12,12 @@
 - 根包新增：会话覆盖保存/用量累计、草稿路径隔离、Web 会话 ID 复用、网关断连用量落盘。
 - 全量门禁：根包 **766/766**、libs **261/261**、TUI PTY **105/105**、`--mock` 端到端通过。
 
+### 修复(Web 首屏离线可用：第三方前端依赖自托管)
+- **去掉 CDN 依赖**：`marked` / `DOMPurify` / `highlight.js` / `github-dark` 主题从 `cdn.jsdelivr.net` 改为随二进制提供，版本固定为 marked 12.0.2、DOMPurify 3.4.17、highlight.js 11.9.0；内网、断网或 CDN 被墙时首屏不再裸奔。
+- **新增 `/assets/vendor/<file>` 路由**：内容不可变，带 `Cache-Control: public, max-age=31536000, immutable`；索引页不再引用任何外域资源。
+- **修复代码高亮静默失效**：marked v5 起移除了 `highlight` 选项，旧代码传了也不生效。改为清洗后用 `hljs.highlightElement` 给真实 `<pre><code>` 节点上色，并保持先清洗后上色的 XSS 边界。
+- 回归：`WebVendorSelfHostTest` 3 例校验索引无 CDN、四个资源已嵌入且版本正确、高亮走 `hljs.highlightElement`；`scripts/web_smoke_test.py` 真起服务核对 4 个 vendor 的路径、Content-Type、`immutable` 缓存头与版本标识（顺带把过期的 protocol=5 断言更到 7）。
+
 ## [v1.6.18] - 2026-11-21
 
 ### 修复(忙时斜杠命令被当成消息 / 中文输入法全角斜杠)

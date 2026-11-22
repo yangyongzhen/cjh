@@ -323,6 +323,7 @@ Works with **any OpenAI-compatible endpoint** — including fully local setups (
 - **WebSocket streaming conversation**: `ChatRequest` → `tool_start` → `tool_result` → streaming `delta` → `done`
 - **REST API**: sessions / models / tasks / health
 - **Frontend SPA**: vanilla JS + marked.js + DOMPurify + highlight.js, 6 themes
+- **Fully offline first paint**: third-party frontend deps embedded in the binary (pinned versions), no CDN
 - **auth_token auth middleware** + **startup security audit log**
 
 ### Sessions & Memory

@@ -26,13 +26,14 @@ public class StaticAssets {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>cjh · Web</title>
     <link rel="stylesheet" href="/assets/styles.css">
-    <!-- Markdown 渲染：marked.js + highlight.js + DOMPurify（CDN，离线降级为纯文本） -->
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
-    <!-- highlight.js 必须用 cdn-release 的 UMD bundle（build/highlight.min.js），
+    <!-- Markdown 渲染：marked.js + DOMPurify + highlight.js，随二进制自托管。
+         不能依赖 CDN：离线/信创内网首屏会退化成纯文本（且版本会漂移）。 -->
+    <link rel="stylesheet" href="/assets/vendor/github-dark.min.css">
+    <script src="/assets/vendor/marked.min.js"></script>
+    <script src="/assets/vendor/purify.min.js"></script>
+    <!-- highlight.js 必须用 UMD bundle（build/highlight.min.js），
          /lib/common.js 是 CommonJS 模块（含 require），浏览器无法加载 -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
-    <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
+    <script src="/assets/vendor/highlight.min.js"></script>
 </head>
 <body data-theme="light">
     <div class="app-container">
@@ -1463,30 +1464,36 @@ function finalizeAssistantMessage() {
 }
 
 /**
- * Markdown 渲染（流式 + 最终）
- * 优先 marked.js + DOMPurify，离线降级为纯文本
+ * Markdown 渲染（流式 + 最终）：marked 渲染 + DOMPurify 清洗 + highlight.js 上色。
+ *
+ * marked 从 v5 起移除了 highlight 选项，必须在清洗后用 DOM 调
+ * hljs.highlightElement（在真实节点上操作，避免手拼 HTML 再次引入 XSS）。
+ * 返回 null 表示运行环境没有加载 marked/DOMPurify，由调用方降级为纯文本。
  */
-function renderMarkdownInline(text) {
-    if (typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {
-        try {
-            marked.setOptions({
-                breaks: true,
-                gfm: true,
-                highlight: function(code, lang) {
-                    if (typeof hljs !== 'undefined' && lang && hljs.getLanguage(lang)) {
-                        try { return hljs.highlight(code, {language: lang}).value; } catch (e) {}
-                    }
-                    return code;
-                }
-            });
-            var raw = marked.parse(text);
-            return DOMPurify.sanitize(raw);
-        } catch (e) {
-            return escapeHtml(text);
-        }
+function renderMarkdownHtml(text) {
+    if (typeof marked === 'undefined' || typeof DOMPurify === 'undefined') {
+        return null;
     }
-    // 离线降级：纯文本 + 转义
-    return escapeHtml(text);
+    try {
+        marked.setOptions({ breaks: true, gfm: true });
+        var clean = DOMPurify.sanitize(marked.parse(text));
+        var holder = document.createElement('div');
+        holder.innerHTML = clean;
+        if (typeof hljs !== 'undefined') {
+            var blocks = holder.querySelectorAll('pre code');
+            for (var i = 0; i < blocks.length; i++) {
+                try { hljs.highlightElement(blocks[i]); } catch (e) {}
+            }
+        }
+        return holder.innerHTML;
+    } catch (e) {
+        return escapeHtml(text);
+    }
+}
+
+function renderMarkdownInline(text) {
+    var rendered = renderMarkdownHtml(text);
+    return rendered === null ? escapeHtml(text) : rendered;
 }
 
 function appendToolStart(name, args) {
@@ -1577,24 +1584,9 @@ function escapeHtml(text) {
 }
 
 function renderMarkdown(text) {
-    // 优先用 marked.js + DOMPurify 做完整 Markdown 渲染
-    if (typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {
-        marked.setOptions({
-            breaks: true,
-            gfm: true,
-            highlight: function(code, lang) {
-                if (typeof hljs !== 'undefined' && lang && hljs.getLanguage(lang)) {
-                    try { return hljs.highlight(code, {language: lang}).value; } catch (e) {}
-                }
-                return code;
-            }
-        });
-        var raw = marked.parse(text);
-        var clean = DOMPurify.sanitize(raw);
-        return '<div class=\"message-content\">' + clean + '</div>';
-    }
-    // 离线降级：纯文本 + 转义
-    return '<div class=\"message-content\">' + escapeHtml(text) + '</div>';
+    var rendered = renderMarkdownHtml(text);
+    return '<div class=\"message-content\">' +
+        (rendered === null ? escapeHtml(text) : rendered) + '</div>';
 }
 
 /**
