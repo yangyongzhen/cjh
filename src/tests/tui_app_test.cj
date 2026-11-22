@@ -941,3 +941,30 @@ public class QueueHintTest {
         @Assert(s.contains("立即发送"))
     }
 }
+
+/**
+ * 草稿按工作区隔离：不同 cwd 必须落到不同文件，且不依赖脆弱的
+ * String.replace("history","draft")（配置目录名含 history 时会被改坏）。
+ */
+@Test
+public class DraftPathTest {
+    @TestCase
+    public func testDifferentWorkspacesUseDifferentFiles(): Unit {
+        let a = draftFilePath("/cfg", "/work/a")
+        let b = draftFilePath("/cfg", "/work/b")
+        @Assert(a == b, false)
+        @Assert(a.startsWith("/cfg/drafts/"), true)
+        @Assert(a.endsWith(".draft"), true)
+        // 同一路径稳定（重启后还能找回自己的草稿）
+        @Assert(draftFilePath("/cfg", "/work/a"), a)
+        // 配置目录里含 history 不会被替换成 draft
+        @Assert(draftFilePath("/cfg/history-projects", "/work/a").contains("/history-projects/drafts/"), true)
+    }
+
+    @TestCase
+    public func testEmptyInputsStaySingleLevelFilename(): Unit {
+        @Assert(draftFilePath("", "/work/a").startsWith("cjh_draft_"), true)
+        @Assert(draftFilePath("", "/work/a").contains("/"), false)
+        @Assert(draftFilePath("/cfg", ""), "/cfg/drafts/unknown.draft")
+    }
+}

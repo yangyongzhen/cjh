@@ -88,12 +88,14 @@ public class WebSessionManager {
      * 销毁会话（WS 断开时调用）
      */
     public func destroySession(wsId: String): Unit {
-        // 保存会话历史
+        // 保存会话历史：按预生成的会话 ID 覆盖，避免每次断连都新建重复会话
         match (this.agents.get(wsId)) {
             case Some(agent) =>
                 let store = SessionStore(this.config.sessionsDir)
-                // save 会自动生成新会话 ID 并返回
-                store.save(agent.history())
+                match (this.sessionIds.get(wsId)) {
+                    case Some(id) => let _ = store.saveWithId(id, agent.history())
+                    case None => let _ = store.save(agent.history())
+                }
             case None => ()
         }
 

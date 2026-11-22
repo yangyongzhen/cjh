@@ -372,6 +372,8 @@ public class ChannelGateway {
     private let cancelledKeys: HashMap<String, Bool> = HashMap<String, Bool>()
     // 未决审批：requestId → 槽位（回合线程阻塞读，approval_response / 超时 / 断连写）
     private let pendingApprovals: HashMap<String, ApprovalSlot> = HashMap<String, ApprovalSlot>()
+    // 会话累计用量：key → 用量（断连/销毁时随历史一起落盘）
+    private let lastUsages: HashMap<String, SessionUsage> = HashMap<String, SessionUsage>()
     // 审批请求序号（requestId 进程内唯一）
     private var approvalSeq: Int64 = 0
     /**
@@ -532,15 +534,24 @@ public class ChannelGateway {
         this.denyApprovals(channelId, chatId)
         this.mutex.lock()
         try {
-            // 保存会话历史
+            // 保存会话历史：按会话自己的 ID 覆盖，并把累计用量一起写入。
+            // 旧实现调 save() 生成新 ID，每次断连都多一条重复会话。
             match (this.agents.get(key)) {
                 case Some(agent) =>
                     let store = SessionStore(this.config.sessionsDir)
-                    store.save(agent.history())
+                    let usage = match (this.lastUsages.get(key)) {
+                        case Some(u) => u
+                        case None => SessionUsage()
+                    }
+                    match (this.sessionIds.get(key)) {
+                        case Some(id) => let _ = store.saveWithIdUsage(id, agent.history(), usage)
+                        case None => let _ = store.saveWithUsage(agent.history(), usage)
+                    }
                 case None => ()
             }
             this.agents.remove(key)
             this.sessionIds.remove(key)
+            this.lastUsages.remove(key)
         } finally {
             this.mutex.unlock()
         }
@@ -1058,6 +1069,27 @@ public class ChannelGateway {
      */
     private func sendDone(channel: Channel, chatId: String, meta: FrameMeta,
         summary: RunSummary, finishReason: String): Unit {
+        // 先记账：断连销毁时把累计用量写进会话文件（done 帧只给客户端看）
+        if (summary.rounds > 0 || summary.totalTokens() > 0 || summary.durationMs > 0) {
+            let key = this.sessionKey(channel.channelId(), chatId)
+            this.mutex.lock()
+            try {
+                var total = SessionUsage()
+                match (this.lastUsages.get(key)) {
+                    case Some(prev) => total = prev
+                    case None => ()
+                }
+                total.promptTokens += summary.promptTokens
+                total.completionTokens += summary.completionTokens
+                total.cachedTokens += summary.cachedTokens
+                total.rounds += summary.rounds
+                total.tools += summary.toolCalls
+                total.durationMs += summary.durationMs
+                this.lastUsages.add(key, total)
+            } finally {
+                this.mutex.unlock()
+            }
+        }
         var obj = JsonObject()
         obj.put("rounds", JsonInt(summary.rounds))
         obj.put("tools", JsonInt(summary.toolCalls))

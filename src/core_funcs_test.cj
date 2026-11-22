@@ -1361,3 +1361,63 @@ public class SlashCommandNormalizeTest {
         @Assert(normalizeSlashCommand("   "), "")
     }
 }
+
+/**
+ * --mode json 输出契约：成功/失败都必须是可解析、可判定的结构化结果。
+ * stdout 纯净性（提示走 stderr）由 CLI 端到端用例覆盖。
+ */
+@Test
+public class JsonResultContractTest {
+    @TestCase
+    public func testSuccessCarriesUsageAndExitZero(): Unit {
+        var s = RunSummary()
+        s.reply = "done"
+        s.rounds = 3
+        s.toolCalls = 2
+        s.durationMs = 1234
+        s.promptTokens = 1000
+        s.completionTokens = 50
+        s.cachedTokens = 800
+        var calls = ArrayList<(String, String, String)>()
+        calls.add(("bash", "{\"command\":\"true\"}", "exit code: 0"))
+        let out = jsonResultOf(s, "s1", calls)
+        let parsed = JsonValue.fromStr(out.toJsonString())
+        let obj = parsed.asObject()
+        @Assert(obj.get("error").getOrThrow().asString().getValue(), "")
+        @Assert(obj.get("error_code").getOrThrow().asString().getValue(), "")
+        @Assert(obj.get("retryable").getOrThrow().asBool().getValue(), false)
+        @Assert(obj.get("tool_calls").getOrThrow().asArray().size(), 1)
+        let usage = obj.get("usage").getOrThrow().asObject()
+        @Assert(usage.get("prompt_tokens").getOrThrow().asInt().getValue(), 1000)
+        @Assert(usage.get("cached_tokens").getOrThrow().asInt().getValue(), 800)
+        @Assert(usage.get("rounds").getOrThrow().asInt().getValue(), 3)
+        @Assert(jsonExitCodeOf(s), 0)
+    }
+
+    @TestCase
+    public func testFailureCarriesCodeAndExitOne(): Unit {
+        var s = RunSummary()
+        s.reply = "[LLM 调用异常: HTTP 500]"
+        s.errorCode = "run_failed"
+        s.errorMessage = "HTTP 500"
+        s.errorRetryable = true
+        let out = jsonResultOf(s, "s2", ArrayList<(String, String, String)>())
+        let obj = JsonValue.fromStr(out.toJsonString()).asObject()
+        @Assert(obj.get("error_code").getOrThrow().asString().getValue(), "run_failed")
+        @Assert(obj.get("error").getOrThrow().asString().getValue(), "HTTP 500")
+        @Assert(obj.get("retryable").getOrThrow().asBool().getValue(), true)
+        @Assert(obj.get("tool_calls").getOrThrow().asArray().size(), 0)
+        @Assert(jsonExitCodeOf(s), 1)
+    }
+
+    @TestCase
+    public func testEmptyPromptIsStructuredFailure(): Unit {
+        var s = RunSummary()
+        s.errorCode = "empty_prompt"
+        s.errorMessage = "empty prompt"
+        let out = jsonResultOf(s, "s3", ArrayList<(String, String, String)>())
+        let obj = JsonValue.fromStr(out.toJsonString()).asObject()
+        @Assert(obj.get("error_code").getOrThrow().asString().getValue(), "empty_prompt")
+        @Assert(jsonExitCodeOf(s), 1)
+    }
+}

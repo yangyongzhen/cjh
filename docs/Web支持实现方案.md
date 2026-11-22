@@ -86,8 +86,8 @@ cjh 目前有三种入口模式：
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
-| `GET /api/sessions` | GET | 列出历史会话 |
-| `GET /api/sessions/:id` | GET | 获取会话消息历史 |
+| `GET /api/sessions` | GET | 列出历史会话；`?scope=project` 只看当前工作区；记录过用量的会话带可选 `usage` |
+| `GET /api/sessions/:id` | GET | 获取会话消息历史；有记录时带 `usage`（prompt/completion/cached/rounds/tools/duration_ms） |
 | `POST /api/sessions/:id/fork` | POST | 分支会话 |
 | `GET /api/models` | GET | 列出可用模型 |
 | `POST /api/model/switch` | POST | 切换模型 |

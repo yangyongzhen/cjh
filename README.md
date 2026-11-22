@@ -329,7 +329,7 @@ Works with **any OpenAI-compatible endpoint** — including fully local setups (
 
 - **Tree sessions**: session branching/forking, parent chain tracking, `/tree` tree listing
 - **Session restore**: `--resume <id>` restore historical session
-- **Session list**: `--list` list all sessions
+- **Session list**: `--list` lists the current workspace (`--list --all` for every workspace)
 - **Auto Compaction**: auto LLM summary compression when messages exceed threshold
 - **Tool result truncation & backtrack**: results exceeding threshold keep head+tail + full spill to `~/.cjh/spill/` + ellipsis marker contains spill path
 

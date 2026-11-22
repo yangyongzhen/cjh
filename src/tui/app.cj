@@ -1,6 +1,7 @@
 package cjh.tui
 
 import std.convert.Parsable
+import std.env.*
 import std.fs.*
 import std.sync.*
 import std.time.*
@@ -31,6 +32,20 @@ class QueuedInput {
         this.text = text
         this.steer = steer
     }
+}
+
+/**
+ * 草稿文件路径（纯函数，供 TUI 与单元测试共用）。
+ *
+ * configDir 为空时退化为当前目录的 cjh_draft_<hash>；cwd 为空用固定键，
+ * 保证路径始终是单层文件名（不会把工作区路径拼进目录）。
+ */
+public func draftFilePath(configDir: String, cwd: String): String {
+    let key = if (cwd.size > 0) { sha256HexStr(cwd) } else { "unknown" }
+    if (configDir.size == 0) {
+        return "cjh_draft_" + key
+    }
+    return configDir + "/drafts/" + key + ".draft"
 }
 
 /**
@@ -589,27 +604,50 @@ public class TuiApp {
     }
 
     /**
-     * 输入历史持久化文件（~/.cjh/history 或 CJH_CONFIG_DIR/history）
+     * 配置目录（CJH_CONFIG_DIR 优先，否则 ~/.cjh）；无法确定返回 ""。
      */
-    private func historyPath(): String {
-        var dir = ""
+    private func configDirPath(): String {
         try {
             let cfgDir = TermEnv.getenv("CJH_CONFIG_DIR") ?? ""
             if (cfgDir.size > 0) {
-                dir = cfgDir
-            } else {
-                let home = TermEnv.getenv("HOME") ?? TermEnv.getenv("USERPROFILE") ?? ""
-                if (home.size > 0) {
-                    dir = home + "/.cjh"
-                }
+                return cfgDir
+            }
+            let home = TermEnv.getenv("HOME") ?? TermEnv.getenv("USERPROFILE") ?? ""
+            if (home.size > 0) {
+                return home + "/.cjh"
             }
         } catch (e: Exception) {
-            dir = ""
+            ()
         }
+        return ""
+    }
+
+    /**
+     * 输入历史持久化文件（~/.cjh/history 或 CJH_CONFIG_DIR/history）
+     */
+    private func historyPath(): String {
+        let dir = this.configDirPath()
         if (dir.size == 0) {
             return "cjh_history"  // 兜底（当前目录；Windows 无 /tmp）
         }
         return dir + "/history"
+    }
+
+    /**
+     * 草稿文件：按工作区隔离（<configDir>/drafts/<cwd hash>.draft）。
+     *
+     * 旧实现是 <configDir>/draft，所有项目共用一份——在项目 A 退出时未提交的
+     * 输入，下次在项目 B 启动会原样出现在输入框里，既困惑也可能误发。
+     * 用 cwd 的 sha256 做键，避免路径分隔符/中文/超长路径做文件名的问题。
+     */
+    private func draftPath(): String {
+        var cwd = ""
+        try {
+            cwd = getWorkingDirectory().toString()
+        } catch (e: Exception) {
+            ()
+        }
+        return draftFilePath(this.configDirPath(), cwd)
     }
 
     /**
@@ -664,7 +702,7 @@ public class TuiApp {
     }
 
     /**
-     * 保存输入草稿（退出/强退前）：未提交的输入内容写 <configDir>/draft
+     * 保存输入草稿（退出/强退前）：未提交的输入内容写按工作区隔离的草稿文件
      */
     private func saveDraft(): Unit {
         try {
@@ -672,7 +710,14 @@ public class TuiApp {
             if (text.size == 0) {
                 return  // 无草稿不写
             }
-            let path = this.historyPath().replace("history", "draft")
+            let cfgDir = this.configDirPath()
+            if (cfgDir.size > 0) {
+                let draftDir = cfgDir + "/drafts"
+                if (!exists(draftDir)) {
+                    Directory.create(draftDir, recursive: true)
+                }
+            }
+            let path = this.draftPath()
             let f = File(path, OpenMode.Write)
             f.write(text.toArray())
             f.close()
@@ -682,11 +727,11 @@ public class TuiApp {
     }
 
     /**
-     * 加载草稿（启动时）：上次退出未提交的输入恢复进输入框（不触发 onChange）
+     * 加载草稿（启动时）：只恢复当前工作区的草稿（不触发 onChange）
      */
     private func loadDraft(): Unit {
         try {
-            let path = this.historyPath().replace("history", "draft")
+            let path = this.draftPath()
             let f = File(path, OpenMode.Read)
             let buf = Array<Byte>(16384, repeat: 0)
             var pending = ""
