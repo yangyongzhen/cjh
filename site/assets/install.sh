@@ -38,7 +38,7 @@ if [ -z "${CJH_VERSION:-}" ]; then
     say "查询最新版本…"
     CJH_VERSION=$(curl -fsSL "$REPO_API/releases/latest" \
         | grep -oE '"tag_name":"[^"]*"' | head -1 | cut -d'"' -f4)
-    [ -n "$CJH_VERSION" ] || die "无法获取最新版本号（网络问题？）可手动指定：CJH_VERSION=v1.6.18"
+    [ -n "$CJH_VERSION" ] || die "无法获取最新版本号（网络问题？）可手动指定：CJH_VERSION=v1.6.19"
 fi
 say "安装 $CJH_VERSION → $PREFIX"
 

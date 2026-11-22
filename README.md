@@ -6,10 +6,10 @@
 
 [![Website](https://img.shields.io/badge/website-yangyongzhen.github.io%2Fcjh-00868B)](https://yangyongzhen.github.io/cjh/)
 [![CI](https://github.com/yangyongzhen/cjh/actions/workflows/ci.yml/badge.svg)](https://github.com/yangyongzhen/cjh/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/badge/release-v1.6.18-00868B)](https://atomgit.com/qq8864/cjh/releases)
+[![Release](https://img.shields.io/badge/release-v1.6.19-00868B)](https://atomgit.com/qq8864/cjh/releases)
 [![AtomGitStars](https://atomgit.com/qq8864/cjh/star/badge.svg)](https://atomgit.com/qq8864/cjh)
 [![Cangjie](https://img.shields.io/badge/language-Cangjie-00868B)](https://cangjie-lang.cn)
-[![Tests](https://img.shields.io/badge/tests-756%20passed-2ea44f)](./scripts/test.sh)
+[![Tests](https://img.shields.io/badge/tests-769%20passed-2ea44f)](./scripts/test.sh)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-lightgrey)](https://atomgit.com/qq8864/cjh/releases)
 [![License](https://img.shields.io/badge/license-MIT-2ea44f)](./LICENSE)
 
@@ -38,8 +38,8 @@ curl -fsSL https://yangyongzhen.github.io/cjh/install.sh | bash
 **Try it without spending a cent** (Mock mode: no network, no API key needed):
 
 ```bash
-curl -LO https://atomgit.com/qq8864/cjh/releases/download/v1.6.18/cjh-v1.6.18-linux-x64.tar.gz
-tar xzf cjh-v1.6.18-linux-x64.tar.gz
+curl -LO https://atomgit.com/qq8864/cjh/releases/download/v1.6.19/cjh-v1.6.19-linux-x64.tar.gz
+tar xzf cjh-v1.6.19-linux-x64.tar.gz
 CJH_MOCK=1 ./cjh-linux-x64
 ```
 
@@ -50,7 +50,7 @@ export DEEPSEEK_API_KEY=sk-xxx     # or OPENAI_API_KEY / DASHSCOPE_API_KEY / CJH
 ./cjh-linux-x64                     # TUI by default; --cli for plain text, --mode json for headless
 ```
 
-Windows: grab [`cjh-v1.6.18-windows-x64-selfcontained.zip`](https://atomgit.com/qq8864/cjh/releases/download/v1.6.18/cjh-v1.6.18-windows-x64-selfcontained.zip) and unzip — keep the exe next to its 4 runtime DLLs. Building from source: see [Quick Start](#-quick-start).
+Windows: grab [`cjh-v1.6.19-windows-x64-selfcontained.zip`](https://atomgit.com/qq8864/cjh/releases/download/v1.6.19/cjh-v1.6.19-windows-x64-selfcontained.zip) and unzip — keep the exe next to its 4 runtime DLLs. Building from source: see [Quick Start](#-quick-start).
 
 ![cjh session demo (real CLI output, mock mode)](docs/imgs/cjh-demo.gif)
 
@@ -64,8 +64,8 @@ Windows: grab [`cjh-v1.6.18-windows-x64-selfcontained.zip`](https://atomgit.com/
 |---|---|
 | **What** | A terminal coding agent harness written from scratch in Cangjie: agent loop (message state machine + tool-call protocol) + tool system + diff-rendered TUI + remote web UI + plugin trust chain |
 | **Who** | ① people who want AI to edit code in the terminal without installing a Node/Python toolchain; ② Cangjie learners looking for a runnable, readable AI-application reference; ③ regulated / domestic-stack teams that require "no foreign runtime dependencies" |
-| **Why** | One static binary (Linux 18.8 MB / Windows exe 14.0 MB) with zero runtime dependencies; token efficiency and execution speed are measured, not claimed; plugins carry SHA256 checksums + SM2 signatures |
-| **Status** | v1.6.18, 756 unit tests green (plus 261 across the 6 publishable libraries), Linux / Windows builds published; slash commands typed while the model is busy are queued as commands (Alt+Enter sends immediately, Ctrl+N queues a new task), and the default theme is now `omp-dark` |
+| **Why** | One static binary (Linux 19.1 MB / Windows exe 14.3 MB) with zero runtime dependencies; token efficiency and execution speed are measured, not claimed; plugins carry SHA256 checksums + SM2 signatures |
+| **Status** | v1.6.19, 769 unit tests green (plus 261 across the 6 publishable libraries), Linux / Windows builds published; resuming a session no longer forks duplicate history, session/draft lists are scoped per workspace, per-session usage is persisted, and the Web UI ships its frontend assets offline (no CDN) |
 
 ---
 
@@ -606,6 +606,7 @@ cjh has a built-in MCP client supporting stdio transport + JSON-RPC 2.0. After c
 
 | Version | Main Features |
 |---|---|
+| **v1.6.19** | **Resumed sessions stop forking history + offline Web UI**: `--resume`, TUI resume and Web disconnect saves used `SessionStore.save()` and created a new file on every save; they now overwrite via `saveWithId/saveWithIdUsage` (keeping `created/cwd/title/parent`) and persist per-session usage. `--list` and the TUI resume tree default to the current workspace (`--list --all` shows everything), and drafts are keyed by a SHA-256 of the cwd instead of sharing one file across projects. On the Web side, marked / DOMPurify / highlight.js / github-dark are embedded and served from `/assets/vendor/*` with immutable caching, so the first screen makes zero external requests; code highlighting now goes through `hljs.highlightElement` (marked v5 dropped the old `highlight` option), keeping sanitize-before-highlight |
 | **v1.6.18** | **Busy-time slash commands stay commands**: `/theme` (and full-width `／`, leading spaces/NBSP) typed while a turn is running used to enter the steer queue and get injected into the conversation; commands now queue with `steer=false` and are dispatched only after the turn ends. Alt+Enter sends immediately (interrupt + head of queue), Ctrl+N queues the input as a separate next task, and the wrap-up hard cap is pinned to the actual wrap-up point |
 | **v1.6.13–v1.6.17** | MCP Streamable HTTP transport + session headers (`Mcp-Session-Id`, `MCP-Protocol-Version`) + GET SSE resume; subagent wall-clock admission, token pre-reservation, `Agent.abandon()` side-effect lockout, per-Web-session todo/tasks; tool-result folding (`Ctrl+O`), seven-section English prompt with environment injection and byte budgets, single version source (`VERSION` + `set_version.sh`); single-tool reminder no longer rendered to users |
 | **v1.6.12** | **Slash-command submit echo follows the picked candidate**: pressing ↓ then Enter executed the right command, but the transcript echoed the raw `/` and history kept it — `InputBox.overrideLastSubmission` now rewrites `lastEcho` and the history entry to what was actually submitted. Also: `start()` clears stale `bg-N.rc`/log files before launch (a leftover exit code made a new background task look finished, then `p.wait()` on the zombie froze the loop for 30s), and `bg_slots` was missing from `outboundEventNames()` (protocol v7) |

@@ -1,5 +1,5 @@
 # CHANGELOG
-## [Unreleased] - 2026-11-22
+## [v1.6.19] - 2026-11-23
 
 ### 修复(会话恢复重复 / 按工作区隔离 / 用量持久化)
 - **恢复会话不再新建重复历史**:`--resume`、TUI 恢复、Web 断连保存原先都调 `SessionStore.save()`，每次生成新 ID；现统一走 `saveWithId/saveWithIdUsage` 覆盖原文件（保留 `created/cwd/title/parent`），恢复+保存后会话数不变。
@@ -8,15 +8,16 @@
 - **用量随会话落盘**:`SessionUsage`（prompt/completion/cached/rounds/tools/duration_ms）累加写入会话根 `usage`；TUI/CLI/JSON/Web 网关断连保存都会带上。Web `/api/sessions` 与 `/api/sessions/{id}` 回可选 `usage` 键（旧会话缺键 = 未记录，不伪报 0）。
 - **JSON 模式输出契约**:`--mode json` 的 stdout 只有最终 JSON 文档，能力配置提示等改走 stderr；失败带 `error_code/retryable` 且退出码非零。
 
-### 测试
-- 根包新增：会话覆盖保存/用量累计、草稿路径隔离、Web 会话 ID 复用、网关断连用量落盘。
-- 全量门禁：根包 **766/766**、libs **261/261**、TUI PTY **105/105**、`--mock` 端到端通过。
-
 ### 修复(Web 首屏离线可用：第三方前端依赖自托管)
 - **去掉 CDN 依赖**：`marked` / `DOMPurify` / `highlight.js` / `github-dark` 主题从 `cdn.jsdelivr.net` 改为随二进制提供，版本固定为 marked 12.0.2、DOMPurify 3.4.17、highlight.js 11.9.0；内网、断网或 CDN 被墙时首屏不再裸奔。
 - **新增 `/assets/vendor/<file>` 路由**：内容不可变，带 `Cache-Control: public, max-age=31536000, immutable`；索引页不再引用任何外域资源。
 - **修复代码高亮静默失效**：marked v5 起移除了 `highlight` 选项，旧代码传了也不生效。改为清洗后用 `hljs.highlightElement` 给真实 `<pre><code>` 节点上色，并保持先清洗后上色的 XSS 边界。
 - 回归：`WebVendorSelfHostTest` 3 例校验索引无 CDN、四个资源已嵌入且版本正确、高亮走 `hljs.highlightElement`；`scripts/web_smoke_test.py` 真起服务核对 4 个 vendor 的路径、Content-Type、`immutable` 缓存头与版本标识（顺带把过期的 protocol=5 断言更到 7）。
+
+### 测试
+- 根包新增：会话覆盖保存/用量累计、草稿路径隔离、Web 会话 ID 复用、网关断连用量落盘；Web vendor 自托管 3 例。
+- 全量门禁：根包 **769/769**、libs **261/261**、TUI PTY **105/105**、`--mock` 端到端通过。
+- Web 冒烟：4 个 vendor 路径/Content-Type/immutable 缓存头/版本校验通过；真实浏览器零外域资源、清洗后高亮正常。
 
 ## [v1.6.18] - 2026-11-21
 
