@@ -107,6 +107,7 @@ src/web/
 ├── rest_api.cj        # RestApi：REST 端点处理（会话/模型/任务）
 ├── session_mgr.cj     # WebSessionManager：浏览器会话 → Agent 实例映射
 ├── static_assets.cj   # 嵌入式静态资源（HTML/CSS/JS 仓颉字符串常量）
+├── web_vendor_assets.cj # 第三方前端依赖（marked/DOMPurify/highlight，base64 内嵌）
 └── protocol.cj        # WS 消息协议定义（ChatRequest/DeltaEvent/DoneEvent...）
 
 src/web/frontend/      # 前端源码（开发用）
@@ -289,14 +290,12 @@ cjh 的 6 套 TUI 主题配色导出为 CSS 变量：
 
 ### 5.3 Markdown 渲染
 
-采用轻量级方案：
-- **marked.js**（~28KB）：Markdown → HTML
-- **highlight.js**（~30KB）：代码高亮
-- **DOMPurify**（~20KB）：XSS 防护
+采用轻量级方案，三个库均**内嵌进二进制**，由 `GET /assets/vendor/<file>` 提供：
+- **marked.js 12.0.2**：Markdown → HTML
+- **highlight.js 11.9.0** + **github-dark 主题**：代码高亮（清洗后用 `hljs.highlightElement` 上色，marked v5 起不再支持 `highlight` 选项）
+- **DOMPurify 3.4.17**：XSS 防护（先清洗，再对真实 DOM 节点高亮）
 
-这三个库通过 CDN 引入（离线模式下降级为纯文本展示）。
-
-> 后续可考虑将这三个库的源码嵌入 cjh 二进制，实现完全离线。
+vendor 源码含 `"""`、反斜杠与 `${}`，直接做仓颉字符串字面量会触发 raw string 终止/转义/插值；`src/web/web_vendor_assets.cj` 以 base64 常量保存，运行时解码为 `String`。内容按版本固定，响应带 `Cache-Control: public, max-age=31536000, immutable`。首屏不访问任何外域，断网/内网/CDN 被墙均不影响渲染。
 
 ---
 

@@ -180,6 +180,10 @@ public class WebDistributor <: HttpRequestDistributor {
             case "/" => return this.webHandler
             case "/assets/app.js" => return this.webHandler
             case "/assets/styles.css" => return this.webHandler
+            case "/assets/vendor/marked.min.js" => return this.webHandler
+            case "/assets/vendor/purify.min.js" => return this.webHandler
+            case "/assets/vendor/highlight.min.js" => return this.webHandler
+            case "/assets/vendor/github-dark.min.css" => return this.webHandler
             case "/ws" => return this.wsHandler
             case _ =>
                 // 所有 /api/* 路由分发给 RestApi
@@ -225,6 +229,14 @@ public class WebHandler <: HttpRequestHandler {
             case "/" => this.handleIndex(ctx)
             case "/assets/app.js" => this.handleStaticJs(ctx)
             case "/assets/styles.css" => this.handleStaticCss(ctx)
+            case "/assets/vendor/marked.min.js" =>
+                this.handleVendor(ctx, WebVendorAssets.markedJs(), "application/javascript; charset=utf-8")
+            case "/assets/vendor/purify.min.js" =>
+                this.handleVendor(ctx, WebVendorAssets.purifyJs(), "application/javascript; charset=utf-8")
+            case "/assets/vendor/highlight.min.js" =>
+                this.handleVendor(ctx, WebVendorAssets.highlightJs(), "application/javascript; charset=utf-8")
+            case "/assets/vendor/github-dark.min.css" =>
+                this.handleVendor(ctx, WebVendorAssets.githubDarkCss(), "text/css; charset=utf-8")
             case "/api/health" => this.handleHealth(ctx)
             case _ => this.handleNotFound(ctx)
         }
@@ -258,6 +270,18 @@ public class WebHandler <: HttpRequestHandler {
         let res = ctx.responseBuilder
         res.header("Content-Type", "text/css; charset=utf-8")
         res.body(stripRawPrefix(StaticAssets.stylesCss).toArray())
+    }
+
+    /**
+     * GET /assets/vendor/<file> → 自托管第三方前端依赖
+     *
+     * 版本随二进制固定，离线/内网无需访问 CDN；内容不可变，允许长缓存。
+     */
+    private func handleVendor(ctx: HttpContext, asset: String, contentType: String): Unit {
+        let res = ctx.responseBuilder
+        res.header("Content-Type", contentType)
+        res.header("Cache-Control", "public, max-age=31536000, immutable")
+        res.body(stripRawPrefix(asset).toArray())
     }
 
     /**

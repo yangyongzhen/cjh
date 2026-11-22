@@ -98,7 +98,7 @@ def main():
         check("/api/health status=ok", health.get("status") == "ok", str(health))
 
         caps = json.loads(http_get(base + "/api/capabilities"))
-        check("/api/capabilities protocol=5", caps.get("protocol") == 5, str(caps)[:200])
+        check("/api/capabilities protocol=7", caps.get("protocol") == 7, str(caps)[:200])
         check("能力自述含出站 approval_request",
               "approval_request" in (caps.get("ws_out") or []))
         check("能力自述含入站 approval_response",
@@ -116,6 +116,22 @@ def main():
         check("页面含审批弹窗 #approval-modal", 'id="approval-modal"' in html)
         check("页面含审批同意按钮 #approval-allow-btn", 'id="approval-allow-btn"' in html)
         check("页面含审批倒计时 #approval-countdown", 'id="approval-countdown"' in html)
+        check("首屏无 CDN 外链", "https://cdn." not in html and "http://cdn." not in html)
+
+        # vendor 自托管：路径、Content-Type、不可变缓存头、内容版本都要对上
+        for path, ctype, marker in (
+            ("/assets/vendor/marked.min.js", "application/javascript", "marked v12.0.2"),
+            ("/assets/vendor/purify.min.js", "application/javascript", "DOMPurify 3.4.17"),
+            ("/assets/vendor/highlight.min.js", "application/javascript", "Highlight.js v11.9.0"),
+            ("/assets/vendor/github-dark.min.css", "text/css", "hljs"),
+        ):
+            with urllib.request.urlopen(base + path, timeout=5) as r:
+                body = r.read().decode("utf-8", "replace")
+                got_type = r.headers.get("Content-Type", "")
+                cache = r.headers.get("Cache-Control", "")
+            check("%s Content-Type" % path, got_type.startswith(ctype), got_type)
+            check("%s 长缓存" % path, "immutable" in cache, cache)
+            check("%s 内容版本" % path, marker in body)
 
         js = http_get(base + "/assets/app.js")
         for token in ("switch_model", "handleAck", "handleCancelled", "notice-bar",

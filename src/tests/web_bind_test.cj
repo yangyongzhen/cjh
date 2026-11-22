@@ -143,6 +143,43 @@ public class WebFrontendAuthTest {
 }
 
 /**
+ * 首屏前端依赖必须自托管：离线/信创内网不能因为 CDN 不可达退化成纯文本。
+ * 版本随二进制固定，禁止再引入外链（否则版本漂移 + 首屏被网络卡住）。
+ */
+@Test
+public class WebVendorSelfHostTest {
+    @TestCase
+    public func testIndexUsesLocalVendorAssets(): Unit {
+        let html = StaticAssets.indexHtml
+        @Assert(html.contains("https://cdn."), false)
+        @Assert(html.contains("http://cdn."), false)
+        @Assert(html.contains("/assets/vendor/marked.min.js"), true)
+        @Assert(html.contains("/assets/vendor/purify.min.js"), true)
+        @Assert(html.contains("/assets/vendor/highlight.min.js"), true)
+        @Assert(html.contains("/assets/vendor/github-dark.min.css"), true)
+    }
+
+    @TestCase
+    public func testVendorAssetsAreEmbeddedAndVersioned(): Unit {
+        @Assert(WebVendorAssets.markedJs().size > 30000, true)
+        @Assert(WebVendorAssets.purifyJs().size > 20000, true)
+        @Assert(WebVendorAssets.highlightJs().size > 100000, true)
+        @Assert(WebVendorAssets.githubDarkCss().size > 1000, true)
+        @Assert(WebVendorAssets.markedJs().contains("marked v12.0.2"), true)
+        @Assert(WebVendorAssets.purifyJs().contains("DOMPurify 3.4.17"), true)
+        @Assert(WebVendorAssets.highlightJs().contains("Highlight.js v11.9.0"), true)
+    }
+
+    @TestCase
+    public func testHighlightUsesDomApiNotRemovedMarkedOption(): Unit {
+        // marked v5 起移除了 highlight 选项；继续传它只会静默不生效
+        let js = StaticAssets.appJs
+        @Assert(js.contains("hljs.highlightElement"), true)
+        @Assert(js.contains("highlight: function"), false)
+    }
+}
+
+/**
  * 版本号一致性守卫
  *
  * 历史坑：/api/health 曾把版本写死 "1.3.0"，一路发到 1.5.x 都还在报 1.3.0。

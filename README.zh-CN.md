@@ -325,6 +325,7 @@ coding agent 的执行效率直接决定用户等待时间。cjh 从三个维度
 - **WebSocket 流式对话**：`ChatRequest` → `tool_start` → `tool_result` → 流式 `delta` → `done`
 - **REST API**：sessions / models / tasks / health
 - **前端 SPA**：原生 JS + marked.js + DOMPurify + highlight.js，6 套主题
+- **首屏完全离线**：第三方前端依赖按固定版本内嵌进二进制，不依赖 CDN（断网/内网可用）
 - **auth_token 鉴权中间件** + **启动安全审计日志**
 
 ### 会话与记忆
