@@ -182,10 +182,10 @@ public class AgentFlowTest {
     }
 
     @TestCase
-    public func testSingleToolReminderStaysInternalAndFiresOnce(): Unit {
+    public func testSingleToolReminderStaysInternalAndFiresTwice(): Unit {
         // 回归（2026-11-21）：连续单工具轮次的提效提醒曾被 onAssistantText
-        // 直接打到用户对话里，长任务每 3 轮刷一次 “[System] 连续 3 轮…”。
-        // 提醒只应进模型上下文，且同一回合最多一次。
+        // 直接打到用户对话里。提醒只应进模型上下文（hiddenFromUser），
+        // 且本回合最多两次：第 2 轮、第 5 轮。
         let paths = ArrayList<String>()
         for (i in 0..7) {
             let p = tmpPath("cjh_serial_${i}.txt")
@@ -205,9 +205,15 @@ public class AgentFlowTest {
                 reminders += 1
             }
         }
-        @Assert(reminders, 1)
+        @Assert(reminders, 2)
+        for (m in agent.getMessages()) {
+            if (m.content.contains("你已连续")) {
+                @Assert(m.hiddenFromUser, true)
+            }
+        }
         for (t in visible) {
             @Assert(t.contains("[System]"), false)
+            @Assert(t.contains("你已连续"), false)
         }
     }
 
@@ -510,19 +516,20 @@ class ThrowingProvider <: LlmProvider {
 @Test
 public class SingleToolEfficiencyReminderTest {
     @TestCase
-    public func testReminderOnlyAfterThreeConsecutiveTurns(): Unit {
-        @Assert(shouldRemindSingleToolTurn(2, false), false)
-        @Assert(shouldRemindSingleToolTurn(3, false), true)
-        @Assert(shouldRemindSingleToolTurn(5, false), true)
-        // 同一回合已提醒过：之后不再重复注入
-        @Assert(shouldRemindSingleToolTurn(3, true), false)
-        @Assert(shouldRemindSingleToolTurn(9, true), false)
+    public func testReminderEscalatesTwicePerTurn(): Unit {
+        // 第 2 轮先提醒；提醒后 streak 归零，模型仍串行则在第 5 轮再提醒。
+        @Assert(shouldRemindSingleToolTurn(1, 0), false)
+        @Assert(shouldRemindSingleToolTurn(2, 0), true)
+        @Assert(shouldRemindSingleToolTurn(4, 1), false)
+        @Assert(shouldRemindSingleToolTurn(5, 1), true)
+        // 两次之后不再刷提醒
+        @Assert(shouldRemindSingleToolTurn(9, 2), false)
     }
 
     @TestCase
     public func testReminderMentionsBatching(): Unit {
-        let msg = singleToolReminder(3)
-        @Assert(msg.contains("3"), true)
+        let msg = singleToolReminder(2)
+        @Assert(msg.contains("2"), true)
         @Assert(msg.contains("并行"), true)
         @Assert(msg.contains("依赖"), true)
     }

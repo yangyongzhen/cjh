@@ -24,15 +24,24 @@ public func compactPendingStale(elapsedMs: Int64, timeoutMs: Int64): Bool {
 
 /**
  * 连续单工具轮次达到阈值时提示批量化（纯函数，便于单测）。
+ *
+ * 第 2 轮先温和提醒一次；模型仍每轮单调用时，第 5 轮再提醒一次（本回合最多两次）。
  * 只提示、不阻断：模型若确实只有一步可做，继续单调用也不会被惩罚。
  */
-public func shouldRemindSingleToolTurn(streak: Int64, alreadyReminded: Bool): Bool {
-    return streak >= 3 && !alreadyReminded
+public func shouldRemindSingleToolTurn(streak: Int64, remindersSent: Int64): Bool {
+    if (remindersSent == 0) {
+        return streak >= 2
+    }
+    if (remindersSent == 1) {
+        return streak >= 5
+    }
+    return false
 }
 
 public func singleToolReminder(streak: Int64): String {
-    return "[System Notice] 你已连续 ${streak} 轮每轮只调用 1 个工具。如果还有彼此独立的读取/搜索，" +
-        "请在同一轮一次性发起（并行工具调用），不要一轮只做一件；只有存在真实依赖时才保持串行。"
+    return "[System Notice] 你已连续 ${streak} 轮每轮只调用 1 个工具。若这些操作彼此独立，" +
+        "必须在同一响应里批量发起（并行工具调用）；例如一次读多个已知文件、一次搜多个模式。" +
+        "不要一轮只做一件，只有后一步的参数依赖前一步结果时才保持串行。"
 }
 
 /**
@@ -102,6 +111,9 @@ public class AgentConfig {
     // S6 写域收窄（task scope 传入；空=不限）：executeGuarded 在 capability 之后
     // 追加 AND 判定——只收窄、绝不放宽；红线：不触碰 Capability 默认宽松语义
     public var writeScope: ArrayList<String> = ArrayList<String>()
+    // 无人值守测试契约审批：settings 的 unattended_approval=tests 时打开。
+    // 只对 testContractChangeReason 命中且落在测试文件的写操作生效；capability Deny 仍先拒绝。
+    public var unattendedApproveTests: Bool = false
     // Compaction 阈值：消息条数超过该值触发历史摘要压缩（0=禁用，对齐 pi）
     public let compactThreshold: Int64
     // Compaction token 阈值：估算 prompt token 超过该值也触发压缩（0=禁用）
@@ -121,7 +133,7 @@ public class AgentConfig {
         this.maxIterations = maxIterations
         this.capability = Capability()
         this.compactThreshold = 0
-        this.compactTokenThreshold = 32000
+        this.compactTokenThreshold = 64000
         this.compactKeep = 6
         this.toolResultMaxChars = 6000
         this.spillDir = ""
@@ -133,7 +145,7 @@ public class AgentConfig {
         this.maxIterations = maxIterations
         this.capability = capability
         this.compactThreshold = 0
-        this.compactTokenThreshold = 32000
+        this.compactTokenThreshold = 64000
         this.compactKeep = 6
         this.toolResultMaxChars = 6000
         this.spillDir = ""
@@ -146,7 +158,7 @@ public class AgentConfig {
         this.maxIterations = maxIterations
         this.capability = capability
         this.compactThreshold = compactThreshold
-        this.compactTokenThreshold = 32000
+        this.compactTokenThreshold = 64000
         this.compactKeep = compactKeep
         this.toolResultMaxChars = 6000
         this.spillDir = ""
@@ -160,7 +172,7 @@ public class AgentConfig {
         this.maxIterations = maxIterations
         this.capability = capability
         this.compactThreshold = compactThreshold
-        this.compactTokenThreshold = 32000
+        this.compactTokenThreshold = 64000
         this.compactKeep = compactKeep
         this.toolResultMaxChars = toolResultMaxChars
         this.spillDir = spillDir
@@ -1073,8 +1085,9 @@ public class Agent {
         var lastToolFailed: Bool = false
         // 连续「一轮只调一个工具」计数：独立读/搜仍串行时提示批量化。
         var singleToolStreak: Int64 = 0
-        // 同一回合只注入一次：长任务串行是常态，反复刷提醒既吵又浪费上下文。
-        var singleToolReminded: Bool = false
+        // 同一回合最多注入两次（第 2 轮 / 第 5 轮）：只提示一次时模型常忽略，
+        // 但反复刷提醒既吵又浪费上下文。
+        var singleToolReminders: Int64 = 0
         // 轮次预算分段（见 ContinuationPolicy.capAction）：撞到本段预算时，若还有
         // 未完成待办且段数没用尽，就续一段预算接着做，而不是交一份"任务中止"总结。
         // 实测 2026-11-06：50 轮预算全花在探索 cspub 源码上（bash `sed -n` 59 次），
@@ -1401,18 +1414,18 @@ public class Agent {
                     this.messages.add(ChatMessage("user", notice, true))
                     this.onAssistantText("\n[System] Truncation detected, forced continuation directive injected\n")
                 }
-                // 效率提醒：连续 3 轮只调 1 个工具，向模型上下文注入一次批量化提示。
+                // 效率提醒：连续单工具轮次达到阈值，向模型上下文注入批量化提示。
                 // 只进 messages、不进 onAssistantText——内部调度提示不该出现在用户对话里；
-                // 同一回合最多一次，避免长任务每 3 轮刷一遍。
+                // 本回合最多两次（第 2 / 第 5 轮）。
                 if (n == 1) {
                     singleToolStreak += 1
                 } else {
                     singleToolStreak = 0
                 }
-                if (shouldRemindSingleToolTurn(singleToolStreak, singleToolReminded)) {
+                if (shouldRemindSingleToolTurn(singleToolStreak, singleToolReminders)) {
                     this.messages.add(ChatMessage("user", singleToolReminder(singleToolStreak), true))
-                    singleToolReminded = true
-                    Log.info("注入单工具串行提醒（连续 ${singleToolStreak} 轮，本回合仅一次）")
+                    singleToolReminders += 1
+                    Log.info("注入单工具串行提醒（连续 ${singleToolStreak} 轮，本回合第 ${singleToolReminders} 次）")
                     singleToolStreak = 0
                 }
                 // 方案 2「边界 steer」：工具批次已全部回填历史，下一轮请求前是用户
@@ -2292,8 +2305,14 @@ public class Agent {
         // 测试契约门禁：修改测试断言必须经用户批准。
         // 无头模式 onApproval 默认 false，直接拒绝；TUI/Web 弹出审批。
         // 位置在 capability 之后：先让安全策略拒绝，再谈测试契约。
+        var autoApprovedTest = false
         if (let Some(testReason) <- testContractChangeReason(name, args)) {
-            if (!this.onApproval(name, args, testReason)) {
+            if (this.config.unattendedApproveTests) {
+                // 无人值守显式策略：批准但留痕。结果前缀进消息历史与 JSON tool_calls，
+                // 最终答复必须解释改了哪条断言及原因。
+                autoApprovedTest = true
+                Log.warn("unattended_approval=tests 自动批准测试契约修改: ${testReason}")
+            } else if (!this.onApproval(name, args, testReason)) {
                 return ToolResult(
                     "操作被用户拒绝（${testReason}）。不要通过改写测试断言让测试变绿：" +
                     "优先修实现；若确需变更测试契约，先向用户说明冲突并取得同意。", true)
@@ -2301,7 +2320,20 @@ public class Agent {
         }
         // 全部通过：正常执行（兜底异常，避免单工具崩溃带垮整个 Agent 循环）
         try {
-            return this.tools.execute(name, args)
+            let result = this.tools.execute(name, args)
+            if (autoApprovedTest) {
+                var target = name
+                if (let Some(pv) <- args.get("path")) {
+                    match (pv.kind()) {
+                        case JsonKind.JsString => target = pv.asString().getValue()
+                        case _ => ()
+                    }
+                }
+                return ToolResult(
+                    "[无人值守审批] 已按 unattended_approval=tests 自动批准测试契约修改（${target}）。" +
+                    "最终答复必须说明改了哪条断言及原因。\n" + result.content, result.isError)
+            }
+            return result
         } catch (e: Exception) {
             return ToolResult("工具执行异常: ${e}", true)
         }

@@ -37,7 +37,7 @@ import cjh.tools.*
 class DeferMainProvider <: LlmProvider {
     public var callCount: Int64 = 0
     public let toolRounds: Int64
-    /** 每次 chatStream 时 messages 里 user 消息的条数（检测回合内注入复活） */
+    /** 每次 chatStream 时 messages 里真实 user 消息的条数（内部提效提醒不计；检测回合内注入复活） */
     public var userCounts: ArrayList<Int64> = ArrayList<Int64>()
 
     public init(toolRounds: Int64) {
@@ -50,7 +50,7 @@ class DeferMainProvider <: LlmProvider {
         this.callCount += 1
         var users: Int64 = 0
         for (m in messages) {
-            if (m.role == "user") {
+            if (m.role == "user" && !m.hiddenFromUser) {
                 users += 1
             }
         }
@@ -87,7 +87,7 @@ class DeferNoOpTool <: CjhTool {
         if (this.agentRef.isSome()) {
             var users: Int64 = 0
             for (m in this.agentRef.getOrThrow().getMessages()) {
-                if (m.role == "user") {
+                if (m.role == "user" && !m.hiddenFromUser) {
                     users += 1
                 }
             }
@@ -186,11 +186,11 @@ func deferFirstToolMsgIndex(agent: Agent): Int64 {
     return -1
 }
 
-/** user 消息总条数。 */
+/** 真实 user 消息总条数（内部提效提醒 hiddenFromUser=true，不计入用户可见对话）。 */
 func deferUserMsgTotal(agent: Agent): Int64 {
     var n: Int64 = 0
     for (m in agent.getMessages()) {
-        if (m.role == "user") {
+        if (m.role == "user" && !m.hiddenFromUser) {
             n += 1
         }
     }

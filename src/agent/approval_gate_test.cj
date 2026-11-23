@@ -1,6 +1,7 @@
 package cjh.agent
 
 import std.collection.*
+import std.fs.*
 import stdx.encoding.json.*
 import cjllm.*
 import cjh.tools.*
@@ -219,6 +220,69 @@ public class ApprovalGateTest {
         // 第一次命中的是工具域(文件域必须因"已确认该工具"而跳过)
         @Assert(asked[0].contains("工具 write_file"), true)
         @Assert(tool.calls, 1)
+    }
+
+    /**
+     * 无人值守策略：unattended_approval=tests 时，改测试断言不再弹审批，
+     * 但工具结果必须带审计前缀（模型最终答复要解释改了哪条断言）。
+     * 反之默认 deny 仍走审批；这里用"回调返回 false"证明它确实问了。
+     */
+    @TestCase
+    public func testUnattendedPolicyAutoApprovesTestContract(): Unit {
+        let path = "/tmp/cjh_ut_unattended_gate_test.py"
+        removeIfExists(path)
+        File.writeTo(path, "def test_x():\n    assert 1 == 1\n".toArray())
+        let tool = GateFileProbeTool("write_file")
+        let registry = ToolRegistry()
+        registry.register(tool)
+        var args = JsonObject()
+        args.put("path", JsonString(path))
+        args.put("content", JsonString("def test_x():\n    assert 1 == 2\n"))
+        let config = AgentConfig("gate", 4, Capability())
+        config.unattendedApproveTests = true
+        let agent = Agent(GateCallProvider("write_file", args), registry, config)
+        let asked = ArrayList<String>()
+        agent.onApproval = { _, _, reason =>
+            asked.add(reason)
+            false
+        }
+        let summary = agent.run("改测试断言")
+        @Assert(summary.reply.contains("GATE-DONE"), true)
+        @Assert(asked.size, 0)
+        @Assert(tool.calls, 1)
+        let msgs = toolMessages(agent)
+        @Assert(msgs.size, 1)
+        @Assert(msgs[0].contains("无人值守审批"), true)
+        @Assert(msgs[0].contains("file-probe-ran"), true)
+        removeIfExists(path)
+    }
+
+    @TestCase
+    public func testUnattendedPolicyDefaultsToDeny(): Unit {
+        let path = "/tmp/cjh_ut_unattended_gate_deny_test.py"
+        removeIfExists(path)
+        File.writeTo(path, "def test_x():\n    assert 1 == 1\n".toArray())
+        let tool = GateFileProbeTool("write_file")
+        let registry = ToolRegistry()
+        registry.register(tool)
+        var args = JsonObject()
+        args.put("path", JsonString(path))
+        args.put("content", JsonString("def test_x():\n    assert 1 == 2\n"))
+        let agent = Agent(GateCallProvider("write_file", args), registry,
+            AgentConfig("gate", 4, Capability()))
+        let asked = ArrayList<String>()
+        agent.onApproval = { _, _, reason =>
+            asked.add(reason)
+            false
+        }
+        let summary = agent.run("改测试断言")
+        @Assert(summary.reply.contains("GATE-DONE"), true)
+        @Assert(asked.size, 1)
+        @Assert(tool.calls, 0)
+        let msgs = toolMessages(agent)
+        @Assert(msgs.size, 1)
+        @Assert(msgs[0].contains("操作被用户拒绝"), true)
+        removeIfExists(path)
     }
 
     @TestCase

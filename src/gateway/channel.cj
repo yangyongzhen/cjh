@@ -1290,6 +1290,7 @@ public class ChannelGateway {
             this.config.spillDir,
             sessionId
         )
+        agentConfig.unattendedApproveTests = this.config.unattendedApproval == "tests"
 
         // 每个会话一份浅拷贝工具表：agent 专属 task/todo 只进本会话，
         // 但 bash 会话、后台任务表、MCP 连接仍共享同一批工具实例。

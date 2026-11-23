@@ -6,10 +6,10 @@
 
 [![Website](https://img.shields.io/badge/website-yangyongzhen.github.io%2Fcjh-00868B)](https://yangyongzhen.github.io/cjh/)
 [![CI](https://github.com/yangyongzhen/cjh/actions/workflows/ci.yml/badge.svg)](https://github.com/yangyongzhen/cjh/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/badge/release-v1.6.20-00868B)](https://atomgit.com/qq8864/cjh/releases)
+[![Release](https://img.shields.io/badge/release-v1.6.21-00868B)](https://atomgit.com/qq8864/cjh/releases)
 [![AtomGitStars](https://atomgit.com/qq8864/cjh/star/badge.svg)](https://atomgit.com/qq8864/cjh)
 [![Cangjie](https://img.shields.io/badge/language-Cangjie-00868B)](https://cangjie-lang.cn)
-[![Tests](https://img.shields.io/badge/tests-786%20passed-2ea44f)](./scripts/test.sh)
+[![Tests](https://img.shields.io/badge/tests-800%20passed-2ea44f)](./scripts/test.sh)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-lightgrey)](https://atomgit.com/qq8864/cjh/releases)
 [![License](https://img.shields.io/badge/license-MIT-2ea44f)](./LICENSE)
 
@@ -38,8 +38,8 @@ curl -fsSL https://yangyongzhen.github.io/cjh/install.sh | bash
 **Try it without spending a cent** (Mock mode: no network, no API key needed):
 
 ```bash
-curl -LO https://atomgit.com/qq8864/cjh/releases/download/v1.6.20/cjh-v1.6.20-linux-x64.tar.gz
-tar xzf cjh-v1.6.20-linux-x64.tar.gz
+curl -LO https://atomgit.com/qq8864/cjh/releases/download/v1.6.21/cjh-v1.6.21-linux-x64.tar.gz
+tar xzf cjh-v1.6.21-linux-x64.tar.gz
 CJH_MOCK=1 ./cjh-linux-x64
 ```
 
@@ -50,7 +50,7 @@ export DEEPSEEK_API_KEY=sk-xxx     # or OPENAI_API_KEY / DASHSCOPE_API_KEY / CJH
 ./cjh-linux-x64                     # TUI by default; --cli for plain text, --mode json for headless
 ```
 
-Windows: grab [`cjh-v1.6.20-windows-x64-selfcontained.zip`](https://atomgit.com/qq8864/cjh/releases/download/v1.6.20/cjh-v1.6.20-windows-x64-selfcontained.zip) and unzip — keep the exe next to its 4 runtime DLLs. Building from source: see [Quick Start](#-quick-start).
+Windows: grab [`cjh-v1.6.21-windows-x64-selfcontained.zip`](https://atomgit.com/qq8864/cjh/releases/download/v1.6.21/cjh-v1.6.21-windows-x64-selfcontained.zip) and unzip — keep the exe next to its 4 runtime DLLs. Building from source: see [Quick Start](#-quick-start).
 
 ![cjh session demo (real CLI output, mock mode)](docs/imgs/cjh-demo.gif)
 
@@ -64,8 +64,8 @@ Windows: grab [`cjh-v1.6.20-windows-x64-selfcontained.zip`](https://atomgit.com/
 |---|---|
 | **What** | A terminal coding agent harness written from scratch in Cangjie: agent loop (message state machine + tool-call protocol) + tool system + diff-rendered TUI + remote web UI + plugin trust chain |
 | **Who** | ① people who want AI to edit code in the terminal without installing a Node/Python toolchain; ② Cangjie learners looking for a runnable, readable AI-application reference; ③ regulated / domestic-stack teams that require "no foreign runtime dependencies" |
-| **Why** | One static binary (Linux 19.1 MB / Windows exe 14.3 MB) with zero runtime dependencies; token efficiency and execution speed are measured, not claimed; plugins carry SHA256 checksums + SM2 signatures |
-| **Status** | v1.6.20, 786 unit tests green (plus 266 across the 6 publishable libraries), Linux / Windows builds published; resume warns when the recorded workspace differs (without silently changing cwd), `write_file` creates missing parent directories, headless JSON mode reports heartbeats and tool progress on stderr, internal efficiency notices stay out of sessions and Web history, and the Web session list loads in pages of 50 |
+| **Why** | One static binary (Linux 19.2 MB / Windows exe 14.3 MB) with zero runtime dependencies; token efficiency and execution speed are measured, not claimed; plugins carry SHA256 checksums + SM2 signatures |
+| **Status** | v1.6.21, 800 unit tests green (plus 270 across the 6 publishable libraries), Linux / Windows builds published; inactivity compaction now defaults to 64K tokens on 128K-context models, independent read/search calls are forced into one parallel batch (reminder at turn 2 and turn 5), and `unattended_approval` (`deny` by default, `tests` opt-in) lets headless runs change test assertions with an audit note while capability Deny rules still win |
 
 ---
 
@@ -270,6 +270,7 @@ The screenshot above is the cjh GUI client built with **cj-tauri** (a Tauri-like
 - **Observability trio**: bottom-right **Agents panel** (live per-agent rounds/tokens/current tool, `Ctrl+G` focus switch to watch one agent's tool lines) + tree-wide accounting summary (`N agents (x✓ y✗) · ⚠N wasteful spawns`) + full process transcript on disk (`~/.cjh/spill/`)
 - **Boundary controls (4 keys)**: `max_subagents` / `max_tasks_per_turn` / `subagent_token_budget` / `subagent_timeout_ms` (configurable in settings); over-limit rejections are structured (`budget_exceeded` / `timeout`)
 - **Queued approvals**: concurrent approvals no longer overwrite each other — title shows `审批(n/m)`, `y` approves only the queue head, Ctrl+C rejects all; approval items carry `[task:label]` identity
+- **Unattended test approval**: `unattended_approval` defaults to `deny` (headless test-assertion edits are rejected); only `tests` auto-approves the write on every entry point and prefixes results with an audit note. Capability Deny rules still apply layer by layer; subagents inherit the parent turn's policy
 - **Stable concurrency (field-tested)**: staggered dispatch (concurrent starts spread 1s apart to flatten request bursts) + throttle backoff retry (400-Throttling/429/5xx retried on same key up to 3 times, Ctrl+C-interruptible) + streaming usage wiring (panel tokens go live) + explicit parent-turn failure lines (`⚠ 本回合执行失败（错误码）` — no more silent hangs)
 - **Routing policy**: `/parallel on|off|auto` toggles dispatch; thin 1-round subagent conclusions get a post-hoc `[路由提示]` nudge, teaching the model to handle small tasks directly
 
@@ -606,6 +607,7 @@ cjh has a built-in MCP client supporting stdio transport + JSON-RPC 2.0. After c
 
 | Version | Main Features |
 |---|---|
+| **v1.6.21** | **Long-task efficiency and unattended test approval**: inactivity compaction threshold default 32000 → 64000 (128K models no longer compact mid-task; `compact_token_threshold` still wins when set); the single-tool reminder now fires at turn 2 and turn 5 (still internal), with wording that requires independent reads/searches in one response; new `unattended_approval` config (default `deny`, only `tests` opts in) auto-approves test-assertion edits on every entry point, prefixes the tool result with an audit note, and passes through to subagents — capability Deny still applies first |
 | **v1.6.20** | **Long-task resume and headless observability**: resuming in a different cwd now prints the recorded workspace instead of silently changing directory; `write_file` creates missing parent directories; `--mode json` emits heartbeats and tool start/finish lines on stderr while stdout stays a single JSON document; internal efficiency notices (single-tool/continuation/empty-response nudges) are marked `internal` and excluded from persistence, Web history and compaction; `/api/sessions` supports `limit/offset`, and the Web sidebar loads 50 sessions per page with a "load more" control |
 | **v1.6.19** | **Resumed sessions stop forking history + offline Web UI**: `--resume`, TUI resume and Web disconnect saves used `SessionStore.save()` and created a new file on every save; they now overwrite via `saveWithId/saveWithIdUsage` (keeping `created/cwd/title/parent`) and persist per-session usage. `--list` and the TUI resume tree default to the current workspace (`--list --all` shows everything), and drafts are keyed by a SHA-256 of the cwd instead of sharing one file across projects. On the Web side, marked / DOMPurify / highlight.js / github-dark are embedded and served from `/assets/vendor/*` with immutable caching, so the first screen makes zero external requests; code highlighting now goes through `hljs.highlightElement` (marked v5 dropped the old `highlight` option), keeping sanitize-before-highlight |
 | **v1.6.18** | **Busy-time slash commands stay commands**: `/theme` (and full-width `／`, leading spaces/NBSP) typed while a turn is running used to enter the steer queue and get injected into the conversation; commands now queue with `steer=false` and are dispatched only after the turn ends. Alt+Enter sends immediately (interrupt + head of queue), Ctrl+N queues the input as a separate next task, and the wrap-up hard cap is pinned to the actual wrap-up point |

@@ -115,11 +115,17 @@ public class CjhConfig {
     public var compactThreshold: Int64 = 30
     // Compaction token 阈值：估算 prompt token 超过该值也触发压缩（0=禁用）
     // 消息条数阈值对长 tool_result 不敏感，token 估算兜底避免 prompt 膨胀。
-    // 32000：系统提示词 + 工具 schema + AGENTS/技能/记忆已占数 K token，8000 会在
-    // 短任务里频繁压缩并稀释任务目标（2026-11-21 实测）。
-    public var compactTokenThreshold: Int64 = 32000
-    // 压缩时保留的最近消息条数（阈值 32000 下保留 6 条，压缩后回到基线 + 最近上下文）
+    // 64000：系统提示词 + 工具 schema + AGENTS/技能/记忆已占数 K token，8000 会在
+    // 短任务里频繁压缩并稀释任务目标（2026-11-21 实测）；32000 对 128K 模型仍偏早
+    // （2026-11-23 同题实测：64K 臂未触发压缩、墙钟 77s；32K 臂 143s）。
+    public var compactTokenThreshold: Int64 = 64000
+    // 压缩时保留的最近消息条数（阈值 64000 下保留 6 条，压缩后回到基线 + 最近上下文）
     public var compactKeep: Int64 = 6
+    // 无人值守审批策略（默认 deny，宁可停下等确认也不误改测试契约）：
+    //   deny  = 测试文件断言改写仍走人工审批（交互式 TUI / Web 审批）
+    //   tests = 自动批准"改测试文件断言"（所有入口生效），并在工具结果开头留审计说明
+    // 只覆盖"测试契约"门禁，不绕过 capability 的 Deny 规则（命令黑名单/路径排除仍生效）。
+    public var unattendedApproval: String = "deny"
     // 启用的技能白名单（settings.json "enabled_skills": [...]；空=全部启用）
     public var enabledSkills: ArrayList<String> = ArrayList<String>()
     // TUI 主题（settings.json "theme": "omp-dark"|"starfrost"|"classic"|...；空=omp-dark 默认）
@@ -299,8 +305,9 @@ public class CjhConfig {
   "theme": "omp-dark",
   "tool_result_max_chars": 6000,
   "compact_threshold": 0,
-  "compact_token_threshold": 32000,
+  "compact_token_threshold": 64000,
   "compact_keep": 6,
+  "unattended_approval": "deny",
 
   "enabled_skills": [],
   "enabled_plugins": [],
@@ -508,6 +515,7 @@ public class CjhConfig {
         root.put("compact_threshold", JsonInt(this.compactThreshold))
         root.put("compact_token_threshold", JsonInt(this.compactTokenThreshold))
         root.put("compact_keep", JsonInt(this.compactKeep))
+        root.put("unattended_approval", JsonString(this.unattendedApproval))
         root.put("tool_result_max_chars", JsonInt(this.toolResultMaxChars))
         root.put("prompt_agents_max_bytes", JsonInt(this.promptAgentsMaxBytes))
         root.put("prompt_skills_max_bytes", JsonInt(this.promptSkillsMaxBytes))
@@ -790,6 +798,16 @@ public class CjhConfig {
                     if (let Some(v) <- obj.get("compact_keep")) {
                         match (v.kind()) {
                             case JsonKind.JsInt => this.compactKeep = v.asInt().getValue()
+                            case _ => ()
+                        }
+                    }
+                    // 无人值守审批策略：只认 "tests"，其余值一律回落到 deny（fail-closed）
+                    if (let Some(v) <- obj.get("unattended_approval")) {
+                        match (v.kind()) {
+                            case JsonKind.JsString =>
+                                let raw = v.asString().getValue()
+                                this.unattendedApproval =
+                                    if (raw.toAsciiLower() == "tests") { "tests" } else { "deny" }
                             case _ => ()
                         }
                     }

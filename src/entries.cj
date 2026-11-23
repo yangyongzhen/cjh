@@ -335,6 +335,7 @@ func runCli(sessionId: String): Int64 {
         cjhCfg.toolResultMaxChars,
         cjhCfg.spillDir,
         effectiveSessionId)
+    config.unattendedApproveTests = cjhCfg.unattendedApproval == "tests"
 
     try {
         let provider: LlmProvider
@@ -591,6 +592,7 @@ func runJson(prompt: String, sessionId: String): Int64 {
         cjhCfg.toolResultMaxChars,
         cjhCfg.spillDir,
         effectiveSessionId)
+    config.unattendedApproveTests = cjhCfg.unattendedApproval == "tests"
 
     try {
         let provider: LlmProvider
@@ -814,6 +816,7 @@ func runTui(sessionId: String): Int64 {
         cjhCfg.toolResultMaxChars,
         cjhCfg.spillDir,
         effectiveSessionId)
+    config.unattendedApproveTests = cjhCfg.unattendedApproval == "tests"
     mark("AgentConfig built")
 
     var tuiOpt: Option<TuiApp> = None
@@ -1532,8 +1535,11 @@ func buildSubagentRegistry(parent: ToolRegistry, subagentType: String): ToolRegi
  */
 func buildSubagentConfig(parent: AgentConfig, subagentType: String): AgentConfig {
     let subSession = parent.sessionId + "/sub-" + subagentType
-    return AgentConfig(buildSubagentPrompt(subagentType), 5, parent.capability,
+    let cfg = AgentConfig(buildSubagentPrompt(subagentType), 5, parent.capability,
         0, 0, 6, parent.toolResultMaxChars, parent.spillDir, subSession)
+    // 无人值守策略随父回合：子代理否则会在同一任务里突然卡在审批上
+    cfg.unattendedApproveTests = parent.unattendedApproveTests
+    return cfg
 }
 
 /**
