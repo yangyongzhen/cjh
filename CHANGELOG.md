@@ -7,12 +7,19 @@
 - **提示词前缀稳定**：当前环境块移到 system prompt 末尾，日期只到天（`YYYY-MM-DD`）。此前后端日期带时分秒且环境块在最前，跨会话前缀从第一段就分叉，provider 前缀缓存命中率被无谓拉低。
 - **TUI 状态行显示缓存命中率**：本 run 累计 `prompt`/`cached` 计算百分比，显示 `· 缓存 N%`（0% 不显示）；新一轮归零。长任务持续 0% 时能立刻看出提示词前缀不稳定。
 - **轮次预算提前提示**：长预算（段上限 ≥20 轮）在剩余 5 轮时注入一次收束提示，要求完成当前步骤、优先产出可验证结果，不再开新探索；有未完成待办时不提示（段末会续段，避免两条指令打架）。`max_iterations` 仍是唯一配置项。
-- **一次工具调用只确认一次**：`capability.approval` 命中工具名（如 `bash`）时，工具域确认后命令域/文件域不再重复弹窗；实测一次 bash 要按两次 `y`，用户以为陷入审批循环。**Deny 仍逐层生效**——已确认的是“允许该工具”，不是放弃命令黑名单/路径排除。新增 `ApprovalGateTest` 3 例（单次确认、拒绝不执行、审批后仍拦危险命令）。
+- **一次工具调用只确认一次**：`capability.approval` 命中工具名（如 `bash`）时，工具域确认后命令域/文件域不再重复弹窗；实测一次 bash 要按两次 `y`，用户以为陷入审批循环。**Deny 仍逐层生效**——已确认的是“允许该工具”，不是放弃命令黑名单/路径排除。新增 `ApprovalGateTest` 3 例（单次确认、拒绝不执行、审批后仍拦危险命令）与 Web 通道同类用例。
+- **工具描述瘦身**：`bash`/`read_file`/`write_file`/`append_file`/`grep`/`edit`/`hashline_edit`/`todo_write`/`bash_start|poll|kill`/`task` 的 spec 去掉重复解释，保留全部硬约束（`| tail` 会挂、read_file 优先、write_file 一次写完整、测试是契约等）。固定 system prompt 从 **6,846 → 6,218 字符（-628，-9.2%）**，每轮少付约 160 token；工具 schema 合计 14,015 字符。
+- **TUI 缓存显示回归**：`CJH_MOCK_USAGE=prompt:cached` 让 mock 响应带 usage，PTY 场景断言状态行真实显示 `缓存 50%` 与 `第 2 轮`，避免只测纯函数。
 - **审批拒绝端到端**：mock 新增 `CJH_MOCK_DANGER=1`，第 2 轮发 `rm -rf`、第 3 轮改发安全只读命令；PTY 场景验证用户拒绝删除后 agent 继续执行安全方案并完成回合，而不是卡死或重复请求同一危险操作。
 
+### 修复(会话恢复丢失工具调用)
+- **恢复会话必须还原 `assistant.tool_calls`**：`SessionStore.parseMessage` 过去只解析 `role`/`content`/`tool_call_id`，把 assistant 的 `tool_calls` 静默丢掉；恢复后 tool 结果成了孤儿，发上游前只能丢弃，模型重启后完全不知道上一轮读过哪个文件、跑过哪条命令。现按 OpenAI 形状还原 `id`/`name`/`arguments`（参数已损坏时保留调用名、参数按空对象恢复），并新增 `SessionStoreTest.testAssistantToolCallsRoundTrip` 锁住配对。
+
 ### 测试
-- 新增/更新：`CorePromptAssemblyTest`（环境块置底、日期稳定到天）、`JsonHeartbeatTest`（耗时/体积/错误标记）、`TuiAppKeyTest`（缓存命中率与新一轮归零）、`CapActionTest`（提前提示窗口与小预算静默）、`DefaultPrompt`（并行列纪律）、`ApprovalGateTest` 3 例（单次确认、拒绝不执行、审批后仍拦危险命令）、PTY 场景 5b（危险命令拒绝→安全替代）。
-- 门禁：根包 **794/794**、libs **266/266**、TUI PTY **109/109**、`--mock` 通过、`cjpm build` 告警仅 `--static` 驱动提示 5 条。
+- 新增/更新：`CorePromptAssemblyTest`（环境块置底、日期稳定到天）、`JsonHeartbeatTest`（耗时/体积/错误标记）、`TuiAppKeyTest`（缓存命中率与新一轮归零）、`CapActionTest`（提前提示窗口与小预算静默）、`DefaultPrompt`（并行列纪律）、`ApprovalGateTest` 3 例（单次确认、拒绝不执行、审批后仍拦危险命令）、`ApprovalChannelTest.testToolAndPathApprovalAskedOnce`（Web 通道单次审批）、`SessionStoreTest.testAssistantToolCallsRoundTrip`、PTY 场景 1b（状态行缓存率/第 N 轮）+ 5b（危险命令拒绝→安全替代）。
+- **长任务实测**：同题 6 次（基线 3 / 当前 3）墙钟 **44–231s**、轮次 **8–36**、缓存命中 **82–96%**；两臂各 2/3 次 pytest 首轮全绿，差异主要来自模型自行决定探索轮次，不能据此宣称提速。最终二进制单跑：**26 轮 / 37 次工具 / 188.5s / 缓存 94.6%**，模型自写 30 个 pytest 全绿。
+- **compaction 恢复**：36 轮任务（prompt 806,113 / completion 36,799 / cached 771,456，命中 95.7%）第 32 轮触发后台摘要；会话落盘 40 条/17.8 KB，`--resume` 后 prompt **7,794**、2.0s 返回 `RESUME-OK`。
+- 门禁：根包 **798/798**、libs **266/266**、TUI PTY **112/112**、`--mock` 通过、`cjpm build` 告警仅 `--static` 驱动提示 5 条。
 
 ## [v1.6.20] - 2026-11-23
 

@@ -82,16 +82,13 @@ public class BashTool <: CjhTool {
             "Windows PowerShell (Git Bash not detected — use PowerShell syntax; avoid && / $VAR / bash redirects)"
         }
         return ToolSpec("bash",
-            "Run a shell command (git, build, test, package manager). Current shell mode: ${mode}. " +
-            "Do NOT use bash to read files — use read_file instead. bash is for executing commands, " +
-            "not for file content extraction (sed/awk/head/tail are slower and less reliable than read_file). " +
-            "Working directory and env persist across commands (heredocs included). " +
-            "NEVER pipe a long-running command through `| tail` / `| head`: descendants left behind keep the " +
-            "pipe open, the right-hand side waits for EOF, and the call hangs until timeout. " +
-            "Redirect instead — `<cmd> > build.log 2>&1` returns at once — then read build.log with read_file. " +
-            "Commands are killed after ${this.timeoutSecs}s by default — for minutes-long commands " +
-            "(cargo build, hvigor) pass the timeout parameter (e.g. timeout=\"600\", max 3600). " +
-            "Independent commands can be run in parallel by issuing multiple bash calls in one response.", schema)
+            "Run a shell command (git, build, test, package manager). Current shell: ${mode}. " +
+            "Do NOT use bash to read files — use read_file; sed/awk/head/tail are slower and less reliable. " +
+            "cwd and env persist across commands (heredocs included). " +
+            "Never pipe a long-running command through `| tail`/`| head`: descendants keep the pipe open " +
+            "and the call hangs. Redirect instead: `<cmd> > build.log 2>&1`, then read_file. " +
+            "Commands are killed after ${this.timeoutSecs}s; pass timeout (seconds, max 3600) for minutes-long " +
+            "commands. Independent commands can run as multiple bash calls in one response.", schema)
     }
 
     public func execute(args: JsonObject): ToolResult {
@@ -253,13 +250,10 @@ public class ReadTool <: CjhTool {
         props.add("limit", JsonSchema.str("Number of lines to return (default: 200 for large files, full for small)"))
         let schema = JsonSchema.object(props, ArrayList<String>(["path"]))
         return ToolSpec("read_file",
-            "Read a file — or any slice of one — from the filesystem. " +
-            "This is the PRIMARY way to read files; always prefer it over bash sed/awk/head/tail. " +
-            "Returns line-numbered content (format: <N>\\t<content>). " +
-            "Call WITHOUT offset/limit first to load the whole file; " +
-            "if the file is large (>500 lines), use offset+limit to read a section. " +
-            "Example: offset=50 limit=20 reads lines 50-69. " +
-            "When you need several independent files, issue all read_file calls in the same response.",
+            "Read a file or slice. PRIMARY file reader; never use bash sed/awk/head/tail. " +
+            "Returns line-numbered content (`<N>\\t<content>`). " +
+            "Without offset/limit loads the whole file; for >500 lines use offset+limit " +
+            "(offset=50 limit=20 reads lines 50-69). Issue independent reads in the same response.",
             schema)
     }
 
@@ -604,11 +598,9 @@ public class WriteTool <: CjhTool {
         props.add("content", JsonSchema.str("File content (overwrites existing)"))
         let schema = JsonSchema.object(props, ArrayList<String>(["path", "content"]))
         return ToolSpec("write_file",
-            "Create or overwrite a file. Write the COMPLETE file in ONE call — do not split content into a skeleton + multiple appends. " +
-            "Missing parent directories are created automatically. " +
-            "Very large content (e.g. a full HTML game, >4000 chars) may be truncated by the model's max_tokens; " +
-            "if the file ends up incomplete, continue with append_file to finish it. " +
-            "path and content MUST be passed together in the same call.",
+            "Create or overwrite a file with the COMPLETE content in ONE call; do not split into a skeleton " +
+            "plus appends. Parent directories are created automatically. Very large content may hit the " +
+            "model's max_tokens; if truncated, finish with append_file. path and content must be in the same call.",
             schema)
     }
 
@@ -778,11 +770,8 @@ public class AppendFileTool <: CjhTool {
         props.add("content", JsonSchema.str("Content to append at end of file"))
         let schema = JsonSchema.object(props, ArrayList<String>(["path", "content"]))
         return ToolSpec("append_file",
-            "Append content to the end of an existing file (incremental write). " +
-            "Use ONLY to continue a file that a previous write_file call left incomplete (truncated), " +
-            "or to add a small piece to an existing file. Do NOT use it as the primary way to write a new file " +
-            "-- write_file writes the complete file in one call. " +
-            "Fails if the file does not exist -- create it with write_file first.",
+            "Append to an existing file. Use ONLY to finish a truncated write_file or add a small piece; " +
+            "write_file creates complete files. Fails if the file does not exist.",
             schema)
     }
 
@@ -852,10 +841,8 @@ public class GrepTool <: CjhTool {
         props.add("context", JsonSchema.str("Context lines around each match (default 0 = no context)"))
         let schema = JsonSchema.object(props, ArrayList<String>(["pattern", "path"]))
         return ToolSpec("grep",
-            "Search file(s) or a directory tree with a regex. " +
-            "path can be a file or a directory (recursive); " +
-            "auto-skips .git/node_modules/target/dist; " +
-            "context controls N lines shown around each match. " +
+            "Regex search in a file or directory tree (recursive). " +
+            "Auto-skips .git/node_modules/target/dist; context=N adds lines around matches. " +
             "Independent searches can be issued together in one response.",
             schema)
     }

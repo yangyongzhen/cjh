@@ -78,14 +78,12 @@ public class TaskTool <: CjhTool {
         props.add("scope", JsonSchema.str("Optional comma-separated glob list limiting where this worker may write, e.g. 'src/agent/*.cj, src/web/*.cj'. Workers without scope are serialized with all writers — give scope to enable parallel writes."))
         let schema = JsonSchema.object(props, ArrayList<String>(["description", "prompt", "subagent_type"]))
         return ToolSpec("task",
-            "Delegate a task to a specialized subagent (own message history, structured result). " +
-            "When to spawn — decide by this table, do NOT spawn for looks:\n" +
-            "- Single-file change / clear answer / <=3 tool calls expected: do it YOURSELF (default).\n" +
-            "- Repo-wide scan or >=5-file investigation whose answer fits one sentence: spawn 1 explore.\n" +
-            "- >=2 independent changes touching DIFFERENT files, each >=3 tool rounds: spawn N workers in ONE turn (they run concurrently).\n" +
-            "- Forbidden: spawning just to 'double-check', one worker for one small file, splitting one task into think+write agents.\n" +
-            "Limits: <=3 concurrent spawns per turn, <=6 per turn (excess is rejected with budget_exceeded). " +
-            "Each spawn costs ~3-5k tokens of fixed overhead (system prompt + tool schemas). " +
+            "Delegate to a specialized subagent (own history, structured result). Decide by this table:\n" +
+            "- One-file change / clear answer / <=3 tool calls: do it YOURSELF (default).\n" +
+            "- Repo-wide scan or >=5-file investigation: spawn 1 explore.\n" +
+            "- >=2 independent changes in DIFFERENT files, each >=3 rounds: spawn N workers in ONE turn (concurrent).\n" +
+            "- Forbidden: double-checking yourself, one worker for one small file, splitting think+write.\n" +
+            "Limits: <=3 concurrent, <=6 per turn; excess is rejected. Each spawn costs ~3-5k fixed tokens. " +
             "subagent_type: explore (read-only) or worker (can write).",
             schema)
     }

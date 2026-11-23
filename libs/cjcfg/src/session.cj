@@ -569,11 +569,83 @@ public class SessionStore {
                         case _ => ()
                     }
                 }
+                // assistant 的 tool_calls 必须恢复：只留 tool 结果会让配对断裂，
+                // 发上游前只能丢弃，模型重启后丢失上一轮查过什么。
+                var toolCalls = ArrayList<ToolCall>()
+                if (let Some(tcs) <- obj.get("tool_calls")) {
+                    match (tcs.kind()) {
+                        case JsonKind.JsArray =>
+                            let arr = tcs.asArray()
+                            for (i in 0..arr.size()) {
+                                if (let Some(tv) <- arr.get(i)) {
+                                    match (parseToolCall(tv)) {
+                                        case Some(tc) => toolCalls.add(tc)
+                                        case None => ()
+                                    }
+                                }
+                            }
+                        case _ => ()
+                    }
+                }
                 if (toolId.size > 0) {
                     return ChatMessage(role, content, toolId, name)
                 }
+                if (toolCalls.size > 0) {
+                    return ChatMessage(role, content, toolCalls)
+                }
                 return ChatMessage(role, content, hidden)
             case _ => return ChatMessage("user", "")
+        }
+    }
+
+    /** 解析持久化的 OpenAI 工具调用；字段残缺返回 None，不伪造参数。 */
+    private func parseToolCall(v: JsonValue): Option<ToolCall> {
+        match (v.kind()) {
+            case JsonKind.JsObject =>
+                let obj = v.asObject()
+                var id = ""
+                var name = ""
+                var args = JsonObject()
+                if (let Some(i) <- obj.get("id")) {
+                    match (i.kind()) {
+                        case JsonKind.JsString => id = i.asString().getValue()
+                        case _ => ()
+                    }
+                }
+                if (let Some(f) <- obj.get("function")) {
+                    match (f.kind()) {
+                        case JsonKind.JsObject =>
+                            let fn = f.asObject()
+                            if (let Some(n) <- fn.get("name")) {
+                                match (n.kind()) {
+                                    case JsonKind.JsString => name = n.asString().getValue()
+                                    case _ => ()
+                                }
+                            }
+                            if (let Some(a) <- fn.get("arguments")) {
+                                match (a.kind()) {
+                                    case JsonKind.JsString =>
+                                        try {
+                                            let parsed = JsonValue.fromStr(a.asString().getValue())
+                                            match (parsed.kind()) {
+                                                case JsonKind.JsObject => args = parsed.asObject()
+                                                case _ => ()
+                                            }
+                                        } catch (e: Exception) {
+                                            // 参数损坏：保留调用名与 id，参数按空对象恢复
+                                        }
+                                    case JsonKind.JsObject => args = a.asObject()
+                                    case _ => ()
+                                }
+                            }
+                        case _ => ()
+                    }
+                }
+                if (id.size == 0 || name.size == 0) {
+                    return None
+                }
+                return Some(ToolCall(id, name, args))
+            case _ => return None
         }
     }
 

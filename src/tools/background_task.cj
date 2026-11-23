@@ -1326,22 +1326,15 @@ public class BashStartTool <: CjhTool {
         props.add("label", JsonSchema.str("任务名（可选）。不给则取命令首行，用于任务列表与提示"))
         props.add("cwd", JsonSchema.str("工作目录（可选）。默认取 cjh 进程自身 cwd——**不继承 bash 会话里 cd 过的目录**"))
         props.add("timeout_secs", JsonSchema.str("墙钟上限秒数（可选）。0/缺省=用配置值；dev server 这类常驻命令请显式放宽或设很大"))
-        props.add("intent", JsonSchema.str(
-            "一句话说明这次调用要达到什么目的（可选，中文优先），如「等全量测试跑完再看结果」。" +
-            "它会作为会话流条目的标题显示给用户，让用户不必读命令就知道在干什么"))
+        props.add("intent", JsonSchema.str("一句话目的（可选，中文优先），作为会话流标题"))
         let schema = JsonSchema.object(props, ArrayList<String>(["command"]))
         return ToolSpec("bash_start",
-            "Start a shell command in the background and return immediately with a task id. " +
-            "Use it instead of `bash` for anything that may outlive one call: builds, full test suites, " +
-            "dev servers, log tails, data migrations.\n" +
-            "Trade-off you must know: a background task runs in its OWN process, so it does NOT share the " +
-            "bash session's cwd or environment — an earlier `cd` via `bash` is invisible here; pass `cwd` " +
-            "explicitly when the location matters. Anything needing session state should stay on `bash`.\n" +
-            "Output goes to a log file: fetch it with bash_poll(task_id), cancel with bash_kill(task_id). " +
-            "Commands that finish within a ~200ms window return their output directly in this result. " +
-            "stdin is /dev/null, so a command reading stdin sees EOF instead of hanging.\n" +
-            "At most ${slots} tasks may run concurrently (settings background.max_background_tasks). " +
-            "When the slots are full the start is REJECTED — not queued: poll or kill a running task first.",
+            "Start a shell command in the background; returns a task id. Use for builds, full tests, dev servers, " +
+            "migrations that may outlive one call.\n" +
+            "Runs in its OWN process: it does NOT inherit the bash session's cwd/env; pass cwd when location matters.\n" +
+            "Output goes to a log: read incrementally with bash_poll(task_id), stop with bash_kill(task_id). " +
+            "Commands finishing within ~200ms return output directly. stdin is /dev/null.\n" +
+            "At most ${slots} tasks run concurrently; when full, starts are REJECTED, not queued.",
             schema)
     }
 
@@ -1387,17 +1380,13 @@ public class BashPollTool <: CjhTool {
         var props = HashMap<String, JsonValue>()
         props.add("task_id", JsonSchema.str("bash_start 返回的任务 ID，如 bg-1"))
         props.add("max_chars", JsonSchema.str("本次最多交付的字节数（可选，默认取配置 background.poll_max_chars）"))
-        props.add("intent", JsonSchema.str(
-            "一句话说明这次取输出是为了什么（可选，中文优先），如「看看测试跑到第几例了」。" +
-            "它会作为会话流条目的标题显示给用户"))
+        props.add("intent", JsonSchema.str("一句话目的（可选，中文优先），作为会话流标题"))
         let schema = JsonSchema.object(props, ArrayList<String>(["task_id"]))
         return ToolSpec("bash_poll",
-            "Collect INCREMENTAL output from a background task created by bash_start. " +
-            "Only bytes produced since the previous poll are returned (a byte cursor is kept per task), " +
-            "so calling it repeatedly never repeats output. " +
-            "The header reports state (running/succeeded/failed/killed/timeout) and the exit code once ended. " +
-            "Keep polling while it says the task is still running; a terminal state with no new output means " +
-            "the task is fully collected. The task's slot is released when it reaches a terminal state.",
+            "Read INCREMENTAL output from a bash_start task. Returns only bytes since the previous poll " +
+            "(per-task cursor), plus state (running/succeeded/failed/killed/timeout) and exit code. " +
+            "Poll again while running; a terminal state with no new output means fully collected. " +
+            "The task's slot is released at terminal state.",
             schema)
     }
 
@@ -1432,16 +1421,12 @@ public class BashKillTool <: CjhTool {
     public func spec(): ToolSpec {
         var props = HashMap<String, JsonValue>()
         props.add("task_id", JsonSchema.str("要取消的任务 ID，如 bg-1"))
-        props.add("intent", JsonSchema.str(
-            "一句话说明为什么要结束它（可选，中文优先），如「dev server 不需要了，腾出槽位」。" +
-            "它会作为会话流条目的标题显示给用户"))
+        props.add("intent", JsonSchema.str("一句话目的（可选，中文优先），作为会话流标题"))
         let schema = JsonSchema.object(props, ArrayList<String>(["task_id"]))
         return ToolSpec("bash_kill",
-            "Cancel a background task started by bash_start. Kills the whole process group " +
-            "(the command's children included) and waits up to 3s for it to be reaped, then reports the " +
-            "final state. Output produced before the kill stays readable via bash_poll. " +
-            "Calling it on an already-finished task is not an error — it just reports that state. " +
-            "Use it to free a slot when the slots are full, or to stop a dev server you no longer need.",
+            "Cancel a bash_start task. Kills the whole process group and waits up to 3s for reaping, then " +
+            "reports the final state. Earlier output stays readable via bash_poll. Killing a finished task " +
+            "is not an error. Use it to free a slot or stop a dev server.",
             schema)
     }
 

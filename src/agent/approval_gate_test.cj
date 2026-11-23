@@ -60,6 +60,53 @@ class GateProvider <: LlmProvider {
     private var rounds: Int64 = 0
 }
 
+/** 假文件工具:按给定工具名记录调用次数,不落盘。 */
+class GateFileProbeTool <: CjhTool {
+    public var calls: Int64 = 0
+    private let name: String
+
+    public init(name: String) {
+        this.name = name
+    }
+
+    public override func spec(): ToolSpec {
+        return ToolSpec(this.name, "文件审批闸门测试探针", JsonObject())
+    }
+
+    public override func execute(_: JsonObject): ToolResult {
+        this.calls += 1
+        return ToolResult("file-probe-ran", false)
+    }
+
+    public override func isReadOnly(): Bool {
+        return false
+    }
+}
+
+/** 第 1 轮发一次任意工具调用,第 2 轮收场。 */
+class GateCallProvider <: LlmProvider {
+    private let name: String
+    private let args: JsonObject
+    private var rounds: Int64 = 0
+
+    public init(name: String, args: JsonObject) {
+        this.name = name
+        this.args = args
+    }
+
+    public func chatStream(_: ArrayList<ChatMessage>, _: ArrayList<ToolSpec>,
+        _: (String) -> Unit, _: (String) -> Unit, _: (Int64) -> Unit,
+        _: () -> Bool): ModelResponse {
+        this.rounds += 1
+        if (this.rounds == 1) {
+            let calls = ArrayList<ToolCall>()
+            calls.add(ToolCall("call_gate_fs", this.name, this.args))
+            return ModelResponse("动一下文件", calls)
+        }
+        return ModelResponse("GATE-DONE", ArrayList<ToolCall>())
+    }
+}
+
 func gateCapability(): Capability {
     let cap = Capability()
     cap.enabled = true
@@ -136,6 +183,66 @@ public class ApprovalGateTest {
             true
         }
         let summary = agent.run("跑一次 bash")
+        @Assert(summary.reply.contains("GATE-DONE"), true)
+        @Assert(asked.size, 1)
+        @Assert(tool.calls, 0)
+        let msgs = toolMessages(agent)
+        @Assert(msgs.size, 1)
+        @Assert(msgs[0].contains("被安全策略拒绝"), true)
+    }
+
+    @TestCase
+    public func testToolApprovalCoversPathLayer(): Unit {
+        // 工具域与文件域同时命中审批:一次 write_file 只能问一次。
+        let tool = GateFileProbeTool("write_file")
+        let registry = ToolRegistry()
+        registry.register(tool)
+        let cap = Capability()
+        cap.enabled = true
+        cap.tools.add("write_file")
+        cap.approval.add("write_file")
+        cap.approval.add("fs:write")
+        cap.fsAllow.add("/tmp/cjh_gate_*")
+        var args = JsonObject()
+        args.put("path", JsonString("/tmp/cjh_gate_probe.txt"))
+        args.put("content", JsonString("x"))
+        let agent = Agent(GateCallProvider("write_file", args), registry,
+            AgentConfig("gate", 4, cap))
+        let asked = ArrayList<String>()
+        agent.onApproval = { _, _, reason =>
+            asked.add(reason)
+            true
+        }
+        let summary = agent.run("写一个文件")
+        @Assert(summary.reply.contains("GATE-DONE"), true)
+        @Assert(asked.size, 1)
+        // 第一次命中的是工具域(文件域必须因"已确认该工具"而跳过)
+        @Assert(asked[0].contains("工具 write_file"), true)
+        @Assert(tool.calls, 1)
+    }
+
+    @TestCase
+    public func testPathDenyStillAppliesAfterToolApproval(): Unit {
+        // 已确认"允许用 write_file"不等于放弃路径排除:fsDeny 仍必须拒绝。
+        let tool = GateFileProbeTool("write_file")
+        let registry = ToolRegistry()
+        registry.register(tool)
+        let cap = Capability()
+        cap.enabled = true
+        cap.tools.add("write_file")
+        cap.approval.add("write_file")
+        cap.fsDeny.add("/etc/*")
+        var args = JsonObject()
+        args.put("path", JsonString("/etc/passwd"))
+        args.put("content", JsonString("x"))
+        let agent = Agent(GateCallProvider("write_file", args), registry,
+            AgentConfig("gate", 4, cap))
+        let asked = ArrayList<String>()
+        agent.onApproval = { _, _, reason =>
+            asked.add(reason)
+            true
+        }
+        let summary = agent.run("写系统文件")
         @Assert(summary.reply.contains("GATE-DONE"), true)
         @Assert(asked.size, 1)
         @Assert(tool.calls, 0)

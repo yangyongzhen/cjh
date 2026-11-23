@@ -124,7 +124,7 @@ public class MockProvider <: LlmProvider {
                 callsT.add(ToolCall("call_1td3", "todo_write", argsTd3))
                 callsT.add(ToolCall("call_1t1", "task", argsT1))
                 callsT.add(ToolCall("call_1t2", "task", argsT2))
-                return ModelResponse("先写任务列表，再并发派两个子代理。", callsT)
+                return mockResponse("先写任务列表，再并发派两个子代理。", callsT)
             }
         }
         match (this.callCount) {
@@ -138,7 +138,7 @@ public class MockProvider <: LlmProvider {
                 var calls = ArrayList<ToolCall>()
                 calls.add(ToolCall("call_1a", "read_file", args1))
                 calls.add(ToolCall("call_1b", "grep", args1b))
-                return ModelResponse("我来先看看文件内容。", calls)
+                return mockResponse("我来先看看文件内容。", calls)
             case 2 =>
                 if (dangerStepEnabled) {
                     // 危险性操作：审批拒绝后下一轮会改发安全命令
@@ -146,7 +146,7 @@ public class MockProvider <: LlmProvider {
                     argsD.put("command", JsonString("rm -rf /tmp/cjh_mock_danger_probe"))
                     var callsD = ArrayList<ToolCall>()
                     callsD.add(ToolCall("call_2d", "bash", argsD))
-                    return ModelResponse("先清理旧目录。", callsD)
+                    return mockResponse("先清理旧目录。", callsD)
                 }
                 if (bashStepEnabled) {
                     // 退出路径回归：发 bash，真正 spawn 持久 BashSession 子进程
@@ -154,7 +154,7 @@ public class MockProvider <: LlmProvider {
                     argsB.put("command", JsonString("echo cjh-mock-bash-marker"))
                     var callsB = ArrayList<ToolCall>()
                     callsB.add(ToolCall("call_2", "bash", argsB))
-                    return ModelResponse("再用 bash 执行一下。", callsB)
+                    return mockResponse("再用 bash 执行一下。", callsB)
                 }
                 // CJH_MOCK_TASKS 的 task 派发在 match 之前统一处理（父判别见上）。
                 if (webFetchUrl.size > 0) {
@@ -163,7 +163,7 @@ public class MockProvider <: LlmProvider {
                     argsW.put("url", JsonString(webFetchUrl))
                     var callsW = ArrayList<ToolCall>()
                     callsW.add(ToolCall("call_2w", "web_fetch", argsW))
-                    return ModelResponse("先抓一下这个页面。", callsW)
+                    return mockResponse("先抓一下这个页面。", callsW)
                 }
                 // 工具调用 2：grep 搜索
                 var args2 = JsonObject()
@@ -171,7 +171,7 @@ public class MockProvider <: LlmProvider {
                 args2.put("path", JsonString(this.scriptedPath))
                 var calls = ArrayList<ToolCall>()
                 calls.add(ToolCall("call_2", "grep", args2))
-                return ModelResponse("再用 grep 搜索。", calls)
+                return mockResponse("再用 grep 搜索。", calls)
             case 3 =>
                 if (dangerStepEnabled) {
                     // 拒绝后改用安全方案：只读探测，不删除任何东西
@@ -179,21 +179,21 @@ public class MockProvider <: LlmProvider {
                     argsSafe.put("command", JsonString("echo cjh-safe-alternative"))
                     var callsSafe = ArrayList<ToolCall>()
                     callsSafe.add(ToolCall("call_3s", "bash", argsSafe))
-                    return ModelResponse("改用安全的只读检查。", callsSafe)
+                    return mockResponse("改用安全的只读检查。", callsSafe)
                 }
                 // 工具调用 3：列出目录（跨平台：POSIX /tmp，Windows %TEMP%）
                 var args3 = JsonObject()
                 args3.put("path", JsonString(tmpDir()))
                 var calls = ArrayList<ToolCall>()
                 calls.add(ToolCall("call_3", "list_dir", args3))
-                return ModelResponse("再看看目录。", calls)
+                return mockResponse("再看看目录。", calls)
             case _ =>
                 // 最终答复：分帧回调模拟流式
                 let finalText = "FINAL-DONE: 验证完成，工具链正常"
                 // 整体回调（避免逐字节/码点重建的 mojibake 风险）
                 onDelta(finalText)
                 onTokenEstimate(100)  // mock 估算值
-                return ModelResponse(finalText, ArrayList<ToolCall>())
+                return mockResponse(finalText, ArrayList<ToolCall>())
         }
     }
 }
@@ -210,6 +210,33 @@ private func mockGetenv(name: String): Option<String> {
         }
         return Some(CString(p).toString())
     }
+}
+
+/**
+ * 构造 mock 响应；CJH_MOCK_USAGE=prompt:cached 时附带 usage。
+ *
+ * 只给真实 TUI 场景（scripts/tui_pty_test.py）用：状态行"缓存 N%"与真实
+ * 压缩阈值都依赖 usage，而真实 provider 需要 API Key。默认不设置 → 全 0，
+ * 行为与旧版一致，runMockVerify 等既有断言不受影响。
+ */
+private func mockResponse(text: String, calls: ArrayList<ToolCall>): ModelResponse {
+    let resp = ModelResponse(text, calls)
+    let raw = (mockGetenv("CJH_MOCK_USAGE") ?? "").trimAscii()
+    if (raw.size == 0) {
+        return resp
+    }
+    let parts = raw.split(":", -1)
+    if (parts.size != 2) {
+        return resp
+    }
+    try {
+        resp.usage.promptTokens = Int64.parse(parts[0])
+        resp.usage.cachedTokens = Int64.parse(parts[1])
+        resp.usage.completionTokens = 1
+    } catch (e: Exception) {
+        // 非法 usage 配置：保持 0，不伪造
+    }
+    return resp
 }
 
 /** mock 的基础思考流分帧（单帧内不切分多字节字符，避免 mojibake） */

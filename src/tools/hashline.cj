@@ -47,14 +47,11 @@ public class HashlineEditTool <: CjhTool {
         props.add("patch", JsonSchema.str("Line-anchored patch: @@N targets line N (1-based, recommended); or @@{hash} hash anchor. Followed by +/- change lines"))
         let schema = JsonSchema.object(props, ArrayList<String>(["path", "patch"]))
         return ToolSpec("hashline_edit",
-            "Edit a file with line anchors (more efficient than write_file full overwrite). " +
-            "Patch format (one directive per line): @@N targets line N (1-based, read_file already shows line numbers); " +
-            "@@N content optionally verifies line N equals content (mismatch -> reject, prevents editing a stale file). " +
-            "+content inserts after the anchor line; -content deletes the anchor line (content must match exactly); " +
-            "-old +new replaces the anchor line. " +
-            "Example replacing line 2: '@@2\\n-line2 this is a test\\n+line2 MODIFIED'. " +
-            "Example with content guard: '@@2 line2 this is a test\\n+line2 MODIFIED'. " +
-            "Mismatched content is rejected (prevents editing the wrong location).",
+            "Edit a file by line anchors. One directive per line: @@N anchors line N (1-based; read_file shows " +
+            "line numbers), optionally with expected content (@@N text). +content inserts after the anchor; " +
+            "-content deletes the anchor line (must match); -old +new replaces it. " +
+            "Example: '@@2\\n-line2 old\\n+line2 new'. Anchor/content mismatch is rejected, preventing edits " +
+            "at a stale location.",
             schema)
     }
 

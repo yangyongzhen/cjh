@@ -104,6 +104,36 @@ public class SessionStoreTest {
     }
 
     @TestCase
+    public func testAssistantToolCallsRoundTrip(): Unit {
+        // 恢复会话不能丢 assistant.tool_calls：丢了之后 tool 结果变成孤儿，
+        // 修复逻辑只能把它们丢掉，模型重启后完全失去"上一轮查过什么"。
+        removeTree(this.dir)
+        Directory.create(this.dir, recursive: true)
+        let store = this.buildStore()
+        var args = JsonObject()
+        args.put("path", JsonString("/tmp/x.txt"))
+        var calls = ArrayList<ToolCall>()
+        calls.add(ToolCall("call_abc", "read_file", args))
+        var msgs = ArrayList<ChatMessage>()
+        msgs.add(ChatMessage("user", "看看文件"))
+        msgs.add(ChatMessage("assistant", "我来读一下。", calls))
+        msgs.add(ChatMessage("tool", "line1\n", "call_abc", "read_file"))
+        let id = store.save(msgs)
+
+        let loaded = store.load(id)
+        @Assert(loaded.size, 3)
+        @Assert(loaded[1].role, "assistant")
+        @Assert(loaded[1].content, "我来读一下。")
+        @Assert(loaded[1].toolCalls.size, 1)
+        @Assert(loaded[1].toolCalls[0].id, "call_abc")
+        @Assert(loaded[1].toolCalls[0].name, "read_file")
+        @Assert(loaded[1].toolCalls[0].arguments.get("path").getOrThrow().asString().getValue(),
+            "/tmp/x.txt")
+        // 结果消息仍按 tool_call_id 配对
+        @Assert(loaded[2].toolCallId, "call_abc")
+    }
+
+    @TestCase
     public func testRenamePersistsTitle(): Unit {
         removeTree(this.dir)
         Directory.create(this.dir, recursive: true)

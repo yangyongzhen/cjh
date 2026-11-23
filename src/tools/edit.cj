@@ -44,11 +44,9 @@ public class EditTool <: CjhTool {
         props.add("replace_all", JsonSchema.str("Replace all occurrences (default: false, requires unique match)"))
         let schema = JsonSchema.object(props, ArrayList<String>(["path", "old_string", "new_string"]))
         return ToolSpec("edit",
-            "Edit an existing file by replacing old_string with new_string. " +
-            "This is the PRIMARY way to edit files; always prefer it over bash sed/awk/perl. " +
-            "old_string must be unique in the file (or set replace_all=true). " +
-            "Whitespace and indentation must match exactly. " +
-            "Safer than write_file for targeted changes.",
+            "Edit an existing file by replacing old_string with new_string. PRIMARY edit method; prefer over " +
+            "bash sed/awk/perl. old_string must be unique (or set replace_all=true); whitespace must match exactly. " +
+            "Safer than a full rewrite for targeted changes.",
             schema)
     }
 

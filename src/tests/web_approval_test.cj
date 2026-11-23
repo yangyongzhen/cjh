@@ -52,6 +52,33 @@ public class ReadCallProvider <: LlmProvider {
 }
 
 /**
+ * 第一轮发一个 write_file 调的 provider 替身（工具域与文件域同时命中审批）
+ */
+public class WriteCallProvider <: LlmProvider {
+    private let path: String
+    public var calls: Int64 = 0
+
+    public init(path: String) {
+        this.path = path
+    }
+
+    public func chatStream(_: ArrayList<ChatMessage>, _: ArrayList<ToolSpec>,
+        onDelta: (String) -> Unit, _: (String) -> Unit, _: (Int64) -> Unit,
+        _: () -> Bool): ModelResponse {
+        this.calls += 1
+        if (this.calls == 1) {
+            var args = JsonObject()
+            args.put("path", JsonString(this.path))
+            args.put("content", JsonString("web-marker\n"))
+            var list = ArrayList<ToolCall>()
+            list.add(ToolCall("call_write", "write_file", args))
+            return ModelResponse("我写一下文件。", list)
+        }
+        return ModelResponse("写完了。", ArrayList<ToolCall>())
+    }
+}
+
+/**
  * 造一个「恰好一次审批」的严格模式配置：
  *   tools 放行 read_file → 工具域 Allow（不审批）
  *   approval=["fs"] + 空 fsAllow → 路径域命中审批规则（一次审批）
@@ -237,6 +264,41 @@ public class ApprovalChannelTest {
         @Assert(approvalWaitUntil({ => ch.dones > 0 }, 3000), true)
         @Assert(ch.doneReasons[0], "cancelled")
         @Assert(ch.toolResultErrors[0], true)
+    }
+
+    @TestCase
+    public func testToolAndPathApprovalAskedOnce(): Unit {
+        // 工具域(approval 含 write_file)与文件域(approval 含 fs:write)同时命中：
+        // Web 只应收到一条 approval_request，用户按一次就能写。
+        let dir = testTempDir("gw_approval_write")
+        let path = dir + "/out.txt"
+        let cfg = CjhConfig()
+        cfg.systemPrompt = "写文件审批"
+        cfg.maxIterations = 3
+        cfg.capability.enabled = true
+        cfg.capability.tools.add("write_file")
+        cfg.capability.approval.add("write_file")
+        cfg.capability.approval.add("fs:write")
+        cfg.capability.fsAllow.add(dir + "/*")
+        let registry = ToolRegistry()
+        registry.register(WriteTool())
+        let gateway = ChannelGateway(cfg, WriteCallProvider(path), registry,
+            Some(StubProviderFactory("")))
+        gateway.approvalTimeoutMs = 8000
+        let ch = CaptureChannel()
+        gateway.registerChannel("test", ch)
+
+        gateway.handleUserMessage("test", "chat1", "写个文件", None)
+        @Assert(approvalWaitUntil({ => ch.approvals.size > 0 }, 5000), true)
+        @Assert(ch.approvals.size, 1)
+        gateway.handleApprovalResponse("test", "chat1", ch.approvals[0].requestId, true)
+        @Assert(approvalWaitUntil({ => ch.dones > 0 }, 8000), true)
+
+        // 收场后再断言：若路径域重复弹窗，approvals 会变成 2
+        @Assert(ch.approvals.size, 1)
+        @Assert(ch.errors.size, 0)
+        @Assert(ch.toolResultErrors[0], false)
+        @Assert(readTextFile(path), "web-marker\n")
     }
 
     @TestCase

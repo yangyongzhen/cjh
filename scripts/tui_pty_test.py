@@ -231,6 +231,31 @@ def test_startup_and_input() -> None:
         s.close()
 
 
+def test_status_cache_and_round() -> None:
+    """[场景1b] 状态行可观测：usage → 缓存命中率，多轮 → 第 N 轮
+
+    CJH_MOCK_USAGE 给 mock 响应附真实 usage（默认 0，不影响其他场景）。
+    这里断言状态行确实把 provider usage 显示出来，而不是只有单测里的纯函数。
+    """
+    print("[场景1b] 状态行缓存命中率 + 轮次推进")
+    cfg = make_config_dir()
+    s = PtuSession(cfg, extra_env={"CJH_MOCK_DELAY_MS": "800", "CJH_MOCK_USAGE": "10000:5000"})
+    try:
+        s.expect("cjh")
+        time.sleep(0.5)
+        s.send("状态行测试\n")
+        s.expect("缓存 50%", timeout=20)
+        check("状态行显示缓存命中率", True)
+        s.expect("第 2 轮", timeout=20)
+        check("多轮任务显示第 N 轮", True)
+        s.expect("FINAL-DONE", timeout=30)
+        s.send_key(3)
+        code = s.wait_exit()
+        check("退出码 0", code == 0, f"(实际 {code})")
+    finally:
+        s.close()
+
+
 def test_slash_completion() -> None:
     print("[场景2] / 命令补全：/th + Tab → /theme")
     cfg = make_config_dir()
@@ -1007,6 +1032,7 @@ def main() -> None:
     global PASS, FAIL
     print(f"cjh TUI PTY 集成测试（{BIN}）\n")
     test_startup_and_input()
+    test_status_cache_and_round()
     test_slash_completion()
     test_fullwidth_slash_dispatch()
     test_busy_slash_command_dispatch()

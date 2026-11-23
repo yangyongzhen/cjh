@@ -122,14 +122,8 @@ public class TodoWriteTool <: CjhTool {
         props.add("content", JsonSchema.str("任务内容（add 必填；update 时为新内容；done 时可填待办文本子串）"))
         let schema = JsonSchema.object(props, ArrayList<String>(["action"]))
         return ToolSpec("todo_write",
-            "管理内置任务列表（对齐 Claude Code TodoWrite）。" +
-            "action=add: 添加任务（content 必填），返回新 id；" +
-            "action=doing: 标记任务为进行中（id 必填）；" +
-            "action=done: 标记任务为已完成（id 必填，也可只给 content 子串让工具自己匹配唯一待办）；" +
-            "action=update: 更新任务内容（id+content 必填）；" +
-            "action=clear: 清空所有任务；" +
-            "action=list: 列出所有任务。" +
-            "复杂多步任务建议先 add 拆解，每完成一步 done，开始下一步 doing。",
+            "管理内置任务列表。action=add(content)→新 id；doing(id)；done(id，或唯一 content 子串)；" +
+            "update(id+content)；clear；list。多步任务先 add 拆解，开始时 doing，完成立即 done。",
             schema)
     }
 
