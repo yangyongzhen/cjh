@@ -28,6 +28,22 @@ import cjcfg.*
 import cjutil.*
 
 /**
+ * 恢复会话时的工作区偏差提示（纯函数，便于单测）。
+ *
+ * 会话历史绑定保存时的 cwd，但进程当前 cwd 可能不同。cjh 不自动 chdir：
+ * 自动切换会让相对路径、权限边界和用户预期全部漂移（实测恢复后 write_file
+ * 落到错误项目）。这里只提示，由用户决定是否在原工作区重跑。
+ */
+func resumeCwdWarning(recorded: String, current: String): String {
+    if (recorded.size == 0 || current.size == 0 || recorded == current) {
+        return ""
+    }
+    return "[cjh] 会话记录的工作区: ${recorded}\n" +
+        "[cjh] 当前工作区: ${current}\n" +
+        "[cjh] 继续使用当前工作区；如需在原工作区恢复: cd \"${recorded}\" 后重新 --resume。"
+}
+
+/**
  * ProviderFactory 实现（装配层）
  *
  * 为什么由根包实现而不是网关自己建 provider：provider 选择（OpenAI/Anthropic/Ollama/Mock）、
@@ -347,6 +363,10 @@ func runCli(sessionId: String): Int64 {
                 agent.loadHistory(history)
                 CliSession.id = sessionId
                 println("[resumed session ${sessionId} (${history.size} messages)]")
+                let cwdWarn = resumeCwdWarning(store.cwdOf(sessionId), getWorkingDirectory().toString())
+                if (cwdWarn.size > 0) {
+                    println(cwdWarn)
+                }
             } else {
                 println("[session ${sessionId} not found, starting new]")
             }
@@ -433,6 +453,16 @@ func runCli(sessionId: String): Int64 {
 class JsonState {
     // 静态字段：lambda 闭包不能捕获可变局部变量，用静态容器收集工具调用记录
     static var toolCalls: ArrayList<(String, String, String)> = ArrayList<(String, String, String)>()
+}
+
+/**
+ * --mode json 的 stderr 心跳行（纯函数，便于单测）。
+ *
+ * stdout 必须只有最终 JSON，所以进度只能写 stderr；长任务（LLM 思考/工具执行）
+ * 超过心跳周期时，脚本/CI 至少能看到进程还活着。
+ */
+func jsonHeartbeatLine(elapsedSecs: Int64): String {
+    return "[cjh] json mode: running ${elapsedSecs}s (progress on stderr)"
 }
 
 /**
@@ -566,6 +596,10 @@ func runJson(prompt: String, sessionId: String): Int64 {
             let history = store.load(curId)
             if (history.size > 0) {
                 agent.loadHistory(history)
+                let cwdWarn = resumeCwdWarning(store.cwdOf(curId), getWorkingDirectory().toString())
+                if (cwdWarn.size > 0) {
+                    eprintln(cwdWarn)
+                }
             } else {
                 curId = ""
             }
@@ -576,6 +610,8 @@ func runJson(prompt: String, sessionId: String): Int64 {
         agent.onDelta = { _ => () }
         agent.onToolStart = { name, args =>
             JsonState.toolCalls.add((name, args.toJsonString(), ""))
+            // stderr 进度：stdout 只留最终 JSON，长任务期间也能看到工具在跑
+            eprintln("[cjh] tool start: ${name}")
         }
         agent.onToolResult = { name, result =>
             for (i in 0..JsonState.toolCalls.size) {
@@ -584,6 +620,8 @@ func runJson(prompt: String, sessionId: String): Int64 {
                     break
                 }
             }
+            let flag = if (result.isError) { " (error)" } else { "" }
+            eprintln("[cjh] tool done: ${name}${flag}")
         }
         agent.onApproval = { _, _, _ => false }  // 无头模式默认拒绝危险操作
         agent.onAssistantText = { _ => () }
@@ -597,7 +635,36 @@ func runJson(prompt: String, sessionId: String): Int64 {
             return 1
         }
 
-        let summary = agent.run(prompt)
+        eprintln(jsonHeartbeatLine(0))
+        let hbStop = AtomicInt64(0)
+        let hbStart = DateTime.now()
+        let hb = spawn {
+            // 200ms 切片：回合结束后最多再等 200ms 就能回收线程，
+            // 不会给每次 --mode json 调用凭空加一个心跳周期的尾延迟。
+            var ticks: Int64 = 0
+            while (hbStop.load() == 0) {
+                sleep(Duration.millisecond * 200)
+                if (hbStop.load() != 0) {
+                    break
+                }
+                ticks += 1
+                if (ticks % 25 != 0) {
+                    continue
+                }
+                let elapsed = (DateTime.now() - hbStart).toMilliseconds() / 1000
+                eprintln(jsonHeartbeatLine(elapsed))
+            }
+        }
+        var summary = RunSummary()
+        try {
+            summary = agent.run(prompt)
+        } catch (e: Exception) {
+            hbStop.store(1)
+            hb.get()
+            throw e
+        }
+        hbStop.store(1)
+        hb.get()
 
         // 保存会话：新会话写新文件；恢复的会话覆盖原文件（不再新建重复条目）
         let usage = sessionUsageOf(summary)
@@ -821,6 +888,10 @@ func runTui(sessionId: String): Int64 {
             if (history.size > 0) {
                 agent.loadHistory(history)
                 tui.appendOutput(Ansi.fg(Ansi.THEME_WARN) + "[resumed ${curSessionId} (${history.size} msgs)]" + Ansi.reset())
+                let cwdWarn = resumeCwdWarning(store.cwdOf(curSessionId), getWorkingDirectory().toString())
+                if (cwdWarn.size > 0) {
+                    tui.appendOutput(Ansi.fg(Ansi.THEME_WARN) + cwdWarn + Ansi.reset())
+                }
             } else {
                 tui.appendOutput(Ansi.fg(Ansi.THEME_WARN) + "[session ${curSessionId} not found, new session]" + Ansi.reset())
                 curSessionId = ""
@@ -1190,6 +1261,10 @@ func runTui(sessionId: String): Int64 {
                 tui.clearConversation()
                 tui.resetSessionUiState()
                 tui.appendOutput(Ansi.fg(Ansi.THEME_WARN) + "[resumed ${id} (${history.size} msgs)]" + Ansi.reset())
+                let cwdWarn = resumeCwdWarning(store.cwdOf(id), getWorkingDirectory().toString())
+                if (cwdWarn.size > 0) {
+                    tui.appendOutput(Ansi.fg(Ansi.THEME_WARN) + cwdWarn + Ansi.reset())
+                }
             } else {
                 tui.appendOutput(Ansi.fg(Ansi.THEME_ERR) + "[会话 ${id} 不存在]" + Ansi.reset())
             }

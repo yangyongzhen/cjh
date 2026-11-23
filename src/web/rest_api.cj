@@ -134,8 +134,15 @@ public class RestApi <: HttpRequestHandler {
             store.list()
         }
 
+        // 分页：limit/offset 可选。不传 limit = 返回全部（兼容旧客户端）；
+        // Web 侧边栏传 limit=50，避免 890 条会话一次性渲染卡死。
+        let total = sessions.size
+        let (start, end) = sessionPageOf(total,
+            queryParamOf(ctx.request.url.query, "limit"),
+            queryParamOf(ctx.request.url.query, "offset"))
+
         var sessionsArr = JsonArray()
-        for (i in 0..sessions.size) {
+        for (i in start..end) {
             let (id, title) = sessions[i]
             var sessionObj = JsonObject()
             sessionObj.put("id", JsonString(id))
@@ -156,6 +163,8 @@ public class RestApi <: HttpRequestHandler {
 
         var obj = JsonObject()
         obj.put("sessions", sessionsArr)
+        obj.put("total", JsonInt(total))
+        obj.put("has_more", JsonBool(end < total))
         let body = obj.toJsonString()
         let res = ctx.responseBuilder
         res.header("Content-Type", "application/json; charset=utf-8")
@@ -968,6 +977,38 @@ public func fsListDirFromQuery(query: Option<String>, cwd: String): String {
         }
     }
     return cwd
+}
+
+/**
+ * 会话分页边界（纯函数，便于单测）。
+ *
+ * limit 缺省/非法/<=0 表示"不限制"（旧行为）；offset 负数按 0 处理，
+ * 超过总数时返回空区间。返回 (start, end) 半开区间。
+ */
+public func sessionPageOf(total: Int64, limitRaw: String, offsetRaw: String): (Int64, Int64) {
+    var offset: Int64 = 0
+    try {
+        offset = Int64.parse(offsetRaw)
+    } catch (e: Exception) {
+        offset = 0
+    }
+    if (offset < 0) {
+        offset = 0
+    }
+    if (offset > total) {
+        offset = total
+    }
+    var limit: Int64 = 0
+    try {
+        limit = Int64.parse(limitRaw)
+    } catch (e: Exception) {
+        limit = 0
+    }
+    if (limit > total) {
+        limit = total
+    }
+    let end = if (limit > 0) { offset + limit } else { total }
+    return (offset, if (end < total) { end } else { total })
 }
 
 /**

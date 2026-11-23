@@ -603,6 +603,7 @@ public class WriteTool <: CjhTool {
         let schema = JsonSchema.object(props, ArrayList<String>(["path", "content"]))
         return ToolSpec("write_file",
             "Create or overwrite a file. Write the COMPLETE file in ONE call — do not split content into a skeleton + multiple appends. " +
+            "Missing parent directories are created automatically. " +
             "Very large content (e.g. a full HTML game, >4000 chars) may be truncated by the model's max_tokens; " +
             "if the file ends up incomplete, continue with append_file to finish it. " +
             "path and content MUST be passed together in the same call.",
@@ -630,6 +631,11 @@ public class WriteTool <: CjhTool {
         }
         // 结构化 diff：写前先读旧内容（新文件视作空），客户端据此渲染 diff 视图
         let diff = diffForRewrite(path, content)
+        // 自动建父目录：LLM 常直接写 src/foo/bar.cj，父目录不存在时
+        // File.writeTo 抛异常，整条工具链白跑一轮。目录已存在时跳过（create 不幂等）。
+        if (!ensureParentDir(path)) {
+            return ToolResult("Write failed: cannot create parent directory for ${path}", true)
+        }
         // 软约束：超长 content 警告但不阻断（让 LLM 自行决定是否拆分）
         let lines = content.split('\n').size
         if (content.size > 4000 || lines > 150) {
@@ -657,6 +663,35 @@ public class WriteTool <: CjhTool {
  * 策略：write_file 一次写完整文件；仅当写入被截断（文件不完整）时，
  * 用 append_file 继续补齐剩余部分——不鼓励主动拆分（拆分多轮低效）。
  */
+
+/**
+ * 确保文件父目录存在（write_file 自动建目录）。
+ * 返回 false 表示建目录失败，调用方应报错而不是继续写。
+ */
+private func ensureParentDir(filePath: String): Bool {
+    var slash: Int64 = -1
+    if (let Some(i) <- filePath.lastIndexOf("/")) {
+        slash = i
+    }
+    if (let Some(i) <- filePath.lastIndexOf("\\")) {
+        if (i > slash) {
+            slash = i
+        }
+    }
+    if (slash <= 0) {
+        return true
+    }
+    let parent = filePath[0..slash]
+    if (exists(parent)) {
+        return true
+    }
+    try {
+        Directory.create(parent, recursive: true)
+        return true
+    } catch (e: Exception) {
+        return false
+    }
+}
 
 /**
  * 检测 LLM 幻觉产物：纯 ASCII 数字串

@@ -1075,13 +1075,13 @@ public class Agent {
                         this.onAssistantText(
                             "\n[System] 轮次预算续段 ${segmentsDone}/${maxSegments}（剩 ${openSeg.size} 项待办，预算至 ${segCap} 轮），继续执行\n")
                         this.messages.add(ChatMessage("user",
-                            ContinuationPolicy.segmentNotice(openSeg, segmentsDone, maxSegments, segCap)))
+                            ContinuationPolicy.segmentNotice(openSeg, segmentsDone, maxSegments, segCap), true))
                     case CapAction.WrapUp =>
                         wrapUpInjected = true
                         // 收尾窗口从**当前轮**起算 10 轮，不是从全部段数用尽处起算
                         hardCap = iterations + wrapUpRounds
                         this.messages.add(ChatMessage("user",
-                            "[System Notice] 任务已执行 ${iterations} 轮（段预算已用尽），请立即结束：不要再调用任何工具，直接给出最终总结答复（如任务确未完成，简述剩余步骤）。最多再 ${wrapUpRounds} 轮将强制结束。"))
+                            "[System Notice] 任务已执行 ${iterations} 轮（段预算已用尽），请立即结束：不要再调用任何工具，直接给出最终总结答复（如任务确未完成，简述剩余步骤）。最多再 ${wrapUpRounds} 轮将强制结束。", true))
                         this.onAssistantText("\n[System] 已达轮次预算（${iterations} 轮），要求模型收尾总结（最多再 ${wrapUpRounds} 轮）\n")
                 }
             }
@@ -1211,7 +1211,7 @@ public class Agent {
             if (response.timedOut && response.text.size == 0 && response.toolCalls.size == 0) {
                 Log.error("SSE 空闲超时且无任何内容，SSE 流被切断")
                 this.onAssistantText("\n\n⚠ 网络空闲超时（模型长时间无输出），已收到内容为空。\n")
-                this.messages.add(ChatMessage("user", "[System Notice] The previous SSE stream was cut off due to an idle timeout (no new data). Please continue or retry."))
+                this.messages.add(ChatMessage("user", "[System Notice] The previous SSE stream was cut off due to an idle timeout (no new data). Please continue or retry.", true))
             } else if (response.timedOut) {
                 Log.warn("SSE 空闲超时（${this.config.maxIterations} 轮内），已收内容保留为回复（不重试）：textLen=${response.text.size} toolCalls=${response.toolCalls.size}")
                 this.onAssistantText("\n\n⚠ 网络空闲超时，已收到的内容已保留（可能不完整）。\n")
@@ -1355,7 +1355,7 @@ public class Agent {
                     notice += "  3. Repeat step 2; the final chunk MUST append the closing tags </script></body></html>\n"
                     notice += "  4. read_file <path> to verify the file is complete and properly closed\n"
                     notice += "Do NOT perform any other action until the above steps are complete."
-                    this.messages.add(ChatMessage("user", notice))
+                    this.messages.add(ChatMessage("user", notice, true))
                     this.onAssistantText("\n[System] Truncation detected, forced continuation directive injected\n")
                 }
                 // 效率提醒：连续 3 轮只调 1 个工具，向模型上下文注入一次批量化提示。
@@ -1367,7 +1367,7 @@ public class Agent {
                     singleToolStreak = 0
                 }
                 if (shouldRemindSingleToolTurn(singleToolStreak, singleToolReminded)) {
-                    this.messages.add(ChatMessage("user", singleToolReminder(singleToolStreak)))
+                    this.messages.add(ChatMessage("user", singleToolReminder(singleToolStreak), true))
                     singleToolReminded = true
                     Log.info("注入单工具串行提醒（连续 ${singleToolStreak} 轮，本回合仅一次）")
                     singleToolStreak = 0
@@ -1402,7 +1402,7 @@ public class Agent {
                     Log.warn("LLM 只输出思考、无正文（推理增量 ${roundReasoning.load()} 字符），注入续写指令 ${continuationNudges}/${ContinuationPolicy.MAX_NUDGES}")
                     this.onAssistantText(
                         "\n[System] 上一轮只输出思考内容，要求直接给出正文或调用工具（第 ${continuationNudges}/${ContinuationPolicy.MAX_NUDGES} 次）\n")
-                    this.messages.add(ChatMessage("user", ContinuationPolicy.reasoningOnlyNotice(continuationNudges)))
+                    this.messages.add(ChatMessage("user", ContinuationPolicy.reasoningOnlyNotice(continuationNudges), true))
                     continue
                 }
                 Log.error("LLM 连续只输出思考、无正文，放弃补写（预算用尽）")
@@ -1419,7 +1419,7 @@ public class Agent {
                     Log.warn("LLM 返回空响应，重试 ${emptyRetries}/${maxEmptyRetries} | 第 ${iterations} 轮 耗时 ${roundMs}ms | prompt ${response.usage.promptTokens} completion ${response.usage.completionTokens} cached ${response.usage.cachedTokens} | 推理增量 ${roundReasoning.load()} 字符 | textLen ${response.text.size} toolCalls ${response.toolCalls.size} | truncated ${response.truncated} timedOut ${response.timedOut}")
                     this.messages.add(ChatMessage("user",
                         "[System Notice] Your previous response was empty (no text and no tool calls). " +
-                        "Please continue the task and provide a response."))
+                        "Please continue the task and provide a response.", true))
                     // 不消耗 iterations，回 while 顶部重试
                     iterations -= 1
                     continue
@@ -1444,7 +1444,7 @@ public class Agent {
                     Log.warn("纯文本收束但任务未收尾（未完成待办 ${open.size} 项，上批工具失败 ${lastToolFailed}），注入续跑指令 ${continuationNudges}/${ContinuationPolicy.MAX_NUDGES}")
                     this.onAssistantText(
                         "\n[System] 检测到任务未收尾，要求模型继续执行（第 ${continuationNudges}/${ContinuationPolicy.MAX_NUDGES} 次）\n")
-                    this.messages.add(ChatMessage("user", ContinuationPolicy.nudgeNotice(open, continuationNudges, lastToolFailed)))
+                    this.messages.add(ChatMessage("user", ContinuationPolicy.nudgeNotice(open, continuationNudges, lastToolFailed), true))
                     continue
                 }
             }
@@ -1624,6 +1624,11 @@ public class Agent {
         var hasSummarizable = false
         for (i in 1..compactEnd) {
             let m = this.messages[i]
+            // 内部提效提醒不进摘要也不钉在 kept：它们是调度噪声，若当 user 指令
+            // 保留会永久占上下文（实测长任务里 [System Notice] 越积越多）。
+            if (m.isInternalNotice()) {
+                continue
+            }
             if (isSummaryMessage(m)) {
                 // 旧摘要不再作为 kept 用户消息累积；把它的内容并入新摘要，
                 // 否则多轮压缩后 [历史摘要] 会一层层叠加、越压越大。
@@ -1726,7 +1731,11 @@ public class Agent {
                 newMsgs.add(m)
             }
             for (i in compactEnd..this.messages.size) {
-                newMsgs.add(this.messages[i])
+                let m = this.messages[i]
+                if (m.isInternalNotice()) {
+                    continue
+                }
+                newMsgs.add(m)
             }
             // 无收益回滚：摘要比被替换的 assistant 文本还长时不换装，
             // 否则"压缩成功"了但 token 反而增长，下一轮继续超阈值（用户实测 churn）。
@@ -1899,12 +1908,16 @@ public class Agent {
                 if (isSummaryMessage(m)) {
                     continue
                 }
-                if (m.role == "user") {
+                if (m.role == "user" && !m.isInternalNotice()) {
                     newMsgs.add(m)
                 }
             }
             for (i in compactEnd..this.messages.size) {
-                newMsgs.add(this.messages[i])
+                let m = this.messages[i]
+                if (m.isInternalNotice()) {
+                    continue
+                }
+                newMsgs.add(m)
             }
             let oldTokens = this.estimateMessagesTokens()
             let newTokens = this.estimateTokensFor(newMsgs)

@@ -1,4 +1,29 @@
 # CHANGELOG
+## [v1.6.20] - 2026-11-23
+
+### 修复(长任务恢复与无头模式可观测性)
+- **恢复会话提示工作区偏差**:会话记录保存时的 `cwd`,恢复时若与当前进程 `cwd` 不同,CLI/JSON/TUI 三条入口都会打印原工作区与当前工作区,并提示 `cd <原目录>` 后重新 `--resume`。**不自动 chdir**:自动切换会让相对路径、权限边界和用户预期静默漂移。覆盖 `--resume`、TUI 欢迎页恢复、TUI `/resume` 三处。
+- **`write_file` 自动建父目录**:LLM 直接写 `src/pkg/foo.cj` 而父目录不存在时,旧实现抛异常、整轮工具链白跑;现写前递归创建缺失的父目录。父路径已存在时跳过(`Directory.create` 不幂等),创建失败返回明确错误而不是继续写。
+- **`--mode json` 长任务心跳**:stdout 仍只有最终 JSON;stderr 每 5 秒输出 `[cjh] json mode: running Ns`,并在工具开始/结束时输出 `tool start` / `tool done`(失败带 `(error)`)。心跳线程用 200ms 切片轮询,回合结束后最多 200ms 即可回收,不给短任务增加一个心跳周期的尾延迟。
+- **测试**:`FileWriteToolsTest.testWriteCreatesMissingParentDirs`、`JsonHeartbeatTest` 2 例、`ResumeCwdWarningTest` 2 例。
+
+### 修复(内部提效提醒污染会话/压缩/Web 历史)
+- **消息增加 `hiddenFromUser`**:单工具串行提醒、续段/收尾指令、空响应重试、SSE 空闲超时续跑、推理为空续写、截断续写等内部提醒统一标记 `internal`。
+- **持久化剔除**:`SessionStore.save*` 跳过内部提醒,不再把 `[System Notice]` 当成用户消息写进会话;恢复旧会话时按内容前缀识别并剔除(兼容没有 `internal` 字段的旧文件)。
+- **摘要/压缩剔除**:会话标题不再取内部提醒;压缩候选、保留用户消息、压缩后重建都跳过内部提醒,避免长任务里提醒越压越多、永久占上下文。
+- **Web 历史剔除**:网关序列化历史消息时跳过内部提醒。
+- **测试**:`cjllm` 新增 `InternalNoticeTest`;`CompactThresholdTest` 覆盖压缩剔除;`SessionStoreTest.testLoadHonorsInternalFlagAndLegacyPrefix` 覆盖新旧格式与标题。
+
+### 修复(Web 会话列表 890 条全量渲染)
+- **`/api/sessions` 分页**:新增可选 `limit` / `offset`(不传 `limit` 仍返回全部,兼容旧客户端);响应增加 `total` 与 `has_more`。`sessionPageOf` 对非法/负数参数归一化。
+- **Web 侧边栏每页 50 条**:首屏只渲染 50 条,底部「加载更多(已显示 N/总数)」按需追加;切换范围时用序号丢弃过期响应,并阻止连点重复追加同一页。
+- **测试**:`sessionPageOf` 边界 6 组;真实浏览器验证 50 → 100 → 130 条追加、末页按钮消失、控制台零错误。
+
+### 测试
+- 根包 **786/786**、libs **266/266**、TUI PTY **105/105**、`--mock` 端到端通过。
+- `--mode json` 实测:`CJH_MOCK=1 CJH_MOCK_DELAY_MS=6000` 下 stderr 出现 0/5/10/15/20s 心跳与工具进度,stdout 可被 `jq` 解析。
+- 恢复实测:在 `/tmp` 恢复记录于 `/root/test/cj/cjh` 的会话,stderr 打印两条工作区路径,保存后会话 `cwd` 仍为原值。
+
 ## [v1.6.19] - 2026-11-23
 
 ### 修复(测试契约护栏：禁止模型改写断言让测试变绿)

@@ -6,10 +6,10 @@
 
 [![Website](https://img.shields.io/badge/website-yangyongzhen.github.io%2Fcjh-00868B)](https://yangyongzhen.github.io/cjh/)
 [![CI](https://github.com/yangyongzhen/cjh/actions/workflows/ci.yml/badge.svg)](https://github.com/yangyongzhen/cjh/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/badge/release-v1.6.19-00868B)](https://atomgit.com/qq8864/cjh/releases)
+[![Release](https://img.shields.io/badge/release-v1.6.20-00868B)](https://atomgit.com/qq8864/cjh/releases)
 [![AtomGitStars](https://atomgit.com/qq8864/cjh/star/badge.svg)](https://atomgit.com/qq8864/cjh)
 [![Cangjie](https://img.shields.io/badge/language-Cangjie-00868B)](https://cangjie-lang.cn)
-[![Tests](https://img.shields.io/badge/tests-769%20passed-2ea44f)](./scripts/test.sh)
+[![Tests](https://img.shields.io/badge/tests-786%20passed-2ea44f)](./scripts/test.sh)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-lightgrey)](https://atomgit.com/qq8864/cjh/releases)
 [![License](https://img.shields.io/badge/license-MIT-2ea44f)](./LICENSE)
 
@@ -38,8 +38,8 @@ curl -fsSL https://yangyongzhen.github.io/cjh/install.sh | bash
 **先不花钱跑起来**（Mock 模式：不联网、不用 API Key）：
 
 ```bash
-curl -LO https://atomgit.com/qq8864/cjh/releases/download/v1.6.19/cjh-v1.6.19-linux-x64.tar.gz
-tar xzf cjh-v1.6.19-linux-x64.tar.gz
+curl -LO https://atomgit.com/qq8864/cjh/releases/download/v1.6.20/cjh-v1.6.20-linux-x64.tar.gz
+tar xzf cjh-v1.6.20-linux-x64.tar.gz
 CJH_MOCK=1 ./cjh-linux-x64
 ```
 
@@ -50,7 +50,7 @@ export DEEPSEEK_API_KEY=sk-xxx     # 或 OPENAI_API_KEY / DASHSCOPE_API_KEY / CJ
 ./cjh-linux-x64                     # 默认 TUI；--cli 纯文本，--mode json 无头，web 子命令拉 Web 界面
 ```
 
-Windows：下载 [`cjh-v1.6.19-windows-x64-selfcontained.zip`](https://atomgit.com/qq8864/cjh/releases/download/v1.6.19/cjh-v1.6.19-windows-x64-selfcontained.zip) 解压即用（exe 与 4 个 DLL 必须同目录）。从源码构建见[快速开始](#-快速开始)。
+Windows：下载 [`cjh-v1.6.20-windows-x64-selfcontained.zip`](https://atomgit.com/qq8864/cjh/releases/download/v1.6.20/cjh-v1.6.20-windows-x64-selfcontained.zip) 解压即用（exe 与 4 个 DLL 必须同目录）。从源码构建见[快速开始](#-快速开始)。
 
 ![cjh 会话演示（Mock 模式实录）](docs/imgs/cjh-demo.gif)
 
@@ -65,7 +65,7 @@ Windows：下载 [`cjh-v1.6.19-windows-x64-selfcontained.zip`](https://atomgit.c
 | **是什么** | 仓颉语言从零实现的终端 coding agent harness：Agent 主循环（消息状态机 + 工具调用协议）+ 工具系统 + TUI 差分渲染 + Web 远程驱动 + 插件信任链 |
 | **给谁用** | ① 想在终端里让 AI 直接改代码、又不想先装 Node/Python 工具链的人；② 学仓颉、想找一份能跑能读的 AI 应用参考实现的开发者；③ 信创 / 政企场景要求「无涉外运行时依赖」的团队 |
 | **凭什么** | 一个静态二进制跑起来（Linux 19.1 MB / Windows exe 14.3 MB），无运行时依赖；「省 token + 高执行效率」是两条可实测的硬性指标；插件 SHA256 校验 + SM2 国密签名 |
-| **现在** | v1.6.19，测试 769+261 全绿，Linux / Windows 预编译包已发布；恢复会话不再复制出重复历史，会话/草稿按工作区隔离，用量随会话落盘；Web 首屏前端依赖全部自托管，断网、内网可用 |
+| **现在** | v1.6.20，测试 786+266 全绿，Linux / Windows 预编译包已发布；恢复会话提示工作区偏差（不静默 chdir），`write_file` 自动建父目录，无头 JSON 模式向 stderr 输出心跳与工具进度，内部提效提醒不再污染会话/Web 历史，Web 会话列表分页加载（每页 50 条） |
 
 ---
 
@@ -123,7 +123,7 @@ cjh 的取向是**并行子代理 + 上下文隔离**（类 Linux fork）：子�
 
 **省 token 是分工并行的核心目标，而非副产品。** 一个任务全程交给单个 agent，等同于一个人从头到尾全知——每一步都背负全局上下文，token 随任务规模持续膨胀；而团队协作的常识是：每个人只需知道与自己职责相关的部分，信息的"按需分配"理应让总消耗更低。cjh 的并行子代理正是按任务隔离上下文——子代理只携带任务相关的局部记忆，目标是**同样的任务、更少的 token**。这与 swarm 的 handoff 串行（对话整体接力、历史持续累积）形成本质区别：后者提升的是吞吐，前者同时优化成本。
 
-> 📋 **完整功能清单**（持续更新至 v1.6.19）→ [docs/cjh功能清单.md](docs/cjh功能清单.md) —— Agent 主循环 / 15 内置工具 / 10 主题 / 插件系统与信任链 / MCP / 双平台 / 版本历史的完整盘点，随版本持续更新。
+> 📋 **完整功能清单**（持续更新至 v1.6.20）→ [docs/cjh功能清单.md](docs/cjh功能清单.md) —— Agent 主循环 / 15 内置工具 / 10 主题 / 插件系统与信任链 / MCP / 双平台 / 版本历史的完整盘点，随版本持续更新。
 
 ## 🌟 为什么是 cjh
 
@@ -608,6 +608,7 @@ cjh 内置 MCP 客户端，支持 stdio 传输 + JSON-RPC 2.0。配置 `mcp_serv
 
 | 版本 | 主要功能 |
 |---|---|
+| **v1.6.20** | **长任务恢复与无头可观测性**：恢复会话时记录 cwd 与当前 cwd 不一致会显式提示原工作区，但不自动 `chdir`（避免相对路径与权限边界漂移）；`write_file` 自动创建缺失父目录；`--mode json` 把心跳与工具开始/结束写 stderr，stdout 仍只有最终 JSON；单工具/续跑/空响应重试等内部提醒标记 `internal`，不落盘、不进 Web 历史、不参与压缩；`/api/sessions` 支持 `limit/offset`，Web 侧边栏每页 50 条按需「加载更多」 |
 | **v1.6.19** | **恢复会话不再复制历史 + Web 首屏离线可用**：`--resume`、TUI 恢复、Web 断连保存原先都走 `SessionStore.save()`，每次保存都生成新 ID；现统一用 `saveWithId/saveWithIdUsage` 覆盖原文件（保留 `created/cwd/title/parent`），并让 `SessionUsage` 随会话落盘。`--list` 与 TUI 恢复树默认只看当前工作区（`--list --all` 看全部），草稿文件改按 cwd 的 SHA-256 命名，多个项目不再共用一份。Web 侧把 marked / DOMPurify / highlight.js / github-dark 嵌入二进制，由 `/assets/vendor/*` 提供并带 immutable 缓存，首屏零外域请求；高亮改走 `hljs.highlightElement`（marked v5 已移除 `highlight` 选项），保持先清洗后上色 |
 | **v1.6.18** | **忙时斜杠命令不再变成对话内容**：模型干活时输入 `/theme`（含全角 `／`、行首空格/NBSP）原先按普通消息入 steer 队列并被注入当前回合；现命令单独以 `steer=false` 排队，当前回合结束后统一分发。Alt+Enter 立即发送（中断 + 队首），Ctrl+N 排为下一条独立新任务，收尾硬顶改为钉在实际收尾点 |
 | **v1.6.13–v1.6.17** | MCP Streamable HTTP 传输 + 会话语义（`Mcp-Session-Id`、`MCP-Protocol-Version`）+ GET SSE 断点续传；子代理墙钟准入、token 预占、超时后 `Agent.abandon()` 关停副作用、Web 每会话 todo/tasks；工具结果折叠（`Ctrl+O`）、七段式英文提示词与环境注入/字节预算、版本单一来源（`VERSION` + `set_version.sh`）；单工具提效提醒不再上屏 |

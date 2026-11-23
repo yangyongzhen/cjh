@@ -1421,3 +1421,47 @@ public class JsonResultContractTest {
         @Assert(jsonExitCodeOf(s), 1)
     }
 }
+
+/**
+ * --mode json 长任务心跳：stdout 之外的进度行必须可读、带秒数。
+ * 真实故障：无头模式下 agent 跑了 17 分钟，stderr 只有启动横幅，
+ * 调用方无从判断是卡死还是在思考/跑工具。
+ */
+@Test
+public class JsonHeartbeatTest {
+    @TestCase
+    public func testHeartbeatCarriesElapsedSeconds(): Unit {
+        let line = jsonHeartbeatLine(0)
+        @Assert(line.contains("json mode"), true)
+        @Assert(line.contains("0s"), true)
+        @Assert(line.contains("stderr"), true)
+    }
+
+    @TestCase
+    public func testHeartbeatUpdatesElapsed(): Unit {
+        @Assert(jsonHeartbeatLine(65).contains("65s"), true)
+        @Assert(jsonHeartbeatLine(65).contains("0s"), false)
+    }
+}
+
+/**
+ * 恢复会话时的工作区偏差提示：只提示，不自动 chdir。
+ * 自动切换会让相对路径与权限边界静默漂移（实测恢复后 write_file 落到错误项目）。
+ */
+@Test
+public class ResumeCwdWarningTest {
+    @TestCase
+    public func testDifferentCwdWarnsWithBothPaths(): Unit {
+        let w = resumeCwdWarning("/proj/a", "/proj/b")
+        @Assert(w.contains("/proj/a"), true)
+        @Assert(w.contains("/proj/b"), true)
+        @Assert(w.contains("--resume"), true)
+    }
+
+    @TestCase
+    public func testSameOrMissingCwdIsSilent(): Unit {
+        @Assert(resumeCwdWarning("/proj/a", "/proj/a"), "")
+        @Assert(resumeCwdWarning("", "/proj/b"), "")
+        @Assert(resumeCwdWarning("/proj/a", ""), "")
+    }
+}

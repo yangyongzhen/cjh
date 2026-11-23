@@ -25,6 +25,8 @@ import cjcfg.*
  */
 class TextStubProvider <: LlmProvider {
     public var usagePromptTokens: Int64 = 0
+    // 摘要请求原文：断言内部提醒没有混进摘要
+    public var lastMessages: ArrayList<ChatMessage> = ArrayList<ChatMessage>()
 
     public init(usagePromptTokens: Int64) {
         this.usagePromptTokens = usagePromptTokens
@@ -33,6 +35,7 @@ class TextStubProvider <: LlmProvider {
     public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
         onDelta: (String) -> Unit, onReasoning: (String) -> Unit,
         onTokenEstimate: (Int64) -> Unit, isCancelled: () -> Bool): ModelResponse {
+        this.lastMessages = messages
         var resp = ModelResponse("压缩摘要 stub 文本", ArrayList<ToolCall>())
         resp.usage.promptTokens = this.usagePromptTokens
         return resp
@@ -133,6 +136,32 @@ public class CompactThresholdTest {
             }
         }
         @Assert(hasSummary, false)
+    }
+
+    @TestCase
+    public func testInternalNoticesDroppedByCompaction(): Unit {
+        // 长任务实测 [System Notice] 越积越多：它们是调度噪声，既不该进摘要，
+        // 也不该作为 user 指令钉在 kept 里永久占上下文。
+        let provider = TextStubProvider(0)
+        let agent = this.buildAgent(0, 0, 0, 0, provider)
+        var history = ArrayList<ChatMessage>()
+        history.add(ChatMessage("user", "任务目标"))
+        history.add(ChatMessage("assistant", "旧进展"))
+        history.add(ChatMessage("user", "内部续跑提醒", true))
+        history.add(ChatMessage("assistant", "更多旧进展"))
+        history.add(ChatMessage("user", "追加任务"))
+        history.add(ChatMessage("assistant", "最近进展"))
+        agent.loadHistory(history)
+        let (compacted, _, _) = agent.compact(true)
+        @Assert(compacted, true)
+        for (m in agent.getMessages()) {
+            @Assert(m.content.contains("内部续跑提醒"), false)
+        }
+        // 摘要请求里也不能出现内部提醒（否则模型会把调度噪声当用户指令）
+        @Assert(provider.lastMessages.size > 0, true)
+        for (m in provider.lastMessages) {
+            @Assert(m.content.contains("内部续跑提醒"), false)
+        }
     }
 
     @TestCase

@@ -259,6 +259,13 @@ let currentSessionId = null;
 // 会话列表范围：project=当前工作区（默认），all=全部工作区。
 // 旧版本没有这个开关，890 条跨项目历史会全部铺开（用户实锤）。
 var sessionScope = localStorage.getItem('cjh-session-scope') || 'project';
+// 会话列表分页：890 条历史一次性渲染会卡死侧边栏（用户实锤），
+// 每页 50 条，"加载更多"按需追加。
+const SESSION_PAGE_SIZE = 50;
+var sessionOffset = 0;
+var sessionHasMore = false;
+var sessionLoadSeq = 0;
+var sessionLoadingMore = false;
 let isExecuting = false;
 // 当前生效模型（以服务端 ack 为准）+ 切换中待确认的模型（失败用于回滚选项）
 let currentModelId = null;
@@ -460,19 +467,40 @@ function sendAbort() {
 // ====== 会话管理 ======
 
 /**
- * 从 /api/sessions 加载会话列表，渲染到侧边栏
+ * 从 /api/sessions 分页加载会话列表，渲染到侧边栏。
+ * reset=true（默认）从第一页重载；reset=false 追加下一页。
  */
-function loadSessions() {
-    apiFetch('/api/sessions?scope=' + encodeURIComponent(sessionScope))
+function loadSessions(reset) {
+    const appending = reset === false;
+    if (appending && sessionLoadingMore) { return; }  // 防连点重复追加同一页
+    if (!appending) {
+        sessionOffset = 0;
+        sessionHasMore = false;
+        sessionLoadingMore = false;
+        let list = document.getElementById('session-list');
+        list.innerHTML = '<div class="loading">加载中...</div>';
+    } else {
+        sessionLoadingMore = true;
+    }
+    const seq = ++sessionLoadSeq;
+    const offset = sessionOffset;
+    apiFetch('/api/sessions?scope=' + encodeURIComponent(sessionScope) +
+             '&limit=' + SESSION_PAGE_SIZE + '&offset=' + offset)
         .then(r => r.json())
         .then(data => {
+            if (seq !== sessionLoadSeq) { return; }  // 范围已切换，丢弃过期响应
+            sessionLoadingMore = false;
             let list = document.getElementById('session-list');
-            if (!data.sessions || data.sessions.length === 0) {
+            let items = data.sessions || [];
+            if (items.length === 0 && offset === 0) {
                 list.innerHTML = '<div class="empty">暂无历史会话</div>';
                 return;
             }
-            list.innerHTML = '';
-            data.sessions.forEach(function(s) {
+            let loading = list.querySelector('.loading');
+            if (loading) { loading.remove(); }
+            let more = list.querySelector('.session-more');
+            if (more) { more.remove(); }
+            items.forEach(function(s) {
                 let item = document.createElement('div');
                 item.className = 'session-item';
                 item.dataset.sessionId = s.id;
@@ -487,10 +515,33 @@ function loadSessions() {
                 }
                 list.appendChild(item);
             });
+            sessionOffset = offset + items.length;
+            sessionHasMore = !!data.has_more;
+            if (sessionHasMore) {
+                let more = document.createElement('div');
+                more.className = 'session-more';
+                let total = data.total || sessionOffset;
+                more.textContent = '加载更多（已显示 ' + sessionOffset + '/' + total + '）';
+                more.addEventListener('click', function() {
+                    loadMoreSessions();
+                });
+                list.appendChild(more);
+            }
         })
         .catch(function(e) {
+            if (seq !== sessionLoadSeq) { return; }
+            sessionLoadingMore = false;
             console.error('[Sessions] 加载失败:', e);
+            if (offset === 0) {
+                document.getElementById('session-list').innerHTML = '<div class="empty">加载失败</div>';
+            }
         });
+}
+
+function loadMoreSessions() {
+    if (sessionHasMore) {
+        loadSessions(false);
+    }
 }
 
 /**
@@ -2219,6 +2270,21 @@ body {
 .session-time {
     font-size: 11px;
     color: var(--text-secondary);
+}
+
+.session-more {
+    margin: 8px 12px;
+    padding: 8px;
+    text-align: center;
+    font-size: 12px;
+    color: var(--accent);
+    border: 1px dashed var(--border);
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.session-more:hover {
+    background: var(--bg-tertiary);
 }
 
 /* ====== 技能列表 ====== */

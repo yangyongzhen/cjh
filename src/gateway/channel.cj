@@ -1244,6 +1244,10 @@ public class ChannelGateway {
                 var msgArr = JsonArray()
                 for (i in 0..messages.size) {
                     let m = messages[i]
+                    // 内部提效提醒只给模型看，不进入 Web 可见历史
+                    if (m.isInternalNotice()) {
+                        continue
+                    }
                     var msgObj = JsonObject()
                     msgObj.put("role", JsonString(m.role))
                     msgObj.put("content", JsonString(m.content))

@@ -13,6 +13,9 @@ public class ChatMessage {
     public let toolCallId: String   // tool 结果消息关联的工具调用 ID
     public let name: String         // tool 结果消息的工具名
     public let toolCalls: ArrayList<ToolCall>  // assistant 消息携带的请求工具调用
+    // 内部提效提醒（单工具提醒/续跑指令/空响应重试等）只给模型看：
+    // 不持久化、不进 Web 历史、不参与压缩。用户排队消息不在此列（含真实用户内容）。
+    public let hiddenFromUser: Bool
 
     public init(role: String, content: String) {
         this.role = role
@@ -20,6 +23,7 @@ public class ChatMessage {
         this.toolCallId = ""
         this.name = ""
         this.toolCalls = ArrayList<ToolCall>()
+        this.hiddenFromUser = false
     }
 
     public init(role: String, content: String, toolCallId: String, name: String) {
@@ -28,6 +32,7 @@ public class ChatMessage {
         this.toolCallId = toolCallId
         this.name = name
         this.toolCalls = ArrayList<ToolCall>()
+        this.hiddenFromUser = false
     }
 
     public init(role: String, content: String, toolCalls: ArrayList<ToolCall>) {
@@ -36,6 +41,40 @@ public class ChatMessage {
         this.toolCallId = ""
         this.name = ""
         this.toolCalls = toolCalls
+        this.hiddenFromUser = false
+    }
+
+    /** 内部提醒消息构造：hiddenFromUser=true 时不落盘、不进可见历史。 */
+    public init(role: String, content: String, hiddenFromUser: Bool) {
+        this.role = role
+        this.content = content
+        this.toolCallId = ""
+        this.name = ""
+        this.toolCalls = ArrayList<ToolCall>()
+        this.hiddenFromUser = hiddenFromUser
+    }
+
+    /**
+     * 是否为内部提醒。
+     *
+     * 新消息看 hiddenFromUser；旧会话没有该字段，按内容前缀识别（兼容升级前的
+     * `[System Notice]` 注入）。用户排队消息（SteerPolicy.NOTICE_HEAD）不算内部，
+     * 因为它携带真实用户指令，必须在恢复后仍然可见。
+     */
+    public func isInternalNotice(): Bool {
+        return this.hiddenFromUser || ChatMessage.isLegacyInternalNotice(this.content)
+    }
+
+    /** 旧会话内容前缀识别（无 hiddenFromUser 元数据时使用）。 */
+    public static func isLegacyInternalNotice(content: String): Bool {
+        return content.startsWith("[System Notice] 你已连续 ") ||
+            content.startsWith("[System Notice] 轮次预算已续") ||
+            content.startsWith("[System Notice] 任务已执行 ") ||
+            content.startsWith("[System Notice] 你还没有完成任务") ||
+            content.startsWith("[System Notice] 你上一轮只输出了思考") ||
+            content.startsWith("[System Notice] The previous SSE stream was cut off") ||
+            content.startsWith("[System Notice - ABSOLUTE DIRECTIVE") ||
+            content.startsWith("[System Notice] Your previous response was empty")
     }
 
     /**
@@ -61,6 +100,20 @@ public class ChatMessage {
                 }
                 obj.put("tool_calls", JsonArray(tcs))
             }
+        }
+        return obj
+    }
+
+    /**
+     * 会话落盘 JSON：OpenAI 形状 + 可选 `internal` 元数据。
+     *
+     * 不能直接改 toOpenAiJson：那是发往模型 API 的请求体，未知字段可能被
+     * OpenAI/Anthropic 拒绝。持久化单独走这里。
+     */
+    public func toSessionJson(): JsonValue {
+        var obj = this.toOpenAiJson().asObject()
+        if (this.hiddenFromUser) {
+            obj.put("internal", JsonBool(true))
         }
         return obj
     }

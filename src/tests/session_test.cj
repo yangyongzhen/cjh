@@ -197,6 +197,56 @@ public class SessionStoreTest {
     }
 
     @TestCase
+    public func testInternalNoticesNotPersistedAndTitleSkipsThem(): Unit {
+        removeTree(this.dir)
+        Directory.create(this.dir, recursive: true)
+        let store = this.buildStore()
+        var msgs = ArrayList<ChatMessage>()
+        msgs.add(ChatMessage("user", "[System Notice] 任务已执行 50 轮（段预算已用尽），请立即结束"))
+        msgs.add(ChatMessage("user", "内部续跑提醒", true))
+        msgs.add(ChatMessage("user", "真实用户任务"))
+        msgs.add(ChatMessage("assistant", "处理中"))
+        let id = store.save(msgs)
+        let loaded = store.load(id)
+        // 内部提醒（新标记 + 旧前缀）都不落盘，只留真实对话
+        @Assert(loaded.size, 2)
+        @Assert(loaded[0].content, "真实用户任务")
+        @Assert(loaded[1].content, "处理中")
+        // 会话标题也不能被内部提醒占用
+        @Assert(store.titleOf(id), "真实用户任务")
+        // 落盘 JSON 里不能残留内部提醒文本
+        let raw = String.fromUtf8(File.readFrom(this.dir + "/" + id + ".json"))
+        @Assert(raw.contains("System Notice"), false)
+        @Assert(raw.contains("内部续跑提醒"), false)
+
+        // 恢复后继续保存走 saveWithId 同样过滤，不能把提醒从内存写回磁盘
+        msgs.add(ChatMessage("assistant", "完成"))
+        @Assert(store.saveWithId(id, msgs), true)
+        let reloaded = store.load(id)
+        @Assert(reloaded.size, 3)
+        @Assert(reloaded[2].content, "完成")
+    }
+
+    @TestCase
+    public func testLoadHonorsInternalFlagAndLegacyPrefix(): Unit {
+        removeTree(this.dir)
+        Directory.create(this.dir, recursive: true)
+        let store = this.buildStore()
+        // 旧文件：一条带 internal 元数据，一条靠前缀识别
+        File.writeTo(this.dir + "/s7.7.7.json",
+            ("{\"id\":\"s7.7.7\",\"created\":\"2026-01-01T00:00:00\",\"messages\":[" +
+             "{\"role\":\"user\",\"content\":\"续跑指令\",\"internal\":true}," +
+             "{\"role\":\"user\",\"content\":\"[System Notice] 你已连续 9 轮只调用 1 个工具\"}]}").toArray())
+        let loaded = store.load("s7.7.7")
+        @Assert(loaded.size, 2)
+        @Assert(loaded[0].hiddenFromUser, true)
+        @Assert(loaded[0].isInternalNotice(), true)
+        @Assert(loaded[1].isInternalNotice(), true)
+        // 列表标题跳过这两条内部提醒（没有真实用户消息 → 空标题，UI 回退显示 ID）
+        @Assert(store.titleOf("s7.7.7"), "")
+    }
+
+    @TestCase
     public func testSaveWithIdDoesNotDuplicateAndKeepsUsage(): Unit {
         removeTree(this.dir)
         Directory.create(this.dir, recursive: true)
@@ -258,5 +308,32 @@ public class SessionStoreTest {
         @Assert(sessionCreatedAt("s1787665309.123.4"), 1787665309)
         @Assert(sessionCreatedAt("garbage"), 0)
         @Assert(sessionCreatedAt("s"), 0)
+    }
+
+    @TestCase
+    public func testSessionPaginationBounds(): Unit {
+        // 第一页
+        let (s0, e0) = sessionPageOf(890, "50", "0")
+        @Assert(s0, 0)
+        @Assert(e0, 50)
+        // 末页不满
+        let (s1, e1) = sessionPageOf(890, "50", "880")
+        @Assert(s1, 880)
+        @Assert(e1, 890)
+        // offset 越界：空区间
+        let (s2, e2) = sessionPageOf(890, "50", "9999")
+        @Assert(s2, 890)
+        @Assert(e2, 890)
+        // 不传 limit（旧客户端）= 全部
+        let (s3, e3) = sessionPageOf(890, "", "")
+        @Assert(s3, 0)
+        @Assert(e3, 890)
+        // 非法 / 负数 / limit 超过总数都收敛到合法区间
+        let (s4, e4) = sessionPageOf(10, "abc", "-5")
+        @Assert(s4, 0)
+        @Assert(e4, 10)
+        let (s5, e5) = sessionPageOf(10, "999", "0")
+        @Assert(s5, 0)
+        @Assert(e5, 10)
     }
 }

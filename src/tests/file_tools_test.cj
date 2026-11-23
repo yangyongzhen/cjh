@@ -41,6 +41,19 @@ public class FileWriteToolsTest {
     }
 
     @TestCase
+    public func testWriteCreatesMissingParentDirs(): Unit {
+        // LLM 常直接写 src/pkg/foo.cj；父目录不存在时旧实现抛异常、整轮工具链白跑
+        let path = this.dir + "/nested/deep/file.txt"
+        let tool = WriteTool()
+        var args = JsonObject()
+        args.put("path", JsonString(path))
+        args.put("content", JsonString("created\n"))
+        let result = tool.execute(args)
+        @Assert(result.isError, false)
+        @Assert(readTextFile(path), "created\n")
+    }
+
+    @TestCase
     public func testMissingContentParam(): Unit {
         let tool = WriteTool()
         var args = JsonObject()

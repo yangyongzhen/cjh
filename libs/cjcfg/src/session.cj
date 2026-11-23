@@ -177,13 +177,28 @@ public class SessionStore {
                                         match (m.kind()) {
                                             case JsonKind.JsObject =>
                                                 let mo = m.asObject()
+                                                // internal=true 的新格式提醒：标题不能拿它当首条用户消息
+                                                var hidden = false
+                                                if (let Some(h) <- mo.get("internal")) {
+                                                    match (h.kind()) {
+                                                        case JsonKind.JsBool => hidden = h.asBool().getValue()
+                                                        case _ => ()
+                                                    }
+                                                }
+                                                if (hidden) {
+                                                    continue
+                                                }
                                                 if (let Some(role) <- mo.get("role") && let Some(content) <- mo.get("content")) {
                                                     match (role.kind()) {
                                                         case JsonKind.JsString =>
                                                             match (content.kind()) {
                                                                 case JsonKind.JsString =>
                                                                     if (role.asString().getValue() == "user") {
-                                                                        return this.clipSummary(content.asString().getValue())
+                                                                        let text = content.asString().getValue()
+                                                                        if (ChatMessage.isLegacyInternalNotice(text)) {
+                                                                            continue
+                                                                        }
+                                                                        return this.clipSummary(text)
                                                                     }
                                                                 case _ => ()
                                                             }
@@ -236,7 +251,10 @@ public class SessionStore {
         }
         var msgArr = ArrayList<JsonValue>()
         for (m in messages) {
-            msgArr.add(m.toOpenAiJson())
+            if (m.isInternalNotice()) {
+                continue
+            }
+            msgArr.add(m.toSessionJson())
         }
         root.put("messages", JsonArray(msgArr))
         File.writeTo(path, root.toJsonString().toArray())
@@ -298,7 +316,10 @@ public class SessionStore {
         }
         var msgArr = ArrayList<JsonValue>()
         for (m in messages) {
-            msgArr.add(m.toOpenAiJson())
+            if (m.isInternalNotice()) {
+                continue
+            }
+            msgArr.add(m.toSessionJson())
         }
         root.put("messages", JsonArray(msgArr))
         if (usage.hasData()) {
@@ -517,6 +538,7 @@ public class SessionStore {
                 var content = ""
                 var toolId = ""
                 var name = ""
+                var hidden = false
                 if (let Some(r) <- obj.get("role")) {
                     match (r.kind()) {
                         case JsonKind.JsString => role = r.asString().getValue()
@@ -541,10 +563,16 @@ public class SessionStore {
                         case _ => ()
                     }
                 }
+                if (let Some(h) <- obj.get("internal")) {
+                    match (h.kind()) {
+                        case JsonKind.JsBool => hidden = h.asBool().getValue()
+                        case _ => ()
+                    }
+                }
                 if (toolId.size > 0) {
                     return ChatMessage(role, content, toolId, name)
                 }
-                return ChatMessage(role, content)
+                return ChatMessage(role, content, hidden)
             case _ => return ChatMessage("user", "")
         }
     }
