@@ -2225,6 +2225,16 @@ public class Agent {
                 }
             }
         }
+        // 测试契约门禁：修改测试断言必须经用户批准。
+        // 无头模式 onApproval 默认 false，直接拒绝；TUI/Web 弹出审批。
+        // 位置在 capability 之后：先让安全策略拒绝，再谈测试契约。
+        if (let Some(testReason) <- testContractChangeReason(name, args)) {
+            if (!this.onApproval(name, args, testReason)) {
+                return ToolResult(
+                    "操作被用户拒绝（${testReason}）。不要通过改写测试断言让测试变绿：" +
+                    "优先修实现；若确需变更测试契约，先向用户说明冲突并取得同意。", true)
+            }
+        }
         // 全部通过：正常执行（兜底异常，避免单工具崩溃带垮整个 Agent 循环）
         try {
             return this.tools.execute(name, args)

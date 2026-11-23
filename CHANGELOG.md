@@ -1,6 +1,12 @@
 # CHANGELOG
 ## [v1.6.19] - 2026-11-23
 
+### 修复(测试契约护栏：禁止模型改写断言让测试变绿)
+- **新增写入门禁**：`edit`/`hashline_edit`/对已有测试文件的 `write_file`/`append_file` 命中测试断言时，必须走审批链（TUI 弹窗、Web `approval_request`、无头模式默认拒绝）。测试失败优先修实现；确需改测试契约须用户显式同意。
+- **识别范围保守**：路径含 `tests/test/spec/__tests__` 或 `*_test.*`/`test_*`/`*.test.*`/`*.spec.*`；断言关键字含 `assert`/`@Assert`/`@Expect`/`expect(`/`should.`/`pytest.raises`。宁可多问，不静默放行。
+- **提示词约束**：默认系统提示词新增 “Tests are contracts…”，明确不得重写已有断言让失败测试变绿。
+- 回归：`TestGuardTest` 8 例（路径/断言识别、edit 拒绝与批准、非断言编辑放行、write_file 改测试断言识别）；`default_prompt_test` 锁提示词新规则。
+
 ### 修复(会话恢复重复 / 按工作区隔离 / 用量持久化)
 - **恢复会话不再新建重复历史**:`--resume`、TUI 恢复、Web 断连保存原先都调 `SessionStore.save()`，每次生成新 ID；现统一走 `saveWithId/saveWithIdUsage` 覆盖原文件（保留 `created/cwd/title/parent`），恢复+保存后会话数不变。
 - **会话列表按工作区过滤**:`--list` 默认只看当前 cwd（旧会话无 `cwd` 仍可见），`--list --all` 查看全部；TUI 欢迎页与 `/resume` 的树形列表同口径。Web `/api/sessions?scope=project` 继续使用 `listScoped`。
@@ -15,8 +21,8 @@
 - 回归：`WebVendorSelfHostTest` 3 例校验索引无 CDN、四个资源已嵌入且版本正确、高亮走 `hljs.highlightElement`；`scripts/web_smoke_test.py` 真起服务核对 4 个 vendor 的路径、Content-Type、`immutable` 缓存头与版本标识（顺带把过期的 protocol=5 断言更到 7）。
 
 ### 测试
-- 根包新增：会话覆盖保存/用量累计、草稿路径隔离、Web 会话 ID 复用、网关断连用量落盘；Web vendor 自托管 3 例。
-- 全量门禁：根包 **769/769**、libs **261/261**、TUI PTY **105/105**、`--mock` 端到端通过。
+- 根包新增：会话覆盖保存/用量累计、草稿路径隔离、Web 会话 ID 复用、网关断连用量落盘、测试契约护栏 8 例；Web vendor 自托管 3 例。
+- 全量门禁：根包 **777/777**、libs **261/261**、TUI PTY **105/105**、`--mock` 端到端通过。
 - Web 冒烟：4 个 vendor 路径/Content-Type/immutable 缓存头/版本校验通过；真实浏览器零外域资源、清洗后高亮正常。
 
 ## [v1.6.18] - 2026-11-21

@@ -599,6 +599,7 @@ public class CjhConfig {
                 "\n\n## Safety and precedence\n" +
                 "- Safety rules and repository instructions (AGENTS.md) are binding. The current user request defines the task. Project memory and session summaries are stale context: verify paths and state before relying on them. If two binding rules conflict, state the conflict instead of guessing.\n" +
                 "- Do not run destructive commands (rm -rf, git reset --hard, force push, mass deletion) without explicit user approval. Never print secrets or commit credentials.\n" +
+                "- Tests are contracts: never rewrite an existing test assertion to make a failing test pass. Fix the implementation; if the spec is genuinely ambiguous, keep the old assertion and report the conflict. Changing a test assertion requires explicit user approval.\n" +
                 "- If the user's premise, diagnosis, or plan looks wrong, say so with evidence before executing. Never fabricate tool output, test results, or file contents. If something cannot be verified, say exactly what and why." +
                 "\n\n## Output contract\n" +
                 "- During work: at most one short line per tool batch. No long plans in prose.\n" +

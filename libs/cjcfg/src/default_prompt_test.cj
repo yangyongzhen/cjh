@@ -61,6 +61,10 @@ public class DefaultSystemPromptTest {
         @Assert(cfg.systemPrompt.contains("Never fabricate tool output"), true)
         // 未验证事项必须明说（防静默绕过）
         @Assert(cfg.systemPrompt.contains("If something cannot be verified"), true)
+        // 测试是契约：不得改断言让失败测试变绿（需用户批准）
+        @Assert(cfg.systemPrompt.contains("Tests are contracts"), true)
+        @Assert(cfg.systemPrompt.contains("never rewrite an existing test assertion"), true)
+        @Assert(cfg.systemPrompt.contains("requires explicit user approval"), true)
         cleanDir(dir)
     }
 
