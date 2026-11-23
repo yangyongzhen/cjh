@@ -267,6 +267,33 @@ public class ContinuationPolicy {
         return CapAction.WrapUp
     }
 
+    /**
+     * 本段预算只剩最后几轮时是否该提前提示。
+     * 到软顶才说"立即总结"往往已经浪费了一轮探索；提前 WARN_WINDOW 轮
+     * 让模型把当前步骤收束，而不是再开新坑。
+     */
+    public static let WARN_WINDOW: Int64 = 5
+    /** 小预算不提示：5 轮窗口会覆盖大半程，提醒反而变成噪音（默认 50 轮才提示）。 */
+    public static let MIN_WARN_SEG_CAP: Int64 = 20
+
+    public static func shouldWarnRoundBudget(iterations: Int64, segCap: Int64): Bool {
+        if (segCap < ContinuationPolicy.MIN_WARN_SEG_CAP) {
+            return false
+        }
+        if (iterations <= 0 || iterations >= segCap) {
+            return false
+        }
+        return segCap - iterations <= ContinuationPolicy.WARN_WINDOW
+    }
+
+    /** 提前收束提示正文（不改变硬预算，只调整优先级）。 */
+    public static func budgetWarningNotice(remaining: Int64, segCap: Int64): String {
+        var notice = "[System Notice] 本段轮次预算只剩 ${remaining} 轮（本段上限累计 ${segCap} 轮）。\n"
+        notice += "不要再开启新的探索：完成当前正在做的步骤，优先产出可验证结果（跑测试/构建/给出结论）。\n"
+        notice += "如果确实做不完，在最终答复里明确列出剩余步骤，不要假装完成。"
+        return notice
+    }
+
     /** 续段指令正文（列出未完成待办 + 禁止重复已完成的工作） */
     public static func segmentNotice(open: ArrayList<TodoItem>, segment: Int64, totalSegments: Int64,
         segCap: Int64): String {
@@ -543,9 +570,9 @@ public class Agent {
     // 子代理行事件回调（S3d 焦点转发用）：(agentId, kind: tool_start|tool_result, text)
     // 硬规则：子代理 onDelta 绝不转发（OutputView 单流会撕行），只转发整行事件
     public var onSubagentEvent: (Int64, String, String) -> Unit = { _, _, _ => }
-    // 每轮一次的轮次/用量回调（S3 修实测卡死）：(rounds, promptTokens, completionTokens)。
+    // 每轮一次的轮次/用量回调（S3 修实测卡死）：(rounds, promptTokens, completionTokens, cachedTokens)。
     // 面板刷新必须挂这里（每轮一次、provider 无关），不能挂 onTokenEstimate（每 SSE chunk 一次）
-    public var onRoundTick: (Int64, Int64, Int64) -> Unit = { _, _, _ => }
+    public var onRoundTick: (Int64, Int64, Int64, Int64) -> Unit = { _, _, _, _ => }
     // 回合结束回调（渲染回合总结条：轮数/工具数/耗时/token用量/缓存命中率）
     public var onRunComplete: (RunSummary) -> Unit = { _ => }
     /**
@@ -1057,6 +1084,8 @@ public class Agent {
         // 软顶（wrapUpRounds）：该收尾时注入"立即总结"指令，不再硬切——
         // 长任务可在当前工作线程自然收尾；超过 wrapUpRounds 仍未结束才强制停止
         var wrapUpInjected: Bool = false
+        // 每段只提前提示一次（防止剩余 5 轮内每轮刷同一条提醒）
+        var budgetWarnedSeg: Int64 = 0
         let wrapUpRounds: Int64 = 10
         // 硬顶 = 实际收尾起点 + 收尾窗口。**不能**用
         // maxIterations * maxSegments + wrapUpRounds 预先算死：第三段之前就收尾时
@@ -1083,6 +1112,20 @@ public class Agent {
                         this.messages.add(ChatMessage("user",
                             "[System Notice] 任务已执行 ${iterations} 轮（段预算已用尽），请立即结束：不要再调用任何工具，直接给出最终总结答复（如任务确未完成，简述剩余步骤）。最多再 ${wrapUpRounds} 轮将强制结束。", true))
                         this.onAssistantText("\n[System] 已达轮次预算（${iterations} 轮），要求模型收尾总结（最多再 ${wrapUpRounds} 轮）\n")
+                }
+            }
+            // 接近本段软顶时提前一次提示：只提醒"收束当前步骤"，不改变硬预算。
+            // 有未完成待办时段末大概率会 Extend，不提前喊收尾（否则与续段指令打架）。
+            let segCapNow = this.config.maxIterations * segmentsDone
+            if (!wrapUpInjected && budgetWarnedSeg < segmentsDone &&
+                ContinuationPolicy.shouldWarnRoundBudget(iterations, segCapNow)) {
+                let openAtWarn = this.openTodoItems()
+                if (openAtWarn.size == 0) {
+                    budgetWarnedSeg = segmentsDone
+                    let remaining = segCapNow - iterations
+                    this.onAssistantText("\n[System] 轮次预算剩 ${remaining} 轮，优先收束当前步骤\n")
+                    this.messages.add(ChatMessage("user",
+                        ContinuationPolicy.budgetWarningNotice(remaining, segCapNow), true))
                 }
             }
             // P0-2：用户 Ctrl+C 中断——轮次间检查，保留已完成工作
@@ -1199,7 +1242,7 @@ public class Agent {
             // S3 修实测卡死：每轮一次的轮次/用量回调（provider 无关）。此前面板刷新接在
             // onTokenEstimate 上——anthropic 每 SSE chunk 回调一次，长流式下每秒成百次
             // 锁+快照拷贝+全帧置脏，主循环被淹没（界面静止、输入无响应）
-            this.onRoundTick(iterations, summary.promptTokens, summary.completionTokens)
+            this.onRoundTick(iterations, summary.promptTokens, summary.completionTokens, summary.cachedTokens)
             Log.info("第 ${iterations} 轮完成 | 耗时 ${roundMs}ms | prompt ${response.usage.promptTokens} completion ${response.usage.completionTokens} cached ${response.usage.cachedTokens} | toolCalls ${response.toolCalls.size} | textLen ${response.text.size} | truncated ${response.truncated} | timedOut ${response.timedOut}")
 
             // SSE 空闲超时：网络长时间无新数据，已收文本/tool_calls 保留。
@@ -2169,6 +2212,11 @@ public class Agent {
         // 后台任务三件套并到 bash 单一授权面（B-1）：用户配 tools: ["bash"] 即涵盖后台执行，
         // 无需为新工具补白名单条目；审批 reason 里出现的也是 bash（同一授权面才好解释）
         let capName = capabilityToolAlias(name)
+        // 同一次工具调用只确认一次：capability.approval 命中工具名时，工具域已经
+        // 问过用户；随后命令域/文件域再命中审批时不应重复弹窗（实测 bash 一次
+        // 命令被问两次，用户以为陷入循环）。**Deny 仍然逐层执行**——已确认的是
+        // “允许该工具”，不是“放弃后续安全规则”。
+        var approvalGranted = false
         // 1. 工具域
         match (cap.checkTool(capName)) {
             case CapDecision.Allow => ()
@@ -2178,8 +2226,9 @@ public class Agent {
                 if (!this.onApproval(name, args, reason)) {
                     return ToolResult("操作被用户拒绝（${reason}）", true)
                 }
+                approvalGranted = true
         }
-        // 2/3. 命令域 + 资源域（按工具类型检查参数）
+        // 2/3. 命令域 + 资源域检查（按工具类型检查参数）
         let cmd = args.get("command")
         // bash_start 的 command 与 bash 同等受命令域约束——黑名单不能靠"换个工具"绕过
         if (cmd.isSome() && (name == "bash" || name == "bash_start")) {
@@ -2189,9 +2238,10 @@ public class Agent {
                 case CapDecision.Deny(reason) =>
                     return ToolResult("被安全策略拒绝: ${reason}", true)
                 case CapDecision.NeedApproval(reason) =>
-                    if (!this.onApproval(name, args, reason)) {
+                    if (!approvalGranted && !this.onApproval(name, args, reason)) {
                         return ToolResult("操作被用户拒绝（${reason}）", true)
                     }
+                    approvalGranted = true
             }
         }
         let path = args.get("path")
@@ -2209,9 +2259,10 @@ public class Agent {
                 case CapDecision.Deny(reason) =>
                     return ToolResult("被安全策略拒绝: ${reason}", true)
                 case CapDecision.NeedApproval(reason) =>
-                    if (!this.onApproval(name, args, reason)) {
+                    if (!approvalGranted && !this.onApproval(name, args, reason)) {
                         return ToolResult("操作被用户拒绝（${reason}）", true)
                     }
+                    approvalGranted = true
             }
             // S6：writeScope 收窄（AND 语义：capability 放行后仍须落在写域内；空=不限）。
             // 只收窄、绝不放宽——红线：不触碰 Capability 默认宽松语义

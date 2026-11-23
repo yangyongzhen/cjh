@@ -39,6 +39,9 @@ public class DefaultSystemPromptTest {
         @Assert(cfg.systemPrompt.contains("Never batch-complete at the end"), true)
         // 与派发特性绑定：task 只用于真正独立的工作
         @Assert(cfg.systemPrompt.contains("task: only for genuinely independent work"), true)
+        // 并行工具调用：同一响应内批量发独立调用（实测一轮一个工具浪费轮次）
+        @Assert(cfg.systemPrompt.contains("Parallel calls:"), true)
+        @Assert(cfg.systemPrompt.contains("SAME response"), true)
         cleanDir(dir)
     }
 

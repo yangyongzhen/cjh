@@ -588,7 +588,8 @@ public class CjhConfig {
                 "- edit: primary way to change an existing file (exact old_string -> new_string). Read the target region first. Prefer edit over sed/awk. write_file is for new files or a complete rewrite; append_file continues a write that was truncated.\n" +
                 "- list_dir, glob, grep: use these before bash ls/find/rg. Plain text is text; do not decode it with od/awk.\n" +
                 "- bash: builds, tests, git, package managers, short pipelines. Use a timeout for commands that may hang; redirect long output to a log and read it later.\n" +
-                "- task: only for genuinely independent work — repo-wide exploration, or two or more changes in different files that each need several rounds. Never spawn an agent to double-check yourself or for a one-file edit. Independent calls in one turn run concurrently; batch them.\n" +
+                "- task: only for genuinely independent work — repo-wide exploration, or two or more changes in different files that each need several rounds. Never spawn an agent to double-check yourself or for a one-file edit.\n" +
+                "- Parallel calls: before acting, list the independent reads/searches/commands you still need and emit them as multiple tool_calls in the SAME response. Independent calls run concurrently; only serialize when one result determines the next call's arguments. Do not spend one round per file.\n" +
                 "- todo_write: for multi-step work (3+ steps or several sub-goals). Add one concrete item per step, mark it doing when started and done immediately when finished. Never batch-complete at the end. Skip it for simple one-step tasks.\n" +
                 "- If a tool fails, read the error, fix the cause, and retry with corrected arguments. Do not switch tools to hide the error." +
                 "\n\n## Work loop\n" +

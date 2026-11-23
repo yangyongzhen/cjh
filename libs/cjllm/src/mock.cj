@@ -82,6 +82,10 @@ public class MockProvider <: LlmProvider {
         // 的路径，验证 stdx 打到 fd 1 的噪声不会进输入栏。默认 4 步链不变，
         // 不影响 runMockVerify 的"恰好 4 次调用"断言（它不设置该变量）。
         let webFetchUrl: String = mockGetenv("CJH_MOCK_WEB_URL") ?? ""
+        // 环境变量门控（additive，默认关闭）：CJH_MOCK_DANGER=1 时第 2 轮发一条
+        // 危险 bash（rm -rf），第 3 轮改发安全命令——供审批拒绝端到端场景验证
+        // "拒绝后模型继续、改用安全方案"，而不是卡死或重复请求同一操作。
+        let dangerStepEnabled: Bool = (mockGetenv("CJH_MOCK_DANGER") ?? "").size > 0
         // 环境变量门控（additive，默认关闭）：CJH_MOCK_TASKS=1 时父代理**第 1 轮**改发
         // 两个 task 调用（V2d 同批并发）。父判别：tools 里含 task（子 explore 的
         // registry 已剥离 task，即使环境变量继承到子代理也不会再派）；callCount==1
@@ -136,6 +140,14 @@ public class MockProvider <: LlmProvider {
                 calls.add(ToolCall("call_1b", "grep", args1b))
                 return ModelResponse("我来先看看文件内容。", calls)
             case 2 =>
+                if (dangerStepEnabled) {
+                    // 危险性操作：审批拒绝后下一轮会改发安全命令
+                    var argsD = JsonObject()
+                    argsD.put("command", JsonString("rm -rf /tmp/cjh_mock_danger_probe"))
+                    var callsD = ArrayList<ToolCall>()
+                    callsD.add(ToolCall("call_2d", "bash", argsD))
+                    return ModelResponse("先清理旧目录。", callsD)
+                }
                 if (bashStepEnabled) {
                     // 退出路径回归：发 bash，真正 spawn 持久 BashSession 子进程
                     var argsB = JsonObject()
@@ -161,6 +173,14 @@ public class MockProvider <: LlmProvider {
                 calls.add(ToolCall("call_2", "grep", args2))
                 return ModelResponse("再用 grep 搜索。", calls)
             case 3 =>
+                if (dangerStepEnabled) {
+                    // 拒绝后改用安全方案：只读探测，不删除任何东西
+                    var argsSafe = JsonObject()
+                    argsSafe.put("command", JsonString("echo cjh-safe-alternative"))
+                    var callsSafe = ArrayList<ToolCall>()
+                    callsSafe.add(ToolCall("call_3s", "bash", argsSafe))
+                    return ModelResponse("改用安全的只读检查。", callsSafe)
+                }
                 // 工具调用 3：列出目录（跨平台：POSIX /tmp，Windows %TEMP%）
                 var args3 = JsonObject()
                 args3.put("path", JsonString(tmpDir()))

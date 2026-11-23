@@ -1243,13 +1243,24 @@ public class CorePromptAssemblyTest {
         let skillsDir = coreTestTempDir("prompt_env_skills")
         let memDir = coreTestTempDir("prompt_env_mem")
         let s = buildSystemPrompt("BASE", skillsDir, ArrayList<String>(), memDir, 6000, 6000, 4000)
-        @Assert(s.startsWith("BASE\n\n## Current environment"), true)
+        @Assert(s.startsWith("BASE"), true)
+        // 环境块置底：稳定前缀（基础规则/项目上下文）尽量长，缓存才有命中
+        @Assert(s.contains("## Current environment"), true)
+        @Assert(s.indexOf("## Current environment").getOrThrow() > s.indexOf("## Tool result truncation").getOrThrow(), true)
         @Assert(s.contains("- Working directory: ${getWorkingDirectory()}"), true)
         @Assert(s.contains("- Platform: "), true)
         @Assert(s.contains("- Shell: "), true)
-        @Assert(s.contains("- Date: "), true)
+        // 日期只到天：同一项目跨会话前缀不变
+        @Assert(s.contains("- Date: ${promptDateOf(DateTime.now().toString())}"), true)
         removeTreeForTest(skillsDir)
         removeTreeForTest(memDir)
+    }
+
+    @TestCase
+    public func testPromptDateIsStableToDay(): Unit {
+        @Assert(promptDateOf("2026-11-23T13:22:45.123Z"), "2026-11-23")
+        @Assert(promptDateOf("2026-11-23"), "2026-11-23")
+        @Assert(promptDateOf("short"), "short")
     }
 
     @TestCase
@@ -1441,6 +1452,20 @@ public class JsonHeartbeatTest {
     public func testHeartbeatUpdatesElapsed(): Unit {
         @Assert(jsonHeartbeatLine(65).contains("65s"), true)
         @Assert(jsonHeartbeatLine(65).contains("0s"), false)
+    }
+
+    @TestCase
+    public func testToolDoneCarriesElapsedAndBytes(): Unit {
+        let line = jsonToolDoneLine("bash", 2300, 1536, false)
+        @Assert(line.contains("tool done: bash"), true)
+        @Assert(line.contains("2.3s"), true)
+        @Assert(line.contains("1.5KB"), true)
+        @Assert(line.contains("(error)"), false)
+        // 亚秒与纯字节边界：不能让长任务心跳只显示 0s/0KB
+        @Assert(jsonToolDoneLine("read_file", 7, 12, true).contains("7ms"), true)
+        @Assert(jsonToolDoneLine("read_file", 7, 12, true).contains("12B"), true)
+        @Assert(jsonToolDoneLine("read_file", 7, 12, true).contains("(error)"), true)
+        @Assert(fmtBytesShort(1024 * 1024 + 512 * 1024).contains("1.5MB"), true)
     }
 }
 

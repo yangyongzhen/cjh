@@ -38,7 +38,8 @@ public class GlobTool <: CjhTool {
         return ToolSpec("glob",
             "Find files matching a glob pattern. Returns matching file paths. " +
             "Supports ** for recursive directory matching. " +
-            "Examples: '**/*.ts' finds all .ts files; 'src/*.cj' finds .cj files in src/.",
+            "Examples: '**/*.ts' finds all .ts files; 'src/*.cj' finds .cj files in src/. " +
+            "Independent globs can be issued together in one response.",
             schema)
     }
 

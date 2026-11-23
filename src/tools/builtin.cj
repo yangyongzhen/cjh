@@ -90,7 +90,8 @@ public class BashTool <: CjhTool {
             "pipe open, the right-hand side waits for EOF, and the call hangs until timeout. " +
             "Redirect instead — `<cmd> > build.log 2>&1` returns at once — then read build.log with read_file. " +
             "Commands are killed after ${this.timeoutSecs}s by default — for minutes-long commands " +
-            "(cargo build, hvigor) pass the timeout parameter (e.g. timeout=\"600\", max 3600).", schema)
+            "(cargo build, hvigor) pass the timeout parameter (e.g. timeout=\"600\", max 3600). " +
+            "Independent commands can be run in parallel by issuing multiple bash calls in one response.", schema)
     }
 
     public func execute(args: JsonObject): ToolResult {
@@ -257,7 +258,8 @@ public class ReadTool <: CjhTool {
             "Returns line-numbered content (format: <N>\\t<content>). " +
             "Call WITHOUT offset/limit first to load the whole file; " +
             "if the file is large (>500 lines), use offset+limit to read a section. " +
-            "Example: offset=50 limit=20 reads lines 50-69.",
+            "Example: offset=50 limit=20 reads lines 50-69. " +
+            "When you need several independent files, issue all read_file calls in the same response.",
             schema)
     }
 
@@ -853,7 +855,8 @@ public class GrepTool <: CjhTool {
             "Search file(s) or a directory tree with a regex. " +
             "path can be a file or a directory (recursive); " +
             "auto-skips .git/node_modules/target/dist; " +
-            "context controls N lines shown around each match.",
+            "context controls N lines shown around each match. " +
+            "Independent searches can be issued together in one response.",
             schema)
     }
 
@@ -1108,7 +1111,7 @@ public class ListDirTool <: CjhTool {
         var props = HashMap<String, JsonValue>()
         props.add("path", JsonSchema.str("Directory path to list"))
         let schema = JsonSchema.object(props, ArrayList<String>(["path"]))
-        return ToolSpec("list_dir", "List files and subdirectories under a directory. Use to understand project structure.", schema)
+        return ToolSpec("list_dir", "List files and subdirectories under a directory. Use to understand project structure. Independent directories can be listed in one response.", schema)
     }
 
     public func execute(args: JsonObject): ToolResult {

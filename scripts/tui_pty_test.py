@@ -96,7 +96,7 @@ class PtuSession:
         )
 
     def expect_count(self, text: str, count: int, timeout: float | None = None) -> str:
-        """等待输出中 text 出现至少 count 次（ANSI 剥离后计数；expect 无位置游标，
+        """等待输出中出现 text 至少 count 次（ANSI 剥离后计数；expect 无位置游标，
         重复 expect 同一文本会命中同一处，必须计数等待）。"""
         deadline = time.time() + (timeout or self.timeout)
         while time.time() < deadline:
@@ -107,6 +107,16 @@ class PtuSession:
             f"expect '{text}' x{count} 超时。当前缓冲(已剥离 ANSI，尾部 500 字符):\n"
             + strip_ansi(self.buf)[-500:]
         )
+
+    def wait_new_output(self, start: int, timeout: float = 0.8) -> bool:
+        """等待 start 之后出现新输出（弹窗文案相同、diff 渲染可能不重发文本，
+        所以只要求有新字节；超时返回 False，由调用方按已渲染处理）。"""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            self.read_available(0.05)
+            if len(strip_ansi(self.buf)) > start:
+                return True
+        return False
 
     def send(self, data: str) -> None:
         os.write(self.master, data.encode("utf-8"))
@@ -400,6 +410,36 @@ def test_approval_queue() -> None:
         s.expect("FINAL-DONE")
         check("两路审批后 agent 完成回合", True)
         s.send_key(3)  # 空闲：一次退出
+        s.wait_exit()
+    finally:
+        s.close()
+
+
+def test_approval_danger_denied_switches_safe() -> None:
+    print("[场景5b] 危险命令拒绝：rm -rf 被拒后改用安全只读命令")
+    cfg = make_config_dir(approval=["bash"])
+    # 第 2 轮发 rm -rf（撞审批），第 3 轮发 echo 安全命令（再撞审批）
+    s = PtuSession(cfg, extra_env={"CJH_MOCK_DANGER": "1"})
+    try:
+        s.expect("cjh")
+        s.send("跑危险命令拒绝测试\n")
+        s.expect("需人工确认")
+        s.expect("rm -rf /tmp/cjh_mock_danger_probe")
+        check("危险命令进入审批弹窗", True)
+        s.send("n")  # 拒绝删除
+        # 拒绝后 agent 必须继续，且下一轮改用安全命令（不是重复请求 rm -rf）
+        s.expect("cjh-safe-alternative", timeout=20)
+        check("拒绝后模型改用安全方案", True)
+        # 安全命令同样要过审批。注意 approve 弹窗文案与首张相同，diff 渲染可能
+        # 不重发文本，因此不能靠文字第二次出现判断；等一小段新输出（弹窗绘制）
+        # 后再按 y，避免按键落在「工具已开始但审批尚未接管输入」的间隙里。
+        mark = len(strip_ansi(s.buf))
+        s.wait_new_output(mark, timeout=0.8)
+        s.send("y")  # 批准安全命令
+        s.expect("FINAL-DONE")
+        check("安全方案执行后回合完成", True)
+        check("出现拒绝相关提示", "拒绝" in strip_ansi(s.buf))
+        s.send_key(3)
         s.wait_exit()
     finally:
         s.close()
@@ -975,6 +1015,7 @@ def main() -> None:
     test_approval_queue()
     test_agents_panel_focus()
     test_approval_no()
+    test_approval_danger_denied_switches_safe()
     test_provider_dialog()
     test_provider_dialog_aggregator()
     test_provider_dialog_protocol()

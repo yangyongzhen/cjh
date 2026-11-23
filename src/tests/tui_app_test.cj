@@ -688,6 +688,27 @@ public class TuiAppKeyTest {
         app.setAgentTokenEstimate(80)       // 小于当前值：不回落
         @Assert(app.testAgentPromptTokens(), 120)
     }
+
+    @TestCase
+    public func testCacheUsageShowsHitRateAndResetsPerRun(): Unit {
+        // 状态行"缓存 N%"：累计 prompt/cached 的比值，跨轮保留到本 run 结束
+        @Assert(cacheHitPercent(1000, 0), 0)      // 无命中不显示
+        @Assert(cacheHitPercent(1000, 250), 25)
+        @Assert(cacheHitPercent(1000, 1500), 100) // 异常上游值钳到 100
+        @Assert(cacheHitPercent(0, 500), 0)       // 无 prompt 不除零
+        let (app, _) = this.buildApp()
+        app.setAgentRunning(true)
+        app.setAgentCacheUsage(2000, 500)
+        @Assert(app.testAgentCachePercent(), 25)
+        // 下一轮累计继续增长（不是每轮覆盖成孤立值）
+        app.setAgentCacheUsage(4000, 3000)
+        @Assert(app.testAgentCachePercent(), 75)
+        // 新 run 必须归零，否则沿用上一任务命中率会误导
+        app.setAgentRunning(false)
+        app.setAgentRunning(true)
+        @Assert(app.testAgentCachePercent(), 0)
+        app.setAgentRunning(false)
+    }
 }
 
 /**

@@ -557,6 +557,31 @@ public class CapActionTest {
     }
 
     @TestCase
+    public func testEarlyBudgetWarningWindow(): Unit {
+        // 50 轮预算：45 轮起提示（剩 5），之前不吵
+        @Assert(ContinuationPolicy.shouldWarnRoundBudget(44, 50), false)
+        @Assert(ContinuationPolicy.shouldWarnRoundBudget(45, 50), true)
+        @Assert(ContinuationPolicy.shouldWarnRoundBudget(49, 50), true)
+        // 已到软顶交给 capAction 收尾，不重复提示；0 轮不提示
+        @Assert(ContinuationPolicy.shouldWarnRoundBudget(50, 50), false)
+        @Assert(ContinuationPolicy.shouldWarnRoundBudget(0, 50), false)
+        // 小预算不提示：5 轮窗口会覆盖大半程，只有长预算（≥20）才提前收束
+        @Assert(ContinuationPolicy.shouldWarnRoundBudget(3, 8), false)
+        @Assert(ContinuationPolicy.shouldWarnRoundBudget(15, 20), true)
+        @Assert(ContinuationPolicy.shouldWarnRoundBudget(14, 19), false)
+    }
+
+    @TestCase
+    public func testEarlyBudgetWarningNoticeIsActionable(): Unit {
+        let n = ContinuationPolicy.budgetWarningNotice(4, 50)
+        @Assert(n.contains("只剩 4 轮"), true)
+        @Assert(n.contains("不要再开启新的探索"), true)
+        @Assert(n.contains("剩余步骤"), true)
+        // 提示不得让模型提前收场时谎称完成
+        @Assert(n.contains("不要假装完成"), true)
+    }
+
+    @TestCase
     public func testSegmentNoticeListsOpenTodos(): Unit {
         let a = TodoItem(1, "读完 cspub 源码")
         a.status = TodoStatus.InProgress

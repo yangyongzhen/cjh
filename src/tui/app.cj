@@ -49,6 +49,21 @@ public func draftFilePath(configDir: String, cwd: String): String {
 }
 
 /**
+ * provider 前缀缓存命中率（纯函数）：cached/prompt，钳到 0..100。
+ * prompt 为 0（估算阶段/无 usage）时不显示，调用方按 0 跳过。
+ */
+public func cacheHitPercent(promptTotal: Int64, cached: Int64): Int64 {
+    if (promptTotal <= 0 || cached <= 0) {
+        return 0
+    }
+    let p = cached * 100 / promptTotal
+    if (p > 100) {
+        return 100
+    }
+    return p
+}
+
+/**
  * TUI 应用：对话界面（组件化编排）
  *
  * 布局（0-based 行，TuiCanvas 差分渲染）：
@@ -94,6 +109,9 @@ public class TuiApp {
     private var agentRounds: Int64 = 0
     // Agent 执行期间累计输入 token（实时状态行显示用）
     private var agentPromptTokens: Int64 = 0
+    // 本 run 累计 prompt / cached token（状态行显示缓存命中率；每 run 归零）
+    private var agentPromptTotal: Int64 = 0
+    private var agentCachedTokens: Int64 = 0
     private var agentTokenLock: Mutex = Mutex()
     // Agent 当前执行状态（实时状态行显示用：Thinking/Running bash/Streaming 等）
     private var agentState: String = ""
@@ -1096,6 +1114,13 @@ public class TuiApp {
         this.agentTokenLock.unlock()
         return t
     }
+    // 本 run 缓存命中率观测（单测用）
+    public func testAgentCachePercent(): Int64 {
+        this.agentTokenLock.lock()
+        let p = cacheHitPercent(this.agentPromptTotal, this.agentCachedTokens)
+        this.agentTokenLock.unlock()
+        return p
+    }
     public func testEditMode(): Bool { return this.editMode }
     // 思考历史观测（单测用）：已保留轮数 / 末轮是否仍在思考
     public func testThinkingRounds(): Int64 { return this.outputView.thinkingRounds() }
@@ -1118,6 +1143,8 @@ public class TuiApp {
             this.agentRounds = 0
             this.agentTokenLock.lock()
             this.agentPromptTokens = 0
+            this.agentPromptTotal = 0
+            this.agentCachedTokens = 0
             this.agentTokenLock.unlock()
             // 重置空闲看门狗锚点：agentLastActivity 只被 onDelta/onReasoning 更新、
             // 跨 run 不重置——上一 run 结束后锚点停在旧帧，新 run 启动后"建连+前
@@ -1339,6 +1366,18 @@ public class TuiApp {
     public func addAgentTokens(tokens: Int64): Unit {
         this.agentTokenLock.lock()
         this.agentPromptTokens = tokens
+        this.agentTokenLock.unlock()
+        this.markDirty()
+    }
+
+    /**
+     * 本 run 累计 prompt/cached token（onRoundTick 每轮一次）。
+     * 状态行据此显示缓存命中率：长任务若始终 0%，说明系统提示词前缀不稳定。
+     */
+    public func setAgentCacheUsage(promptTotal: Int64, cached: Int64): Unit {
+        this.agentTokenLock.lock()
+        this.agentPromptTotal = promptTotal
+        this.agentCachedTokens = cached
         this.agentTokenLock.unlock()
         this.markDirty()
     }
@@ -2463,6 +2502,8 @@ public class TuiApp {
         let elapsed = (DateTime.now() - this.agentStartTime).toSeconds()
         this.agentTokenLock.lock()
         let tokens = this.agentPromptTokens
+        let promptTotal = this.agentPromptTotal
+        let cachedTotal = this.agentCachedTokens
         this.agentTokenLock.unlock()
         let stateLabel = if (this.agentState.size > 0) { this.agentState } else { "Working…" }
         // 排队消息数（执行期间提交、待自动发送）；0 时不显示
@@ -2473,6 +2514,13 @@ public class TuiApp {
             Ansi.fg(Ansi.THEME_MUTED) + " (" + elapsed.toString() + "s · ↑ " + Ansi.reset() +
             Ansi.fg(Ansi.THEME_WARN) + fmtTokenCount(tokens) + Ansi.reset() +
             Ansi.fg(Ansi.THEME_MUTED) + " tokens" + Ansi.reset()
+        // 缓存命中率（本 run 累计）：0% 不显示（上一版本无 usage/首轮尚未回传）；
+        // 长任务持续 0% 通常意味着系统提示词前缀不稳定
+        let cachePct = cacheHitPercent(promptTotal, cachedTotal)
+        if (cachePct > 0) {
+            line += Ansi.fg(Ansi.THEME_MUTED) + " · 缓存 " + Ansi.reset() +
+                Ansi.fg(Ansi.THEME_OK) + cachePct.toString() + "%" + Ansi.reset()
+        }
         // 多轮任务：显示当前轮次（用户可判断 run 在推进）
         if (this.agentRounds > 1) {
             line += Ansi.fg(Ansi.THEME_MUTED) + " · 第 " + Ansi.reset() +

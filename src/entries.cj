@@ -453,6 +453,38 @@ func runCli(sessionId: String): Int64 {
 class JsonState {
     // 静态字段：lambda 闭包不能捕获可变局部变量，用静态容器收集工具调用记录
     static var toolCalls: ArrayList<(String, String, String)> = ArrayList<(String, String, String)>()
+    // 工具开始时刻：并行同名工具按“先开始先匹配”结算，耗时/结果体积写进 stderr 心跳
+    static var toolStarts: ArrayList<(String, DateTime)> = ArrayList<(String, DateTime)>()
+}
+
+/**
+ * 工具结果体积的短格式（纯函数）：B/KB/MB，保留一位小数。
+ * 无头模式心跳用，帮助判断这一轮是“结果很大”还是“工具本身慢”。
+ */
+func fmtBytesShort(n: Int64): String {
+    if (n < 1024) {
+        return "${n}B"
+    }
+    if (n < 1024 * 1024) {
+        let tenths = n * 10 / 1024
+        return "${tenths / 10}.${tenths % 10}KB"
+    }
+    let tenths = n * 10 / (1024 * 1024)
+    return "${tenths / 10}.${tenths % 10}MB"
+}
+
+/** 工具耗时的短格式（纯函数）：<1s 用 ms，否则保留一位小数的秒。 */
+func fmtElapsedShort(ms: Int64): String {
+    if (ms < 1000) {
+        return "${ms}ms"
+    }
+    return "${ms / 1000}.${(ms % 1000) / 100}s"
+}
+
+/** --mode json 的工具完成心跳行（纯函数，便于单测）。 */
+func jsonToolDoneLine(name: String, elapsedMs: Int64, bytes: Int64, isError: Bool): String {
+    let flag = if (isError) { " (error)" } else { "" }
+    return "[cjh] tool done: ${name} ${fmtElapsedShort(elapsedMs)} ${fmtBytesShort(bytes)}${flag}"
 }
 
 /**
@@ -607,9 +639,11 @@ func runJson(prompt: String, sessionId: String): Int64 {
 
         // 收集工具调用记录（供 JSON 输出）
         JsonState.toolCalls = ArrayList<(String, String, String)>()
+        JsonState.toolStarts = ArrayList<(String, DateTime)>()
         agent.onDelta = { _ => () }
         agent.onToolStart = { name, args =>
             JsonState.toolCalls.add((name, args.toJsonString(), ""))
+            JsonState.toolStarts.add((name, DateTime.now()))
             // stderr 进度：stdout 只留最终 JSON，长任务期间也能看到工具在跑
             eprintln("[cjh] tool start: ${name}")
         }
@@ -620,8 +654,20 @@ func runJson(prompt: String, sessionId: String): Int64 {
                     break
                 }
             }
-            let flag = if (result.isError) { " (error)" } else { "" }
-            eprintln("[cjh] tool done: ${name}${flag}")
+            // 并行同名工具按开始顺序结算；找不到配对时耗时记 0，不让心跳中断
+            var elapsedMs: Int64 = 0
+            var startIdx = -1
+            for (i in 0..JsonState.toolStarts.size) {
+                if (JsonState.toolStarts[i][0] == name) {
+                    elapsedMs = (DateTime.now() - JsonState.toolStarts[i][1]).toMilliseconds()
+                    startIdx = i
+                    break
+                }
+            }
+            if (startIdx >= 0) {
+                JsonState.toolStarts.remove(at: startIdx)
+            }
+            eprintln(jsonToolDoneLine(name, elapsedMs, result.content.size, result.isError))
         }
         agent.onApproval = { _, _, _ => false }  // 无头模式默认拒绝危险操作
         agent.onAssistantText = { _ => () }
@@ -948,6 +994,10 @@ func runTui(sessionId: String): Int64 {
         agent.queuedInputSource = { => tui.dequeueSteerableInput() }
         agent.onTokens = { tokens =>
             tui.addAgentTokens(tokens)
+        }
+        // 本 run 累计缓存命中率（每轮一次，provider 无关）：状态行显示"缓存 N%"
+        agent.onRoundTick = { _, promptTotal, _, cached =>
+            tui.setAgentCacheUsage(promptTotal, cached)
         }
         // 流式逐帧 token 估算：思考过程中实时更新动态状态栏 token 数。
         // 注意：不标记"活动"——代理 keep-alive 帧（无 content/reasoning）
@@ -1609,7 +1659,7 @@ func spawnSubagent(provider: LlmProvider, parentRegistry: ToolRegistry, parent: 
             // 轮次/用量刷新（修实测卡死）：挂 onRoundTick——每轮一次、provider 无关。
             // 不能挂 onTokenEstimate：anthropic 每 SSE chunk 回调一次，长流式下每秒成百次
             // 锁+快照拷贝+全帧置脏，主循环被淹没（界面静止、输入无响应——用户实测复现）
-            subAgent.onRoundTick = { rounds, p, c =>
+            subAgent.onRoundTick = { rounds, p, c, _ =>
                 sched.markRoundUsage(subAgent.agentId, rounds, p, c)
             }
         case None => ()

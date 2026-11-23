@@ -1,0 +1,146 @@
+package cjh.agent
+
+import std.collection.*
+import stdx.encoding.json.*
+import cjllm.*
+import cjh.tools.*
+import cjcfg.*
+
+/**
+ * 工具审批闸门测试
+ *
+ * 契约：一次工具调用只向用户确认一次。capability.approval 命中工具名时，
+ * 工具域已经确认；后续命令域/文件域的 NeedApproval 不得重复弹窗，否则
+ * TUI 里一次 bash 要按两次 y（实测用户以为陷入审批循环）。
+ *
+ * 但**安全规则不因确认而失效**：命令黑名单、路径排除等 Deny 仍必须拒绝。
+ */
+
+/** 假 bash 工具：只记录调用次数，不真正 spawn。 */
+class GateProbeTool <: CjhTool {
+    public var calls: Int64 = 0
+
+    public override func spec(): ToolSpec {
+        return ToolSpec("bash", "审批闸门测试探针", JsonObject())
+    }
+
+    public override func execute(_: JsonObject): ToolResult {
+        this.calls += 1
+        return ToolResult("probe-ran", false)
+    }
+
+    public override func isReadOnly(): Bool {
+        return false
+    }
+}
+
+/** 第 1 轮发一次 bash 调用，第 2 轮收场。 */
+class GateProvider <: LlmProvider {
+    private let command: String
+
+    public init(command: String) {
+        this.command = command
+    }
+
+    public func chatStream(_: ArrayList<ChatMessage>, _: ArrayList<ToolSpec>,
+        _: (String) -> Unit, _: (String) -> Unit, _: (Int64) -> Unit,
+        _: () -> Bool): ModelResponse {
+        // 用内部计数判断轮次：provider 实例只服务一次 run
+        this.rounds += 1
+        if (this.rounds == 1) {
+            let args = JsonObject()
+            args.put("command", JsonString(this.command))
+            let calls = ArrayList<ToolCall>()
+            calls.add(ToolCall("call_gate", "bash", args))
+            return ModelResponse("执行命令", calls)
+        }
+        return ModelResponse("GATE-DONE", ArrayList<ToolCall>())
+    }
+
+    private var rounds: Int64 = 0
+}
+
+func gateCapability(): Capability {
+    let cap = Capability()
+    cap.enabled = true
+    cap.tools.add("bash")
+    cap.approval.add("bash")
+    cap.commands.add("echo")
+    return cap
+}
+
+func toolMessages(agent: Agent): ArrayList<String> {
+    let out = ArrayList<String>()
+    for (m in agent.getMessages()) {
+        if (m.role == "tool") {
+            out.add(m.content)
+        }
+    }
+    return out
+}
+
+@Test
+public class ApprovalGateTest {
+
+    @TestCase
+    public func testToolApprovalCoversCommandLayer(): Unit {
+        let tool = GateProbeTool()
+        let registry = ToolRegistry()
+        registry.register(tool)
+        let agent = Agent(GateProvider("echo hi"), registry, AgentConfig("gate", 4, gateCapability()))
+        let asked = ArrayList<String>()
+        agent.onApproval = { _, _, reason =>
+            asked.add(reason)
+            true
+        }
+        let summary = agent.run("跑一次 bash")
+        @Assert(summary.reply.contains("GATE-DONE"), true)
+        @Assert(asked.size, 1)
+        @Assert(tool.calls, 1)
+        let msgs = toolMessages(agent)
+        @Assert(msgs.size, 1)
+        @Assert(msgs[0], "probe-ran")
+    }
+
+    @TestCase
+    public func testRejectedToolApprovalRunsNothing(): Unit {
+        let tool = GateProbeTool()
+        let registry = ToolRegistry()
+        registry.register(tool)
+        let agent = Agent(GateProvider("echo hi"), registry, AgentConfig("gate", 4, gateCapability()))
+        let asked = ArrayList<String>()
+        agent.onApproval = { _, _, reason =>
+            asked.add(reason)
+            false
+        }
+        let summary = agent.run("跑一次 bash")
+        @Assert(summary.reply.contains("GATE-DONE"), true)
+        @Assert(asked.size, 1)
+        @Assert(tool.calls, 0)
+        let msgs = toolMessages(agent)
+        @Assert(msgs.size, 1)
+        @Assert(msgs[0].contains("操作被用户拒绝"), true)
+    }
+
+    @TestCase
+    public func testDenyRulesStillApplyAfterToolApproval(): Unit {
+        let tool = GateProbeTool()
+        let registry = ToolRegistry()
+        registry.register(tool)
+        let cap = gateCapability()
+        cap.procDeny.add("rm")
+        let agent = Agent(GateProvider("rm -rf /tmp/nope"), registry, AgentConfig("gate", 4, cap))
+        let asked = ArrayList<String>()
+        agent.onApproval = { _, _, reason =>
+            asked.add(reason)
+            true
+        }
+        let summary = agent.run("跑一次 bash")
+        @Assert(summary.reply.contains("GATE-DONE"), true)
+        @Assert(asked.size, 1)
+        @Assert(tool.calls, 0)
+        let msgs = toolMessages(agent)
+        @Assert(msgs.size, 1)
+        @Assert(msgs[0].contains("被安全策略拒绝"), true)
+    }
+}

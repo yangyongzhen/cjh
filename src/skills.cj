@@ -498,18 +498,27 @@ func promptShell(): String {
     }
 }
 
+/** 日期只取到天：时分秒每次会话都变，会让 provider 前缀缓存整段失效。 */
+func promptDateOf(raw: String): String {
+    match (raw.indexOf("T")) {
+        case Some(idx) => if (idx > 0) { return raw[0..idx] } else { () }
+        case None => ()
+    }
+    if (raw.size >= 10) {
+        return raw[0..10]
+    }
+    return raw
+}
+
 /**
- * 组装 system prompt：基础规则 + 当前环境 + 项目指令 + 技能 + 项目记忆。
+ * 组装 system prompt：基础规则 + 项目指令 + 技能 + 项目记忆 + 工具截断说明 + 当前环境。
  * 项目上下文均有字节上限，避免 14 KB 的 AGENTS.md 之类把基础规则挤出注意力。
+ * 易变的当前环境放最末尾（日期只到天），让不同会话/不同时段共享尽可能长的稳定前缀，
+ * provider 的前缀缓存才有命中率（实测同一任务 cached=0）。
  */
 func buildSystemPrompt(base: String, skillsDir: String, enabled: ArrayList<String>, memoryDir: String,
     agentsMaxBytes: Int64, skillsMaxBytes: Int64, memoryMaxBytes: Int64): String {
     var s = base
-    s += "\n\n## Current environment\n"
-    s += "- Working directory: ${getWorkingDirectory()}\n"
-    s += "- Platform: ${promptPlatform()}\n"
-    s += "- Shell: ${promptShell()}\n"
-    s += "- Date: ${DateTime.now()}"
     let instrPath = findProjectInstructionsPath()
     if (instrPath.size > 0) {
         try {
@@ -538,6 +547,12 @@ func buildSystemPrompt(base: String, skillsDir: String, enabled: ArrayList<Strin
     s += "\n\n## Tool result truncation\nLong tool results are shortened by cjh: head and tail are kept, "
     s += "and the omitted middle is saved to disk. The marker shows the path. Read that path with read_file "
     s += "(using offset/limit) when the middle matters."
+    // 当前环境置底：日期/工作目录/平台在本会话内不变，跨会话也尽量同前缀（日期只到天）
+    s += "\n\n## Current environment\n"
+    s += "- Working directory: ${getWorkingDirectory()}\n"
+    s += "- Platform: ${promptPlatform()}\n"
+    s += "- Shell: ${promptShell()}\n"
+    s += "- Date: ${promptDateOf(DateTime.now().toString())}"
     return s
 }
 func currentProjectName(): String {
