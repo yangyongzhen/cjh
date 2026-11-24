@@ -259,6 +259,35 @@ public class CoreSkillsTest {
         loadSkillTools(tmpPath("cjh_ut_no_such_skills_dir"), registry, ArrayList<String>())
         @Assert(registry.has("skill_load"), true)
     }
+
+    @TestCase
+    public func testListSkillsShowsWhyNotInjected(): Unit {
+        // /skills 与 buildSystemPrompt 同源：超预算/禁用要可见，且明确正文仍可 skill_load
+        let dir = coreTestTempDir("skills_list_status")
+        let bigDesc = coreRepeatText("d", 200)
+        coreWriteTextFile(dir + "/big-skill.md",
+            "---\nname: big-skill\ndescription: ${bigDesc}\n---\nBIG-BODY")
+        coreWriteTextFile(dir + "/small-skill.md",
+            "---\nname: small-skill\ndescription: S\n---\nSMALL-BODY")
+        coreWriteTextFile(dir + "/off-skill.md",
+            "---\nname: off-skill\ndescription: O\n---\nOFF-BODY")
+        var whitelist = ArrayList<String>()
+        whitelist.add("big-skill")
+        whitelist.add("small-skill")
+        let app = TuiApp()
+        listSkills(dir, whitelist, 60, app)
+        let out = app.testOutputText()
+        @Assert(out.contains("索引预算 60B"), true)
+        @Assert(out.contains("big-skill"), true)
+        @Assert(out.contains("索引超预算（未注入）"), true)
+        @Assert(out.contains("仍可 skill_load"), true)
+        @Assert(out.contains("small-skill"), true)
+        @Assert(out.contains("已注入索引"), true)
+        @Assert(out.contains("off-skill"), true)
+        @Assert(out.contains("禁用"), true)
+        @Assert(out.contains("超预算只影响索引注入"), true)
+        removeTreeForTest(dir)
+    }
 }
 
 @Test

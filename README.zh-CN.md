@@ -605,7 +605,7 @@ cjh 内置 MCP 客户端，支持 stdio 传输 + JSON-RPC 2.0。配置 `mcp_serv
 | `/compact` | 手动压缩历史 |
 | `/tree` | 树形列示会话分支 |
 | `/fork` | 从当前会话分支 |
-| `/skills` | 列出技能与启用状态 |
+| `/skills` | 列出技能及索引注入状态（已注入 / 超预算 / 禁用 / 正文为空）与当前索引预算 |
 | `/task` | 任务管理 |
 | `/settings` | 查看采样参数 |
 | `/quit` | 退出 |
@@ -614,7 +614,7 @@ cjh 内置 MCP 客户端，支持 stdio 传输 + JSON-RPC 2.0。配置 `mcp_serv
 
 | 版本 | 主要功能 |
 |---|---|
-| **未发布** | **技能渐进披露**：system prompt 只注入技能名称 + 描述索引，正文改由 `skill_load` 按需读取；索引按名称升序整条装载/跳过，预算只约束索引；`GET /api/skills` 区分 `bytes`（正文）与 `index_bytes`（索引）。技能正文再长也不再挤占常驻上下文 |
+| **未发布** | **技能渐进披露**：system prompt 只注入技能名称 + 描述索引，正文改由 `skill_load` 按需读取；索引按名称升序整条装载/跳过，预算只约束索引；`GET /api/skills` 区分 `bytes`（正文）与 `index_bytes`（索引）。技能正文再长也不再挤占常驻上下文；`/skills` 显示每个技能的索引注入状态与当前预算，超预算技能不再被误认为已启用 |
 | **v1.6.21** | **长任务效率与无人值守测试审批**：压缩 token 阈值默认 32000 → 64000（128K 模型不再在任务中段压缩；用户显式 `compact_token_threshold` 仍优先）；单工具提效提醒改为第 2 轮与第 5 轮各一次（仍只进模型上下文），措辞要求独立读/搜在同一响应批量发起；新增 `unattended_approval`（默认 `deny`，仅 `tests` 开启）——所有入口自动批准测试断言改写，工具结果带审计前缀，子代理继承父策略，capability Deny 仍先执行 |
 | **v1.6.20** | **长任务恢复与无头可观测性**：恢复会话时记录 cwd 与当前 cwd 不一致会显式提示原工作区，但不自动 `chdir`（避免相对路径与权限边界漂移）；`write_file` 自动创建缺失父目录；`--mode json` 把心跳与工具开始/结束写 stderr，stdout 仍只有最终 JSON；单工具/续跑/空响应重试等内部提醒标记 `internal`，不落盘、不进 Web 历史、不参与压缩；`/api/sessions` 支持 `limit/offset`，Web 侧边栏每页 50 条按需「加载更多」 |
 | **v1.6.19** | **恢复会话不再复制历史 + Web 首屏离线可用**：`--resume`、TUI 恢复、Web 断连保存原先都走 `SessionStore.save()`，每次保存都生成新 ID；现统一用 `saveWithId/saveWithIdUsage` 覆盖原文件（保留 `created/cwd/title/parent`），并让 `SessionUsage` 随会话落盘。`--list` 与 TUI 恢复树默认只看当前工作区（`--list --all` 看全部），草稿文件改按 cwd 的 SHA-256 命名，多个项目不再共用一份。Web 侧把 marked / DOMPurify / highlight.js / github-dark 嵌入二进制，由 `/assets/vendor/*` 提供并带 immutable 缓存，首屏零外域请求；高亮改走 `hljs.highlightElement`（marked v5 已移除 `highlight` 选项），保持先清洗后上色 |

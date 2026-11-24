@@ -201,8 +201,8 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
             // 给明确回执：旧实现切完后屏幕与欢迎页几乎一样，用户以为命令没生效
             tui.appendOutput(Ansi.fg(Ansi.THEME_OK) + "[已开始新会话]" + Ansi.reset())
         case "/skills" =>
-            // 列示技能（~/.cjh/skills/<name>.md）与启用状态
-            listSkills(cfg.skillsDir, cfg.enabledSkills, tui)
+            // 列示技能（~/.cjh/skills/<name>.md）与索引注入状态
+            listSkills(cfg.skillsDir, cfg.enabledSkills, cfg.promptSkillsMaxBytes, tui)
         case "/compact" =>
             // 手动触发 Compaction：强制把早期历史压成 LLM 摘要
             // 无视 compactThreshold 阈值；compact_keep 仍生效

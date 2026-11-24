@@ -6,7 +6,13 @@
 - **索引注入**：`buildSystemPrompt` 现在只注入 `- **<name>**: <description>` 索引（含预算与启用状态），正文完全不进提示词。索引仍按名称升序、整条装或整条跳过，`prompt_skills_max_bytes` 改为约束索引段。
 - **按需读取**：新增内置工具 `skill_load`，按名称返回技能正文与声明工具。只接受索引内**已启用**的技能；未知名称、禁用技能、路径分隔符/`..` 越界均明确报错。工具在所有入口（CLI/JSON/TUI/Web/子代理）注册，即使技能目录缺失也注册，由调用时给出可执行错误。`skill_load` 结果**豁免 6000 字符工具结果截断**——执行说明书被腰斩会直接丢步骤/禁止项；`read_file` 同理。
 - **可观测**：`GET /api/skills` 保留 `injected`/`reason`，并将 `bytes` 明确为正文体积、新增 `index_bytes`（索引整行体积）；`over_budget` 只表示索引放不下，正文仍可被 `skill_load` 读取。
-- **测试**：`SkillBudgetPlanTest` 4 例、`SkillListJsonTest` 2 例、根包 `CoreSkillsTest` 15 例（索引无正文、正文读取、未知/禁用/越界拒绝、目录缺失仍注册加载器）、`ScannedSkill` 构造与工具注册测试；另跑 `*Skill*` 过滤 25 例全绿。
+- **测试**：`SkillBudgetPlanTest` 4 例、`SkillListJsonTest` 2 例、根包 `CoreSkillsTest` 16 例（索引无正文、正文读取、未知/禁用/越界拒绝、目录缺失仍注册加载器、`/skills` 状态可见性）、`ScannedSkill` 构造与工具注册测试；另跑 `*Skill*` 过滤 25 例全绿。
+
+### 修复(/skills 只显示「启用」，看不到索引为何未注入)
+- **旧实现**：`/skills` 直接读 `c.enabled`，未启用显示「○ 禁用」，启用一律显示「● 启用」；`over_budget`（索引放不下）与正文为空的技能仍显示「启用」，用户看不出「列出来 ≠ 进提示词」。
+- **同源状态**：`listSkills` 改为调用与 `buildSystemPrompt` 相同的 `planSkillIndex`，逐项显示「● 已注入索引 / ○ 禁用 / ○ 正文为空 / ⚠ 索引超预算（未注入）」，预算随 `prompt_skills_max_bytes` 一起显示。
+- **可执行提示**：超预算行在**描述之前**给出「（正文 N B，仍可 skill_load）」——长描述会把尾部说明挤出 80 列终端；页脚缩短为「超预算只影响索引注入；正文仍可 skill_load。开关：settings.json 的 enabled_skills」。
+- **测试**：根包 `testListSkillsShowsWhyNotInjected`（注入/超预算/禁用三态 + 预算与提示）+ TUI PTY 场景 `/skills` 超预算可见性；根包 **817/817**、libs **270/270**、PTY **114/114**。
 
 ### 修复(Web 会话看不到技能/AGENTS.md，issue #16)
 - **根因**：`cjh web` 的会话由 `ChannelGateway.buildAgent` 创建，提示词取 `config.systemPrompt` 原值；CLI/JSON/TUI 走的 `buildSystemPrompt`（技能正文 + `AGENTS.md` + 项目记忆）在 Web 入口一次都没调用。`GET /api/skills` 只证明文件在磁盘上，模型上下文里没有。

@@ -10,6 +10,7 @@ package cjh
 import std.collection.*
 import std.env.*
 import std.fs.*
+import std.sort.*
 import std.time.*
 import stdx.encoding.json.*
 import cjllm.ToolSpec
@@ -42,10 +43,13 @@ func findProjectInstructionsPath(): String {
 }
 
 /**
- * 列示技能（/skills 命令）：扫描 ~/.cjh/skills/<name>.md，输出名称、启用状态、
+ * 列示技能（/skills 命令）：扫描 ~/.cjh/skills/<name>.md，输出名称、索引注入状态、
  * 前端声明的描述与携带工具数；无技能目录时提示创建方法。
+ *
+ * 状态必须与 buildSystemPrompt 的 planSkillIndex 完全同源：用户需要一眼看出
+ * “为什么这个技能没在模型上下文里”，而不是只看到“启用”却毫无效果。
  */
-func listSkills(skillsDir: String, enabled: ArrayList<String>, tui: TuiApp): Unit {
+func listSkills(skillsDir: String, enabled: ArrayList<String>, maxBytes: Int64, tui: TuiApp): Unit {
     if (!exists(skillsDir)) {
         tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "[技能目录不存在: ${skillsDir}；创建 ~/.cjh/skills/<name>.md 即可启用]" + Ansi.reset())
         return
@@ -55,14 +59,32 @@ func listSkills(skillsDir: String, enabled: ArrayList<String>, tui: TuiApp): Uni
         tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "[无技能；创建 ~/.cjh/skills/<name>.md（frontmatter: name/description + 正文指令）]" + Ansi.reset())
         return
     }
-    tui.appendOutput(Ansi.fg(Ansi.THEME_ACCENT) + "可用技能（settings.json 的 enabled_skills 白名单控制开关，空=全部启用）：" + Ansi.reset())
+    let ordered = ArrayList<SkillCandidate>()
     for (c in skills) {
-        let state = if (c.enabled) {
-            Ansi.fg(Ansi.THEME_OK) + "● 启用" + Ansi.reset()
+        ordered.add(c)
+    }
+    sort(ordered, by: { a, b => a.name.compare(b.name) }, stable: true)
+    let (_, statuses) = planSkillIndex(ordered, maxBytes)
+    tui.appendOutput(Ansi.fg(Ansi.THEME_ACCENT) +
+        "可用技能（settings.json 的 enabled_skills 白名单，空=全部启用；索引预算 ${maxBytes}B）：" + Ansi.reset())
+    for (i in 0..statuses.size) {
+        let status = statuses[i]
+        let c = ordered[i]
+        let state = if (!status.injected) {
+            match (status.reason) {
+                case "disabled" => Ansi.fg(Ansi.THEME_MUTED) + "○ 禁用" + Ansi.reset()
+                case "empty" => Ansi.fg(Ansi.THEME_MUTED) + "○ 正文为空" + Ansi.reset()
+                case "over_budget" => Ansi.fg(Ansi.THEME_WARN) + "⚠ 索引超预算（未注入）" + Ansi.reset()
+                case _ => Ansi.fg(Ansi.THEME_MUTED) + "○ 未注入" + Ansi.reset()
+            }
         } else {
-            Ansi.fg(Ansi.THEME_MUTED) + "○ 禁用" + Ansi.reset()
+            Ansi.fg(Ansi.THEME_OK) + "● 已注入索引" + Ansi.reset()
         }
         var line = "  ${state} ${c.name}"
+        if (status.reason == "over_budget") {
+            // 状态与原因必须排在描述之前：长描述会吃掉整行宽度，尾部说明在 80 列终端里看不到。
+            line += Ansi.fg(Ansi.THEME_MUTED) + "（正文 ${fmtBytesShort(status.bodyBytes)}，仍可 skill_load）" + Ansi.reset()
+        }
         if (c.description.size > 0) {
             line += " — ${c.description}"
         }
@@ -72,7 +94,8 @@ func listSkills(skillsDir: String, enabled: ArrayList<String>, tui: TuiApp): Uni
         }
         tui.appendOutput(line)
     }
-    tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "示例：/skills 查看；编辑 ~/.cjh/settings.json 的 enabled_skills 数组切换开关" + Ansi.reset())
+    tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) +
+        "超预算只影响索引注入；正文仍可 skill_load。开关：settings.json 的 enabled_skills" + Ansi.reset())
 }
 
 /**

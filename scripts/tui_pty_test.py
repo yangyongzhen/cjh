@@ -1025,6 +1025,35 @@ def test_history_recall_no_slash_menu() -> None:
         s.close()
 
 
+def test_skills_over_budget_visible() -> None:
+    print("[场景] /skills 显示索引超预算，而不是只显示“启用”")
+    cfg = make_config_dir()
+    with open(os.path.join(cfg, "settings.json"), encoding="utf-8") as f:
+        settings = json.load(f)
+    settings["prompt_skills_max_bytes"] = 60
+    with open(os.path.join(cfg, "settings.json"), "w", encoding="utf-8") as f:
+        json.dump(settings, f)
+    skills_dir = os.path.join(cfg, "skills")
+    os.makedirs(skills_dir)
+    with open(os.path.join(skills_dir, "big-skill.md"), "w", encoding="utf-8") as f:
+        f.write("---\nname: big-skill\ndescription: " + "d" * 200 + "\n---\nBIG-BODY")
+    with open(os.path.join(skills_dir, "small-skill.md"), "w", encoding="utf-8") as f:
+        f.write("---\nname: small-skill\ndescription: S\n---\nSMALL-BODY")
+    s = PtuSession(cfg)
+    try:
+        s.expect("cjh")
+        s.send("/skills\n")
+        s.expect("索引超预算（未注入）")
+        s.expect("仍可 skill_load")
+        s.expect("small-skill")
+        check("超预算技能可见且说明可按需加载", True)
+        s.send_key(3)
+        code = s.wait_exit()
+        check("退出码 0", code == 0, f"(实际 {code})")
+    finally:
+        s.close()
+
+
 def main() -> None:
     if not os.path.exists(BIN):
         print(f"错误：未找到 {BIN}，请先 cjpm build")
@@ -1056,6 +1085,7 @@ def main() -> None:
     test_thinking_history_expand()
     test_ref_panel_gate()
     test_history_recall_no_slash_menu()
+    test_skills_over_budget_visible()
     print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
     sys.exit(1 if FAIL else 0)
 
