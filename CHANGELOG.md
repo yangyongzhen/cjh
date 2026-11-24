@@ -1,4 +1,13 @@
 # CHANGELOG
+## [Unreleased]
+
+### 修复(Web 会话看不到技能/AGENTS.md，issue #16)
+- **根因**：`cjh web` 的会话由 `ChannelGateway.buildAgent` 创建，提示词取 `config.systemPrompt` 原值；CLI/JSON/TUI 走的 `buildSystemPrompt`（技能正文 + `AGENTS.md` + 项目记忆）在 Web 入口一次都没调用。`GET /api/skills` 只证明文件在磁盘上，模型上下文里没有。
+- **修复**：`WebServer.promptBuilder` → `WebDistributor.enablePromptReload` → `ChannelGateway.promptBuilder`，每个 Web 会话建会话时现算组装提示词；`runWeb` 注入与其它入口同一个 `buildSystemPrompt`。
+- **技能热加载**：新增 `POST /api/skills/reload`，返回 `{ok, refreshed, promptChars}`；`Agent.refreshSystemPrompt` 对空闲会话立即换装 system 消息，**回合运行中只记 pending、下回合 `beginRound` 前换装**（避免 provider 正在读 messages 时并发改写，也避免同一回合上下文前后不一致）。改技能不必重启进程。
+- **验证**：真实进程 `cjh web`，仅加一条 `demo.md`（正文 `SKILL-BODY-MARKER-9F71`）后 `promptChars` 3969 → 4519，`POST /api/skills/reload` 正常、`GET` 明确回 `use POST`；`/api/capabilities` 已列出新路由。
+- **测试**：`WebPromptInjectionTest` 5 例——组装提示词进 Web 会话、未注入时回退 base、空闲会话热刷新（含新建会话）、未注入时明确报不可用、回合运行中刷新延到下一回合。
+
 ## [v1.6.21] - 2026-11-23
 
 ### 优化(长任务：64K 压缩阈值 / 并行提醒加码 / 无人值守测试审批)

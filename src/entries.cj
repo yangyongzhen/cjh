@@ -201,6 +201,13 @@ func runWeb(args: Array<String>): Int64 {
 
     // 启动 Web 服务器（注入模型工厂：会话级切模型 / 单次模型覆盖可用）
     let server = WebServer(cjhCfg, provider, registry, Some(ModelProviderFactory(cjhCfg)))
+    // system prompt：与 CLI/JSON/TUI 共用 buildSystemPrompt（技能正文 + AGENTS.md +
+    // 项目记忆）。每建一个 Web 会话重算，新建会话即拿到最新文件；POST
+    // /api/skills/reload 再刷新在线会话，改技能不必重启进程（issue #16）。
+    server.promptBuilder = Some({ =>
+        buildSystemPrompt(cjhCfg.systemPrompt, cjhCfg.skillsDir, cjhCfg.enabledSkills, cjhCfg.memoryDir,
+            cjhCfg.promptAgentsMaxBytes, cjhCfg.promptSkillsMaxBytes, cjhCfg.promptMemoryMaxBytes)
+    })
     // 每个 Web 会话一份 SubagentScheduler + task/todo（与 TUI 行为对齐）。
     // 工具表是浅拷贝：bash 会话/后台任务/MCP 仍进程级共享，owner 工具只进本会话。
     SubagentRouting.set(cjhCfg.subagentMode)

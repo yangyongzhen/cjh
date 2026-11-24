@@ -33,6 +33,9 @@ public class WebServer {
     private let providerFactory: ?ProviderFactory
     // 会话级工具/调度器装配（runWeb 注入）：None = 旧行为（无 task/todo）
     public var agentSetup: Option<(Agent, ToolRegistry, AgentConfig, String) -> Unit> = None
+    // system prompt 组装器（runWeb 注入）：技能正文 / AGENTS.md / 项目记忆；
+    // None = 直接用 config.systemPrompt（旧行为）
+    public var promptBuilder: Option<() -> String> = None
 
     public init(config: CjhConfig, provider: LlmProvider, registry: ToolRegistry) {
         this.config = config
@@ -63,6 +66,11 @@ public class WebServer {
         // 构建请求分发器（自定义实现 HttpRequestDistributor 接口）
         let distributor = WebDistributor(this.config, this.provider, this.registry, this.providerFactory,
             this.agentSetup)
+        // 技能/AGENTS.md 注入 + 热刷新入口（runWeb 注入；测试/旧入口 None 保持原行为）
+        match (this.promptBuilder) {
+            case Some(build) => distributor.enablePromptReload(build)
+            case None => ()
+        }
 
         // 构建并启动服务器
         let server = ServerBuilder()
@@ -170,6 +178,15 @@ public class WebDistributor <: HttpRequestDistributor {
         this.restApi = RestApi(this.config, this.registry)
         this.bgBroadcaster.agentUsedProvider = { => this.gateway.activeSubagentCount() }
     }
+    /**
+     * 注入 system prompt 组装器：网关建会话时用它，REST 侧热刷新复用同一条组装路径。
+     * 只有 Web 入口（runWeb）调用；其它构造保持 None。
+     */
+    public func enablePromptReload(build: () -> String): Unit {
+        this.gateway.promptBuilder = Some(build)
+        this.restApi.reloadPrompt = Some({ => this.gateway.refreshSystemPrompts() })
+    }
+
     /**
      * 分发请求：按 path 查路由表，未找到返回 404
      *

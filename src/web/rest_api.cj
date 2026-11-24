@@ -31,6 +31,12 @@ public class RestApi <: HttpRequestHandler {
     private let config: CjhConfig
     // 工具注册表（工作区切换时重置持久 bash 会话 cwd）
     private let registry: ?ToolRegistry
+    /**
+     * 技能/AGENTS.md 热加载回调（Web 装配层注入）：
+     * 重新组装 system prompt 并刷新在线会话，返回 (会话数, 提示词字符数)。
+     * None = 未注入（测试/非 Web 场景），POST /api/skills/reload 明确回错。
+     */
+    public var reloadPrompt: Option<() -> (Int64, Int64)> = None
 
     public init(config: CjhConfig) {
         this.config = config
@@ -77,6 +83,7 @@ public class RestApi <: HttpRequestHandler {
             case "/api/models" => this.handleListModels(ctx)
             case "/api/tasks" => this.handleListTasks(ctx)
             case "/api/skills" => this.handleListSkills(ctx)
+            case "/api/skills/reload" => this.handleReloadSkills(ctx)
             case "/api/mcp" => this.handleListMcp(ctx)
             case "/api/settings" => this.handleSettings(ctx)
             case "/api/workspaces" => this.handleWorkspaces(ctx)
@@ -362,6 +369,36 @@ public class RestApi <: HttpRequestHandler {
         let res = ctx.responseBuilder
         res.header("Content-Type", "application/json; charset=utf-8")
         res.body(body.toArray())
+    }
+
+    /**
+     * POST /api/skills/reload → 重读技能与 AGENTS.md，刷新在线会话 system prompt
+     *
+     * 返回 { "ok": true, "refreshed": <在线会话数>, "promptChars": <新提示词字符数> }
+     * 技能正文是否真的注入，以 promptChars 与新建会话的行为为准——`GET /api/skills`
+     * 只证明目录里有文件。
+     */
+    private func handleReloadSkills(ctx: HttpContext): Unit {
+        let res = ctx.responseBuilder
+        res.header("Content-Type", "application/json; charset=utf-8")
+        var obj = JsonObject()
+        if (ctx.request.method != "POST") {
+            obj.put("ok", JsonBool(false))
+            obj.put("error", JsonString("use POST /api/skills/reload"))
+            res.body(obj.toJsonString().toArray())
+            return
+        }
+        match (this.reloadPrompt) {
+            case Some(reload) =>
+                let (refreshed, chars) = reload()
+                obj.put("ok", JsonBool(true))
+                obj.put("refreshed", JsonInt(refreshed))
+                obj.put("promptChars", JsonInt(chars))
+            case None =>
+                obj.put("ok", JsonBool(false))
+                obj.put("error", JsonString("prompt reload is not wired in this entry"))
+        }
+        res.body(obj.toJsonString().toArray())
     }
 
     /**

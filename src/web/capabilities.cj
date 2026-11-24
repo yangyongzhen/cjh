@@ -96,6 +96,7 @@ public func httpEndpointNames(): ArrayList<String> {
     names.add("GET /api/models")
     names.add("GET /api/tasks")
     names.add("GET /api/skills")
+    names.add("POST /api/skills/reload")
     names.add("GET /api/mcp")
     names.add("GET /api/settings")
     names.add("POST /api/settings")

@@ -527,6 +527,9 @@ public class Agent {
     // P1b：messages 换装锁——后台摘要任务持锁做"快照 → 换装"，
     // 主循环 loadHistory/换装同样持锁，保证快照与换装的原子性（避免换装旧列表）
     private var compactLock: Mutex = Mutex()
+    // 技能/AGENTS.md 热刷新（Web /api/skills/reload）：回合运行中不能改 messages，
+    // 先记在这里，下回合 beginRound 时换装 system 消息
+    private var pendingSystemPrompt: Option<String> = None
     // P1b 后台压缩状态：pending 摘要任务（None=无）；auto 模式（None/SyncFallback）
     private var pendingCompact: Option<Future<String>> = None
     // 后台摘要起始时刻：超时回收用。网关无响应时 Future 永不完成，
@@ -695,6 +698,9 @@ public class Agent {
         } finally {
             this.interruptLock.unlock()
         }
+        // 技能/AGENTS.md 热刷新：上一回合运行中收到的提示词在这里换装，
+        // 保证 provider 读 messages 时不会与写并发
+        this.applyPendingSystemPrompt()
         // 工具中断门同批清零：上一回合若在工具执行中被中断，门可能仍置位——
         // 留着会让下回合第一条 bash 命令立刻自杀（见 BashSession 的轮询）
         InterruptGate.clear()
@@ -2512,6 +2518,59 @@ public class Agent {
             sb.append("\n")
         }
         return sb.toString()
+    }
+
+    /**
+     * 热刷新 system prompt（技能正文 / AGENTS.md / 项目记忆由装配层重新组装）。
+     *
+     * 回合运行中不改 messages（provider 正在读同一列表，且中途换 system 会让
+     * 本轮上下文前后不一致），只记 pending，下回合开始前换装。
+     */
+    public func refreshSystemPrompt(prompt: String): Unit {
+        var running = false
+        this.interruptLock.lock()
+        try {
+            match (this.roundState) {
+                case RoundState.Running => running = true
+                case _ => ()
+            }
+        } finally {
+            this.interruptLock.unlock()
+        }
+        this.compactLock.lock()
+        try {
+            if (running) {
+                this.pendingSystemPrompt = Some(prompt)
+            } else {
+                this.replaceSystemMessage(prompt)
+            }
+        } finally {
+            this.compactLock.unlock()
+        }
+    }
+
+    /** 调用方必须已持 compactLock */
+    private func replaceSystemMessage(prompt: String): Unit {
+        if (this.messages.size > 0 && this.messages[0].role == "system") {
+            this.messages[0] = ChatMessage("system", prompt)
+        } else {
+            this.messages.add(ChatMessage("system", prompt), at: 0)
+        }
+    }
+
+    /** 回合开始前换装 pending prompt；调用方不持锁 */
+    private func applyPendingSystemPrompt(): Unit {
+        this.compactLock.lock()
+        try {
+            match (this.pendingSystemPrompt) {
+                case Some(prompt) =>
+                    this.pendingSystemPrompt = None
+                    this.replaceSystemMessage(prompt)
+                case None => ()
+            }
+        } finally {
+            this.compactLock.unlock()
+        }
     }
 
     /**

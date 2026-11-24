@@ -383,6 +383,9 @@ public class ChannelGateway {
      * TUI 那条链是无期限等待（人在终端前），Web 这条必须有上限（人可能不在）。
      */
     public var approvalTimeoutMs: Int64 = 300000
+    // system prompt 组装器（装配层注入）：Web 入口需要把技能正文 / AGENTS.md /
+    // 项目记忆拼进提示词；None = 直接用 config.systemPrompt（测试/旧调用方）
+    public var promptBuilder: Option<() -> String> = None
     // provider 工厂（装配层注入）；缺省 = 不支持切模型，此时明确回错而非静默
     private let providerFactory: ?ProviderFactory
     // 会话级工具/调度器装配（Web 入口注入）：agent 建好后追加 task/todo 与
@@ -1279,8 +1282,12 @@ public class ChannelGateway {
      * 构建 Agent 实例
      */
     private func buildAgent(sessionId: String, _: String, _: String): Agent {
+        let basePrompt = match (this.promptBuilder) {
+            case Some(build) => build()
+            case None => this.config.systemPrompt
+        }
         let agentConfig = AgentConfig(
-            this.config.systemPrompt,
+            basePrompt,
             this.config.maxIterations,
             this.config.capability,
             this.config.compactThreshold,
@@ -1301,6 +1308,30 @@ public class ChannelGateway {
             case None => ()
         }
         return agent
+    }
+
+    /**
+     * 重新组装 system prompt 并刷新所有在线会话（技能热加载）。
+     *
+     * @return (刷新会话数, 新提示词字符数)；未注入 promptBuilder 时 (-1, 0)
+     */
+    public func refreshSystemPrompts(): (Int64, Int64) {
+        match (this.promptBuilder) {
+            case Some(build) =>
+                let prompt = build()
+                this.mutex.lock()
+                try {
+                    var refreshed: Int64 = 0
+                    for ((_, agent) in this.agents) {
+                        agent.refreshSystemPrompt(prompt)
+                        refreshed += 1
+                    }
+                    return (refreshed, Int64(prompt.size))
+                } finally {
+                    this.mutex.unlock()
+                }
+            case None => return (-1, 0)
+        }
     }
 
     /**
