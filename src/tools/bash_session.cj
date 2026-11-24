@@ -6,6 +6,7 @@ import std.io.*
 import std.sync.*
 import std.time.*
 import std.convert.Parsable
+@When[os != "Windows"]
 import std.fs.*
 import cjutil.*
 import cjterm.*

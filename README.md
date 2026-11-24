@@ -6,10 +6,10 @@
 
 [![Website](https://img.shields.io/badge/website-yangyongzhen.github.io%2Fcjh-00868B)](https://yangyongzhen.github.io/cjh/)
 [![CI](https://github.com/yangyongzhen/cjh/actions/workflows/ci.yml/badge.svg)](https://github.com/yangyongzhen/cjh/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/badge/release-v1.6.21-00868B)](https://atomgit.com/qq8864/cjh/releases)
+[![Release](https://img.shields.io/badge/release-v1.6.22-00868B)](https://atomgit.com/qq8864/cjh/releases)
 [![AtomGitStars](https://atomgit.com/qq8864/cjh/star/badge.svg)](https://atomgit.com/qq8864/cjh)
 [![Cangjie](https://img.shields.io/badge/language-Cangjie-00868B)](https://cangjie-lang.cn)
-[![Tests](https://img.shields.io/badge/tests-800%20passed-2ea44f)](./scripts/test.sh)
+[![Tests](https://img.shields.io/badge/tests-817%20passed-2ea44f)](./scripts/test.sh)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-lightgrey)](https://atomgit.com/qq8864/cjh/releases)
 [![License](https://img.shields.io/badge/license-MIT-2ea44f)](./LICENSE)
 
@@ -38,8 +38,8 @@ curl -fsSL https://yangyongzhen.github.io/cjh/install.sh | bash
 **Try it without spending a cent** (Mock mode: no network, no API key needed):
 
 ```bash
-curl -LO https://atomgit.com/qq8864/cjh/releases/download/v1.6.21/cjh-v1.6.21-linux-x64.tar.gz
-tar xzf cjh-v1.6.21-linux-x64.tar.gz
+curl -LO https://atomgit.com/qq8864/cjh/releases/download/v1.6.22/cjh-v1.6.22-linux-x64.tar.gz
+tar xzf cjh-v1.6.22-linux-x64.tar.gz
 CJH_MOCK=1 ./cjh-linux-x64
 ```
 
@@ -50,7 +50,7 @@ export DEEPSEEK_API_KEY=sk-xxx     # or OPENAI_API_KEY / DASHSCOPE_API_KEY / CJH
 ./cjh-linux-x64                     # TUI by default; --cli for plain text, --mode json for headless
 ```
 
-Windows: grab [`cjh-v1.6.21-windows-x64-selfcontained.zip`](https://atomgit.com/qq8864/cjh/releases/download/v1.6.21/cjh-v1.6.21-windows-x64-selfcontained.zip) and unzip — keep the exe next to its 4 runtime DLLs. Building from source: see [Quick Start](#-quick-start).
+Windows: grab [`cjh-v1.6.22-windows-x64-selfcontained.zip`](https://atomgit.com/qq8864/cjh/releases/download/v1.6.22/cjh-v1.6.22-windows-x64-selfcontained.zip) and unzip — keep the exe next to its 4 runtime DLLs. Building from source: see [Quick Start](#-quick-start).
 
 ![cjh session demo (real CLI output, mock mode)](docs/imgs/cjh-demo.gif)
 
@@ -65,7 +65,7 @@ Windows: grab [`cjh-v1.6.21-windows-x64-selfcontained.zip`](https://atomgit.com/
 | **What** | A terminal coding agent harness written from scratch in Cangjie: agent loop (message state machine + tool-call protocol) + tool system + diff-rendered TUI + remote web UI + plugin trust chain |
 | **Who** | ① people who want AI to edit code in the terminal without installing a Node/Python toolchain; ② Cangjie learners looking for a runnable, readable AI-application reference; ③ regulated / domestic-stack teams that require "no foreign runtime dependencies" |
 | **Why** | One static binary (Linux 19.2 MB / Windows exe 14.3 MB) with zero runtime dependencies; token efficiency and execution speed are measured, not claimed; plugins carry SHA256 checksums + SM2 signatures |
-| **Status** | v1.6.21, 800 unit tests green (plus 270 across the 6 publishable libraries), Linux / Windows builds published; inactivity compaction now defaults to 64K tokens on 128K-context models, independent read/search calls are forced into one parallel batch (reminder at turn 2 and turn 5), and `unattended_approval` (`deny` by default, `tests` opt-in) lets headless runs change test assertions with an audit note while capability Deny rules still win |
+| **Status** | v1.6.22, 817 unit tests green (plus 270 across the 6 publishable libraries), Linux / Windows builds published; skills now use progressive disclosure (the prompt carries a name+description index, bodies load on demand via `skill_load`), Web sessions inject skills/`AGENTS.md` and support hot reload via `POST /api/skills/reload`, and `/skills` shows per-skill index-injection status so an over-budget skill is no longer mistaken for enabled |
 
 ---
 
@@ -612,7 +612,7 @@ cjh has a built-in MCP client supporting stdio transport + JSON-RPC 2.0. After c
 
 | Version | Main Features |
 |---|---|
-| **Unreleased** | **Progressive skill disclosure**: the system prompt carries a name + description index only; bodies load on demand through `skill_load`. Index lines are included or skipped whole in name order, and the budget applies to the index; `GET /api/skills` now distinguishes `bytes` (body) from `index_bytes` (index line). Long skill bodies no longer consume resident context; `/skills` shows each skill's index-injection status and the active index budget, so an over-budget skill is no longer mistaken for an enabled one |
+| **v1.6.22** | **Progressive skill disclosure**: the system prompt carries a name + description index only; bodies load on demand through `skill_load`. Index lines are included or skipped whole in name order, and the budget applies to the index; `GET /api/skills` now distinguishes `bytes` (body) from `index_bytes` (index line). Long skill bodies no longer consume resident context; `/skills` shows each skill's index-injection status and the active index budget, so an over-budget skill is no longer mistaken for an enabled one |
 | **v1.6.21** | **Long-task efficiency and unattended test approval**: inactivity compaction threshold default 32000 → 64000 (128K models no longer compact mid-task; `compact_token_threshold` still wins when set); the single-tool reminder now fires at turn 2 and turn 5 (still internal), with wording that requires independent reads/searches in one response; new `unattended_approval` config (default `deny`, only `tests` opts in) auto-approves test-assertion edits on every entry point, prefixes the tool result with an audit note, and passes through to subagents — capability Deny still applies first |
 | **v1.6.20** | **Long-task resume and headless observability**: resuming in a different cwd now prints the recorded workspace instead of silently changing directory; `write_file` creates missing parent directories; `--mode json` emits heartbeats and tool start/finish lines on stderr while stdout stays a single JSON document; internal efficiency notices (single-tool/continuation/empty-response nudges) are marked `internal` and excluded from persistence, Web history and compaction; `/api/sessions` supports `limit/offset`, and the Web sidebar loads 50 sessions per page with a "load more" control |
 | **v1.6.19** | **Resumed sessions stop forking history + offline Web UI**: `--resume`, TUI resume and Web disconnect saves used `SessionStore.save()` and created a new file on every save; they now overwrite via `saveWithId/saveWithIdUsage` (keeping `created/cwd/title/parent`) and persist per-session usage. `--list` and the TUI resume tree default to the current workspace (`--list --all` shows everything), and drafts are keyed by a SHA-256 of the cwd instead of sharing one file across projects. On the Web side, marked / DOMPurify / highlight.js / github-dark are embedded and served from `/assets/vendor/*` with immutable caching, so the first screen makes zero external requests; code highlighting now goes through `hljs.highlightElement` (marked v5 dropped the old `highlight` option), keeping sanitize-before-highlight |
