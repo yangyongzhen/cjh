@@ -1,10 +1,10 @@
 package cjh
 
 /**
- * Skills 子系统：技能文件扫描、frontmatter 解析、指令注入、声明式工具注册
+ * Skills 子系统：技能文件扫描、索引注入、按需正文读取、声明式工具注册
  *
- * 技能形态：~/.cjh/skills/<name>.md，frontmatter 声明 name/description/tools，
- * 正文为注入 system prompt 的指令文本。
+ * 技能形态：~/.cjh/skills/<name>.md，frontmatter 声明 name/description/tools；
+ * system prompt 只注入「名称 + 描述」索引，正文由 `skill_load` 按需读取。
  */
 
 import std.collection.*
@@ -12,8 +12,10 @@ import std.env.*
 import std.fs.*
 import std.time.*
 import stdx.encoding.json.*
+import cjllm.ToolSpec
 import cjh.tools.*
 import cjh.tui.*
+import cjlog.*
 import cjterm.*
 import cjutil.*
 
@@ -40,103 +42,6 @@ func findProjectInstructionsPath(): String {
 }
 
 /**
- * 解析 Markdown frontmatter（--- 之间的 YAML 子集）。
- * 返回字段名 → 原始值字符串的 map。支持两种形态：
- *   1) 单行标量：`name: xxx` → value = "xxx"
- *   2) 多行块：`tools:` 单独成行，其后到下一个顶级 key 或 frontmatter
- *      结束的所有行合并为 value（保留 JSON 数组字面量）
- * 标量值做 trimAscii；多行块保留原始缩进与换行，由调用方按 JSON 解析。
- */
-public func parseFrontmatter(fm: String): HashMap<String, String> {
-    let result = HashMap<String, String>()
-    let lines = fm.split("\n", -1)
-    var i = 0
-    while (i < lines.size) {
-        let line = lines[i]
-        let t = line.trimAscii()
-        if (t.size == 0 || t.startsWith("#")) {
-            i += 1
-            continue
-        }
-        // key: value 单行形态
-        let colon = t.indexOf(":")
-        if (colon.isSome()) {
-            let key = t[0..colon.getOrThrow()].trimAscii()
-            let rest = t[colon.getOrThrow() + 1..t.size].trimAscii()
-            if (rest.size > 0) {
-                // 单行标量：key: value
-                result.add(key, rest)
-                i += 1
-            } else {
-                // 多行块：key: 单独成行，后续缩进行合并
-                var sb = StringBuilder()
-                var j = i + 1
-                var gathered: Bool = false
-                while (j < lines.size) {
-                    let nl = lines[j]
-                    let nt = nl.trimAscii()
-                    // 空行或注释跳过
-                    if (nt.size == 0) {
-                        j += 1
-                        continue
-                    }
-                    // 下一个顶级 key（非缩进、含冒号）则结束块
-                    let nColon = nt.indexOf(":")
-                    if (nColon.isSome() && nl.size > 0 && nl[0] != 32u8 /* ' ' */ && nl[0] != 9u8 /* '\t' */) {
-                        break
-                    }
-                    // 缩进行：合并（保留 trimAscii 后内容，换行分隔）
-                    if (gathered) {
-                        sb.append("\n")
-                    }
-                    sb.append(nt)
-                    gathered = true
-                    j += 1
-                }
-                if (gathered) {
-                    result.add(key, sb.toString())
-                }
-                i = j
-            }
-        } else {
-            i += 1
-        }
-    }
-    return result
-}
-
-/**
- * 统计 frontmatter tools 段里声明的工具数（JSON 数组长度）。
- * 解析失败或非数组返回 0。
- */
-public func countSkillTools(toolsStr: String): Int64 {
-    try {
-        let v = JsonValue.fromStr(toolsStr)
-        match (v.kind()) {
-            case JsonKind.JsArray => return Int64(v.asArray().size())
-            case _ => return 0
-        }
-    } catch (e: Exception) {
-        return 0
-    }
-}
-
-/**
- * 技能是否启用（enabledSkills 空=全部启用；非空=白名单）
- */
-public func skillEnabled(name: String, enabled: ArrayList<String>): Bool {
-    if (enabled.size == 0) {
-        return true
-    }
-    for (e in enabled) {
-        if (e == name) {
-            return true
-        }
-    }
-    return false
-}
-
-/**
  * 列示技能（/skills 命令）：扫描 ~/.cjh/skills/<name>.md，输出名称、启用状态、
  * 前端声明的描述与携带工具数；无技能目录时提示创建方法。
  */
@@ -145,128 +50,147 @@ func listSkills(skillsDir: String, enabled: ArrayList<String>, tui: TuiApp): Uni
         tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "[技能目录不存在: ${skillsDir}；创建 ~/.cjh/skills/<name>.md 即可启用]" + Ansi.reset())
         return
     }
-    let files = ArrayList<String>()
-    Directory.walk(skillsDir, { fi =>
-        if (fi.name.endsWith(".md")) {
-            files.add(fi.name)
-        }
-        return true
-    })
-    if (files.size == 0) {
+    let skills = scanSkills(skillsDir, enabled)
+    if (skills.size == 0) {
         tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "[无技能；创建 ~/.cjh/skills/<name>.md（frontmatter: name/description + 正文指令）]" + Ansi.reset())
         return
     }
     tui.appendOutput(Ansi.fg(Ansi.THEME_ACCENT) + "可用技能（settings.json 的 enabled_skills 白名单控制开关，空=全部启用）：" + Ansi.reset())
-    for (f in files) {
-        try {
-            let content = safeFromUtf8(File.readFrom(skillsDir + "/" + f))
-            var name = f[0..f.size - 3]
-            var desc = ""
-            var toolCount: Int64 = 0
-            if (content.startsWith("---")) {
-                let endFm = content.indexOf("\n---")
-                if (endFm.isSome()) {
-                    let fm = content[3..endFm.getOrThrow()]
-                    let fields = parseFrontmatter(fm)
-                    if (let Some(v) <- fields.get("name")) {
-                        if (v.size > 0) {
-                            name = v
-                        }
-                    }
-                    if (let Some(v) <- fields.get("description")) {
-                        if (v.size > 0) {
-                            desc = v
-                        }
-                    }
-                    if (let Some(v) <- fields.get("tools")) {
-                        // 统计 tools JSON 数组里的对象数
-                        toolCount = countSkillTools(v)
-                    }
-                }
-            }
-            let state = if (skillEnabled(name, enabled)) {
-                Ansi.fg(Ansi.THEME_OK) + "● 启用" + Ansi.reset()
-            } else {
-                Ansi.fg(Ansi.THEME_MUTED) + "○ 禁用" + Ansi.reset()
-            }
-            var line = "  ${state} ${name}"
-            if (desc.size > 0) {
-                line += " — ${desc}"
-            }
-            if (toolCount > 0) {
-                line += Ansi.fg(Ansi.THEME_MUTED) + " [${toolCount} 个声明式工具]" + Ansi.reset()
-            }
-            tui.appendOutput(line)
-        } catch (e: Exception) {
-            ()
+    for (c in skills) {
+        let state = if (c.enabled) {
+            Ansi.fg(Ansi.THEME_OK) + "● 启用" + Ansi.reset()
+        } else {
+            Ansi.fg(Ansi.THEME_MUTED) + "○ 禁用" + Ansi.reset()
         }
+        var line = "  ${state} ${c.name}"
+        if (c.description.size > 0) {
+            line += " — ${c.description}"
+        }
+        let toolCount = countSkillTools(c.toolsJson)
+        if (toolCount > 0) {
+            line += Ansi.fg(Ansi.THEME_MUTED) + " [${toolCount} 个声明式工具]" + Ansi.reset()
+        }
+        tui.appendOutput(line)
     }
     tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "示例：/skills 查看；编辑 ~/.cjh/settings.json 的 enabled_skills 数组切换开关" + Ansi.reset())
 }
 
 /**
- * 加载技能（Skills，对齐 pi 的按需能力包）：
- * 扫描 ~/.cjh/skills/<name>.md（v2 4.3c"技能即文件"：Markdown 文本资产，
- * frontmatter 声明 name/description + 正文为指令），把所有技能指令拼接返回；
- * 目录不存在或无技能返回 ""。技能指令注入 system prompt（按需能力，不破缓存）。
+ * 按预算生成技能索引：只含「名称 + 描述」，正文不进入提示词。
+ * 按技能名升序确定性排列，装不下的整条跳过，不做中间截断。
+ * 返回索引文本与逐技能状态（含 over_budget 原因），供 `buildSystemPrompt`
+ * 告警和 `/api/skills` 展示。
  */
-public func loadSkills(skillsDir: String, enabled: ArrayList<String>): String {
-    if (!exists(skillsDir)) {
-        return ""
-    }
-    let files = ArrayList<String>()
-    Directory.walk(skillsDir, { fi =>
-        if (fi.name.endsWith(".md")) {
-            files.add(fi.name)
+public func loadSkillIndexWithBudget(skillsDir: String, enabled: ArrayList<String>, maxBytes: Int64): (String, ArrayList<SkillInjection>) {
+    return planSkillIndex(scanSkills(skillsDir, enabled), maxBytes)
+}
+
+/**
+ * 技能索引预算告警：只报"装不下"的技能（未启用/空正文是用户显式选择，不告警），
+ * 避免超预算后模型看不到技能、工具链却毫无提示。
+ */
+private func warnDroppedSkills(statuses: ArrayList<SkillInjection>, maxBytes: Int64): Unit {
+    var dropped: Int64 = 0
+    let names = StringBuilder()
+    for (s in statuses) {
+        if (s.reason != "over_budget") {
+            continue
         }
+        if (dropped > 0) {
+            names.append(", ")
+        }
+        names.append("${s.name}(${s.indexBytes}B)")
+        dropped += 1
+    }
+    if (dropped > 0) {
+        Log.warn("技能索引超出预算 prompt_skills_max_bytes=${maxBytes}：${dropped} 个技能未列出（${names}）；" +
+            "按技能名升序整条尝试，装不下的整条跳过，不会截断描述。技能正文始终按需 skill_load 加载")
+    }
+}
+
+/**
+ * 读取技能正文工具（渐进披露的第二步）。
+ *
+ * system prompt 只列名称/描述；模型判断任务匹配后调用本工具取正文。
+ * 只读、无副作用，可与其他只读工具并发。
+ */
+public class SkillLoadTool <: CjhTool {
+    private let skillsDir: String
+    private let enabled: ArrayList<String>
+
+    public init(skillsDir: String, enabled: ArrayList<String>) {
+        this.skillsDir = skillsDir
+        let copy = ArrayList<String>()
+        for (e in enabled) {
+            copy.add(e)
+        }
+        this.enabled = copy
+    }
+
+    public func spec(): ToolSpec {
+        let props = HashMap<String, JsonValue>()
+        props.add("name", JsonSchema.str("技能名（取自 system prompt 的 Available skills 索引）"))
+        let schema = JsonSchema.object(props, ArrayList<String>(["name"]))
+        return ToolSpec("skill_load",
+            "读取指定技能的完整正文。system prompt 只列技能名与描述；当任务匹配某个技能时，" +
+            "先调用本工具加载正文，再严格按其指令执行。只加载与当前任务相关的技能，不要预加载全部。",
+            schema)
+    }
+
+    public func isReadOnly(): Bool {
         return true
-    })
-    if (files.size == 0) {
-        return ""
     }
-    var sb = StringBuilder()
-    var count: Int64 = 0
-    for (f in files) {
-        try {
-            let content = safeFromUtf8(File.readFrom(skillsDir + "/" + f))
-            if (content.size == 0) {
-                continue
+
+    public func execute(args: JsonObject): ToolResult {
+        if (!args.containsKey("name")) {
+            return ToolResult("缺少参数: name", true)
+        }
+        let rawName = match (args.get("name").getOrThrow().kind()) {
+            case JsonKind.JsString => args.get("name").getOrThrow().asString().getValue().trimAscii()
+            case _ => return ToolResult("参数 name 必须是字符串", true)
+        }
+        if (rawName.size == 0) {
+            return ToolResult("参数 name 不能为空", true)
+        }
+        let candidates = scanSkills(this.skillsDir, this.enabled)
+        var target: ?SkillCandidate = None
+        for (c in candidates) {
+            if (c.name == rawName) {
+                target = Some(c)
+                break
             }
-            // 提取 frontmatter：---\nname: xxx\ndescription: xxx\n---\n正文
-            var name = f[0..f.size - 3]  // 去 .md
-            var body = content
-            if (content.startsWith("---")) {
-                let endFm = content.indexOf("\n---")
-                if (endFm.isSome()) {
-                    let fmEnd = endFm.getOrThrow()
-                    let fm = content[3..fmEnd]
-                    let fields = parseFrontmatter(fm)
-                    if (let Some(v) <- fields.get("name")) {
-                        if (v.size > 0) {
-                            name = v
-                        }
-                    }
-                    body = content[fmEnd + 4..content.size].trimAscii()
+        }
+        match (target) {
+            case Some(c) =>
+                if (!c.enabled) {
+                    return ToolResult("技能已禁用: ${c.name}（检查 ~/.cjh/settings.json 的 enabled_skills）", true)
                 }
-            }
-            // 白名单过滤：未启用的技能不注入
-            if (!skillEnabled(name, enabled)) {
-                continue
-            }
-            if (body.size == 0) {
-                continue
-            }
-            if (count > 0) {
-                sb.append("\n\n")
-            }
-            sb.append("### Skill: ${name}\n")
-            sb.append(body)
-            count += 1
-        } catch (e: Exception) {
-            ()
+                if (c.body.size == 0) {
+                    return ToolResult("技能正文为空: ${c.name}（${c.path}）", true)
+                }
+                return ToolResult("# Skill: ${c.name}\nSource: ${c.path}\n\n${c.body}", false)
+            case None =>
+                let available = StringBuilder()
+                var count: Int64 = 0
+                for (c in candidates) {
+                    if (!c.enabled || c.body.size == 0) {
+                        continue
+                    }
+                    if (count > 0) {
+                        available.append(", ")
+                    }
+                    available.append(c.name)
+                    count += 1
+                    if (count >= 20) {
+                        break
+                    }
+                }
+                if (count == 0) {
+                    return ToolResult("未知技能: ${rawName}；当前没有可用技能（目录: ${this.skillsDir}）", true)
+                }
+                return ToolResult("未知技能: ${rawName}；可用技能: ${available.toString()}", true)
         }
     }
-    return sb.toString()
 }
 
 /**
@@ -316,53 +240,19 @@ func registerSkillTools(jsonStr: String, registry: ToolRegistry): Unit {
 }
 
 /**
- * 加载技能携带的声明式工具（对齐 v2 4.3b 声明式形态）：
- * 技能 frontmatter 的 tools 段为 JSON 数组，每项 {name, description, command, args?}，
- * 注册为 DeclarativeTool（shell 模板 + 参数 schema，低门槛）。
- * 无 tools 段或解析失败则跳过该技能；技能目录不存在时静默。
+ * 注册技能相关工具：
+ * 1) `skill_load`：按需读取技能正文（始终注册，即使当前目录为空，运行期新增技能也能用）；
+ * 2) 技能 frontmatter 的 tools 段（JSON 数组，每项 {name, description, command, args?}）
+ *    注册为 DeclarativeTool（shell 模板 + 参数 schema，低门槛）。
+ * 无 tools 段或解析失败则跳过该技能；技能目录不存在时只注册 skill_load。
  */
 func loadSkillTools(skillsDir: String, registry: ToolRegistry, enabled: ArrayList<String>): Unit {
-    if (!exists(skillsDir)) {
-        return
-    }
-    let files = ArrayList<String>()
-    Directory.walk(skillsDir, { fi =>
-        if (fi.name.endsWith(".md")) {
-            files.add(fi.name)
+    registry.register(SkillLoadTool(skillsDir, enabled))
+    for (c in scanSkills(skillsDir, enabled)) {
+        if (!c.enabled || c.toolsJson.size == 0) {
+            continue
         }
-        return true
-    })
-    for (f in files) {
-        try {
-            let content = safeFromUtf8(File.readFrom(skillsDir + "/" + f))
-            if (content.size == 0 || !content.startsWith("---")) {
-                continue
-            }
-            let endFm = content.indexOf("\n---")
-            if (endFm.isNone()) {
-                continue
-            }
-            let fm = content[3..endFm.getOrThrow()]
-            let fields = parseFrontmatter(fm)
-            // 技能名（frontmatter name 或文件名去 .md），白名单过滤
-            var name = f[0..f.size - 3]
-            if (let Some(v) <- fields.get("name")) {
-                if (v.size > 0) {
-                    name = v
-                }
-            }
-            if (!skillEnabled(name, enabled)) {
-                continue
-            }
-            // frontmatter 的 tools 段（多行 JSON 数组），注册声明式工具
-            if (let Some(toolsStr) <- fields.get("tools")) {
-                if (toolsStr.size > 0) {
-                    registerSkillTools(toolsStr, registry)
-                }
-            }
-        } catch (e: Exception) {
-            ()
-        }
+        registerSkillTools(c.toolsJson, registry)
     }
 }
 
@@ -531,11 +421,17 @@ func buildSystemPrompt(base: String, skillsDir: String, enabled: ArrayList<Strin
             ()
         }
     }
-    let skills = loadSkills(skillsDir, enabled)
+    let skillResult = loadSkillIndexWithBudget(skillsDir, enabled, skillsMaxBytes)
+    let (skills, skillStatuses) = skillResult
     if (skills.size > 0) {
-        s += "\n\n## Available skills (load on demand)\n" +
-            clipPromptSection(skills, skillsMaxBytes, skillsDir)
+        s += "\n\n## Available skills (progressive disclosure)\n"
+        s += "Skill bodies are not loaded. When a task matches a skill below, call `skill_load` with its name "
+        s += "before following its instructions. Load only skills relevant to the current task; do not preload all. "
+        s += "If several skills apply, call each one (multiple calls in one turn are allowed). "
+        s += "If a skill body is already present in this conversation, reuse it instead of loading it again.\n\n"
+        s += skills
     }
+    warnDroppedSkills(skillStatuses, skillsMaxBytes)
     // 跨会话项目记忆（P1-6）：上次会话的关键信息，帮助快速恢复上下文
     let memory = loadProjectMemory(memoryDir)
     if (memory.size > 0) {

@@ -241,7 +241,7 @@ coding agent 的执行效率直接决定用户等待时间。cjh 从三个维度
 - **自动 Compaction（后台异步）**：消息条数或真实 `usage.promptTokens` 超阈值时**后台 spawn 摘要**（不阻塞主循环），下一轮请求前 `tryGet` 非阻塞换装，未完成顺延、失败回退同步压缩，`compactThreshold` / `compact_token_threshold` / `compactKeep` 可配（token 阈值默认 **64000**，128K 模型下避免 32K 早压缩）；手动 `/compact` 保持同步
 - **项目指令**：自动加载 `AGENTS.md` / `.atomcode.md` 项目指令注入 system prompt
 
-### 工具系统（14 个内置 + 可扩展）
+### 工具系统（15 个内置 + 可扩展）
 
 | 工具 | 说明 |
 |---|---|
@@ -259,6 +259,7 @@ coding agent 的执行效率直接决定用户等待时间。cjh 从三个维度
 | `task` | 派发子代理执行独立任务，explore（只读）/ worker（可写）——V4 多 agent 并行编排的基础原语 |
 | `web_search` | 联网搜索，多后端路由（Tavily/Exa/SearXNG/DDG）+ per-engine key rotation |
 | `web_fetch` | 抓取网页，三级降级链（仓颉 HTTP → curl → Firecrawl）+ SSRF 防护 |
+| `skill_load` | 按名称读取技能正文（system prompt 只放名称+描述索引，正文按需加载） |
 
 ### 并发执行引擎（V2d）
 
@@ -341,6 +342,10 @@ coding agent 的执行效率直接决定用户等待时间。cjh 从三个维度
 
 - **技能即 Markdown**：`~/.cjh/skills/<name>.md`，frontmatter 声明元数据 + 工具
 - **技能白名单**：`enabled_skills` 配置启用技能
+- **渐进披露**：system prompt 只注入 `名称 + 描述` 的索引，**正文不进提示词**；模型判断任务匹配后调用 `skill_load` 按需读取。常驻开销只与索引相关；正文只在加载后按实际大小占用当前上下文。
+- **描述决定触发**：索引只有 `名称 + 描述`，描述要写清“何时用 / 能做什么 / 何时不用”，不要写“用于测试”这类空话——描述含糊等于技能永远不会被加载。
+- **技能索引预算**：`prompt_skills_max_bytes`（默认 6000）约束索引段。按技能名升序逐条尝试，每条**整条装入或整条跳过**；超预算的技能会打告警日志，并在 `GET /api/skills` 中返回 `injected:false` + `reason:"over_budget"`。
+- **正文可观测**：`GET /api/skills` 的 `bytes` 是正文体积、`index_bytes` 是索引整行体积；`skill_load` 只接受索引内已启用的技能，未知/禁用/路径越界明确报错。`skill_load` 结果**豁免工具结果 6000 字符截断**，执行说明书不会被腰斩。
 - **技能携带工具**：技能 frontmatter 的 `tools` 段注册声明式工具
 
 ### 仓颉内置知识层
@@ -609,6 +614,7 @@ cjh 内置 MCP 客户端，支持 stdio 传输 + JSON-RPC 2.0。配置 `mcp_serv
 
 | 版本 | 主要功能 |
 |---|---|
+| **未发布** | **技能渐进披露**：system prompt 只注入技能名称 + 描述索引，正文改由 `skill_load` 按需读取；索引按名称升序整条装载/跳过，预算只约束索引；`GET /api/skills` 区分 `bytes`（正文）与 `index_bytes`（索引）。技能正文再长也不再挤占常驻上下文 |
 | **v1.6.21** | **长任务效率与无人值守测试审批**：压缩 token 阈值默认 32000 → 64000（128K 模型不再在任务中段压缩；用户显式 `compact_token_threshold` 仍优先）；单工具提效提醒改为第 2 轮与第 5 轮各一次（仍只进模型上下文），措辞要求独立读/搜在同一响应批量发起；新增 `unattended_approval`（默认 `deny`，仅 `tests` 开启）——所有入口自动批准测试断言改写，工具结果带审计前缀，子代理继承父策略，capability Deny 仍先执行 |
 | **v1.6.20** | **长任务恢复与无头可观测性**：恢复会话时记录 cwd 与当前 cwd 不一致会显式提示原工作区，但不自动 `chdir`（避免相对路径与权限边界漂移）；`write_file` 自动创建缺失父目录；`--mode json` 把心跳与工具开始/结束写 stderr，stdout 仍只有最终 JSON；单工具/续跑/空响应重试等内部提醒标记 `internal`，不落盘、不进 Web 历史、不参与压缩；`/api/sessions` 支持 `limit/offset`，Web 侧边栏每页 50 条按需「加载更多」 |
 | **v1.6.19** | **恢复会话不再复制历史 + Web 首屏离线可用**：`--resume`、TUI 恢复、Web 断连保存原先都走 `SessionStore.save()`，每次保存都生成新 ID；现统一用 `saveWithId/saveWithIdUsage` 覆盖原文件（保留 `created/cwd/title/parent`），并让 `SessionUsage` 随会话落盘。`--list` 与 TUI 恢复树默认只看当前工作区（`--list --all` 看全部），草稿文件改按 cwd 的 SHA-256 命名，多个项目不再共用一份。Web 侧把 marked / DOMPurify / highlight.js / github-dark 嵌入二进制，由 `/assets/vendor/*` 提供并带 immutable 缓存，首屏零外域请求；高亮改走 `hljs.highlightElement`（marked v5 已移除 `highlight` 选项），保持先清洗后上色 |
@@ -781,7 +787,7 @@ cjh/
 │   ├── tui/                # TUI 应用层
 │   ├── web/                # Web Server（HTTP + WS + REST + 前端）
 │   ├── gateway/            # Channel 抽象（IM/Web 渠道网关）
-│   ├── skills.cj           # 技能系统（frontmatter 解析 + 指令注入）
+│   ├── skills.cj           # 技能系统（索引注入 / 按需正文 / 声明式工具）
 │   ├── ast_grep.cj         # AST 搜索工具（sg CLI + grep 降级）
 │   ├── tests/              # 单元测试（工具/会话/截断器/路由/TUI 渲染/思考交织/性能优化/并行子代理，674 用例）
 │   └── core_funcs_test.cj  # 根包纯函数测试（skills/tool_format/ast_grep/task）

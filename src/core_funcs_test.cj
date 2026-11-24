@@ -117,38 +117,147 @@ public class CoreSkillsTest {
     }
 
     @TestCase
-    public func testLoadSkillsFromDir(): Unit {
+    public func testSkillIndexContainsNamesAndDescriptionsNotBodies(): Unit {
         let dir = coreTestTempDir("skills")
         coreWriteTextFile(dir + "/one.md",
             "---\nname: skill-one\ndescription: 第一个\n---\n技能一指令")
         coreWriteTextFile(dir + "/two.md",
             "---\nname: skill-two\ndescription: 第二个\n---\n技能二指令")
         var enabled = ArrayList<String>()
-        let all = loadSkills(dir, enabled)
-        @Assert(all.contains("skill-one"), true)
-        @Assert(all.contains("技能一指令"), true)
-        @Assert(all.contains("skill-two"), true)
+        let allResult = loadSkillIndexWithBudget(dir, enabled, Int64.Max)
+        let (all, statuses) = allResult
+        @Assert(all.contains("- **skill-one**: 第一个"), true)
+        @Assert(all.contains("- **skill-two**: 第二个"), true)
+        // 渐进披露：正文绝不进入 system prompt 索引
+        @Assert(all.contains("技能一指令"), false)
+        @Assert(all.contains("技能二指令"), false)
+        @Assert(all.contains("### Skill:"), false)
+        @Assert(statuses.size, 2)
+        @Assert(statuses[0].name, "skill-one")
+        @Assert(statuses[0].bodyBytes > 0, true)
+        @Assert(statuses[0].indexBytes, all.split("\n", -1)[0].size)
         var whitelist = ArrayList<String>()
         whitelist.add("skill-one")
-        let filtered = loadSkills(dir, whitelist)
-        @Assert(filtered.contains("技能一指令"), true)
-        @Assert(filtered.contains("技能二指令"), false)
+        let filteredResult = loadSkillIndexWithBudget(dir, whitelist, Int64.Max)
+        let (filtered, filteredStatuses) = filteredResult
+        @Assert(filtered.contains("skill-one"), true)
+        @Assert(filtered.contains("skill-two"), false)
+        @Assert(filteredStatuses.size, 2)
+        @Assert(filteredStatuses[1].reason, "disabled")
     }
 
     @TestCase
-    public func testLoadSkillsNonexistentDir(): Unit {
+    public func testLoadSkillIndexNonexistentDir(): Unit {
         var enabled = ArrayList<String>()
-        @Assert(loadSkills(tmpPath("cjh_ut_no_such_skills_dir"), enabled), "")
+        let result = loadSkillIndexWithBudget(tmpPath("cjh_ut_no_such_skills_dir"), enabled, Int64.Max)
+        let (text, statuses) = result
+        @Assert(text, "")
+        @Assert(statuses.size, 0)
     }
 
     @TestCase
-    public func testLoadSkillsBodyTrimmed(): Unit {
+    public func testScanSkillsBodyTrimmedAndToolsKept(): Unit {
         let dir = coreTestTempDir("skills2")
-        coreWriteTextFile(dir + "/t.md", "---\nname: t\n---\n  正文内容  \n")
+        coreWriteTextFile(dir + "/t.md",
+            "---\nname: t\ndescription: 测试\ntools: [{\"name\":\"x\"}]\n---\n  正文内容  \n")
         var enabled = ArrayList<String>()
-        let result = loadSkills(dir, enabled)
-        @Assert(result.contains("正文内容"), true)
-        @Assert(result.endsWith("正文内容"), true)
+        let skills = scanSkills(dir, enabled)
+        @Assert(skills.size, 1)
+        @Assert(skills[0].name, "t")
+        @Assert(skills[0].description, "测试")
+        @Assert(skills[0].body, "正文内容")
+        @Assert(countSkillTools(skills[0].toolsJson), 1)
+    }
+
+    @TestCase
+    public func testSkillIndexBudgetSkipsWholeEntryAndKeepsLaterSmallOne(): Unit {
+        // 索引按整行取舍：长描述整条跳过，不能截断；后面的短条目仍要列出
+        let dir = coreTestTempDir("skills_budget")
+        let bigDesc = coreRepeatText("A", 500)
+        coreWriteTextFile(dir + "/a-big.md", "---\nname: a-big\ndescription: ${bigDesc}\n---\nBIG-BODY")
+        coreWriteTextFile(dir + "/z-small.md", "---\nname: z-small\ndescription: S\n---\nSMALL-BODY")
+        var enabled = ArrayList<String>()
+        let result = loadSkillIndexWithBudget(dir, enabled, 80)
+        let (text, statuses) = result
+        @Assert(text.contains("- **z-small**: S"), true)
+        @Assert(text.contains("a-big"), false)
+        @Assert(text.contains("AAAA"), false)
+        @Assert(text.contains("BIG-BODY"), false)
+        @Assert(statuses.size, 2)
+        @Assert(statuses[0].name, "a-big")
+        @Assert(statuses[0].injected, false)
+        @Assert(statuses[0].reason, "over_budget")
+        @Assert(statuses[0].bodyBytes, 8)
+        @Assert(statuses[1].name, "z-small")
+        @Assert(statuses[1].injected, true)
+        @Assert(statuses[1].reason, "")
+    }
+
+    @TestCase
+    public func testLoadSkillIndexDisabledReportedNotInjected(): Unit {
+        let dir = coreTestTempDir("skills_disabled")
+        coreWriteTextFile(dir + "/one.md", "---\nname: one\ndescription: d\n---\nONE")
+        var whitelist = ArrayList<String>()
+        whitelist.add("other")
+        let result = loadSkillIndexWithBudget(dir, whitelist, Int64.Max)
+        let (text, statuses) = result
+        @Assert(text, "")
+        @Assert(statuses.size, 1)
+        @Assert(statuses[0].injected, false)
+        @Assert(statuses[0].reason, "disabled")
+    }
+
+    @TestCase
+    public func testSkillLoadToolReturnsBodyOnDemand(): Unit {
+        let dir = coreTestTempDir("skills_load")
+        coreWriteTextFile(dir + "/one.md",
+            "---\nname: skill-one\ndescription: 第一个\n---\n技能一指令\n第二行")
+        let tool = SkillLoadTool(dir, ArrayList<String>())
+        @Assert(tool.isReadOnly(), true)
+        @Assert(tool.spec().name, "skill_load")
+        var args = JsonObject()
+        args.put("name", JsonString("skill-one"))
+        let r = tool.execute(args)
+        @Assert(r.isError, false)
+        @Assert(r.content.contains("# Skill: skill-one"), true)
+        @Assert(r.content.contains("技能一指令\n第二行"), true)
+        @Assert(r.content.contains(dir + "/one.md"), true)
+    }
+
+    @TestCase
+    public func testSkillLoadToolRejectsMissingUnknownDisabledAndTraversal(): Unit {
+        let dir = coreTestTempDir("skills_load_errors")
+        coreWriteTextFile(dir + "/one.md", "---\nname: one\ndescription: d\n---\nONE")
+        var whitelist = ArrayList<String>()
+        whitelist.add("other")
+        let tool = SkillLoadTool(dir, whitelist)
+        var missing = JsonObject()
+        let missingResult = tool.execute(missing)
+        @Assert(missingResult.isError, true)
+        @Assert(missingResult.content.contains("name"), true)
+        var unknown = JsonObject()
+        unknown.put("name", JsonString("no-such"))
+        let unknownResult = tool.execute(unknown)
+        @Assert(unknownResult.isError, true)
+        @Assert(unknownResult.content.contains("未知技能"), true)
+        // 目录里的 one 被白名单禁用：不能被路径/名称绕过
+        var disabled = JsonObject()
+        disabled.put("name", JsonString("one"))
+        let disabledResult = tool.execute(disabled)
+        @Assert(disabledResult.isError, true)
+        @Assert(disabledResult.content.contains("已禁用"), true)
+        var traversal = JsonObject()
+        traversal.put("name", JsonString("../one"))
+        let traversalResult = tool.execute(traversal)
+        @Assert(traversalResult.isError, true)
+        @Assert(traversalResult.content.contains("未知技能"), true)
+    }
+
+    @TestCase
+    public func testLoadSkillToolsRegistersLoaderEvenWithMissingDir(): Unit {
+        let registry = ToolRegistry()
+        loadSkillTools(tmpPath("cjh_ut_no_such_skills_dir"), registry, ArrayList<String>())
+        @Assert(registry.has("skill_load"), true)
     }
 }
 
@@ -1287,12 +1396,22 @@ public class CorePromptAssemblyTest {
     public func testSkillsAndMemoryAreCapped(): Unit {
         let skillsDir = coreTestTempDir("prompt_cap_skills")
         let memDir = coreTestTempDir("prompt_cap_mem")
+        // 渐进披露后技能正文不再进 prompt；预算约束的是索引行本身
+        let bigDesc = coreRepeatText("d", 300)
         coreWriteTextFile(skillsDir + "/big.md",
-            "---\nname: big-skill\ndescription: big\n---\n" + coreRepeatText("s", 7000))
+            "---\nname: big-skill\ndescription: ${bigDesc}\n---\nBIG-SKILL-BODY")
+        coreWriteTextFile(skillsDir + "/small.md",
+            "---\nname: small-skill\ndescription: small\n---\nSMALL-SKILL-BODY")
         coreWriteTextFile(memDir + "/" + currentProjectName() + ".md", coreRepeatText("m", 5000))
-        let s = buildSystemPrompt("BASE", skillsDir, ArrayList<String>(), memDir, 6000, 6000, 4000)
-        @Assert(s.contains("### Skill: big-skill"), true)
-        @Assert(s.contains("exceeds ${6000} bytes"), true)
+        let s = buildSystemPrompt("BASE", skillsDir, ArrayList<String>(), memDir, 6000, 120, 4000)
+        // 超预算索引行整条跳过；小技能索引仍列出，正文一律不注入
+        @Assert(s.contains("- **big-skill**"), false)
+        @Assert(s.contains("- **small-skill**: small"), true)
+        @Assert(s.contains("BIG-SKILL-BODY"), false)
+        @Assert(s.contains("SMALL-SKILL-BODY"), false)
+        @Assert(s.contains("## Available skills (progressive disclosure)"), true)
+        @Assert(s.contains("call `skill_load`"), true)
+        // 项目记忆仍走小节压缩，保留截断提示
         @Assert(s.contains("## Project memory (previous session, stale context)"), true)
         @Assert(s.contains("exceeds ${4000} bytes"), true)
         removeTreeForTest(skillsDir)

@@ -25,6 +25,46 @@ import cjutil.*
 import cjh.tools.*
 
 /**
+ * 构建 `/api/skills` 的技能列表（纯函数，供 REST 与测试共用）。
+ *
+ * 语义与 `buildSystemPrompt` 的技能索引一致（技能名升序）：
+ * - `injected`：该技能是否进入 system prompt 的「名称 + 描述」索引；
+ * - `bytes`：技能正文大小（真正按需 `skill_load` 加载的体积）；
+ * - `index_bytes`：该技能在索引中占用的整行字节数；
+ * - `reason`："" / "disabled" / "empty" / "over_budget"。
+ */
+public func buildSkillListJson(skillsDir: String, enabledSkills: ArrayList<String>, maxBytes: Int64): JsonArray {
+    let skillsArr = JsonArray()
+    let candidates = scanSkills(skillsDir, enabledSkills)
+    let plan = planSkillIndex(candidates, maxBytes)
+    let (_, statuses) = plan
+    for (st in statuses) {
+        var desc = ""
+        var toolCount: Int64 = 0
+        var enabled = false
+        for (c in candidates) {
+            if (c.name == st.name) {
+                desc = c.description
+                toolCount = countSkillTools(c.toolsJson)
+                enabled = c.enabled
+                break
+            }
+        }
+        var skillObj = JsonObject()
+        skillObj.put("name", JsonString(st.name))
+        skillObj.put("description", JsonString(desc))
+        skillObj.put("tools", JsonInt(toolCount))
+        skillObj.put("enabled", JsonBool(enabled))
+        skillObj.put("injected", JsonBool(st.injected))
+        skillObj.put("reason", JsonString(st.reason))
+        skillObj.put("bytes", JsonInt(st.bodyBytes))
+        skillObj.put("index_bytes", JsonInt(st.indexBytes))
+        skillsArr.add(skillObj)
+    }
+    return skillsArr
+}
+
+/**
  * REST API 处理器：统一处理所有 /api 路由
  */
 public class RestApi <: HttpRequestHandler {
@@ -310,59 +350,18 @@ public class RestApi <: HttpRequestHandler {
     }
 
     /**
-     * GET /api/skills → 列出技能
+     * GET /api/skills → 列出技能及其实际注入状态
      *
-     * 扫描 skillsDir 下的 *.md 文件，解析 frontmatter（name/description/tools）。
+     * 扫描 skillsDir 下的 *.md 文件，解析 frontmatter（name/description/tools），
+     * 并用与 buildSystemPrompt 相同的预算规划器计算 injected/reason。
      * 返回格式：
-     * { "skills": [{"name":"git", "description":"...", "tools": 2, "enabled": true}, ...] }
+     * { "skills": [{"name":"git", "description":"...", "tools": 2, "enabled": true,
+     *               "injected": true, "reason": "", "bytes": 123}, ...] }
+     * reason: ""（已注入）/ "disabled" / "empty" / "over_budget"。
      */
     private func handleListSkills(ctx: HttpContext): Unit {
-        var skillsArr = JsonArray()
-        if (exists(this.config.skillsDir)) {
-            let files = ArrayList<String>()
-            Directory.walk(this.config.skillsDir, { fi =>
-                if (fi.name.endsWith(".md")) {
-                    files.add(fi.name)
-                }
-                return true
-            })
-            for (f in files) {
-                try {
-                    let content = safeFromUtf8(File.readFrom(this.config.skillsDir + "/" + f))
-                    var name = f[0..f.size - 3]
-                    var desc = ""
-                    var toolCount: Int64 = 0
-                    if (content.startsWith("---")) {
-                        let endFm = content.indexOf("\n---")
-                        if (endFm.isSome()) {
-                            let fm = content[3..endFm.getOrThrow()]
-                            // 简单 frontmatter 解析（key: value 逐行）
-                            for (line in fm.split("\n", -1)) {
-                                let trimmed = line.trimAscii()
-                                if (trimmed.startsWith("name:")) {
-                                    let v = trimmed[5..].trimAscii()
-                                    if (v.size > 0) { name = v }
-                                } else if (trimmed.startsWith("description:")) {
-                                    let v = trimmed[12..].trimAscii()
-                                    if (v.size > 0) { desc = v }
-                                } else if (trimmed.startsWith("tools:")) {
-                                    // 统计 tools JSON 数组里的对象数
-                                    let v = trimmed[6..].trimAscii()
-                                    toolCount = countJsonObjects(v)
-                                }
-                            }
-                        }
-                    }
-                    let enabled = isSkillEnabled(name, this.config.enabledSkills)
-                    var skillObj = JsonObject()
-                    skillObj.put("name", JsonString(name))
-                    skillObj.put("description", JsonString(desc))
-                    skillObj.put("tools", JsonInt(toolCount))
-                    skillObj.put("enabled", JsonBool(enabled))
-                    skillsArr.add(skillObj)
-                } catch (e: Exception) {}
-            }
-        }
+        let skillsArr = buildSkillListJson(this.config.skillsDir, this.config.enabledSkills,
+            this.config.promptSkillsMaxBytes)
         var obj = JsonObject()
         obj.put("skills", skillsArr)
         let body = obj.toJsonString()
@@ -375,8 +374,8 @@ public class RestApi <: HttpRequestHandler {
      * POST /api/skills/reload → 重读技能与 AGENTS.md，刷新在线会话 system prompt
      *
      * 返回 { "ok": true, "refreshed": <在线会话数>, "promptChars": <新提示词字符数> }
-     * 技能正文是否真的注入，以 promptChars 与新建会话的行为为准——`GET /api/skills`
-     * 只证明目录里有文件。
+     * 每个技能是否真的注入看 `GET /api/skills` 的 `injected` / `reason`，
+     * `promptChars` 可交叉验证索引段长度（不含技能正文，正文由 `skill_load` 按需读取）。
      */
     private func handleReloadSkills(ctx: HttpContext): Unit {
         let res = ctx.responseBuilder
@@ -980,21 +979,6 @@ public func countJsonObjects(s: String): Int64 {
         }
     }
     return count
-}
-
-/**
- * 判断技能是否启用（enabled 为空时全部启用）
- */
-public func isSkillEnabled(name: String, enabled: ArrayList<String>): Bool {
-    if (enabled.size == 0) {
-        return true
-    }
-    for (i in 0..enabled.size) {
-        if (enabled[i] == name) {
-            return true
-        }
-    }
-    return false
 }
 
 /**

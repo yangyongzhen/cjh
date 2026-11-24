@@ -1,12 +1,25 @@
 # CHANGELOG
 ## [Unreleased]
 
+### 新增(技能渐进披露：提示词只放索引，正文按需读取)
+- **动机**：旧实现把启用技能的完整正文塞进 system prompt，再由 `prompt_skills_max_bytes` 裁剪。技能越多/越长，常驻上下文越大，多份大技能还会互相挤占；技能本质是"任务匹配后才需要的说明书"，不应全程占用 token。
+- **索引注入**：`buildSystemPrompt` 现在只注入 `- **<name>**: <description>` 索引（含预算与启用状态），正文完全不进提示词。索引仍按名称升序、整条装或整条跳过，`prompt_skills_max_bytes` 改为约束索引段。
+- **按需读取**：新增内置工具 `skill_load`，按名称返回技能正文与声明工具。只接受索引内**已启用**的技能；未知名称、禁用技能、路径分隔符/`..` 越界均明确报错。工具在所有入口（CLI/JSON/TUI/Web/子代理）注册，即使技能目录缺失也注册，由调用时给出可执行错误。`skill_load` 结果**豁免 6000 字符工具结果截断**——执行说明书被腰斩会直接丢步骤/禁止项；`read_file` 同理。
+- **可观测**：`GET /api/skills` 保留 `injected`/`reason`，并将 `bytes` 明确为正文体积、新增 `index_bytes`（索引整行体积）；`over_budget` 只表示索引放不下，正文仍可被 `skill_load` 读取。
+- **测试**：`SkillBudgetPlanTest` 4 例、`SkillListJsonTest` 2 例、根包 `CoreSkillsTest` 15 例（索引无正文、正文读取、未知/禁用/越界拒绝、目录缺失仍注册加载器）、`ScannedSkill` 构造与工具注册测试；另跑 `*Skill*` 过滤 25 例全绿。
+
 ### 修复(Web 会话看不到技能/AGENTS.md，issue #16)
 - **根因**：`cjh web` 的会话由 `ChannelGateway.buildAgent` 创建，提示词取 `config.systemPrompt` 原值；CLI/JSON/TUI 走的 `buildSystemPrompt`（技能正文 + `AGENTS.md` + 项目记忆）在 Web 入口一次都没调用。`GET /api/skills` 只证明文件在磁盘上，模型上下文里没有。
 - **修复**：`WebServer.promptBuilder` → `WebDistributor.enablePromptReload` → `ChannelGateway.promptBuilder`，每个 Web 会话建会话时现算组装提示词；`runWeb` 注入与其它入口同一个 `buildSystemPrompt`。
 - **技能热加载**：新增 `POST /api/skills/reload`，返回 `{ok, refreshed, promptChars}`；`Agent.refreshSystemPrompt` 对空闲会话立即换装 system 消息，**回合运行中只记 pending、下回合 `beginRound` 前换装**（避免 provider 正在读 messages 时并发改写，也避免同一回合上下文前后不一致）。改技能不必重启进程。
 - **验证**：真实进程 `cjh web`，仅加一条 `demo.md`（正文 `SKILL-BODY-MARKER-9F71`）后 `promptChars` 3969 → 4519，`POST /api/skills/reload` 正常、`GET` 明确回 `use POST`；`/api/capabilities` 已列出新路由。
 - **测试**：`WebPromptInjectionTest` 5 例——组装提示词进 Web 会话、未注入时回退 base、空闲会话热刷新（含新建会话）、未注入时明确报不可用、回合运行中刷新延到下一回合。
+
+### 修复(技能超预算静默丢弃，issue #16 补充评论)
+- **旧实现**：`loadSkills` 先把所有技能拼成一个字符串，再由 `clipPromptSection` 按 `prompt_skills_max_bytes` 从末尾截断——超预算时最后几份技能整份消失、末尾一份还可能被切成半截，且没有日志或 API 状态。
+- **新口径**：按**技能名升序**逐个尝试，把 `### Skill: <name>\n` 头部 + 正文 + 技能间空行计入预算；每份技能**整份装入或整份跳过**，跳过后面仍会继续尝试更小的技能；frontmatter 不计入。
+- **可观测**：`buildSystemPrompt` 对 `over_budget` 技能打 `Log.warn`（含名称与字节数）；`GET /api/skills` 每项新增 `injected` / `reason`（`""` / `disabled` / `empty` / `over_budget`）/ `bytes`，`reason` 由与注入完全相同的规划器计算。
+- **测试**：`SkillBudgetPlanTest` 4 例（确定性排序、整份跳过且后续小技能可注入、0 预算、头部/分隔符计费）+ `SkillListJsonTest` 2 例（API 字段、禁用技能）+ 根包 2 例文件级预算/禁用回归。
 
 ## [v1.6.21] - 2026-11-23
 

@@ -5,7 +5,7 @@ import cjh.web.*
 
 /**
  * web REST API 纯函数单元测试（此前 web 模块零测试）：
- * maskApiKey / countJsonObjects / isSkillEnabled / jsonArrFromStrings / 类型判断
+ * maskApiKey / countJsonObjects / jsonArrFromStrings / 类型判断
  */
 @Test
 public class WebApiUtilTest {
@@ -27,18 +27,6 @@ public class WebApiUtilTest {
         // 嵌套对象只数顶层
         @Assert(countJsonObjects("[{\"a\":{\"b\":1}}]"), 1)
         @Assert(countJsonObjects("not json"), 0)
-    }
-
-    @TestCase
-    public func testIsSkillEnabled(): Unit {
-        var enabled = ArrayList<String>()
-        enabled.add("a")
-        enabled.add("b")
-        @Assert(isSkillEnabled("a", enabled), true)
-        @Assert(isSkillEnabled("c", enabled), false)
-        // 空白名单 = 全部启用
-        var empty = ArrayList<String>()
-        @Assert(isSkillEnabled("anything", empty), true)
     }
 
     @TestCase

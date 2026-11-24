@@ -201,7 +201,7 @@ func runWeb(args: Array<String>): Int64 {
 
     // 启动 Web 服务器（注入模型工厂：会话级切模型 / 单次模型覆盖可用）
     let server = WebServer(cjhCfg, provider, registry, Some(ModelProviderFactory(cjhCfg)))
-    // system prompt：与 CLI/JSON/TUI 共用 buildSystemPrompt（技能正文 + AGENTS.md +
+    // system prompt：与 CLI/JSON/TUI 共用 buildSystemPrompt（技能索引 + AGENTS.md +
     // 项目记忆）。每建一个 Web 会话重算，新建会话即拿到最新文件；POST
     // /api/skills/reload 再刷新在线会话，改技能不必重启进程（issue #16）。
     server.promptBuilder = Some({ =>

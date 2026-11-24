@@ -16,6 +16,7 @@ public class TruncatorTest {
         @Assert(ToolResultTruncator.maxChars("bash", 6000), 2000)
         @Assert(ToolResultTruncator.maxChars("list_dir", 6000), 4000)
         @Assert(ToolResultTruncator.maxChars("read_file", 6000), Int64.Max)
+        @Assert(ToolResultTruncator.maxChars("skill_load", 6000), Int64.Max)
         @Assert(ToolResultTruncator.maxChars("grep", 6000), 6000)          // 默认
         @Assert(ToolResultTruncator.maxChars("write_file", 6000), 6000)    // 默认
         @Assert(ToolResultTruncator.maxChars("bash", 0), Int64.Max)        // 全局禁用
@@ -52,6 +53,14 @@ public class TruncatorTest {
     public func testReadFileNeverTruncated(): Unit {
         let content = repeatStr("x", 10000)
         let result = ToolResultTruncator.truncate(content, "read_file", 6000, "", "", "c4")
+        @Assert(result, content)
+    }
+
+    @TestCase
+    public func testSkillLoadNeverTruncated(): Unit {
+        // 执行说明书必须完整：截断会丢掉步骤/禁止项，模型无法照做
+        let content = repeatStr("s", 10000)
+        let result = ToolResultTruncator.truncate(content, "skill_load", 6000, "", "", "c8")
         @Assert(result, content)
     }
 

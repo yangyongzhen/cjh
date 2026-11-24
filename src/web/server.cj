@@ -33,7 +33,7 @@ public class WebServer {
     private let providerFactory: ?ProviderFactory
     // 会话级工具/调度器装配（runWeb 注入）：None = 旧行为（无 task/todo）
     public var agentSetup: Option<(Agent, ToolRegistry, AgentConfig, String) -> Unit> = None
-    // system prompt 组装器（runWeb 注入）：技能正文 / AGENTS.md / 项目记忆；
+    // system prompt 组装器（runWeb 注入）：技能索引 / AGENTS.md / 项目记忆；
     // None = 直接用 config.systemPrompt（旧行为）
     public var promptBuilder: Option<() -> String> = None
 

@@ -239,7 +239,7 @@ The screenshot above is the cjh GUI client built with **cj-tauri** (a Tauri-like
 - **Auto Compaction (background async)**: when message count or real `usage.promptTokens` exceed thresholds, the summary is **spawned in the background** (never blocks the main loop); the next LLM request checks it non-blockingly (`tryGet`) and swaps history in, deferring if still running, falling back to sync compression on failure. Manual `/compact` stays synchronous
 - **Project instructions**: auto-loads `AGENTS.md` / `.atomcode.md` project instructions injected into system prompt
 
-### Tool System (14 built-in + extensible)
+### Tool System (15 built-in + extensible)
 
 | Tool | Description |
 |---|---|
@@ -257,6 +257,7 @@ The screenshot above is the cjh GUI client built with **cj-tauri** (a Tauri-like
 | `task` | Delegate to subagent (explore read-only / worker writable) |
 | `web_search` | Web search, multi-backend routing (Tavily/Exa/SearXNG/DDG) + per-engine key rotation |
 | `web_fetch` | Fetch web page, 3-tier degradation chain (Cangjie HTTP → curl → Firecrawl) + SSRF guard |
+| `skill_load` | Read a skill body by name (the system prompt carries only name + description; bodies load on demand) |
 
 ### Concurrent Execution Engine (V2d)
 
@@ -339,7 +340,11 @@ Works with **any OpenAI-compatible endpoint** — including fully local setups (
 
 - **Skills as Markdown**: `~/.cjh/skills/<name>.md`, frontmatter declares metadata + tools
 - **Skill whitelist**: `enabled_skills` config to enable skills
-- **Skill-carried tools**: skill frontmatter's `tools` section registers declarative tools
+- **Progressive disclosure**: the system prompt carries an index of `name + description` only; **bodies never enter the prompt**. When a task matches, the model calls `skill_load` to read the body on demand. Resident cost scales with the number of skills, not their length.
+- **Descriptions drive loading**: the index contains only `name + description`, so write the description as "when to use / what it does / when not to use" instead of "for tests". A vague description means the skill never gets loaded.
+- **Skill index budget**: `prompt_skills_max_bytes` (default 6000) caps the index section. Skills are tried in skill-name ascending order and each index line is included **whole or skipped whole**. Oversized skills emit a warning and appear in `GET /api/skills` as `injected:false` with `reason:"over_budget"`.
+- **Observable bodies**: `GET /api/skills` reports `bytes` (body size) and `index_bytes` (index line size); `skill_load` only accepts enabled skills present in the index and rejects unknown/disabled/path-traversal names explicitly.
+- **Skill-scoped tools**: the frontmatter `tools` section registers declarative tools
 
 ### Built-in Cangjie Knowledge Layer
 
@@ -607,6 +612,7 @@ cjh has a built-in MCP client supporting stdio transport + JSON-RPC 2.0. After c
 
 | Version | Main Features |
 |---|---|
+| **Unreleased** | **Progressive skill disclosure**: the system prompt carries a name + description index only; bodies load on demand through `skill_load`. Index lines are included or skipped whole in name order, and the budget applies to the index; `GET /api/skills` now distinguishes `bytes` (body) from `index_bytes` (index line). Long skill bodies no longer consume resident context |
 | **v1.6.21** | **Long-task efficiency and unattended test approval**: inactivity compaction threshold default 32000 → 64000 (128K models no longer compact mid-task; `compact_token_threshold` still wins when set); the single-tool reminder now fires at turn 2 and turn 5 (still internal), with wording that requires independent reads/searches in one response; new `unattended_approval` config (default `deny`, only `tests` opts in) auto-approves test-assertion edits on every entry point, prefixes the tool result with an audit note, and passes through to subagents — capability Deny still applies first |
 | **v1.6.20** | **Long-task resume and headless observability**: resuming in a different cwd now prints the recorded workspace instead of silently changing directory; `write_file` creates missing parent directories; `--mode json` emits heartbeats and tool start/finish lines on stderr while stdout stays a single JSON document; internal efficiency notices (single-tool/continuation/empty-response nudges) are marked `internal` and excluded from persistence, Web history and compaction; `/api/sessions` supports `limit/offset`, and the Web sidebar loads 50 sessions per page with a "load more" control |
 | **v1.6.19** | **Resumed sessions stop forking history + offline Web UI**: `--resume`, TUI resume and Web disconnect saves used `SessionStore.save()` and created a new file on every save; they now overwrite via `saveWithId/saveWithIdUsage` (keeping `created/cwd/title/parent`) and persist per-session usage. `--list` and the TUI resume tree default to the current workspace (`--list --all` shows everything), and drafts are keyed by a SHA-256 of the cwd instead of sharing one file across projects. On the Web side, marked / DOMPurify / highlight.js / github-dark are embedded and served from `/assets/vendor/*` with immutable caching, so the first screen makes zero external requests; code highlighting now goes through `hljs.highlightElement` (marked v5 dropped the old `highlight` option), keeping sanitize-before-highlight |

@@ -33,6 +33,9 @@ public class ToolResultTruncator {
             // read_file 是按需读取工具，LLM 已通过 offset/limit 控制读取量；
             // 截断会导致 LLM 看到不完整内容，反复重读，浪费轮次
             case "read_file" => Int64.Max
+            // skill_load 是模型显式请求的执行说明书，截断会丢步骤/约束；
+            // 正文体积由技能作者与索引预算控制，这里必须原样返回
+            case "skill_load" => Int64.Max
             case _ => configMax
         }
     }
