@@ -565,6 +565,9 @@ public class Agent {
     public var onReasoning: (String) -> Unit = { _ => }
     public var onToolStart: (String, JsonObject) -> Unit = { _, _ => }
     public var onToolResult: (String, ToolResult) -> Unit = { _, _ => }
+    // 带精确耗时的结果回调（--mode json 需要每工具 duration_ms；
+    // 旧 onToolResult 由调用方用 DateTime 自行配对，并行同名时会错位）
+    public var onToolResultTimed: (String, ToolResult, Int64) -> Unit = { _, _, _ => }
     public var onAssistantText: (String) -> Unit = { _ => }
     // 状态回调（TUI 实时状态行用）
     public var onThinking: () -> Unit = { => }
@@ -1304,8 +1307,10 @@ public class Agent {
                 // 按拓扑分组执行：组内 spawn 并发，组间串行
                 // 结果暂存到 results 数组（按原始索引），全部完成后按原始顺序回填
                 var results = ArrayList<ToolResult>()
+                var durations = ArrayList<Int64>()
                 for (_ in 0..n) {
                     results.add(ToolResult("", false))
+                    durations.add(0)
                 }
                 for (g in 0..groups.size) {
                     let group = groups[g]
@@ -1326,6 +1331,7 @@ public class Agent {
                             result = ToolResult(result.content + "\n\n⚠ 截断警告：本轮 LLM 输出被 max_tokens 强制截断，上面写入的文件内容【不完整】。\n请【立即】按以下步骤修复（不要再用 write_file 重写整个文件，那会再次截断）：\n1. 调用 read_file 读取刚写入的文件，确认截断位置\n2. 调用 edit，old_string 填文件末尾最后几个有效字符，new_string 续写剩余部分\n3. 重复 1-2 直到文件完整闭合（HTML 需 </script></body></html>）\n务必分多次小段续写，每段 new_string 控制在 ~1500 字符以内。", true)
                         }
                         results[i] = result
+                        durations[i] = toolMs
                     } else {
                         // 多元素组：spawn 并发执行
                         // V2d 性能基线：记录并发实际耗时 vs 假设串行耗时
@@ -1368,6 +1374,7 @@ public class Agent {
                                 r = ToolResult(r.content + "\n\n⚠ 截断警告：本轮 LLM 输出被 max_tokens 强制截断，上面写入的文件内容【不完整】。\n请【立即】按以下步骤修复（不要再用 write_file 重写整个文件，那会再次截断）：\n1. 调用 read_file 读取刚写入的文件，确认截断位置\n2. 调用 edit，old_string 填文件末尾最后几个有效字符，new_string 续写剩余部分\n3. 重复 1-2 直到文件完整闭合（HTML 需 </script></body></html>）\n务必分多次小段续写，每段 new_string 控制在 ~1500 字符以内。", true)
                             }
                             results[idx] = r
+                            durations[idx] = dur
                         }
                         // 并发实际耗时
                         let parallelMs = (DateTime.now() - batchStart).toMilliseconds()
@@ -1390,6 +1397,7 @@ public class Agent {
                     if (result.isError) {
                         lastToolFailed = true
                     }
+                    this.onToolResultTimed(tc.name, result, durations[i])
                     this.onToolResult(tc.name, result)
                     var postP = JsonObject()
                     postP.put("tool", JsonString(tc.name))

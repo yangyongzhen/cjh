@@ -1712,7 +1712,7 @@ public class TuiApp {
         this.outputLock.lock()
         try {
             if (detailCount > 0) {
-                this.outputView.appendFoldable(wrapped, detail.toString())
+                this.outputView.appendFoldable(wrapped, detail.toString(), isError)
             } else {
                 this.outputView.append(wrapped)
             }

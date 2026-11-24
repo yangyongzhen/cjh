@@ -42,6 +42,13 @@ public class DefaultSystemPromptTest {
         // 并行工具调用：同一响应内批量发独立调用（实测一轮一个工具浪费轮次）
         @Assert(cfg.systemPrompt.contains("Parallel calls:"), true)
         @Assert(cfg.systemPrompt.contains("SAME response"), true)
+        // 验证只跑一次：README/文档改动不使已绿的测试失效（实测长任务重复 pytest 4 次）
+        @Assert(cfg.systemPrompt.contains("Run each verification once"), true)
+        @Assert(cfg.systemPrompt.contains("docs-only edits"), true)
+        @Assert(cfg.systemPrompt.contains("instead of rerunning with another wrapper"), true)
+        // 范围纪律：小工具任务实测多建 pyproject/LICENSE/venv，白烧数轮
+        @Assert(cfg.systemPrompt.contains("Do not add packaging, CI, license files"), true)
+        @Assert(cfg.systemPrompt.contains("unless the user asked"), true)
         cleanDir(dir)
     }
 

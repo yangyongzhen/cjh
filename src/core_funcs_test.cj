@@ -1537,8 +1537,14 @@ public class JsonResultContractTest {
         s.promptTokens = 1000
         s.completionTokens = 50
         s.cachedTokens = 800
-        var calls = ArrayList<(String, String, String)>()
-        calls.add(("bash", "{\"command\":\"true\"}", "exit code: 0"))
+        var calls = ArrayList<JsonToolCall>()
+        var call = JsonToolCall("bash", "{\"command\":\"true\"}")
+        call.result = "exit code: 0"
+        call.durationMs = 42
+        call.isError = false
+        call.bytes = 11
+        call.done = true
+        calls.add(call)
         let out = jsonResultOf(s, "s1", calls)
         let parsed = JsonValue.fromStr(out.toJsonString())
         let obj = parsed.asObject()
@@ -1546,6 +1552,10 @@ public class JsonResultContractTest {
         @Assert(obj.get("error_code").getOrThrow().asString().getValue(), "")
         @Assert(obj.get("retryable").getOrThrow().asBool().getValue(), false)
         @Assert(obj.get("tool_calls").getOrThrow().asArray().size(), 1)
+        let tc = obj.get("tool_calls").getOrThrow().asArray()[0].asObject()
+        @Assert(tc.get("duration_ms").getOrThrow().asInt().getValue(), 42)
+        @Assert(tc.get("is_error").getOrThrow().asBool().getValue(), false)
+        @Assert(tc.get("bytes").getOrThrow().asInt().getValue(), 11)
         let usage = obj.get("usage").getOrThrow().asObject()
         @Assert(usage.get("prompt_tokens").getOrThrow().asInt().getValue(), 1000)
         @Assert(usage.get("cached_tokens").getOrThrow().asInt().getValue(), 800)
@@ -1560,7 +1570,7 @@ public class JsonResultContractTest {
         s.errorCode = "run_failed"
         s.errorMessage = "HTTP 500"
         s.errorRetryable = true
-        let out = jsonResultOf(s, "s2", ArrayList<(String, String, String)>())
+        let out = jsonResultOf(s, "s2", ArrayList<JsonToolCall>())
         let obj = JsonValue.fromStr(out.toJsonString()).asObject()
         @Assert(obj.get("error_code").getOrThrow().asString().getValue(), "run_failed")
         @Assert(obj.get("error").getOrThrow().asString().getValue(), "HTTP 500")
@@ -1574,7 +1584,7 @@ public class JsonResultContractTest {
         var s = RunSummary()
         s.errorCode = "empty_prompt"
         s.errorMessage = "empty prompt"
-        let out = jsonResultOf(s, "s3", ArrayList<(String, String, String)>())
+        let out = jsonResultOf(s, "s3", ArrayList<JsonToolCall>())
         let obj = JsonValue.fromStr(out.toJsonString()).asObject()
         @Assert(obj.get("error_code").getOrThrow().asString().getValue(), "empty_prompt")
         @Assert(jsonExitCodeOf(s), 1)
@@ -1636,5 +1646,21 @@ public class ResumeCwdWarningTest {
         @Assert(resumeCwdWarning("/proj/a", "/proj/a"), "")
         @Assert(resumeCwdWarning("", "/proj/b"), "")
         @Assert(resumeCwdWarning("/proj/a", ""), "")
+    }
+}
+
+/** capability 宽松提示只显示一次；marker 存在后不再打扰。 */
+@Test
+public class CapabilityNoticeOnceTest {
+    @TestCase
+    public func testNoticeShownOnlyOncePerConfigDir(): Unit {
+        let dir = coreTestTempDir("cap_notice")
+        try {
+            @Assert(shouldShowCapabilityNotice(dir), true)
+            markCapabilityNoticeShown(dir)
+            @Assert(shouldShowCapabilityNotice(dir), false)
+        } finally {
+            removeTreeForTest(dir)
+        }
     }
 }

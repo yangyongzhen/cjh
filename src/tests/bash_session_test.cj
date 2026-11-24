@@ -362,3 +362,44 @@ public class BashHeredocInSessionTest {
         }
     }
 }
+
+/**
+ * 管道左侧失败可见性：最终命令成功但左侧失败时，必须把 PIPESTATUS 提示带进结果。
+ * 旧包装只回 `$?`（=0），模型会把 `grep ... | tail` 的“空结果”当成成功。
+ */
+@Test
+public class BashPipelineStatusTest {
+
+    @TestCase
+    public func testLeftStageFailureSurfaced(): Unit {
+        if (!ShellProvider().isBash) {
+            return
+        }
+        let s = BashSession()
+        try {
+            let (code, out) = s.execute("false | true", 5)
+            @Assert(code, 0)  // 最终命令确实成功
+            @Assert(out.contains("pipeline stage(s) failed"), true)
+            @Assert(out.contains("PIPESTATUS: 1 0"), true)
+            @Assert(out.contains("__CJH_PS_"), false)  // 标记行必须剥离
+        } finally {
+            s.close()
+        }
+    }
+
+    @TestCase
+    public func testAllStagesSucceedNoWarning(): Unit {
+        if (!ShellProvider().isBash) {
+            return
+        }
+        let s = BashSession()
+        try {
+            let (code, out) = s.execute("printf 'ok\\n' | true", 5)
+            @Assert(code, 0)
+            @Assert(out.contains("pipeline stage(s) failed"), false)
+            @Assert(out.contains("__CJH_PS_"), false)
+        } finally {
+            s.close()
+        }
+    }
+}

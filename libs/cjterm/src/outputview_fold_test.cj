@@ -38,7 +38,7 @@ public class OutputViewFoldTest {
     public func testDetailHiddenThenExpanded(): Unit {
         let view = OutputView()
         view.append("before\n")
-        view.appendFoldable("SUMMARY tool", "DETAIL one\nDETAIL two\n")
+        view.appendFoldable("SUMMARY tool", "DETAIL one\nDETAIL two\n", false)
         view.append("after\n")
         // 存档不丢明细
         @Assert(view.content().contains("DETAIL one"), true)
@@ -58,11 +58,27 @@ public class OutputViewFoldTest {
     @TestCase
     public func testNextContentNotSwallowedByHiddenDetail(): Unit {
         let view = OutputView()
-        view.appendFoldable("SUMMARY only", "DETAIL\n")
+        view.appendFoldable("SUMMARY only", "DETAIL\n", false)
         view.append("NEXT line\n")
         let folded = this.renderText(view, 6, 50)
         @Assert(folded.contains("SUMMARY only"), true)
         @Assert(folded.contains("NEXT line"), true)
+    }
+
+    @TestCase
+    public func testFailedToolAutoExpandedEvenWhenFolded(): Unit {
+        let view = OutputView()
+        view.appendFoldable("✗ bash: FAILED", "ERROR detail one\nERROR detail two\n", true)
+        view.appendFoldable("↳ bash: ok", "OK detail\n", false)
+        let folded = this.renderText(view, 10, 70)
+        @Assert(folded.contains("FAILED"), true)
+        @Assert(folded.contains("ERROR detail one"), true)  // 失败明细默认可见
+        @Assert(folded.contains("OK detail"), false)        // 成功明细仍折叠
+        // 用户显式 Ctrl+O 两次（展开→折叠）后，失败明细也必须收起（显式操作优先）
+        view.toggleToolFold()
+        view.toggleToolFold()
+        let collapsed = this.renderText(view, 10, 70)
+        @Assert(collapsed.contains("ERROR detail one"), false)
     }
 
     @TestCase

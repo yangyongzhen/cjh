@@ -593,7 +593,7 @@ public class CjhConfig {
                 "\n\n## Tools\n" +
                 " Tool schemas are the source of truth for names and arguments; call them exactly.\n" +
                 "- read_file: primary file reader. Without offset/limit it returns the first 500 lines and says whether more remain. Then call it again with offset/limit. Never walk a repository source file with repeated `sed -n` slices.\n" +
-                "- edit: primary way to change an existing file (exact old_string -> new_string). Read the target region first. Prefer edit over sed/awk. write_file is for new files or a complete rewrite; append_file continues a write that was truncated.\n" +
+                "- edit: primary way to change an existing file (exact old_string -> new_string). Read the target region first. Prefer edit over sed/awk. For 2+ separate changes in the SAME file, pass edits=[{old_string,new_string}, ...] in ONE call (applied in order, nothing written if any segment fails); do not spend one round per hunk. write_file is for new files or a complete rewrite; append_file continues a write that was truncated.\n" +
                 "- list_dir, glob, grep: use these before bash ls/find/rg. Plain text is text; do not decode it with od/awk.\n" +
                 "- bash: builds, tests, git, package managers, short pipelines. Use a timeout for commands that may hang; redirect long output to a log and read it later.\n" +
                 "- task: only for genuinely independent work — repo-wide exploration, or two or more changes in different files that each need several rounds. Never spawn an agent to double-check yourself or for a one-file edit.\n" +
@@ -602,8 +602,8 @@ public class CjhConfig {
                 "- If a tool fails, read the error, fix the cause, and retry with corrected arguments. Do not switch tools to hide the error." +
                 "\n\n## Work loop\n" +
                 " 1. Read the relevant files and current state before changing anything.\n" +
-                " 2. Make the smallest targeted change. Follow existing conventions; never add a second abstraction for the same job.\n" +
-                " 3. Verify with the narrowest command that exercises the change (build, test, or a small script).\n" +
+                " 2. Make the smallest targeted change. Follow existing conventions; never add a second abstraction for the same job. Do not add packaging, CI, license files, or virtualenv setup unless the user asked or the repo already uses them.\n" +
+                " 3. Verify with the narrowest command that exercises the change (build, test, or a small script). Run each verification once: do not rerun a green test after docs-only edits; rerun only when source, test, or config changed. If output is incomplete, redirect to a log and read it instead of rerunning with another wrapper.\n" +
                 " 4. If verification fails, fix the cause and rerun. Do not claim success from memory." +
                 "\n\n## Safety and precedence\n" +
                 "- Safety rules and repository instructions (AGENTS.md) are binding. The current user request defines the task. Project memory and session summaries are stale context: verify paths and state before relying on them. If two binding rules conflict, state the conflict instead of guessing.\n" +

@@ -17,15 +17,21 @@ import cjllm.ToolSpec
  * - old_string: 要替换的文本(必须精确匹配, 含缩进)
  * - new_string: 替换后的文本
  * - replace_all: 是否替换所有匹配(默认 false, 即要求 old_string 唯一)
+ * - edits: 同文件多段替换 [{old_string, new_string, replace_all?}, ...]，
+ *   一次调用原子应用。与顶层 old_string/new_string 互斥。
  *
  * 安全机制:
  * - old_string 必须在文件中唯一匹配, 否则拒绝(防误改多处)
  * - replace_all=true 时允许匹配多处, 全部替换
  * - old_string 为空时拒绝(避免清空文件)
  * - old_string == new_string 时拒绝(无意义操作)
+ * - edits 任意一段失败则整次调用不写入（原子）
  *
  * 示例:
  *   edit(path="src/main.cj", old_string="let x = 1", new_string="let x = 2")
+ *   edit(path="src/main.cj", edits=[
+ *       {old_string="let x = 1", new_string="let x = 2"},
+ *       {old_string="let y = 3", new_string="let y = 4"}])
  *   edit(path="config.json", old_string="\"debug\": false",
  *        new_string="\"debug\": true", replace_all=true)
  */
@@ -39,43 +45,99 @@ public class EditTool <: CjhTool {
     public func spec(): ToolSpec {
         var props = HashMap<String, JsonValue>()
         props.add("path", JsonSchema.str("File path to edit"))
-        props.add("old_string", JsonSchema.str("Text to replace (must match exactly, including whitespace)"))
-        props.add("new_string", JsonSchema.str("Replacement text"))
-        props.add("replace_all", JsonSchema.str("Replace all occurrences (default: false, requires unique match)"))
-        let schema = JsonSchema.object(props, ArrayList<String>(["path", "old_string", "new_string"]))
+        props.add("old_string", JsonSchema.str("Text to replace (must match exactly, including whitespace). Omit when using edits[]."))
+        props.add("new_string", JsonSchema.str("Replacement text. Omit when using edits[]."))
+        props.add("replace_all", JsonSchema.bool("Replace all occurrences (default: false, requires unique match)"))
+        var editProps = HashMap<String, JsonValue>()
+        editProps.add("old_string", JsonSchema.str("Text to replace (must match exactly)"))
+        editProps.add("new_string", JsonSchema.str("Replacement text"))
+        editProps.add("replace_all", JsonSchema.bool("Replace all occurrences of this segment (default: false)"))
+        let editItem = JsonSchema.object(editProps, ArrayList<String>(["old_string", "new_string"]))
+        props.add("edits", JsonSchema.array(
+            "Multiple independent edits in the SAME file, applied in order and atomically. " +
+            "Use this instead of several edit calls when changing 2+ separate places.",
+            editItem))
+        let schema = JsonSchema.object(props, ArrayList<String>(["path"]))
         return ToolSpec("edit",
             "Edit an existing file by replacing old_string with new_string. PRIMARY edit method; prefer over " +
             "bash sed/awk/perl. old_string must be unique (or set replace_all=true); whitespace must match exactly. " +
+            "For 2+ separate changes in the same file, pass edits=[{old_string,new_string}, ...] in ONE call: " +
+            "all segments are validated first and nothing is written if any fails. " +
             "Safer than a full rewrite for targeted changes.",
             schema)
     }
 
-    public func execute(args: JsonObject): ToolResult {
-        if (!args.containsKey("path") || !args.containsKey("old_string") || !args.containsKey("new_string")) {
-            return ToolResult("缺少参数: path/old_string/new_string", true)
-        }
-        let path = args.get("path").getOrThrow().asString().getValue()
-        let oldString = args.get("old_string").getOrThrow().asString().getValue()
-        let newString = args.get("new_string").getOrThrow().asString().getValue()
-
-        // 解析 replace_all (默认 false)
-        var replaceAll: Bool = false
-        if (let Some(ra) <- args.get("replace_all")) {
-            match (ra.kind()) {
-                case JsonKind.JsBool => replaceAll = ra.asBool().getValue()
+    /** 兼容 bool 与 "true"/"1" 两种 JSON 传法（模型常把布尔写成字符串）。 */
+    private func readBoolFlag(obj: JsonObject, key: String): Bool {
+        if (let Some(v) <- obj.get(key)) {
+            match (v.kind()) {
+                case JsonKind.JsBool => return v.asBool().getValue()
                 case JsonKind.JsString =>
-                    let s = ra.asString().getValue()
-                    replaceAll = (s == "true" || s == "1")
+                    let s = v.asString().getValue()
+                    return s == "true" || s == "1"
                 case _ => ()
             }
         }
+        return false
+    }
 
-        // 安全检查
-        if (oldString.size == 0) {
-            return ToolResult("old_string 不能为空. 如果想清空文件, 请用 write_file 写入空内容.", true)
+    public func execute(args: JsonObject): ToolResult {
+        if (!args.containsKey("path")) {
+            return ToolResult("缺少参数: path", true)
         }
-        if (oldString == newString) {
-            return ToolResult("old_string 和 new_string 相同, 无需替换.", true)
+        let path = args.get("path").getOrThrow().asString().getValue()
+
+        let hasTopOld = args.containsKey("old_string")
+        let hasTopNew = args.containsKey("new_string")
+        let hasEdits = args.containsKey("edits")
+        if (hasEdits && (hasTopOld || hasTopNew)) {
+            return ToolResult("参数冲突: edits[] 与顶层 old_string/new_string 不能同时使用.", true)
+        }
+        if (!hasEdits && !(hasTopOld && hasTopNew)) {
+            return ToolResult("缺少参数: 需要 old_string + new_string，或 edits[]", true)
+        }
+
+        // 统一解析成编辑段列表：顶层单段也走同一条原子路径
+        var edits = ArrayList<EditOp>()
+        if (hasEdits) {
+            let editsVal = args.get("edits").getOrThrow()
+            match (editsVal.kind()) {
+                case JsonKind.JsArray => ()
+                case _ => return ToolResult("edits 必须是数组.", true)
+            }
+            let arr = editsVal.asArray()
+            if (arr.size() == 0) {
+                return ToolResult("edits 不能为空数组.", true)
+            }
+            for (idx in 0..arr.size()) {
+                let item = arr[idx]
+                match (item.kind()) {
+                    case JsonKind.JsObject => ()
+                    case _ => return ToolResult("edits[${idx}] 必须是对象.", true)
+                }
+                let obj = item.asObject()
+                if (!obj.containsKey("old_string") || !obj.containsKey("new_string")) {
+                    return ToolResult("edits[${idx}] 缺少 old_string/new_string.", true)
+                }
+                let oldS = obj.get("old_string").getOrThrow().asString().getValue()
+                let newS = obj.get("new_string").getOrThrow().asString().getValue()
+                edits.add(EditOp(oldS, newS, this.readBoolFlag(obj, "replace_all")))
+            }
+        } else {
+            let oldS = args.get("old_string").getOrThrow().asString().getValue()
+            let newS = args.get("new_string").getOrThrow().asString().getValue()
+            edits.add(EditOp(oldS, newS, this.readBoolFlag(args, "replace_all")))
+        }
+
+        // 安全检查（逐段）
+        for (idx in 0..edits.size) {
+            let op = edits[idx]
+            if (op.oldString.size == 0) {
+                return ToolResult("edits[${idx}] old_string 不能为空. 如果想清空文件, 请用 write_file 写入空内容.", true)
+            }
+            if (op.oldString == op.newString) {
+                return ToolResult("edits[${idx}] old_string 和 new_string 相同, 无需替换.", true)
+            }
         }
 
         try {
@@ -83,34 +145,39 @@ public class EditTool <: CjhTool {
             let originalBytes = File.readFrom(path)
             let original = String.fromUtf8(originalBytes)
 
-            // 统计 old_string 在文件中的匹配次数
-            let matchCount = countOccurrences(original, oldString)
-
-            if (matchCount == 0) {
-                // 诊断：帮助模型定位匹配失败的原因
-                return ToolResult(buildNoMatchError(path, original, oldString), true)
+            // 先在内存里逐段应用；任一段失败直接返回，文件保持原样（原子）
+            var newContent = original
+            var totalReplacements: Int64 = 0
+            for (idx in 0..edits.size) {
+                let op = edits[idx]
+                let matchCount = countOccurrences(newContent, op.oldString)
+                if (matchCount == 0) {
+                    let detail = if (edits.size == 1) {
+                        buildNoMatchError(path, original, op.oldString)
+                    } else {
+                        "edit 失败: edits[${idx}] 的 old_string 未匹配；未写入任何修改。\n" +
+                        buildNoMatchError(path, newContent, op.oldString)
+                    }
+                    return ToolResult(detail, true)
+                }
+                if (matchCount > 1 && !op.replaceAll) {
+                    return ToolResult(
+                        "old_string 在文件中匹配 ${matchCount} 处, 非唯一" +
+                        (if (edits.size == 1) { "" } else { " (edits[${idx}])" }) + "；未写入任何修改.\n" +
+                        "解决方法:\n" +
+                        "  1. 在 old_string 中加入更多上下文行, 使其唯一匹配\n" +
+                        "  2. 设置 replace_all=true 替换所有匹配处\n" +
+                        "注意: old_string 必须精确匹配文件内容, 包括缩进和换行.", true)
+                }
+                newContent = replaceString(newContent, op.oldString, op.newString, op.replaceAll)
+                totalReplacements += if (op.replaceAll) { matchCount } else { 1 }
             }
-
-            if (matchCount > 1 && !replaceAll) {
-                return ToolResult(
-                    "old_string 在文件中匹配 ${matchCount} 处, 非唯一.\n" +
-                    "解决方法:\n" +
-                    "  1. 在 old_string 中加入更多上下文行, 使其唯一匹配\n" +
-                    "  2. 设置 replace_all=true 替换所有匹配处\n" +
-                    "注意: old_string 必须精确匹配文件内容, 包括缩进和换行.", true)
-            }
-
-            // 执行替换
-            let newContent = replaceString(original, oldString, newString, replaceAll)
 
             // 写回文件 (先写临时文件再重命名, 避免写一半崩溃损坏原文件)
             let tmpPath = path + ".cjh-tmp"
             File.writeTo(tmpPath, newContent.toArray())
             // 仓颉 std.fs 没有直接的 rename, 用 bash mv 原子替换
             try {
-                let mvArgs = Array<String>(2, repeat: "")
-                mvArgs[0] = "-f"
-                mvArgs[1] = tmpPath
                 // 先尝试 rename (同分区原子操作)
                 renameFile(tmpPath, path)
             } catch (e: Exception) {
@@ -120,14 +187,38 @@ public class EditTool <: CjhTool {
             }
 
             // 返回摘要
-            var summary = "edit 成功: 替换 ${if (replaceAll) { matchCount } else { 1 }} 处\n"
+            var summary = "edit 成功: 替换 ${totalReplacements} 处\n"
             summary += "文件: ${path}\n"
-            summary += "旧: ${truncateForDisplay(oldString)}\n"
-            summary += "新: ${truncateForDisplay(newString)}\n"
+            if (edits.size == 1) {
+                summary += "旧: ${truncateForDisplay(edits[0].oldString)}\n"
+                summary += "新: ${truncateForDisplay(edits[0].newString)}\n"
+            } else {
+                summary += "段数: ${edits.size}\n"
+                for (idx in 0..edits.size) {
+                    if (idx >= 3) {
+                        summary += "  ... 其余 ${edits.size - 3} 段省略\n"
+                        break
+                    }
+                    summary += "  [${idx + 1}] ${truncateForDisplay(edits[idx].oldString)} -> ${truncateForDisplay(edits[idx].newString)}\n"
+                }
+            }
             return ToolResult(summary, false, buildDiffInfo(path, original, newContent))
         } catch (e: Exception) {
             return ToolResult("edit 失败: ${e}", true)
         }
+    }
+}
+
+/** 单段编辑参数（顶层单段与 edits[] 元素统一走这里）。 */
+class EditOp {
+    let oldString: String
+    let newString: String
+    let replaceAll: Bool
+
+    public init(oldString: String, newString: String, replaceAll: Bool) {
+        this.oldString = oldString
+        this.newString = newString
+        this.replaceAll = replaceAll
     }
 }
 

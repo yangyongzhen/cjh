@@ -458,11 +458,24 @@ func runCli(sessionId: String): Int64 {
  * {"reply", "session_id", "tool_calls": [{name, args, result}], "error"}
  * 会话自动保存（新会话或原会话 id 覆盖），便于链式调用。
  */
+class JsonToolCall {
+    let name: String
+    let args: String
+    var result: String = ""
+    var durationMs: Int64 = 0
+    var isError: Bool = false
+    var bytes: Int64 = 0
+    var done: Bool = false
+
+    public init(name: String, args: String) {
+        this.name = name
+        this.args = args
+    }
+}
+
 class JsonState {
     // 静态字段：lambda 闭包不能捕获可变局部变量，用静态容器收集工具调用记录
-    static var toolCalls: ArrayList<(String, String, String)> = ArrayList<(String, String, String)>()
-    // 工具开始时刻：并行同名工具按“先开始先匹配”结算，耗时/结果体积写进 stderr 心跳
-    static var toolStarts: ArrayList<(String, DateTime)> = ArrayList<(String, DateTime)>()
+    static var toolCalls: ArrayList<JsonToolCall> = ArrayList<JsonToolCall>()
 }
 
 /**
@@ -520,7 +533,7 @@ func sessionUsageOf(summary: RunSummary): SessionUsage {
  * usage 每轮累计（与 Web done 帧同源），便于调用方核算成本。
  */
 func jsonResultOf(summary: RunSummary, sessionId: String,
-    calls: ArrayList<(String, String, String)>): JsonObject {
+    calls: ArrayList<JsonToolCall>): JsonObject {
     var out = JsonObject()
     out.put("reply", JsonString(summary.reply))
     out.put("session_id", JsonString(sessionId))
@@ -539,9 +552,12 @@ func jsonResultOf(summary: RunSummary, sessionId: String,
     var tcArr = ArrayList<JsonValue>()
     for (tc in calls) {
         var t = JsonObject()
-        t.put("name", JsonString(tc[0]))
-        t.put("args", JsonString(tc[1]))
-        t.put("result", JsonString(tc[2]))
+        t.put("name", JsonString(tc.name))
+        t.put("args", JsonString(tc.args))
+        t.put("result", JsonString(tc.result))
+        t.put("duration_ms", JsonInt(tc.durationMs))
+        t.put("is_error", JsonBool(tc.isError))
+        t.put("bytes", JsonInt(tc.bytes))
         tcArr.add(t)
     }
     out.put("tool_calls", JsonArray(tcArr))
@@ -647,34 +663,29 @@ func runJson(prompt: String, sessionId: String): Int64 {
         }
 
         // 收集工具调用记录（供 JSON 输出）
-        JsonState.toolCalls = ArrayList<(String, String, String)>()
-        JsonState.toolStarts = ArrayList<(String, DateTime)>()
+        JsonState.toolCalls = ArrayList<JsonToolCall>()
         agent.onDelta = { _ => () }
         agent.onToolStart = { name, args =>
-            JsonState.toolCalls.add((name, args.toJsonString(), ""))
-            JsonState.toolStarts.add((name, DateTime.now()))
+            JsonState.toolCalls.add(JsonToolCall(name, args.toJsonString()))
             // stderr 进度：stdout 只留最终 JSON，长任务期间也能看到工具在跑
             eprintln("[cjh] tool start: ${name}")
         }
-        agent.onToolResult = { name, result =>
+        // 耗时由 Agent 精确回传（并行同名工具按原始顺序结算，不再自己配对 DateTime）
+        agent.onToolResultTimed = { name, result, elapsedMs =>
+            var recIdx = -1
             for (i in 0..JsonState.toolCalls.size) {
-                if (JsonState.toolCalls[i][0] == name && JsonState.toolCalls[i][2].size == 0) {
-                    JsonState.toolCalls[i] = (JsonState.toolCalls[i][0], JsonState.toolCalls[i][1], result.content)
+                if (!JsonState.toolCalls[i].done && JsonState.toolCalls[i].name == name) {
+                    recIdx = i
                     break
                 }
             }
-            // 并行同名工具按开始顺序结算；找不到配对时耗时记 0，不让心跳中断
-            var elapsedMs: Int64 = 0
-            var startIdx = -1
-            for (i in 0..JsonState.toolStarts.size) {
-                if (JsonState.toolStarts[i][0] == name) {
-                    elapsedMs = (DateTime.now() - JsonState.toolStarts[i][1]).toMilliseconds()
-                    startIdx = i
-                    break
-                }
-            }
-            if (startIdx >= 0) {
-                JsonState.toolStarts.remove(at: startIdx)
+            if (recIdx >= 0) {
+                let rec = JsonState.toolCalls[recIdx]
+                rec.result = result.content
+                rec.durationMs = elapsedMs
+                rec.isError = result.isError
+                rec.bytes = result.content.size
+                rec.done = true
             }
             eprintln(jsonToolDoneLine(name, elapsedMs, result.content.size, result.isError))
         }
@@ -1949,17 +1960,49 @@ func extractSubagentResult(subAgent: Agent): String {
  * 的 silentPermissiveHint 注释与 commit 4c56f55：曾默认严格，用户配了 capability 段后
  * bash 被拒而投诉）。以往这种情况完全无反馈，规则配了却不生效。
  */
-func warnCapabilitySilent(cfg: CjhConfig): Unit {
+func capabilityNoticeMarkerPath(configDir: String): String {
+    return configDir + "/.capability-notice-shown"
+}
+
+/** 用户实测：capability 段配好后每次启动都提示，属于噪音。按配置目录只提示一次。 */
+func shouldShowCapabilityNotice(configDir: String): Bool {
+    return !exists(capabilityNoticeMarkerPath(configDir))
+}
+
+func markCapabilityNoticeShown(configDir: String): Unit {
+    try {
+        // Directory.create 不幂等：已存在会抛异常，必须先判断
+        if (!exists(configDir)) {
+            Directory.create(configDir, recursive: true)
+        }
+        File.writeTo(capabilityNoticeMarkerPath(configDir), "shown\n".toArray())
+    } catch (e: Exception) {
+        // 只读/无权限时宁可下次再提示，也不能让启动失败
+    }
+}
+
+private func warnCapabilityOnce(cfg: CjhConfig, toStderr: Bool): Unit {
     match (cfg.capability.silentPermissiveHint()) {
-        case Some(msg) => println(msg)
+        case Some(msg) =>
+            if (shouldShowCapabilityNotice(cfg.configDir)) {
+                let text = msg + "\n[cjh] 此提示只显示一次；如需重新查看，删除 " +
+                    capabilityNoticeMarkerPath(cfg.configDir)
+                if (toStderr) {
+                    eprintln(text)
+                } else {
+                    println(text)
+                }
+                markCapabilityNoticeShown(cfg.configDir)
+            }
         case None => ()
     }
 }
 
+func warnCapabilitySilent(cfg: CjhConfig): Unit {
+    warnCapabilityOnce(cfg, false)
+}
+
 /** 同 warnCapabilitySilent，但写 stderr——无头 JSON 模式的 stdout 必须干净。 */
 func warnCapabilitySilentErr(cfg: CjhConfig): Unit {
-    match (cfg.capability.silentPermissiveHint()) {
-        case Some(msg) => eprintln(msg)
-        case None => ()
-    }
+    warnCapabilityOnce(cfg, true)
 }

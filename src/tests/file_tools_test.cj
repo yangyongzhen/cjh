@@ -76,16 +76,29 @@ public class FileWriteToolsTest {
 
     @TestCase
     public func testLargeContentWrittenWithWarning(): Unit {
-        // 超 4000 字符：软约束——写入成功 + 警告（不阻断，截断风险提示）
+        // 超 12000 字符：软约束——写入成功 + 警告（不阻断，截断风险提示）
         let path = this.dir + "/large.txt"
         let tool = WriteTool()
         var args = JsonObject()
         args.put("path", JsonString(path))
-        args.put("content", JsonString(repeatStr("x", 5000)))
+        args.put("content", JsonString(repeatStr("x", 13000)))
         let result = tool.execute(args)
         @Assert(result.isError, false)
         @Assert(result.content.contains("WARNING"), true)
-        @Assert(readTextFile(path).size, Int64(5000))
+        @Assert(readTextFile(path).size, Int64(13000))
+    }
+
+    @TestCase
+    public func testMediumContentNoWarning(): Unit {
+        // 4000 旧阈值会误报；12000 字符下 8KB 应静默成功
+        let path = this.dir + "/medium.txt"
+        let tool = WriteTool()
+        var args = JsonObject()
+        args.put("path", JsonString(path))
+        args.put("content", JsonString(repeatStr("x", 8000)))
+        let result = tool.execute(args)
+        @Assert(result.isError, false)
+        @Assert(result.content.contains("WARNING"), false)
     }
 
     @TestCase

@@ -53,6 +53,8 @@ public class OutputView <: Component {
     private var displayLines: ArrayList<String> = ArrayList<String>()
     // 折叠区间（lineCache 行下标，[start,end) 为明细行）；只追加、不清空，除非 clear。
     private var foldRanges: ArrayList<(Int64, Int64)> = ArrayList<(Int64, Int64)>()
+    // 失败工具的明细即使全局折叠也强制可见；Ctrl+O 切换时清空（用户显式折叠优先）
+    private var forceVisibleRanges: ArrayList<(Int64, Int64)> = ArrayList<(Int64, Int64)>()
     private var toolDetailsHidden: Bool = true
     // 追加折叠明细时抑制 displayLines 同步（明细默认不显示）
     private var suppressDisplay: Bool = false
@@ -71,6 +73,7 @@ public class OutputView <: Component {
         this.lineCache = ArrayList<String>()
         this.displayLines = ArrayList<String>()
         this.foldRanges = ArrayList<(Int64, Int64)>()
+        this.forceVisibleRanges = ArrayList<(Int64, Int64)>()
         this.toolDetailsHidden = true
         this.suppressDisplay = false
         this.cacheValid = true
@@ -436,6 +439,15 @@ public class OutputView <: Component {
         this.cacheValid = true
     }
 
+    private func inForceVisibleRange(line: Int64): Bool {
+        for (r in this.forceVisibleRanges) {
+            if (line >= r[0] && line < r[1]) {
+                return true
+            }
+        }
+        return false
+    }
+
     /** 按 foldRanges 过滤出可见行（折叠态跳过明细）；O(全历史)，仅重建/切换折叠时调用 */
     private func rebuildDisplayCache(): Unit {
         let dl = ArrayList<String>()
@@ -446,7 +458,8 @@ public class OutputView <: Component {
             }
             var hidden = false
             if (this.toolDetailsHidden && fi < this.foldRanges.size &&
-                i >= this.foldRanges[fi][0] && i < this.foldRanges[fi][1]) {
+                i >= this.foldRanges[fi][0] && i < this.foldRanges[fi][1] &&
+                !this.inForceVisibleRange(i)) {
                 hidden = true
             }
             if (!hidden) {
@@ -459,8 +472,9 @@ public class OutputView <: Component {
     /**
      * 追加「摘要行 + 可折叠明细」。摘要始终可见，明细行默认隐藏，
      * 由 Ctrl+O 全局切换展开/折叠；完整内容仍在 lineCache/content()。
+     * expanded=true 的明细（失败工具）即使全局折叠也直接显示。
      */
-    public func appendFoldable(summary: String, detail: String): Unit {
+    public func appendFoldable(summary: String, detail: String, expanded: Bool): Unit {
         this.append(summary)
         if (detail.size == 0) {
             return
@@ -468,7 +482,8 @@ public class OutputView <: Component {
         // append 保证尾部换行，此时 lineCache 末行是空行；下一条明细就写在这一行，
         // 故折叠起点是 size-1，而不是 size（否则范围错位、明细折叠不掉）。
         let start = if (this.lineCache.size > 0) { this.lineCache.size - 1 } else { 0 }
-        this.suppressDisplay = this.toolDetailsHidden
+        let visible = expanded || !this.toolDetailsHidden
+        this.suppressDisplay = !visible
         try {
             this.append(detail)
         } finally {
@@ -481,12 +496,16 @@ public class OutputView <: Component {
         }
         if (end > start) {
             this.foldRanges.add((start, end))
+            if (expanded && this.toolDetailsHidden) {
+                this.forceVisibleRanges.add((start, end))
+            }
         }
     }
 
-    /** Ctrl+O：展开/折叠所有工具结果明细 */
+    /** Ctrl+O：展开/折叠所有工具结果明细（用户显式切换后，失败工具的强制展开也取消） */
     public func toggleToolFold(): Unit {
         this.toolDetailsHidden = !this.toolDetailsHidden
+        this.forceVisibleRanges = ArrayList<(Int64, Int64)>()
         if (!this.cacheValid) {
             this.rebuildCache()
         } else {

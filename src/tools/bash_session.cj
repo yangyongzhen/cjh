@@ -76,9 +76,17 @@ public class BashSession {
                 // 现场快照兜底）；命令若以续行 `\` 结尾，收尾的 `}` 会被拼进续行（极端罕见）。
                 // 3) 命令前先补一次 PATH（shellPathFix，幂等）：cjh 用绝对路径找 bash，
                 //    但它的 /usr/bin 未必在继承的 PATH 上，缺了连 `cat` 都是 127。
+                // 4) 同时暴露 PIPESTATUS：`false | true` 的 `$?` 是 0，旧包装让模型
+                //    误以为整条管道成功。两个值必须在**同一条赋值命令**里展开：先单独
+                //    `__cjh_code=$?` 会刷新 PIPESTATUS，先单独存 PIPESTATUS 又会把 `$?`
+                //    变成赋值命令的 0。且最终退出码必须取 `$?` 而不是 PIPESTATUS 末元素：
+                //    `while read … <<EOF` 正常结束 `$?` 为 0，但 PIPESTATUS 会残留 read
+                //    的 EOF 状态 1（heredoc 回归用例踩过）。PS/CODE 都写独立 fd 3。
                 full = shellPathFix(this.shell.shellPath, true) +
-                    "exec 3>&1; { " + cmd + "\n} 2>&1; echo \"__CJH_CODE_$?__\" 1>&3; echo " +
-                    marker + " 1>&3; exec 1>&3\n"
+                    "exec 3>&1; { " + cmd + "\n" +
+                    "__cjh_code=$? __cjh_ps=\"\${PIPESTATUS[*]}\"; } 2>&1; " +
+                    "echo \"__CJH_PS_\${__cjh_ps}__\" 1>&3; " +
+                    "echo \"__CJH_CODE_\${__cjh_code}__\" 1>&3; echo " + marker + " 1>&3; exec 1>&3\n"
             } else {
                 full = cmd + " 2>&1; echo \"__CJH_CODE_$LASTEXITCODE__\"; echo " + marker + "\n"
             }
@@ -395,6 +403,47 @@ public class BashSession {
                     }
                     content = body[0..contentEnd]
                 case None => ()
+            }
+        }
+
+        // PIPESTATUS 行紧挨在 CODE 行之前：先剥离，再决定是否提示。
+        // 只在最终命令成功(code==0)时提示——最终命令失败时退出码已表达失败。
+        let psPrefix = "__CJH_PS_"
+        let contentLines = content.split("\n", -1)
+        if (contentLines.size > 0) {
+            let psLine = contentLines[contentLines.size - 1]
+            if (psLine.startsWith(psPrefix) && psLine.endsWith("__") && psLine.size > psPrefix.size + 2) {
+                let psText = psLine[psPrefix.size..psLine.size - 2]
+                match (content.lastIndexOf(psLine)) {
+                    case Some(idx) =>
+                        var cut = idx
+                        if (cut > 0 && content[cut - 1] == 10u8) {  // '\n'
+                            cut -= 1
+                        }
+                        content = content[0..cut]
+                    case None => ()
+                }
+                if (code == 0) {
+                    let statuses = psText.split(" ", -1)
+                    // 只有一个元素说明上次执行的不是管道（PIPESTATUS 可能残留
+                    // while read 的 EOF 状态），此时 $?==0 就是真实结果，不提示。
+                    if (statuses.size > 1) {
+                        var failed = ArrayList<String>()
+                        for (i in 0..statuses.size) {
+                            if (statuses[i].size > 0 && statuses[i] != "0") {
+                                failed.add("${i + 1}:${statuses[i]}")
+                            }
+                        }
+                        if (failed.size > 0) {
+                            if (content.size > 0) {
+                                content += "\n"
+                            }
+                            content += "⚠ pipeline stage(s) failed while the final command exited 0 " +
+                                "(PIPESTATUS: ${psText}). The result may be incomplete; " +
+                                "use `set -o pipefail` or inspect each stage."
+                        }
+                    }
+                }
             }
         }
         return (code, content)

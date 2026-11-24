@@ -85,8 +85,9 @@ public class BashTool <: CjhTool {
             "Run a shell command (git, build, test, package manager). Current shell: ${mode}. " +
             "Do NOT use bash to read files — use read_file; sed/awk/head/tail are slower and less reliable. " +
             "cwd and env persist across commands (heredocs included). " +
-            "Never pipe a long-running command through `| tail`/`| head`: descendants keep the pipe open " +
-            "and the call hangs. Redirect instead: `<cmd> > build.log 2>&1`, then read_file. " +
+            "`| tail`/`| head` are fine for finite commands that leave no background children (tests, builds). " +
+            "Avoid them for servers/background jobs: descendants keep the pipe open and the call hangs; " +
+            "redirect instead (`<cmd> > build.log 2>&1`) and read_file the log. "+
             "Commands are killed after ${this.timeoutSecs}s; pass timeout (seconds, max 3600) for minutes-long " +
             "commands. Independent commands can run as multiple bash calls in one response.", schema)
     }
@@ -630,9 +631,11 @@ public class WriteTool <: CjhTool {
         if (!ensureParentDir(path)) {
             return ToolResult("Write failed: cannot create parent directory for ${path}", true)
         }
-        // 软约束：超长 content 警告但不阻断（让 LLM 自行决定是否拆分）
+        // 软约束：超长 content 警告但不阻断（让 LLM 自行决定是否拆分）。
+        // 阈值 12000 字符 / 300 行：4000/150 会把 4-10KB 的正常模板（HTML/配置/测试）
+        // 也判为“有截断风险”，用户实际很少在该区间触发 max_tokens。
         let lines = content.split('\n').size
-        if (content.size > 4000 || lines > 150) {
+        if (content.size > 12000 || lines > 300) {
             try {
                 File.writeTo(path, content.toArray())
                 return ToolResult("Written ${path} (${content.size} chars).\nWARNING: content exceeds the recommended limit (${lines} lines / ${content.size} chars); risk of max_tokens truncation. If the file turns out incomplete, continue with append_file to finish it.", false, diff)

@@ -1,4 +1,20 @@
 # CHANGELOG
+## [未发布] - 2026-11-24
+
+### 优化(长任务：范围纪律 / 验证一次 / 管道口径)
+- **最小范围写入系统提示**：小工具任务实测模型额外创建 `pyproject.toml`、`LICENSE`、`.gitignore` 并折腾 venv/`pip install -e .`，白烧 3 轮、6.8 秒工具时间。`## Work loop` 第 2 条新增：用户未要求且仓库未使用时，不添加打包、CI、许可证文件或虚拟环境。同题单次对照：**13 轮 / 20 工具 / 67.7s → 10 轮 / 15 工具 / 45.0s**，产物只含请求的包、测试与 README（单次运行，模型探索量仍有波动，不宣称普遍提速）。
+- **验证只跑一次**：第 3 条明确“绿测之后仅源码/测试/配置变更才重跑，纯文档编辑不使结果失效；输出不全就重定向到日志再读，不要换包装重跑同一命令”。修正长任务里同一套 pytest 被反复重跑、或 `| tail` 后再重定向读取的浪费。
+- **`| tail` 口径修正**：bash 工具描述不再一刀切禁止管道，改为“有限命令（测试/构建）可管道；服务器/后台任务因后代进程握着管道会挂起，必须重定向到日志”。
+- **回归**：`DefaultSystemPromptTest` 锁死三条新纪律；cjcfg **35/35**、根包 **826/826**、6 库 **271/271**、PTY **114/114**、`--mock` `FINAL-DONE`。
+
+### 优化(长任务：批量编辑 / 管道失败可见 / JSON 工具指标 / 失败详情展开)
+- **`edit` 支持同文件多段替换**：新增 `edits=[{old_string,new_string,replace_all?}, ...]`，按顺序在内存中逐段应用，**任一段匹配失败/不唯一则整次不写盘**；与顶层 `old_string/new_string` 互斥。单段与多段共用同一条原子路径，返回每段替换摘要；`replace_all` schema 由字符串改为布尔，并兼容模型传 `"true"`/`"1"`。系统提示同步要求“同一文件 2 处以上改动一次调用完成”，减少一轮一 hunk 的往返。
+- **bash 暴露管道中段失败**：会话包装先捕获 `PIPESTATUS` 再取末段退出码（赋值会刷新 PIPESTATUS），`PS/CODE` 均走独立 fd 3；最终命令 `code==0` 但前序段失败时，在结果尾部追加 `⚠ pipeline stage(s) failed…`。`false | true` 不再被误判为整体成功。回归用例 `BashPipelineStatusTest` 2 例（左段失败可见、全成功不提示）。
+- **`--mode json` 每工具指标**：`tool_calls[]` 新增 `duration_ms` / `is_error` / `bytes`；耗时由 `Agent.onToolResultTimed` 按原始调用索引精确回传，替代调用方 `DateTime` 配对——并行同名工具不再错位。`onToolResult` 保留给既有回调。
+- **TUI 失败工具自动展开**：`OutputView.appendFoldable(..., expanded)` 对 `isError` 明细强制可见，即使全局 `Ctrl+O` 处于折叠态；用户显式按 `Ctrl+O` 后强制展开清空。失败现场的报错/堆栈不用再手动展开。
+- **降低提示噪音**：`write_file` 软警告阈值由 4000 字符/150 行提高到 12000 字符/300 行，4–10KB 的正常模板不再被误报截断风险；capability 宽松模式提示改为**按配置目录只显示一次**（marker `.capability-notice-shown`），并提示删除 marker 可重新查看。`Directory.create` 前先判存在，避免非幂等异常吞掉 marker 写入。
+- **门禁**：根包 **826/826**、6 库 **271/271**、TUI PTY **114/114**、`--mock` 端到端 `FINAL-DONE`、`cjpm build` 仅 5 条 `--static` 驱动提示；`--mode json` 实跑确认 `duration_ms/is_error/bytes` 三个字段落盘。
+
 ## [v1.6.22] - 2026-11-24
 
 ### 新增(技能渐进披露：提示词只放索引，正文按需读取)

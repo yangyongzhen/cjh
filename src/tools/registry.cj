@@ -199,6 +199,22 @@ public class JsonSchema {
         obj.put("description", JsonString(description))
         return obj
     }
+
+    public static func bool(description: String): JsonValue {
+        var obj = JsonObject()
+        obj.put("type", JsonString("boolean"))
+        obj.put("description", JsonString(description))
+        return obj
+    }
+
+    /** 数组参数：items 是元素 schema，模型按 JSON 数组传值。 */
+    public static func array(description: String, items: JsonValue): JsonValue {
+        var obj = JsonObject()
+        obj.put("type", JsonString("array"))
+        obj.put("description", JsonString(description))
+        obj.put("items", items)
+        return obj
+    }
 }
 
 /**
