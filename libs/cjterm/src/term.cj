@@ -152,6 +152,29 @@ public class KeyEvent {
             this.mouseY = -1
         }
     }
+
+    /**
+     * 修饰 Enter（提交 / 忙时立即发送）的唯一判定入口。
+     *
+     * 覆盖三类真实序列，避免 app 里各写一份、加一种终端就漏一处：
+     * - POSIX 传统终端 / Windows 后端映射：`ESC + CR`（Alt+Enter），
+     *   部分终端发送 `ESC + LF`；
+     * - Kitty 键盘协议：`CSI 13;5u`（Ctrl+Enter）、`CSI 13;5~`；
+     * - xterm modifyOtherKeys：`CSI 27;5;13~`（Ctrl+Enter），
+     *   `CSI 27;3;13~`（Alt+Enter 被改编码时仍识别）。
+     *
+     * 注意：传统 POSIX 终端不开启协议时，Ctrl+Enter 会被压成普通 Enter，
+     * 这里无法区分；提示层仍以 Alt+Enter 为 POSIX 主键。
+     */
+    public func isModifiedEnter(): Bool {
+        let esc = TermEsc.ESC
+        let seq = this.escapeSeq
+        return seq == esc + "\r" || seq == esc + "\n" ||
+            seq == esc + "[13;5u" || seq == esc + "[13;5~" ||
+            seq == esc + "[13;6u" || seq == esc + "[13;6~" ||
+            seq == esc + "[27;3;13~" || seq == esc + "[27;5;13~" ||
+            seq == esc + "[27;6;13~" || seq == esc + "[27;7;13~"
+    }
 }
 
 /**

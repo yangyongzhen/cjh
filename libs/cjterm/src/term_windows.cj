@@ -340,6 +340,11 @@ public class WindowsTerminalBackend <: TerminalBackend {
                 }
                 let ctrl = winCtrlPressed(ctrlState)
                 let alt = winAltPressed(ctrlState)
+                // Ctrl+Enter → ESC+CR：Windows 终端把 Alt+Enter 保留给全屏切换，
+                // 进程收不到；用未被占用的 Ctrl+Enter 作等价按键（详见 win_mods.cj）。
+                if (winIsCtrlEnter(ctrlState, vk)) {
+                    return Some(KeyEvent(27, TermEsc.ESC + "\r"))
+                }
                 // Ctrl 组合 → 控制字符（对齐 POSIX raw 模式 ISIG 关闭后的字节语义）
                 if (ctrl) {
                     if (vk == 0x43 /* VK_C */) { return Some(KeyEvent(Int32(3))) }    // Ctrl+C

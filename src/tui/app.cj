@@ -178,7 +178,7 @@ public class TuiApp {
     private var viewMode: Int64 = 0
     // 帮助页滚动偏移（帮助内容超一屏时可滚）
     private var helpScroll: Int64 = 0
-    // 多行编辑模式（Ctrl+E 切换；Alt+Enter 提交，Esc 退出）
+    // 多行编辑模式（Ctrl+E 切换；修饰 Enter 提交，Esc 退出）
     private var editor: MultiLineEditor = MultiLineEditor()
     private var editMode: Bool = false
 
@@ -249,8 +249,8 @@ public class TuiApp {
         this.confirmDialog.fullWidth = true
         // 启动欢迎视图（utf8 能力对齐终端；模型/会话由外部 setModel/setSessions 注入）
         this.welcomeView = WelcomeView(this.term.isUtf8())
-        // 多行编辑器（行号栏 + 多行编辑；Alt+Enter 由 TuiApp 拦截提交）
-        this.editor = MultiLineEditor("输入…（Ctrl+E 多行，Alt+Enter 提交）")
+        // 多行编辑器（行号栏 + 多行编辑；修饰 Enter 由 TuiApp 拦截提交）
+        this.editor = MultiLineEditor("输入…（Ctrl+E 多行，${modifiedEnterHint()} 提交）")
         // 视图切换：对话 / 帮助（Tab/←→ 切换，Esc 回对话视图）
         let tabs = ArrayList<String>()
         tabs.add("对话")
@@ -2056,13 +2056,12 @@ public class TuiApp {
             this.markDirty()
             return
         }
-        // Alt+Enter（忙时）/ Ctrl+Enter（终端支持修饰 Enter 时）：立即发送。
-        // Alt+Enter 在裸 ESC 分支之前处理，否则会被当成 Esc 中断而丢掉输入。
-        // Ctrl+Enter 依赖 Kitty 键盘协议；传统终端会把它压成普通 Enter，
-        // 此时仍可用 Alt+Enter 达到同一效果。
-        let isAltEnter = key.escapeSeq == TermEsc.ESC + "\r" || key.escapeSeq == TermEsc.ESC + "\n"
-        let isCtrlEnter = key.escapeSeq == "\u{1b}[13;5u" || key.escapeSeq == "\u{1b}[13;5~"
-        if ((isAltEnter || isCtrlEnter) && !this.editMode && this.viewMode == 0) {
+        // 修饰 Enter（忙时）/ Ctrl+Enter：立即发送。
+        // 序列判定集中在 KeyEvent.isModifiedEnter()：POSIX Alt+Enter（ESC+CR）、
+        // Windows 后端映射的 Ctrl+Enter（同为 ESC+CR）、Kitty 键盘协议与
+        // xterm modifyOtherKeys 的专用序列都走这一条。必须放在裸 ESC 分支
+        // 之前，否则 ESC+CR 会被当成 Esc 中断而丢掉输入。
+        if (key.isModifiedEnter() && !this.editMode && this.viewMode == 0) {
             this.submitCurrentInput(true)
             return
         }
@@ -2134,11 +2133,12 @@ public class TuiApp {
             }
             return
         }
-        // 多行编辑模式：Alt+Enter（ESC \r 序列）提交；其余键交 MultiLineEditor
+        // 多行编辑模式：修饰 Enter 提交；其余键交 MultiLineEditor
         if (this.editMode) {
-            // Alt+Enter：ESC 后跟 \r（readKey 中 escapeSeq = "\x1b\r"）。
+            // 统一判定：Alt+Enter 的 ESC+CR、Windows 的 Ctrl+Enter、Kitty /
+            // xterm modifyOtherKeys 的 Ctrl+Enter 序列都在这里生效。
             // 忙时=立即发送（中断当前回合），空闲时等价普通提交。
-            if (key.escapeSeq == TermEsc.ESC + "\r" || key.escapeSeq == TermEsc.ESC + "\n") {
+            if (key.isModifiedEnter()) {
                 this.editorSubmit(this.isAgentBusy())
                 return
             }
@@ -2608,7 +2608,10 @@ public class TuiApp {
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  长粘贴         软换行显示 + 超5行/400字折叠 [Paste #N]（回车展开提交）" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_ACCENT) + "快捷键：" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Tab / ←→       切换视图（对话/帮助）" + Ansi.reset())
-        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Ctrl+E         多行输入编辑（Alt+Enter 提交；忙时 Alt+Enter 中断并立即发送）" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Ctrl+E         多行输入编辑" + Ansi.reset())
+        // 提交键必须来自 cjterm 的唯一提示源：Windows 显示 Ctrl+Enter（Alt+Enter
+        // 被终端全屏占用），POSIX 显示 Alt+Enter 并注明 Ctrl+Enter 需终端支持。
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  ${modifiedEnterHint()}   提交/忙时立即发送（${modifiedEnterCaveat()}）" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Ctrl+N         下一条消息作为新任务排队（忙时；再按取消，不并入当前回合）" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Ctrl+T         思考过程展开/折叠（推理模型），展开后可上滚回看多轮历史" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  Ctrl+G         循环切换焦点（父 → 子代理 → 父），焦点子代理的工具行进入主流" + Ansi.reset())
@@ -2711,7 +2714,7 @@ public func watchdogAction(idleSecs: Int64, timeoutSecs: Int64, toolsInFlight: I
 
 /** 入队后回显到输出区的一行（纯文本；色彩由调用方加） */
 public func queueNoticeText(seq: Int64): String {
-    "已入队 第 ${seq} 条  ·  Esc/Alt+Enter 立即发送  ·  Ctrl+N 下条新任务"
+    "已入队 第 ${seq} 条  ·  Esc/${modifiedEnterHint()} 立即发送  ·  Ctrl+N 下条新任务"
 }
 
 /** 新任务排队提示（Ctrl+N 后提交） */
@@ -2724,7 +2727,7 @@ public func queueCommandNoticeText(seq: Int64): String {
     "命令已排队 第 ${seq} 条  ·  当前回合结束后执行（不会发给模型）"
 }
 
-/** 立即发送提示（Alt+Enter / Ctrl+Enter 忙时提交） */
+/** 立即发送提示（修饰 Enter 忙时提交） */
 public func queueImmediateNoticeText(seq: Int64): String {
     "已排到队首 第 ${seq} 条  ·  正在中断当前回合，随后立即发送"
 }
@@ -2734,5 +2737,5 @@ public func queueStatusText(qLen: Int64): String {
     if (qLen <= 0) {
         return ""
     }
-    return "· 📥 排队 ${qLen} 条待发送  Esc/Alt+Enter 立即发送"
+    return "· 📥 排队 ${qLen} 条待发送  Esc/${modifiedEnterHint()} 立即发送"
 }

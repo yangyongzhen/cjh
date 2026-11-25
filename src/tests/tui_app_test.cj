@@ -418,6 +418,27 @@ public class TuiAppKeyTest {
     }
 
     @TestCase
+    public func testCtrlEnterSubmitsEditor(): Unit {
+        // 回归：旧实现编辑模式只认 Alt+Enter，Windows 按 Ctrl+Enter 无反应；
+        // 现在普通输入与多行编辑共用 KeyEvent.isModifiedEnter()。
+        let (kitty, kittySubmitted) = this.buildApp()
+        kitty.handleKey(KeyEvent(5))              // Ctrl+E
+        kitty.handleKey(this.keyChar(109))        // m
+        kitty.handleKey(KeyEvent(27, "\u{1b}[13;5u"))  // Kitty Ctrl+Enter
+        @Assert(kittySubmitted.size, 1)
+        @Assert(kittySubmitted[0], "m")
+        @Assert(kitty.testEditMode(), false)
+
+        let (xterm, xtermSubmitted) = this.buildApp()
+        xterm.handleKey(KeyEvent(5))              // Ctrl+E
+        xterm.handleKey(this.keyChar(117))        // u
+        xterm.handleKey(KeyEvent(27, "\u{1b}[27;5;13~"))  // xterm modifyOtherKeys
+        @Assert(xtermSubmitted.size, 1)
+        @Assert(xtermSubmitted[0], "u")
+        @Assert(xterm.testEditMode(), false)
+    }
+
+    @TestCase
     public func testArrowKeysDoNotCorruptInput(): Unit {
         let (app, _) = this.buildApp()
         app.handleKey(this.keyChar(120))  // x
@@ -586,6 +607,29 @@ public class TuiAppKeyTest {
         let next = app.dequeueInput()
         @Assert(next.isSome(), true)
         @Assert(next.getOrThrow(), "m")
+        app.setAgentRunning(false)
+    }
+
+    @TestCase
+    public func testCtrlEnterWhileBusyQueuesImmediateAndInterrupts(): Unit {
+        // Windows 后端映射的 Ctrl+Enter（ESC+CR）与 POSIX Kitty/xterm 序列
+        // 都必须走同一条“插队首 + 中断”路径，不能只在普通输入里生效。
+        let app = TuiApp()
+        let submitted = ArrayList<String>()
+        let interrupts = ArrayList<String>()
+        app.onSubmit = { line => submitted.add(line) }
+        app.onInterrupt = { => interrupts.add("yes") }
+        app.setAgentRunning(true)
+        app.handleKey(this.keyChar(117))  // u
+        app.handleKey(this.keyChar(114))  // r
+        app.handleKey(KeyEvent(27, "\u{1b}[27;5;13~"))  // xterm Ctrl+Enter
+        @Assert(submitted.size, 0)
+        @Assert(interrupts.size, 1)
+        @Assert(app.queueLength(), 1)
+        @Assert(app.dequeueSteerableInput().isNone(), true)
+        let next = app.dequeueInput()
+        @Assert(next.isSome(), true)
+        @Assert(next.getOrThrow(), "ur")
         app.setAgentRunning(false)
     }
 
@@ -949,6 +993,9 @@ public class QueueHintTest {
         let s = queueNoticeText(3)
         @Assert(s.contains("第 3 条"))
         @Assert(s.contains("Esc"))
+        // 提示必须来自 modifiedEnterHint()，不能各写一份或再附加平台后缀
+        @Assert(s.contains(modifiedEnterHint()))
+        @Assert(s.contains("Win 用"), false)
     }
 
     @TestCase
@@ -968,6 +1015,7 @@ public class QueueHintTest {
         let s = queueStatusText(2)
         @Assert(s.contains("2 条"))
         @Assert(s.contains("Esc"))
+        @Assert(s.contains(modifiedEnterHint()))
     }
 
     @TestCase

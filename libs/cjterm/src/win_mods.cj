@@ -47,3 +47,21 @@ public func winAltPressed(state: UInt32): Bool {
 public func winShiftPressed(state: UInt32): Bool {
     return (state & WIN_SHIFT_PRESSED) != 0
 }
+
+/** Win32 VK_RETURN（主键盘/小键盘回车共用） */
+public let WIN_VK_RETURN: UInt16 = 0x0D
+
+/**
+ * 是否为 Ctrl+Enter。
+ *
+ * 为什么要单独有 Ctrl+Enter：Windows Terminal 与 conhost 都把 Alt+Enter
+ * 绑定为“切换全屏”，按键在终端层被消费，进程收到的 KeyEvent 流里根本
+ * 没有这一下——cjh 的“忙时 Alt+Enter 中断并立即发送”在 Windows 上永远
+ * 触发不了。Ctrl+Enter 未被 Windows Terminal 默认绑定（默认仅
+ * alt+enter / f11 切全屏），系统控制台原始输入也能拿到 CTRL+RETURN，
+ * 因此作为 Windows 上的等价按键，映射成与 POSIX Alt+Enter 相同的
+ * ESC+CR 序列，复用 TUI 既有分支。
+ */
+public func winIsCtrlEnter(state: UInt32, vk: UInt16): Bool {
+    return winCtrlPressed(state) && vk == WIN_VK_RETURN
+}

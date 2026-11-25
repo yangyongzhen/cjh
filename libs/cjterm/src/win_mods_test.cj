@@ -70,4 +70,20 @@ public class WinModsTest {
         // 大小写锁定 + Shift（真实大写字母输入的组合）仍不是 Ctrl
         @Assert(winCtrlPressed(WIN_SHIFT_PRESSED | 0x80), false)
     }
+
+    /**
+     * Ctrl+Enter 是 Windows 上的“立即发送”等价键。
+     * Alt+Enter 被 Windows Terminal/conhost 全屏切换占用，进程收不到，
+     * 所以必须在 Ctrl+Enter 上补一条能到达的路径。
+     */
+    @TestCase
+    public func testCtrlEnterDetected(): Unit {
+        @Assert(winIsCtrlEnter(WIN_LEFT_CTRL_PRESSED, WIN_VK_RETURN), true)
+        @Assert(winIsCtrlEnter(WIN_RIGHT_CTRL_PRESSED, WIN_VK_RETURN), true)
+        @Assert(winIsCtrlEnter(WIN_LEFT_CTRL_PRESSED | WIN_SHIFT_PRESSED, WIN_VK_RETURN), true)
+        // 反例：没按 Ctrl、Alt+Enter、Ctrl+其他键都不是 Ctrl+Enter
+        @Assert(winIsCtrlEnter(0, WIN_VK_RETURN), false)
+        @Assert(winIsCtrlEnter(WIN_LEFT_ALT_PRESSED, WIN_VK_RETURN), false)
+        @Assert(winIsCtrlEnter(WIN_LEFT_CTRL_PRESSED, 0x41), false) // Ctrl+A
+    }
 }

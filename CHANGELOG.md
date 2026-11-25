@@ -1,5 +1,13 @@
 # CHANGELOG
 ## [Unreleased] - 2026-11-25
+### 修复(收尾命令必须有界，避免坏 shell 拖死超时)
+- **问题**：`BashSession` 超时后调用 `killProcessTree` / `cleanupPgFile`，这两处用 `executeWithOutput` 启动外部 shell（Git Bash / `taskkill`）且 `wait()` 无超时。shell 本身卡住时，收尾永远不返回，**超时提示也回不到模型**。Wine 实测：Cygwin 版 Git Bash 启动即挂，bash 工具设 10s 超时，整条命令却挂到外层 120s 被杀。
+- **修复**：新增 `runBounded(exe, args, timeout)`，`launch` 后 `wait(timeout)`，超时 `terminate(force)` 并短回收；Windows 组杀/`taskkill`、POSIX 组杀、pid 文件清理全部改走它（各 2s 上限）。回归 `BashSessionBoundedTest`：`/bin/sleep 30` 在 1s 上限内返回、缺失可执行文件直接吞掉。
+- **边界**：Wine 9.0 实测 `--version`/`--help`/`--mock`（`FINAL-DONE`）与真实模型 `write_file` 写 `Z:\tmp\cjh-wine-real\note.txt` 均通过；Git Bash 在 Wine 下 Cygwin 初始化失败，且无可用 `powershell.exe`，命令执行无法验证。真机 `bash`/`taskkill` 仍以 `scripts/test_win.ps1` 为准。
+- **产物**：根包 **838/838**、6 库 **277/277**、TUI PTY **115/115**、`cjpm build` 5 条 `--static` 提示、`glibc_compat.sh --check` = `GLIBC_2.34`、`verify_dist.sh` 5/5。新产物：`cjh-linux-x64` 19,288,232 B（`8797ad6fa2bc…`）、Linux tar 6,556,227 B（`c62685969b40…`）、Windows exe 14,420,992 B（`ece8bd64c07a…`）、Windows zip 5,387,226 B（`97c436ee8eba…`）、selfcontained 8,469,721 B（`04824ee8be4e…`）；SHA 文件与官网前缀已同步。
+
+### 修复(Windows: Alt+Enter 被终端全屏占用)
+- **Windows 改用 Ctrl+Enter 提交/立即发送**:Windows Terminal 与 conhost 默认把 Alt+Enter 绑定为全屏切换,按键在终端层被消费,`ReadConsoleInputW` 收不到——cjh 的"忙时 Alt+Enter 中断并立即发送"在 Windows 上从未触发。Windows 后端现将 `Ctrl+Enter` 映射为同一 `ESC+CR` 序列;判定抽为平台无关 `winIsCtrlEnter` 并有回归 `testCtrlEnterDetected`。Windows 帮助/欢迎/入队提示与中英 README 同步,说明 Alt+Enter 被全屏占用;POSIX 行为不变。
 ### 优化(长任务第二轮:轮询升级 / TUI 角标 / 基准 / 提示去噪)
 - **连续立即 poll 第 3 次自动提示 `wait_ms`**:`wait_ms` 已存在但模型可能不照做。`BackgroundTask` 只统计"明确没传 `wait_ms` 且任务未终态"的连续 poll,同一任务第 3 次在工具结果尾部追加一次 `wait_ms=60000`;改用等待或任务收尾即清零,不重复提示。回归 `testRepeatedImmediatePollsHintWaitMs`。
 - **状态栏常驻后台角标**:`StatusBar.setBadge` + `fmtBgBadge` 新增独立分段 `后台 2/8`(上限 0 只显示用量),TUI 每帧按槽位账刷新。任务在后台跑、agent 不忙时也能看到;空角标不占位。cjterm 回归 `testFmtBgBadge`、`testStatusBarBadgeVisibleWithReadyStatus`。

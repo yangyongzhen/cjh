@@ -276,12 +276,8 @@ public class BashSession {
         if (f.size == 0) {
             return
         }
-        try {
-            if (this.shell.isBash) {
-                let _ = executeWithOutput(this.shell.shellPath, ["-c", "rm -f '${f}'; exit 0"])
-            }
-        } catch (e: Exception) {
-            ()
+        if (this.shell.isBash) {
+            runBounded(this.shell.shellPath, ["-c", "rm -f '${f}'; exit 0"], Duration.second * 2)
         }
     }
 
@@ -451,6 +447,39 @@ public class BashSession {
 }
 
 /**
+ * 有界执行一条收尾命令：最多等 `timeout`，超时就强杀并返回。
+ *
+ * 为什么不用 `executeWithOutput`：它内部的 `wait()` 没有超时。收尾命令本身是
+ * 外部 shell（Windows 的 Git Bash / taskkill）时，一旦那个 shell 起不来/卡住，
+ * `killSession` 就永远回不来——**超时提示也回不到模型**。实测 Wine 里
+ * Cygwin 版 Git Bash 卡在启动（`Couldn't compute FAST_CWD pointer`），
+ * bash 工具设定 10s 超时，整条命令却挂到 120s 被外层杀掉。
+ * 收尾必须自己有时间上限，宁可漏杀也不能把 agent 循环拖死。
+ */
+func runBounded(exe: String, args: Array<String>, timeout: Duration): Unit {
+    try {
+        let p = launch(exe, args, stdIn: Pipe, stdOut: Pipe, stdErr: Pipe)
+        try {
+            let _ = p.wait(timeout: timeout)
+        } catch (e: Exception) {
+            try {
+                p.terminate(force: true)
+            } catch (e2: Exception) {
+                ()
+            }
+            try {
+                let _ = p.wait(timeout: Duration.second * 1)
+            } catch (e3: Exception) {
+                ()
+            }
+        }
+    } catch (e: Exception) {
+        // 命令不存在/无法启动：收尾尽力而为，绝不向外抛
+        ()
+    }
+}
+
+/**
  * 杀掉会话 bash **整个进程组**（会话本体 + 它正在跑的子命令及其子孙）。
  *
  * 为什么要连子孙一起杀（而不是只 terminate 会话本体）：
@@ -484,22 +513,15 @@ func killProcessTree(pid: Int64, shell: ShellProvider, pgFile: String): Unit {
     if (pid <= 0) {
         return
     }
-    try {
-        if (shell.isBash && pgFile.size > 0) {
-            // `-$(cat …)` 展开成 `-<pgid>`：负号表示"发给整个进程组"
-            // 不在这里 `rm -f`：临时文件统一由 BashSession.cleanupPgFile 收口，
-            // 否则 EOF 退出、proc 已是 None 的路径漏清，/tmp 里的文件只增不减。
-            let _ = executeWithOutput(shell.shellPath,
-                ["-c", "kill -9 -$(cat '${pgFile}' 2>/dev/null) 2>/dev/null; exit 0"])
-        }
-    } catch (e: Exception) {
-        ()
+    if (shell.isBash && pgFile.size > 0) {
+        // `-$(cat …)` 展开成 `-<pgid>`：负号表示"发给整个进程组"
+        // 不在这里 `rm -f`：临时文件统一由 BashSession.cleanupPgFile 收口，
+        // 否则 EOF 退出、proc 已是 None 的路径漏清，/tmp 里的文件只增不减。
+        runBounded(shell.shellPath,
+            ["-c", "kill -9 -$(cat '${pgFile}' 2>/dev/null) 2>/dev/null; exit 0"],
+            Duration.second * 2)
     }
-    try {
-        let _ = executeWithOutput("taskkill", ["/T", "/F", "/PID", "${pid}"])
-    } catch (e: Exception) {
-        ()
-    }
+    runBounded("taskkill", ["/T", "/F", "/PID", "${pid}"], Duration.second * 2)
 }
 
 /** 见 Windows 版说明（同上，POSIX 分支） */
@@ -519,11 +541,7 @@ func killProcessTree(pid: Int64, shell: ShellProvider, pgFile: String): Unit {
     // 参数留着只为与 Windows 版同签名。无 setsid 的环境里 pid 不是组长，kill 报 ESRCH
     // （被 2>/dev/null 吞掉），收尾退回 killSession 里的 terminate —— 不误伤，与修复前一致。
     let _ = pgFile
-    try {
-        let _ = executeWithOutput(bin, ["-c", "kill -9 -${pid} 2>/dev/null; exit 0"])
-    } catch (e: Exception) {
-        ()
-    }
+    runBounded(bin, ["-c", "kill -9 -${pid} 2>/dev/null; exit 0"], Duration.second * 2)
 }
 
 /**

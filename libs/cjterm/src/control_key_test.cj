@@ -148,3 +148,38 @@ public class ControlKeyLeakTest {
         @Assert(ed.text(), "H")
     }
 }
+
+/**
+ * 修饰 Enter 的判定必须集中一处：任何 UI 组件（单行输入 / 多行编辑 /
+ * 忙时立即发送）都走 KeyEvent.isModifiedEnter()，避免“普通输入能用、
+ * 编辑器里没反应”这类时灵时不灵。
+ */
+@Test
+public class ModifiedEnterTest {
+    @TestCase
+    public func testLegacyAndWindowsSequence(): Unit {
+        // POSIX Alt+Enter / Windows 后端 Ctrl+Enter 映射：同一 ESC+CR
+        @Assert(KeyEvent(27, TermEsc.ESC + "\r").isModifiedEnter(), true)
+        @Assert(KeyEvent(27, TermEsc.ESC + "\n").isModifiedEnter(), true)
+        // Windows 后端把 Ctrl+Enter 映射成 ESC+CR
+        @Assert(KeyEvent(27, TermEsc.ESC + "\r").isModifiedEnter(), true)
+    }
+
+    @TestCase
+    public func testKittyAndXtermSequences(): Unit {
+        // Kitty 键盘协议 / xterm modifyOtherKeys：Ctrl+Enter
+        @Assert(KeyEvent(27, "\u{1b}[13;5u").isModifiedEnter(), true)
+        @Assert(KeyEvent(27, "\u{1b}[13;5~").isModifiedEnter(), true)
+        @Assert(KeyEvent(27, "\u{1b}[27;5;13~").isModifiedEnter(), true)
+        // Alt+Enter 在 modifyOtherKeys 下会被改编码，仍需识别
+        @Assert(KeyEvent(27, "\u{1b}[27;3;13~").isModifiedEnter(), true)
+    }
+
+    @TestCase
+    public func testPlainEnterAndOtherKeysAreNotModified(): Unit {
+        @Assert(KeyEvent(13).isModifiedEnter(), false)
+        @Assert(KeyEvent(27).isModifiedEnter(), false)
+        @Assert(KeyEvent(27, TermEsc.UP).isModifiedEnter(), false)
+        @Assert(KeyEvent(27, TermEsc.ESC + "a").isModifiedEnter(), false)
+    }
+}

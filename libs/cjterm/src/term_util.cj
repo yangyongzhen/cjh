@@ -397,6 +397,35 @@ public func isWindowsHost(): Bool {
 }
 
 /**
+ * 提交 / 忙时立即发送的按键短标签（全平台唯一来源）。
+ *
+ * 只返回**当前平台默认可达**的那个键：
+ * - Windows：`Ctrl+Enter`。Windows Terminal 与 conhost 把 Alt+Enter 绑定为
+ *   全屏切换，按键在终端层被消费，进程根本收不到，因此不能提示 Alt+Enter。
+ * - POSIX：`Alt+Enter`。传统终端把 Ctrl+Enter 压成普通 Enter（CR），无法
+ *   区分；只有 Kitty 键盘协议或开启 xterm modifyOtherKeys 的终端才会发
+ *   专用序列。提示不能把“需额外配置才可用”的键当主键，否则就是“时灵时不灵”。
+ *
+ * 所有 UI 组件（欢迎页 / 帮助页 / 编辑器占位 / 入队提示 / 状态行）必须调用
+ * 本函数，禁止各自硬编码按键名。
+ */
+public func modifiedEnterHint(): String {
+    return if (isWindowsHost()) { "Ctrl+Enter" } else { "Alt+Enter" }
+}
+
+/**
+ * 短标签的附加说明（欢迎页/帮助页用，解释为什么不是另一个键）。
+ * 入队提示/状态行空间有限，只用 {@link modifiedEnterHint()}。
+ */
+public func modifiedEnterCaveat(): String {
+    return if (isWindowsHost()) {
+        "Alt+Enter 被终端全屏占用"
+    } else {
+        "Ctrl+Enter 需终端支持"
+    }
+}
+
+/**
  * 提示符是否用"花体图标"（❯ / 🔍）而不是 ASCII（> / ?）
  *
  * 与 UTF-8 能力**分开判**：conhost（PowerShell / 老控制台窗口）在 cjh 切到代码页 65001 后
