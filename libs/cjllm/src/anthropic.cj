@@ -2,8 +2,65 @@ package cjllm
 
 import stdx.encoding.json.*
 import std.collection.*
+import std.convert.*
 import std.sync.*
 import cjutil.*
+
+/**
+ * Anthropic prompt caching 断点标记：{type: "ephemeral"}。
+ * 官方缓存前缀顺序为 tools → system → messages，命中写入有最低 token 门槛；
+ * 提示过短时 API 自动跳过缓存，不报错。
+ */
+private func anthropicCacheControl(): JsonObject {
+    var cc = JsonObject()
+    cc.put("type", JsonString("ephemeral"))
+    return cc
+}
+
+/** 读取 Anthropic usage 数值（int/float/string 容错，缺失或非法返回 0）。 */
+private func anthropicTokenInt(v: JsonValue): Int64 {
+    match (v.kind()) {
+        case JsonKind.JsInt => return v.asInt().getValue()
+        case JsonKind.JsFloat => return Int64(v.asFloat().getValue())
+        case JsonKind.JsString =>
+            try { return Int64.parse(v.asString().getValue()) } catch (e: Exception) { return 0 }
+        case _ => return 0
+    }
+}
+
+/** 在消息最后一个 content block 上打缓存断点（text / tool_use / tool_result 均支持）。 */
+private func markAnthropicLastBlockCache(msg: JsonObject): Unit {
+    if (let Some(v) <- msg.get("content")) {
+        match (v.kind()) {
+            case JsonKind.JsString =>
+                let text = v.asString().getValue()
+                // 空文本块本身无意义，且可能被 API 拒绝；跳过断点
+                if (text.size == 0) {
+                    return
+                }
+                var block = JsonObject()
+                block.put("type", JsonString("text"))
+                block.put("text", JsonString(text))
+                block.put("cache_control", anthropicCacheControl())
+                var arr = ArrayList<JsonValue>()
+                arr.add(block)
+                msg.put("content", JsonArray(arr))
+            case JsonKind.JsArray =>
+                let blocks = v.asArray()
+                if (blocks.size() == 0) {
+                    return
+                }
+                if (let Some(last) <- blocks.get(blocks.size() - 1)) {
+                    match (last.kind()) {
+                        case JsonKind.JsObject =>
+                            last.asObject().put("cache_control", anthropicCacheControl())
+                        case _ => ()
+                    }
+                }
+            case _ => ()
+        }
+    }
+}
 
 /**
  * Anthropic Messages API 协议实现
@@ -27,11 +84,18 @@ public class AnthropicProvider <: LlmProvider {
     public var maxTokens: Int64 = 4096
     // P1a：reasoning_effort 映射的 thinking budget（0=不发 thinking 参数，维持现状）
     public var thinkingBudget: Int64 = 0
+    // 提示词缓存：Anthropic 需显式 cache_control 断点，默认开启；配置可关闭以兼容代理
+    public var promptCache: Bool = true
 
     public init(baseUrl: String, apiKey: String, model: String) {
         this.baseUrl = baseUrl
         this.apiKey = apiKey
         this.model = model
+    }
+
+    /** 开关 prompt caching（关闭后请求体保持缓存特性之前的形状）。 */
+    public func setPromptCache(enabled: Bool): Unit {
+        this.promptCache = enabled
     }
 
     /**
@@ -139,7 +203,18 @@ public class AnthropicProvider <: LlmProvider {
             }
         }
         if (sys.size > 0) {
-            body.put("system", JsonString(sys))
+            if (this.promptCache) {
+                // system 断点同时缓存 tools + system（官方前缀顺序），不需要再标 tools
+                var sysBlock = JsonObject()
+                sysBlock.put("type", JsonString("text"))
+                sysBlock.put("text", JsonString(sys))
+                sysBlock.put("cache_control", anthropicCacheControl())
+                var sysBlocks = ArrayList<JsonValue>()
+                sysBlocks.add(sysBlock)
+                body.put("system", JsonArray(sysBlocks))
+            } else {
+                body.put("system", JsonString(sys))
+            }
         }
 
         // messages（Anthropic 无 system 角色，tool 结果转 user+tool_result）
@@ -182,6 +257,15 @@ public class AnthropicProvider <: LlmProvider {
                 msgList.add(msg)
             }
         }
+        // 最后一个消息块打缓存断点：下一轮工具调用循环可直接复用整段历史
+        if (this.promptCache && msgList.size > 0) {
+            if (let Some(last) <- msgList.get(msgList.size - 1)) {
+                match (last.kind()) {
+                    case JsonKind.JsObject => markAnthropicLastBlockCache(last.asObject())
+                    case _ => ()
+                }
+            }
+        }
         body.put("messages", JsonArray(msgList))
 
         // tools → input_schema
@@ -193,6 +277,15 @@ public class AnthropicProvider <: LlmProvider {
                 tool.put("description", JsonString(t.description))
                 tool.put("input_schema", t.parameters)
                 toolList.add(tool)
+            }
+            // 没有 system 时，缓存断点落到最后一个 tool（覆盖 tools 前缀）
+            if (this.promptCache && sys.size == 0 && toolList.size > 0) {
+                if (let Some(last) <- toolList.get(toolList.size - 1)) {
+                    match (last.kind()) {
+                        case JsonKind.JsObject => last.asObject().put("cache_control", anthropicCacheControl())
+                        case _ => ()
+                    }
+                }
             }
             body.put("tools", JsonArray(toolList))
         }
@@ -266,6 +359,12 @@ public class AnthropicAccumulator {
     // token 实时估算回调（与 StreamAccumulator.onTokenEstimate 同语义）
     public var onTokenEstimate: (Int64) -> Unit = { _ => }
     public var estimatedPromptTokens: Int64 = 0
+    // Anthropic 用量：input_tokens 不含缓存命中/写入，promptTokens 需三者相加
+    private var inputTokens: Int64 = 0
+    private var cacheCreationTokens: Int64 = 0
+    private var cacheReadTokens: Int64 = 0
+    private var outputTokens: Int64 = 0
+    private var usageSeen: Bool = false
 
     // 并行工具调用按 content_block index 分别累积（Anthropic 流式
     // content_block_start/delta 事件带 index；旧实现单一 curToolArgs 会把
@@ -299,6 +398,28 @@ public class AnthropicAccumulator {
             }
 
             match (eventType) {
+                case "message_start" =>
+                    // message_start.message.usage 含 input/cache/output 初值
+                    if (let Some(m) <- obj.get("message")) {
+                        match (m.kind()) {
+                            case JsonKind.JsObject =>
+                                if (let Some(u) <- m.asObject().get("usage")) {
+                                    match (u.kind()) {
+                                        case JsonKind.JsObject => this.absorbUsage(u.asObject())
+                                        case _ => ()
+                                    }
+                                }
+                            case _ => ()
+                        }
+                    }
+                case "message_delta" =>
+                    // 结束时通常只带 output_tokens；有缓存字段则覆盖
+                    if (let Some(u) <- obj.get("usage")) {
+                        match (u.kind()) {
+                            case JsonKind.JsObject => this.absorbUsage(u.asObject())
+                            case _ => ()
+                        }
+                    }
                 case "content_block_start" =>
                     // 工具调用开始（content_block 带 index，多个并行调用各自累积）
                     if (let Some(cb) <- obj.get("content_block")) {
@@ -405,6 +526,22 @@ public class AnthropicAccumulator {
         this.onTokenEstimate(this.estimatedPromptTokens + estimatedCompletion)
     }
 
+    private func absorbUsage(usage: JsonObject): Unit {
+        this.usageSeen = true
+        if (let Some(v) <- usage.get("input_tokens")) {
+            this.inputTokens = anthropicTokenInt(v)
+        }
+        if (let Some(v) <- usage.get("cache_creation_input_tokens")) {
+            this.cacheCreationTokens = anthropicTokenInt(v)
+        }
+        if (let Some(v) <- usage.get("cache_read_input_tokens")) {
+            this.cacheReadTokens = anthropicTokenInt(v)
+        }
+        if (let Some(v) <- usage.get("output_tokens")) {
+            this.outputTokens = anthropicTokenInt(v)
+        }
+    }
+
     private func takeDelta(): String {
         // 增量 = 全文 - 已发送文本（字符安全，避免 UTF-8 切片错位）
         let cur = this.text
@@ -453,6 +590,19 @@ public class AnthropicAccumulator {
             this.toolCalls.add(ToolCall(id, name, args))
         }
         // 整体修复：流式累积的原始文本可能含 mojibake（finish 时整体修复才能跨分片还原）
-        return ModelResponse(MojibakeFix.fix(this.text), this.toolCalls)
+        let fixed = MojibakeFix.fix(this.text)
+        let resp = ModelResponse(fixed, this.toolCalls)
+        // Anthropic usage.input_tokens 只统计未命中缓存的输入；总 prompt = 三者之和。
+        // 旧端点/代理不回 usage 时退回字符估算，避免指标归零。
+        let promptTotal = this.inputTokens + this.cacheCreationTokens + this.cacheReadTokens
+        if (this.usageSeen) {
+            resp.usage.promptTokens = promptTotal
+            resp.usage.completionTokens = this.outputTokens
+            resp.usage.cachedTokens = this.cacheReadTokens
+        } else {
+            resp.usage.promptTokens = this.estimatedPromptTokens
+            resp.usage.completionTokens = Int64(fixed.size) / 4
+        }
+        return resp
     }
 }

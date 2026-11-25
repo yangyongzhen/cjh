@@ -555,3 +555,89 @@ public class MojibakeFixTest {
         return root.toJsonString()
     }
 }
+
+/**
+ * Anthropic 用量解析：promptTokens 必须含缓存命中/写入，cachedTokens 单独保留命中量。
+ * 回归背景：旧实现 finish() 只返回文本与工具调用，usage 恒为 0，缓存指标形同虚设。
+ */
+@Test
+public class AnthropicUsageTest {
+    @TestCase
+    public func testCacheUsageIsAggregated(): Unit {
+        let acc = AnthropicAccumulator()
+        let start = this.messageStartUsage(100, 200, 700, 1)
+        acc.feed(start, { _ => })
+        let delta = this.messageDeltaUsage(42)
+        acc.feed(delta, { _ => })
+        let resp = acc.finish()
+        // 100 未缓存 + 200 缓存写入 + 700 缓存命中 = 1000 总输入
+        @Assert(resp.usage.promptTokens, 1000)
+        @Assert(resp.usage.completionTokens, 42)
+        @Assert(resp.usage.cachedTokens, 700)
+    }
+
+    @TestCase
+    public func testMissingUsageFallsBackToEstimate(): Unit {
+        let acc = AnthropicAccumulator()
+        acc.estimatedPromptTokens = 400
+        var delta = JsonObject()
+        delta.put("type", JsonString("content_block_delta"))
+        var d = JsonObject()
+        d.put("type", JsonString("text_delta"))
+        d.put("text", JsonString("abcdefgh"))
+        delta.put("delta", d)
+        acc.feed(delta.toJsonString(), { _ => })
+        let resp = acc.finish()
+        @Assert(resp.usage.promptTokens, 400)
+        @Assert(resp.usage.completionTokens, 2)
+        @Assert(resp.usage.cachedTokens, 0)
+    }
+
+    @TestCase
+    public func testStringUsageNumbersAreAccepted(): Unit {
+        // 部分代理把 usage 数值序列化成字符串
+        let acc = AnthropicAccumulator()
+        acc.feed(this.messageStartUsageStr("10", "20", "30", "5"), { _ => })
+        let resp = acc.finish()
+        @Assert(resp.usage.promptTokens, 60)
+        @Assert(resp.usage.completionTokens, 5)
+        @Assert(resp.usage.cachedTokens, 30)
+    }
+
+    private func messageStartUsage(input: Int64, creation: Int64, read: Int64, output: Int64): String {
+        var usage = JsonObject()
+        usage.put("input_tokens", JsonInt(input))
+        usage.put("cache_creation_input_tokens", JsonInt(creation))
+        usage.put("cache_read_input_tokens", JsonInt(read))
+        usage.put("output_tokens", JsonInt(output))
+        var msg = JsonObject()
+        msg.put("usage", usage)
+        var root = JsonObject()
+        root.put("type", JsonString("message_start"))
+        root.put("message", msg)
+        return root.toJsonString()
+    }
+
+    private func messageStartUsageStr(input: String, creation: String, read: String, output: String): String {
+        var usage = JsonObject()
+        usage.put("input_tokens", JsonString(input))
+        usage.put("cache_creation_input_tokens", JsonString(creation))
+        usage.put("cache_read_input_tokens", JsonString(read))
+        usage.put("output_tokens", JsonString(output))
+        var msg = JsonObject()
+        msg.put("usage", usage)
+        var root = JsonObject()
+        root.put("type", JsonString("message_start"))
+        root.put("message", msg)
+        return root.toJsonString()
+    }
+
+    private func messageDeltaUsage(output: Int64): String {
+        var usage = JsonObject()
+        usage.put("output_tokens", JsonInt(output))
+        var root = JsonObject()
+        root.put("type", JsonString("message_delta"))
+        root.put("usage", usage)
+        return root.toJsonString()
+    }
+}

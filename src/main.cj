@@ -88,7 +88,9 @@ func makeProviderFor(cfg: CjhConfig, model: String, baseUrl: String, apiKey: Str
     // P1a：穿透 reasoning_effort（openai→请求体字段；anthropic→thinking budget；ollama 忽略）
     match (p) {
         case oa: OpenAiProvider => oa.setSampling(cfg.temperature, cfg.maxTokens, cfg.reasoningEffort)
-        case ap: AnthropicProvider => ap.setSampling(cfg.temperature, cfg.maxTokens, cfg.reasoningEffort)
+        case ap: AnthropicProvider =>
+            ap.setSampling(cfg.temperature, cfg.maxTokens, cfg.reasoningEffort)
+            ap.setPromptCache(cfg.promptCache)
         case op: OllamaProvider => op.setSampling(cfg.temperature, cfg.maxTokens, cfg.reasoningEffort)
         case _ => ()
     }

@@ -2,6 +2,7 @@ package cjh.tools
 
 import std.collection.*
 import std.process.*
+import std.sort.*
 import std.sync.*
 import stdx.encoding.json.*
 import cjllm.ToolSpec
@@ -94,6 +95,9 @@ public class ToolRegistry {
             for ((_, t) in this.tools) {
                 list.add(t.spec())
             }
+            // HashMap 迭代顺序不稳定；按工具名稳定排序，保证 system prompt 的
+            // 工具说明与 API tools 数组跨会话字节一致（OpenAI/DeepSeek 前缀缓存依赖）
+            sort<ToolSpec>(list, lessThan: { a, b => a.name < b.name }, stable: true)
             return list
         } finally {
             lock.unlock()

@@ -48,6 +48,21 @@ public class RegistryTest {
     }
 
     @TestCase
+    public func testSpecsAreSortedByName(): Unit {
+        // HashMap 迭代无序；工具说明顺序抖动会破坏跨会话的缓存前缀
+        let registry = ToolRegistry()
+        registry.register(WriteTool())
+        registry.register(BashTool())
+        registry.register(GlobTool())
+        registry.register(ReadTool())
+        let specs = registry.specs()
+        @Assert(specs.size, 4)
+        for (i in 1..specs.size) {
+            @Assert(specs[i - 1].name < specs[i].name, true)
+        }
+    }
+
+    @TestCase
     public func testExecuteDispatch(): Unit {
         // 用跨平台工具验证 dispatch 链路（原用 bash echo：Windows 上 BashTool 回落
         // PowerShell/无 Git Bash 时报错，测的就不再是 registry 本身了）

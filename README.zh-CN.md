@@ -239,6 +239,7 @@ coding agent 的执行效率直接决定用户等待时间。cjh 从三个维度
 - **多轮工具调用循环**：消息历史 → LLM → 工具调用 → 结果回填 → 再调用，支持复杂任务编排
 - **三域 Capability 安全模型**：commands / tools / resources 白名单 + 危险操作审批链
 - **自动 Compaction（后台异步）**：消息条数或真实 `usage.promptTokens` 超阈值时**后台 spawn 摘要**（不阻塞主循环），下一轮请求前 `tryGet` 非阻塞换装，未完成顺延、失败回退同步压缩，`compactThreshold` / `compact_token_threshold` / `compactKeep` 可配（token 阈值默认 **64000**，128K 模型下避免 32K 早压缩）；手动 `/compact` 保持同步
+- **提示词缓存**：Anthropic 默认在 tools/system 与最后消息块打 `cache_control` 断点，并把 `cache_read_input_tokens` 归入 usage；工具定义按名称稳定排序，跨会话前缀字节一致。第三方代理拒绝该字段时设 `"prompt_cache": false`
 - **项目指令**：自动加载 `AGENTS.md` / `.atomcode.md` 项目指令注入 system prompt
 
 ### 工具系统（15 个内置 + 可扩展）

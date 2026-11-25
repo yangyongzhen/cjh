@@ -237,6 +237,7 @@ The screenshot above is the cjh GUI client built with **cj-tauri** (a Tauri-like
 - **Multi-turn tool call loop**: message history → LLM → tool call → result feedback → re-call, supporting complex task orchestration
 - **Three-domain Capability security model**: commands / tools / resources whitelist + dangerous operation approval chain
 - **Auto Compaction (background async)**: when message count or real `usage.promptTokens` exceed thresholds, the summary is **spawned in the background** (never blocks the main loop); the next LLM request checks it non-blockingly (`tryGet`) and swaps history in, deferring if still running, falling back to sync compression on failure. Manual `/compact` stays synchronous
+- **Prompt caching**: Anthropic requests carry `cache_control` breakpoints on tools/system and the last message block by default, and `cache_read_input_tokens` is folded into usage; tool definitions are stably sorted by name so the prefix stays byte-identical across sessions. Set `"prompt_cache": false` for gateways that reject the field
 - **Project instructions**: auto-loads `AGENTS.md` / `.atomcode.md` project instructions injected into system prompt
 
 ### Tool System (15 built-in + extensible)

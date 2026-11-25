@@ -43,6 +43,26 @@ func p1aChatMessages(): ArrayList<ChatMessage> {
     return m
 }
 
+/** system + 一轮 tool_call/tool_result：验证缓存断点落在 system 与最后消息块 */
+func p1aAnthropicCacheMessages(): ArrayList<ChatMessage> {
+    let m = ArrayList<ChatMessage>()
+    m.add(ChatMessage("system", "sys"))
+    m.add(ChatMessage("user", "hi"))
+    var args = JsonObject()
+    args.put("path", JsonString("/tmp/x"))
+    var calls = ArrayList<ToolCall>()
+    calls.add(ToolCall("call_1", "read_file", args))
+    m.add(ChatMessage("assistant", "", calls))
+    m.add(ChatMessage("tool", "ok", "call_1", "read_file"))
+    return m
+}
+
+func p1aAnthropicCacheTools(): ArrayList<ToolSpec> {
+    let tools = ArrayList<ToolSpec>()
+    tools.add(ToolSpec("read_file", "read", JsonObject()))
+    return tools
+}
+
 /** 由目录名推导稳定端口（20000+；同一目录名跨用例不同后缀 → 不同端口，避免 TIME_WAIT 冲突） */
 func p1aPortForDir(dir: String): UInt16 {
     var sum = 0
@@ -276,6 +296,95 @@ public class P1aAnthropicBodyTest {
                 stop()
                 removeTree(dir)
             }
+        }
+    }
+
+    @TestCase
+    public func testPromptCacheBreakpoints(): Unit {
+        // 启用缓存：system 转 block 数组并打断点（覆盖 tools+system），
+        // 最后一条 tool_result 消息也打断点（下一轮工具循环复用整段历史）
+        let dir = testTempDir("p1a_anth_cache")
+        let cap = dir + "/req.json"
+        let sse = "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+        let stop = p1aStartBodyCaptureServer(p1aPortForDir(dir), cap, sse)
+        try {
+            let port = p1aPortForDir(dir)
+            let p = AnthropicProvider("http://127.0.0.1:${port}", "k", "m")
+            p.chatStream(p1aAnthropicCacheMessages(), p1aAnthropicCacheTools(),
+                { _ => }, { _ => }, { _ => }, { => false })
+            @Assert(p1aWaitCapture(cap, "\"model\": \"m\""), true)
+            let root = JsonValue.fromStr(readTextFile(cap)).asObject()
+            let sys = root.get("system").getOrThrow()
+            let sysIsArray = match (sys.kind()) {
+                case JsonKind.JsArray => true
+                case _ => false
+            }
+            @Assert(sysIsArray, true)
+            let sysBlock = sys.asArray().get(0).getOrThrow().asObject()
+            @Assert(sysBlock.containsKey("cache_control"), true)
+
+            let msgs = root.get("messages").getOrThrow().asArray()
+            let last = msgs.get(msgs.size() - 1).getOrThrow().asObject()
+            let blocks = last.get("content").getOrThrow().asArray()
+            let lastBlock = blocks.get(blocks.size() - 1).getOrThrow().asObject()
+            @Assert(lastBlock.get("type").getOrThrow().asString().getValue(), "tool_result")
+            @Assert(lastBlock.containsKey("cache_control"), true)
+            @Assert(root.containsKey("tools"), true)
+        } finally {
+            stop()
+            removeTree(dir)
+        }
+    }
+
+    @TestCase
+    public func testPromptCacheCoversToolsWithoutSystem(): Unit {
+        // 无 system 时，断点必须落到最后一个 tool（否则 tools 前缀不进缓存）
+        let dir = testTempDir("p1a_anth_cache_tools")
+        let cap = dir + "/req.json"
+        let sse = "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+        let stop = p1aStartBodyCaptureServer(p1aPortForDir(dir), cap, sse)
+        try {
+            let port = p1aPortForDir(dir)
+            let p = AnthropicProvider("http://127.0.0.1:${port}", "k", "m")
+            p.chatStream(p1aChatMessages(), p1aAnthropicCacheTools(),
+                { _ => }, { _ => }, { _ => }, { => false })
+            @Assert(p1aWaitCapture(cap, "\"model\": \"m\""), true)
+            let root = JsonValue.fromStr(readTextFile(cap)).asObject()
+            let tools = root.get("tools").getOrThrow().asArray()
+            let lastTool = tools.get(tools.size() - 1).getOrThrow().asObject()
+            @Assert(lastTool.containsKey("cache_control"), true)
+        } finally {
+            stop()
+            removeTree(dir)
+        }
+    }
+
+    @TestCase
+    public func testPromptCacheCanBeDisabled(): Unit {
+        // 兼容拒绝 cache_control 的第三方代理：关闭后请求体回到旧形状
+        let dir = testTempDir("p1a_anth_cache_off")
+        let cap = dir + "/req.json"
+        let sse = "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+        let stop = p1aStartBodyCaptureServer(p1aPortForDir(dir), cap, sse)
+        try {
+            let port = p1aPortForDir(dir)
+            let p = AnthropicProvider("http://127.0.0.1:${port}", "k", "m")
+            p.setPromptCache(false)
+            p.chatStream(p1aAnthropicCacheMessages(), p1aAnthropicCacheTools(),
+                { _ => }, { _ => }, { _ => }, { => false })
+            @Assert(p1aWaitCapture(cap, "\"model\": \"m\""), true)
+            let body = readTextFile(cap)
+            @Assert(body.contains("cache_control"), false)
+            let root = JsonValue.fromStr(body).asObject()
+            let sys = root.get("system").getOrThrow()
+            let sysIsString = match (sys.kind()) {
+                case JsonKind.JsString => true
+                case _ => false
+            }
+            @Assert(sysIsString, true)
+        } finally {
+            stop()
+            removeTree(dir)
         }
     }
 

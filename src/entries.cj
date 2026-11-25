@@ -120,7 +120,9 @@ public class ModelProviderFactory <: ProviderFactory {
         // 采样参数沿用配置（切模型不改采样：采样是配置页的事）
         match (p) {
             case oa: OpenAiProvider => oa.setSampling(this.cfg.temperature, this.cfg.maxTokens, this.cfg.reasoningEffort)
-            case ap: AnthropicProvider => ap.setSampling(this.cfg.temperature, this.cfg.maxTokens, this.cfg.reasoningEffort)
+            case ap: AnthropicProvider =>
+                ap.setSampling(this.cfg.temperature, this.cfg.maxTokens, this.cfg.reasoningEffort)
+                ap.setPromptCache(this.cfg.promptCache)
             case op: OllamaProvider => op.setSampling(this.cfg.temperature, this.cfg.maxTokens, this.cfg.reasoningEffort)
             case _ => ()
         }

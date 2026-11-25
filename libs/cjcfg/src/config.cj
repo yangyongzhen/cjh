@@ -95,6 +95,10 @@ public class CjhConfig {
     // openai 协议 → 请求体 reasoning_effort；anthropic 协议 → thinking budget 映射（off=不发，
     // low=1024/medium=4096/high=8192）；不支持的 provider 静默忽略。
     public var reasoningEffort: String = ""
+    // Anthropic 提示词缓存（settings.json "prompt_cache"；默认 true）。
+    // OpenAI/DeepSeek 自动缓存无需该开关；部分第三方 Anthropic 兼容代理会拒绝
+    // cache_control/system 数组，可显式置 false 退回旧请求形状。
+    public var promptCache: Bool = true
     // 可选模型列表（settings.json "models": [...]；/model 可切换）
     public var models: ArrayList<ModelEntry> = ArrayList<ModelEntry>()
     // 接入协议（settings.json "provider_protocol"；""=自动按 CJH_PROVIDER/env 现有逻辑）：
@@ -312,6 +316,7 @@ public class CjhConfig {
   "background_poll_max_chars": 6000,
   "temperature": 0.7,
   "max_tokens": 16384,
+  "prompt_cache": true,
   "system_prompt": "",
 
   "theme": "omp-dark",
@@ -524,6 +529,7 @@ public class CjhConfig {
         if (this.reasoningEffort.size > 0) {
             root.put("reasoning_effort", JsonString(this.reasoningEffort))
         }
+        root.put("prompt_cache", JsonBool(this.promptCache))
         root.put("compact_threshold", JsonInt(this.compactThreshold))
         root.put("compact_token_threshold", JsonInt(this.compactTokenThreshold))
         root.put("compact_keep", JsonInt(this.compactKeep))
@@ -812,6 +818,12 @@ public class CjhConfig {
                                 if (s == "off" || s == "low" || s == "medium" || s == "high") {
                                     this.reasoningEffort = s
                                 }
+                            case _ => ()
+                        }
+                    }
+                    if (let Some(v) <- obj.get("prompt_cache")) {
+                        match (v.kind()) {
+                            case JsonKind.JsBool => this.promptCache = v.asBool().getValue()
                             case _ => ()
                         }
                     }

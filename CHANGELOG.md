@@ -1,5 +1,13 @@
 # CHANGELOG
-## [Unreleased] - 2026-11-25
+## [Unreleased] - 2026-11-26
+
+### 优化(长任务第四轮：Anthropic 提示词缓存与稳定工具前缀)
+
+- **Anthropic prompt caching**：请求体默认打 `cache_control: {"type": "ephemeral"}` 断点——有 system 时标在 system 文本块（覆盖 tools + system 前缀），无 system 时标在最后一个 tool 定义；每条请求的最后一个消息块也打断点，工具循环下一轮可直接复用整段历史。官方按前缀命中，短提示自动跳过，不改变语义。第三方代理拒绝 `cache_control` / system 数组时，`settings.json` 设 `"prompt_cache": false` 退回旧请求形状（默认 `true`）。
+- **Anthropic usage 归账**：流式累计 `message_start` / `message_delta` 的 `input_tokens`、`cache_creation_input_tokens`、`cache_read_input_tokens` 与 `output_tokens`；`promptTokens = 三者之和`，`cachedTokens = cache_read`，代理不回 usage 时退回字符估算，不再恒为 0。
+- **工具前缀稳定**：`ToolRegistry.specs()` 按工具名稳定排序，消除 HashMap 迭代顺序抖动；system prompt 的工具说明与 API `tools` 数组跨会话字节一致，OpenAI/DeepSeek/Anthropic 的前缀缓存才可能命中。
+- **回归**：`P1aAnthropicBodyTest` 覆盖 system/tool 断点位置与关闭开关后的旧形状；`AnthropicUsageTest` 覆盖缓存 token 汇总、缺失 usage 回退与字符串数值；`PromptCacheConfigTest` 覆盖默认值、落盘/重载与非法类型；`RegistryTest.testSpecsAreSortedByName` 锁死排序。
+- **门禁**：根包 **875/875**、6 库 **286/286**、TUI PTY **115/115**、`--mock` 端到端 `FINAL-DONE`、`cjpm build` 仅 5 条既有 `--static` 驱动提示。
 
 ### 修复(长任务评测：写域、占位符、中断与目录缓存)
 
