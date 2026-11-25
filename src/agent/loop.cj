@@ -46,6 +46,23 @@ public func singleToolReminder(streak: Int64): String {
 }
 
 /**
+ * scope 模式下无法从参数静态证明写路径的工具类型。
+ *
+ * 声明式工具、插件工具、MCP 工具最终都在 cjh 进程外执行命令/脚本；其参数
+ * schema 不承诺 `path`，即使声明 readOnly 也不能证明不会写文件（服务端/脚本
+ * 自报的 readOnly 不是安全边界）。scope 非空时整类拒绝，避免换一个工具名
+ * 就绕过写域。
+ */
+func isUnscopedExecSurface(tool: CjhTool): Bool {
+    match (tool) {
+        case _: DeclarativeTool => true
+        case _: McpTool => true
+        case _: PluginTool => true
+        case _ => false
+    }
+}
+
+/**
  * Agent 生命周期事件钩子（Claude Code 式，统一事件化）
  *
  * 事件触发点（Agent.run 内部）：
@@ -1350,12 +1367,25 @@ public class Agent {
                 // 结果暂存到 results 数组（按原始索引），全部完成后按原始顺序回填
                 var results = ArrayList<ToolResult>()
                 var durations = ArrayList<Int64>()
+                var executed = ArrayList<Bool>()
                 for (_ in 0..n) {
                     results.add(ToolResult("", false))
                     durations.add(0)
+                    executed.add(false)
                 }
                 for (g in 0..groups.size) {
                     let group = groups[g]
+                    // 中断/放弃检查放在组边界：已经中断后不再启动新组，把该组每个
+                    // 调用都回填为明确的"未执行"错误，而不是空结果（空结果会被模型
+                    // 当成工具成功但无输出，继续基于不存在的状态推进）。
+                    if (this.isInterrupted() || this.isAbandoned()) {
+                        let why = if (this.isInterrupted()) { "已中断" } else { "已被父回合放弃" }
+                        for (idx in group) {
+                            results[idx] = ToolResult("⚠ ${why}：该工具未执行", true)
+                            executed[idx] = true
+                        }
+                        continue
+                    }
                     // 单元素组直接串行执行（避免 spawn 开销）
                     if (group.size == 1) {
                         let i = group[0]
@@ -1374,6 +1404,7 @@ public class Agent {
                         }
                         results[i] = result
                         durations[i] = toolMs
+                        executed[i] = true
                     } else {
                         // 多元素组：spawn 并发执行
                         // V2d 性能基线：记录并发实际耗时 vs 假设串行耗时
@@ -1405,6 +1436,7 @@ public class Agent {
                                 // glob 的 find 快速路径没有超时）。留空结果让本轮收场，
                                 // 别为等工具把整个回合挂死（2026-11-06 事故形态）
                                 results[group[k]] = ToolResult("⚠ 已中断：未等该工具返回", true)
+                                executed[group[k]] = true
                                 continue
                             }
                             let (idx, result, dur) = futures[k].get()
@@ -1417,6 +1449,7 @@ public class Agent {
                             }
                             results[idx] = r
                             durations[idx] = dur
+                            executed[idx] = true
                         }
                         // 并发实际耗时
                         let parallelMs = (DateTime.now() - batchStart).toMilliseconds()
@@ -1431,6 +1464,14 @@ public class Agent {
                     }
                 }
 
+                // 拓扑排序若遇到环会提前退出；任何没被覆盖的调用都必须报错，
+                // 不能留空 ToolResult("", false) 让模型当成成功空输出。
+                for (i in 0..n) {
+                    if (!executed[i]) {
+                        results[i] = ToolResult(
+                            "⚠ 工具未执行：DAG 依赖分析未覆盖该调用（可能存在依赖环）", true)
+                    }
+                }
                 // 按原始顺序回填结果到消息历史
                 lastToolFailed = false
                 for (i in 0..n) {
@@ -2064,8 +2105,8 @@ public class Agent {
      * 资源识别规则（对齐 builtin.cj 工具参数）：
      *   - read_file/grep/list_dir → path, read
      *   - write_file/append_file/edit → path, write
-     *   - bash → command, write（保守：bash 可能改任意状态）
-     *   - 其他工具 → "", write（保守：未知工具当写处理）
+     *   - bash → 哨兵 "**", write（命令可能改任意路径；同批两个 bash 也不并发）
+     *   - 其他工具 → 哨兵 "**", write（未知工具保守串行，空 path 会被当成无边并发）
      *
      * @return (resourcePath, isWrite)；path 为空表示无文件资源
      */
@@ -2129,10 +2170,12 @@ public class Agent {
                     case None => out.add(("", true))
                 }
             case "bash" =>
-                match (tc.arguments.get("command")) {
-                    case Some(c) => out.add((c.asString().getValue(), true))
-                    case None => out.add(("", true))
-                }
+                // 命令字符串无法可靠解析出真实写集：`cd /tmp && rm -rf x`、`sed -i`、
+                // `git checkout` 都能改任意文件。旧实现把整条命令当资源键，导致
+                // bash 与 write_file 的路径永不相等 → 同批并发，写冲突/读到半成品。
+                // 用全仓库写哨兵：bash 与所有写者、其它 bash 以及同批读操作都串行（命令可能
+                // 改掉刚读的文件，保守优先）。
+                out.add(("**", true))
             case "todo_write" =>
                 // 进程内状态，没有文件路径可当资源键。返回空 path 会被 DAG 当作
                 // "无边"→ 同批多个 add 并发执行，nextTodoId/ArrayList 竞态会丢任务、
@@ -2140,7 +2183,9 @@ public class Agent {
                 // 顺序串行；不同工具（read/bash/web）之间仍可并发。
                 out.add(("#tool:todo_write", true))
             case _ =>
-                out.add(("", true))
+                // 空 path 在 DAG 中等于"无资源"→ 同批未知工具会并发。未知工具是否
+                // 有副作用不可知，保守按全仓库写处理。
+                out.add(("**", true))
         }
         return out
     }
@@ -2450,6 +2495,12 @@ public class Agent {
         if (path.size > 0) {
             try {
                 let fi = FileInfo(path)
+                // 目录 mtime 只在直接子项增删时变，孙文件内容修改完全不动它：
+                // 缓存 glob/list_dir/grep(dir) 结果会一直返回过期列表。目录类结果
+                // 不缓存，交给工具每次遍历（只缓存常规文件结果）。
+                if (fi.isDirectory()) {
+                    return
+                }
                 mtime = Some(fi.lastModificationTime)
                 size = Some(fi.size)
             } catch (e: Exception) {
@@ -2515,6 +2566,27 @@ public class Agent {
                     return ToolResult("操作被用户拒绝（${reason}）", true)
                 }
                 approvalGranted = true
+        }
+        // S6 写域：scope 模式下，任何无法从参数静态证明写路径落在域内的执行面都拒绝。
+        // bash 命令可 `cd`/`sed -i`/`git checkout` 改任意文件；声明式技能工具的命令模板
+        // 同样不可分析；MCP / 插件工具把参数交给进程外脚本/服务，schema 里没有写路径，
+        // 即使自报 readOnly 也不能证明不会写。只靠 path 参数检查会被这些工具整段绕过。
+        if (this.config.writeScope.size > 0) {
+            var unsafeSurface = name == "bash" || name == "bash_start"
+            if (!unsafeSurface) {
+                match (this.tools.getTool(name)) {
+                    case Some(t) =>
+                        if (isUnscopedExecSurface(t)) {
+                            unsafeSurface = true
+                        }
+                    case None => ()
+                }
+            }
+            if (unsafeSurface) {
+                return ToolResult(
+                    "超出本子代理写域 (scope): ${name} 可执行任意路径写入，scope 模式下不可用。" +
+                    "请改用 write_file/edit 等带 path 参数的写工具，或由父代理执行 shell。", true)
+            }
         }
         // 2/3. 命令域 + 资源域检查（按工具类型检查参数）
         let cmd = args.get("command")

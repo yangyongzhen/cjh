@@ -914,7 +914,7 @@ public class SubagentIsolationTest {
             tmpPath("cjh_ut_sub_spill"), "sess-sub")
         let agent = Agent(provider, registry, config)
         registry.register(TaskTool({ d, p, t, s =>
-            spawnSubagent(factory.make(), registry, agent, config, d, p, t, s)
+            spawnSubagent(factory.make(), registry, agent, config, d, p, t, s, 5, "")
         }))
         return (agent, registry, config)
     }
@@ -955,12 +955,12 @@ public class SubagentIsolationTest {
         cap.enabled = true
         cap.tools.add("read_file")
         let (_, _, config) = this.buildParent(SubagentScriptProvider(), cap)
-        let sub = buildSubagentConfig(config, "explore")
+        let sub = buildSubagentConfig(config, "explore", 8)
         @Assert(sub.capability.enabled == true, true)
         @Assert(sub.capability.tools.size == 1, true)
         @Assert(sub.capability.tools[0] == "read_file", true)
-        // 短生命周期：maxIterations=5，compaction 关闭
-        @Assert(sub.maxIterations == 5, true)
+        // explore 可配轮次（默认 8），compaction 关闭
+        @Assert(sub.maxIterations == 8, true)
         @Assert(sub.compactThreshold == 0, true)
         @Assert(sub.compactTokenThreshold == 0, true)
         @Assert(sub.sessionId == "sess-sub/sub-explore", true)
@@ -1003,6 +1003,22 @@ public class SubagentIsolationTest {
     }
 
     @TestCase
+    public func testTaskToolFailureStatusIsError(): Unit {
+        // 失败矩阵 failed/timeout/budget_exceeded → isError=true，父代理下一轮能区分
+        let tool = TaskTool({ d, p, t, s =>
+            TaskSpawnResult("子代理执行失败（run_failed）：HTTP 500", 0, 0, 0, "failed")
+        })
+        var a = JsonObject()
+        a.put("description", JsonString("失败任务"))
+        a.put("prompt", JsonString("做点什么"))
+        a.put("subagent_type", JsonString("explore"))
+        let r = tool.execute(a)
+        @Assert(r.isError, true)
+        @Assert(r.content.contains("· failed"), true)
+        @Assert(r.content.contains("HTTP 500"), true)
+    }
+
+    @TestCase
     public func testTaskToolRoutingOff(): Unit {
         // S5(d)：/parallel off → task 派发物理关闭（execute 直接拒绝，不进 spawnFn）
         let old = SubagentRouting.current()
@@ -1036,6 +1052,10 @@ public class SubagentIsolationTest {
         @Assert(summary.reply.contains("parent done"), true)
         let taskResult = this.lastToolResult(agent.getMessages(), "task")
         @Assert(taskResult.contains("· failed"), true)
+        @Assert(taskResult.contains("子代理执行失败"), true)
+        @Assert(taskResult.contains("子代理模拟异常"), true)
+        // 失败派发不能挂"外包不划算"路由提示：短文本是故障态，不是低效完成
+        @Assert(taskResult.contains("[路由提示]"), false)
         @Assert(taskResult.contains("└─ (task 结束)"), true)
     }
 
@@ -1147,7 +1167,7 @@ public class SubagentIsolationTest {
         a.put("subagent_type", JsonString("worker"))
         a.put("scope", JsonString(tmpPath("cjh_ut_scope/allowed/*")))
         let tool = TaskTool({ d, p, t, s =>
-            spawnSubagent(factory.make(), ToolRegistry(), agent, config, d, p, t, s)
+            spawnSubagent(factory.make(), ToolRegistry(), agent, config, d, p, t, s, 5, "")
         })
         let r = tool.execute(a)
         @Assert(r.isError, false)

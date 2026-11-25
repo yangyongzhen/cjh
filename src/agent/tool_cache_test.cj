@@ -70,6 +70,24 @@ class CacheReadTool <: CjhTool {
     }
 }
 
+/** 模拟目录型只读工具（glob/list_dir/grep 目录）；结果不应缓存。 */
+class CacheDirTool <: CjhTool {
+    public var calls: Int64 = 0
+
+    public override func spec(): ToolSpec {
+        return ToolSpec("glob", "cache dir probe", JsonObject())
+    }
+
+    public override func execute(args: JsonObject): ToolResult {
+        this.calls += 1
+        return ToolResult("DIR-CONTENT", false)
+    }
+
+    public override func isReadOnly(): Bool {
+        return true
+    }
+}
+
 /** 模拟写工具；执行后应使只读缓存失效。 */
 class CacheWriteTool <: CjhTool {
     public var calls: Int64 = 0
@@ -225,4 +243,29 @@ public class ToolResultCacheTest {
         @Assert(contents[1], "READ-CONTENT")
         @Assert(contents[2], "READ-CONTENT")
     }
+    @TestCase
+    public func testDirectoryResultsAreNotCached(): Unit {
+        // 目录 mtime 对孙文件内容修改不敏感；缓存 glob/list_dir 结果会让长任务
+        // 一直看到旧列表。目录型读工具必须每次重新遍历。
+        let dir = "/tmp/cjh_ut_tool_cache_dir"
+        try { removeIfExists(dir, recursive: true) } catch (e: Exception) { () }
+        Directory.create(dir, recursive: true)
+        let tool = CacheDirTool()
+        var call1 = JsonObject()
+        call1.put("path", JsonString(dir))
+        var call2 = JsonObject()
+        call2.put("path", JsonString(dir))
+        let script = ArrayList<ModelResponse>()
+        script.add(ModelResponse("glob once", ArrayList<ToolCall>([ToolCall("g1", "glob", call1)])))
+        script.add(ModelResponse("glob again", ArrayList<ToolCall>([ToolCall("g2", "glob", call2)])))
+        let registry = ToolRegistry()
+        registry.register(tool)
+        let agent = Agent(CacheScriptProvider(script), registry,
+            AgentConfig("dir cache test", 8, Capability()))
+        let summary = agent.run("目录结果不缓存")
+        @Assert(summary.reply, "CACHE-DONE")
+        @Assert(tool.calls, 2)
+        @Assert(summary.toolCacheHits, 0)
+    }
+
 }

@@ -373,6 +373,31 @@ public class SubagentSupportTest {
     }
 
     @TestCase
+    public func testDagBashSerializesWithWritesAndUnknownTools(): Unit {
+        // bash 的命令字符串不是路径资源键：旧实现让 `echo` 与 write_file 永不冲突，
+        // 同批并发执行。现在 bash 用 "**" 写哨兵，必须与写/读/其它 bash 串行。
+        let agent = this.buildAgent(SubNoopProvider())
+        var calls = ArrayList<ToolCall>()
+        var b = JsonObject()
+        b.put("command", JsonString("echo hi"))
+        calls.add(ToolCall("b1", "bash", b))
+        var w = JsonObject()
+        w.put("path", JsonString("src/a.cj"))
+        w.put("content", JsonString("x"))
+        calls.add(ToolCall("w1", "write_file", w))
+        var r = JsonObject()
+        r.put("path", JsonString("src/a.cj"))
+        calls.add(ToolCall("r1", "read_file", r))
+        var u = JsonObject()
+        calls.add(ToolCall("u1", "mystery_tool", u))
+        let deps = agent.buildDependencyGraph(calls)
+        @Assert(deps[1].size, 1)  // write 等 bash
+        @Assert(deps[1][0], 0)
+        @Assert(deps[2].size, 2)  // read 等 bash + write
+        @Assert(deps[3].size, 3)  // 未知工具也不再当"无边"并发
+    }
+
+    @TestCase
     public func testDagOverlappingGlobScopesSerialize(): Unit {
         // src/** 与 src/a/*.cj 字符串不相等，但写域重叠；必须串行，否则两个
         // worker 可能并发写同一批文件。静态前缀判定是保守的：宁可多串行。

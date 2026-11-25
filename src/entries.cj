@@ -218,7 +218,8 @@ func runWeb(args: Array<String>): Int64 {
         sessionRegistry.register(makeTodoWriteTool(agent))
         sessionRegistry.register(TaskTool({ description, prompt, subagentType, scope =>
             spawnSubagent(makeSubagentProvider(cjhCfg, subagentType), sessionRegistry, agent, agentConfig,
-                description, prompt, subagentType, scope)
+                description, prompt, subagentType, scope,
+                subagentMaxIterations(cjhCfg, subagentType), subagentModelLabel(cjhCfg, subagentType))
         }))
     })
     return server.serve()
@@ -646,7 +647,8 @@ func runJson(prompt: String, sessionId: String): Int64 {
         // TaskTool：派发子代理执行独立任务（spawnFn 回调注入；父 agent 用于简报上下文块）
         // S2：子代理 provider 每次派生新建实例，避免共享单槽 transport 的 abort 串台（P0-2）
         registry.register(TaskTool({ description, prompt, subagentType, scope =>
-            spawnSubagent(makeSubagentProvider(cjhCfg, subagentType), registry, agent, config, description, prompt, subagentType, scope)
+            spawnSubagent(makeSubagentProvider(cjhCfg, subagentType), registry, agent, config, description, prompt, subagentType, scope,
+                subagentMaxIterations(cjhCfg, subagentType), subagentModelLabel(cjhCfg, subagentType))
         }))
 
         // 恢复会话（--resume <id>）
@@ -867,7 +869,8 @@ func runTui(sessionId: String): Int64 {
         // TaskTool：派发子代理执行独立任务（spawnFn 回调注入；父 agent 用于简报上下文块）
         // S2：子代理 provider 每次派生新建实例，避免共享单槽 transport 的 abort 串台（P0-2）
         registry.register(TaskTool({ description, prompt, subagentType, scope =>
-            spawnSubagent(makeSubagentProvider(cjhCfg, subagentType), registry, agent, config, description, prompt, subagentType, scope)
+            spawnSubagent(makeSubagentProvider(cjhCfg, subagentType), registry, agent, config, description, prompt, subagentType, scope,
+                subagentMaxIterations(cjhCfg, subagentType), subagentModelLabel(cjhCfg, subagentType))
         }))
 
         // 线程安全的输出队列（agent 在调用线程运行，输出经队列到 TUI）
@@ -1562,9 +1565,9 @@ func buildSubagentRegistry(parent: ToolRegistry, subagentType: String): ToolRegi
  * - G6 落盘隔离：spillDir 继承，sessionId 追加 /sub-<type> 段——落盘路径
  *   spillDir/<sid>/sub-<type>/<toolCallId>.txt（writeSpill 递归建目录，天然生效）
  */
-func buildSubagentConfig(parent: AgentConfig, subagentType: String): AgentConfig {
+func buildSubagentConfig(parent: AgentConfig, subagentType: String, maxIterations: Int64): AgentConfig {
     let subSession = parent.sessionId + "/sub-" + subagentType
-    let cfg = AgentConfig(buildSubagentPrompt(subagentType), 5, parent.capability,
+    let cfg = AgentConfig(buildSubagentPrompt(subagentType, maxIterations), maxIterations, parent.capability,
         0, 0, 6, parent.toolResultMaxChars, parent.spillDir, subSession)
     // 无人值守策略随父回合：子代理否则会在同一任务里突然卡在审批上
     cfg.unattendedApproveTests = parent.unattendedApproveTests
@@ -1611,6 +1614,25 @@ func exploreProviderConfig(cjhCfg: CjhConfig): Option<(String, String, String)> 
     return Some((model, base, key))
 }
 
+/** 子代理迭代上限：explore 可配（默认 8），worker 保持 5 轮。 */
+func subagentMaxIterations(cjhCfg: CjhConfig, subagentType: String): Int64 {
+    if (subagentType == "explore" && cjhCfg.exploreMaxIterations > 0) {
+        return cjhCfg.exploreMaxIterations
+    }
+    return 5
+}
+
+/** 子代理实际模型名（只用于 task 结果头，便于定位路由问题）。 */
+func subagentModelLabel(cjhCfg: CjhConfig, subagentType: String): String {
+    if (subagentType == "explore") {
+        match (exploreProviderConfig(cjhCfg)) {
+            case Some((model, _, _)) => return model
+            case None => ()
+        }
+    }
+    return cjhCfg.model
+}
+
 /**
  * 派发子代理执行独立任务（方案定稿 §5-§7）
  *
@@ -1633,7 +1655,7 @@ func exploreProviderConfig(cjhCfg: CjhConfig): Option<(String, String, String)> 
  */
 func spawnSubagent(provider: LlmProvider, parentRegistry: ToolRegistry, parent: Agent,
     parentConfig: AgentConfig, description: String, prompt: String, subagentType: String,
-    scope: ArrayList<String>): TaskSpawnResult {
+    scope: ArrayList<String>, maxIterations: Int64, modelLabel: String): TaskSpawnResult {
     // S4 边界闸门：配额满 → 结构化 budget_exceeded（文案告诉模型改策略）；
     // 并发名额满则排队（排队中父中断 → cancelled，排队超过墙钟 → timeout）
     var slotAcquired = false
@@ -1683,7 +1705,7 @@ func spawnSubagent(provider: LlmProvider, parentRegistry: ToolRegistry, parent: 
     let brief = prompt + "\n\n" + parent.taskBriefContext()
 
     let subRegistry = buildSubagentRegistry(parentRegistry, subagentType)
-    let subConfig = buildSubagentConfig(parentConfig, subagentType)
+    let subConfig = buildSubagentConfig(parentConfig, subagentType, maxIterations)
     // S6：task scope → 子代理写域（AND 收窄；explore 只读不受影响）
     subConfig.writeScope = scope
     let subAgent = Agent(provider, subRegistry, subConfig)
@@ -1757,9 +1779,13 @@ func spawnSubagent(provider: LlmProvider, parentRegistry: ToolRegistry, parent: 
         finPrompt = summary.promptTokens
         finCompletion = summary.completionTokens
         var resultText = extractSubagentResult(subAgent)
-        // S5(c) 事后纠偏（比说教有效）：1 轮完成且结论稀薄（<200 字符）的派生，
-        // 明确告诉模型这次外包不划算——用真实成本反馈自我校准
-        if (summary.rounds <= 1 && resultText.toRuneArray().size < 200) {
+        if (status == "failed") {
+            // 子代理失败时 provider 的 errorCode/errorMessage 才是根因；只回最后一条
+            // assistant 文本（常见是空态或半截思考）会让父代理误判为"子代理没干活"。
+            resultText = subagentFailureText(summary.errorCode, summary.errorMessage, resultText)
+        } else if (summary.rounds <= 1 && resultText.toRuneArray().size < 200) {
+            // S5(c) 事后纠偏（比说教有效）：仅成功且结论稀薄的派生才提示外包不划算。
+            // 失败/中断的短文本不是"低效完成"，加路由提示只会掩盖根因。
             resultText = resultText +
                 "\n[路由提示] 该子任务 ${summary.rounds} 轮完成、结论 ${resultText.toRuneArray().size} 字符；" +
                 "此类任务下次请直接处理（单次派生固定开销约 3–5k token：子代理 system prompt + 全量工具 schema）"
@@ -1771,6 +1797,7 @@ func spawnSubagent(provider: LlmProvider, parentRegistry: ToolRegistry, parent: 
         }
         let result = TaskSpawnResult(resultText, summary.rounds,
             summary.promptTokens, summary.completionTokens, status)
+        result.model = modelLabel
         // S7：触碰文件导出（子代理自己 recordTouchedPaths 的结果）
         result.filesTouched = subAgent.getTouchedFiles()
         // S7：完整过程转录落盘（回父上下文的是结论，过程在盘上可回看）
@@ -1943,7 +1970,7 @@ func runSubagentWithTimeout(agent: Agent, brief: String, timeoutMs: Int64): RunS
  * explore: 只读调查，不修改文件，汇报发现
  * worker: 可以修改文件，完成任务后汇报
  */
-func buildSubagentPrompt(subagentType: String): String {
+func buildSubagentPrompt(subagentType: String, maxIterations: Int64): String {
     var sb = StringBuilder()
     sb.append("你是一个专门执行独立任务的子代理.\n\n")
     match (subagentType) {
@@ -1967,7 +1994,7 @@ func buildSubagentPrompt(subagentType: String): String {
     sb.append("\n注意:\n")
     sb.append("- 你有独立的对话历史, 看不到主会话的上下文\n")
     sb.append("- 任务简报末尾附有父会话上下文块 (触碰文件表+摘要), 优先利用它精准定位, 避免重复大面积探索\n")
-    sb.append("- 最多 5 次迭代, 高效完成任务\n")
+    sb.append("- 最多 ${maxIterations} 次迭代, 高效完成任务\n")
     sb.append("- 不要请求用户确认, 自主决策\n")
     return sb.toString()
 }
@@ -1988,6 +2015,28 @@ func extractSubagentResult(subAgent: Agent): String {
         i -= 1
     }
     return "(子代理未产生回复文本)"
+}
+
+/**
+ * 子代理失败结果：把错误码/错误信息放在父代理能看见的第一行。
+ *
+ * 旧实现只看最后一条 assistant 文本，provider 抛错时该文本往往是空态或半截思考，
+ * 父代理拿不到 HTTP 500 / 401 / 超时等根因，只能重试或误判任务需求。
+ */
+func subagentFailureText(code: String, message: String, partial: String): String {
+    let trimmedCode = code.trimAscii()
+    let trimmedMsg = message.trimAscii()
+    let head = if (trimmedCode.size == 0) {
+        "子代理执行失败"
+    } else if (trimmedMsg.size == 0) {
+        "子代理执行失败（${trimmedCode}）"
+    } else {
+        "子代理执行失败（${trimmedCode}）：${truncateUtf8(trimmedMsg, 800)}"
+    }
+    if (partial.size == 0 || partial == "(子代理未产生回复文本)") {
+        return head
+    }
+    return head + "\n已产出部分：\n" + truncateUtf8(partial, 800)
 }
 
 /**

@@ -27,11 +27,12 @@ public class ExploreConfigTest {
         let dir = testTmpPath("cjh_ut_explore_cfg")
         writeSettings(dir, "{\"model\": \"m\", \"base_url\": \"https://x/v1\", " +
             "\"explore_model\": \"fast\", \"explore_base_url\": \"https://fast/v1\", " +
-            "\"explore_api_key\": \"k2\"}")
+            "\"explore_api_key\": \"k2\", \"explore_max_iterations\": 11}")
         let cfg = CjhConfig(dir)
         @Assert(cfg.exploreModel, "fast")
         @Assert(cfg.exploreBaseUrl, "https://fast/v1")
         @Assert(cfg.exploreApiKey, "k2")
+        @Assert(cfg.exploreMaxIterations, 11)
         try {
             removeIfExists(dir, recursive: true)
         } catch (e: Exception) {
@@ -47,6 +48,8 @@ public class ExploreConfigTest {
         @Assert(cfg.exploreModel, "")
         @Assert(cfg.exploreBaseUrl, "")
         @Assert(cfg.exploreApiKey, "")
+        // 默认 8：只读调查常在 6-8 轮才收敛
+        @Assert(cfg.exploreMaxIterations, 8)
         try {
             removeIfExists(dir, recursive: true)
         } catch (e: Exception) {

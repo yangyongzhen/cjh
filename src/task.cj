@@ -144,6 +144,9 @@ public class TaskTool <: CjhTool {
             // 树状格式（方案 §8）：子代理作为父消息流里的一个节点呈现
             var sb = StringBuilder()
             sb.append("├─ [${subagentType}] ${description} · ${result.status} · 迭代 ${result.iterations}")
+            if (result.model.size > 0) {
+                sb.append(" · ${result.model}")
+            }
             if (result.promptTokens > 0 || result.completionTokens > 0) {
                 sb.append(" · ↑${result.promptTokens} ↓${result.completionTokens}")
             }
@@ -169,7 +172,9 @@ public class TaskTool <: CjhTool {
                 sb.append("转录: ${result.transcriptPath}\n")
             }
             sb.append("└─ (task 结束)\n")
-            return ToolResult(sb.toString(), false)
+            // 失败矩阵里的 failed/timeout/budget_exceeded 必须让父代理的下一轮
+            // 看到 isError=true；否则模型会把"子代理失败"当成功结论继续推进。
+            return ToolResult(sb.toString(), result.status != "ok")
         } catch (e: Exception) {
             return ToolResult(
                 "├─ [${subagentType}] ${description} · failed\n子代理任务失败: ${e}\n└─ (task 结束)\n", true)
@@ -193,6 +198,8 @@ public class TaskSpawnResult {
     public let promptTokens: Int64
     public let completionTokens: Int64
     public var status: String
+    // 实际使用的模型名（task 结果头展示，便于确认 explore 快模型是否生效）
+    public var model: String = ""
     // S7 归账与转录：完整过程落盘路径（spillDir 为空时为 ""）+ 子代理触碰文件
     public var transcriptPath: String = ""
     public var filesTouched: ArrayList<String> = ArrayList<String>()

@@ -7,6 +7,7 @@ import stdx.encoding.json.*
 import cjllm.ToolSpec
 import cjutil.*
 import cjterm.*
+import cjlog.*
 
 /**
  * 工具执行结果
@@ -73,7 +74,14 @@ public class ToolRegistry {
     public func register(tool: CjhTool): Unit {
         lock.lock()
         try {
-            this.tools.add(tool.spec().name, tool)
+            let name = tool.spec().name
+            // 先注册者胜：技能/MCP/插件与内置工具重名时，不允许后加载者静默覆盖
+            // 已经过安全审查的内置实现（例如插件注册一个同名 bash 绕过 capability）。
+            if (this.tools.contains(name)) {
+                Log.warn("工具重名，忽略后注册项: ${name}")
+                return
+            }
+            this.tools.add(name, tool)
         } finally {
             lock.unlock()
         }
@@ -218,6 +226,87 @@ public class JsonSchema {
 }
 
 /**
+ * shell 参数转义：声明式工具把模型可控的参数拼进命令模板时，必须当成数据而不是代码。
+ * bash 用单引号包裹（内部 ' 变 '\''）；PowerShell 单引号内用 '' 转义。
+ */
+public func shellArgQuote(value: String, isBash: Bool): String {
+    if (isBash) {
+        return shSingleQuote(value)
+    }
+    return "'" + value.replace("'", "''") + "'"
+}
+
+func declarativeArgLiteral(args: JsonObject, name: String, isBash: Bool): String {
+    var value = ""
+    if (let Some(v) <- args.get(name)) {
+        match (v.kind()) {
+            case JsonKind.JsString => value = v.asString().getValue()
+            case _ => value = v.toJsonString()
+        }
+    }
+    return shellArgQuote(value, isBash)
+}
+
+/**
+ * 单趟展开声明式命令模板：只在原模板上扫描占位符，参数值插入后不再参与扫描。
+ * 不能用「按参数逐个 replace」——先插入的值里若含 `${另一个参数}`，后一次 replace
+ * 会把它当占位符再次展开（二次替换），既改变命令语义，也会破坏 shellArgQuote 的引号边界。
+ */
+func expandDeclarativeCommand(template: String,
+    argSpecs: HashMap<String, (String, String)>, args: JsonObject, isBash: Bool): String {
+    let out = StringBuilder()
+    var cursor = 0
+    while (true) {
+        var bestIdx: ?Int64 = None
+        var bestKey = ""
+        var bestPh = ""
+        // 每次取原模板中最早出现的占位符；同一位置取更长者，避免参数名前缀互吃。
+        for ((k, _) in argSpecs) {
+            let ph = "$" + "{" + k + "}"
+            match (template.indexOf(ph, cursor)) {
+                case Some(idx) =>
+                    var take = false
+                    match (bestIdx) {
+                        case None => take = true
+                        case Some(bi) => take = idx < bi || (idx == bi && ph.size > bestPh.size)
+                    }
+                    if (take) {
+                        bestIdx = Some(idx)
+                        bestKey = k
+                        bestPh = ph
+                    }
+                case None => ()
+            }
+        }
+        var idx = 0
+        match (bestIdx) {
+            case Some(i) => idx = i
+            case None => break
+        }
+        let phEnd = idx + bestPh.size
+        var start = idx
+        var end = phEnd
+        // 模板写成 "${x}" / '${x}'：连同占位符两侧的引号一起吃掉，输出不多一层字面引号。
+        if (idx > 0 && phEnd < template.size) {
+            let q = template[idx - 1]
+            if ((q == 34u8 || q == 39u8) && template[phEnd] == q) {
+                start = idx - 1
+                end = phEnd + 1
+            }
+        }
+        if (start > cursor) {
+            out.append(template[cursor..start])
+        }
+        out.append(declarativeArgLiteral(args, bestKey, isBash))
+        cursor = end
+    }
+    if (cursor < template.size) {
+        out.append(template[cursor..])
+    }
+    return out.toString()
+}
+
+/**
  * 声明式工具（Skill 携带的自定义工具，对齐 v2 4.3b 声明式形态）：
  * 由 shell 命令模板 + 参数 schema 声明定义，execute 时展开参数执行。
  * 技能文件 frontmatter 的 tools 段可声明多个此类工具（低门槛，写 Markdown 即贡献）。
@@ -260,23 +349,16 @@ public class DeclarativeTool <: CjhTool {
     }
 
     public override func execute(args: JsonObject): ToolResult {
-        // 模板展开：${argName} → 参数值；未提供的参数替换为空串
-        var cmd = this.commandTemplate
-        for ((k, _) in this.argSpecs) {
-            var value = ""
-            if (let Some(v) <- args.get(k)) {
-                match (v.kind()) {
-                    case JsonKind.JsString => value = v.asString().getValue()
-                    case _ => value = v.toJsonString()
-                }
-            }
-            cmd = cmd.replace("${" + k + "}", value)
-        }
+        // 平台感知 shell（v1.3.17 起 bash_session / builtin 都走 ShellProvider；
+        // 这里原先硬编码 /bin/bash，Windows 上声明式技能工具一调就抛异常，见 issue #1）
+        let provider = ShellProvider()
+        // 模板展开：${argName} → 参数值；未提供的参数替换为空串。
+        // 参数来自模型/用户，必须转义成单个 shell 字面量；否则 `x; rm -rf /` 会被当命令执行。
+        // 单趟扫描：参数值里即使含 `${other}` 也不会被二次展开。
+        let cmd = expandDeclarativeCommand(this.commandTemplate, this.argSpecs, args,
+            provider.isBash)
         try {
             var argv = Array<String>(2, repeat: "")
-            // 平台感知 shell（v1.3.17 起 bash_session / builtin 都走 ShellProvider；
-            // 这里原先硬编码 /bin/bash，Windows 上声明式技能工具一调就抛异常，见 issue #1）
-            let provider = ShellProvider()
             if (provider.isBash) {
                 argv[0] = "-c"
                 argv[1] = cmd

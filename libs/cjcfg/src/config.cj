@@ -112,6 +112,8 @@ public class CjhConfig {
     public var exploreModel: String = ""
     public var exploreBaseUrl: String = ""
     public var exploreApiKey: String = ""
+    // explore 子代理迭代上限：只读调查常在 6-8 轮才收敛，5 轮会逼它交半成品。
+    public var exploreMaxIterations: Int64 = 8
     // 备用 API key（P1-5 429 fallback）：401/429/5xx 时轮换重试。
     // settings.json "fallback_api_keys": [...] 或 env CJH_FALLBACK_KEYS="k2,k3" 逗号分隔。
     public var fallbackApiKeys: ArrayList<String> = ArrayList<String>()
@@ -297,6 +299,7 @@ public class CjhConfig {
   "explore_model": "",
   "explore_base_url": "",
   "explore_api_key": "",
+  "explore_max_iterations": 8,
   "max_iterations": 10,
   "max_subagents": 4,
   "max_tasks_per_turn": 6,
@@ -696,6 +699,12 @@ public class CjhConfig {
                     if (let Some(v) <- obj.get("explore_api_key")) {
                         match (v.kind()) {
                             case JsonKind.JsString => this.exploreApiKey = v.asString().getValue()
+                            case _ => ()
+                        }
+                    }
+                    if (let Some(v) <- obj.get("explore_max_iterations")) {
+                        match (v.kind()) {
+                            case JsonKind.JsInt => this.exploreMaxIterations = v.asInt().getValue()
                             case _ => ()
                         }
                     }

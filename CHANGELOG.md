@@ -1,6 +1,19 @@
 # CHANGELOG
 ## [Unreleased] - 2026-11-25
 
+### 修复(长任务评测：写域、占位符、中断与目录缓存)
+
+- **子代理失败不再冒充成功**：`task` 结果原本一律 `isError=false`，父代理会把 `failed` / `timeout` / `budget_exceeded` 当结论继续推进。现在非 `ok` 状态返回 `isError=true`，失败文本带 provider 的 `errorCode/errorMessage` 根因；失败派发也不再追加「外包不划算」路由提示。回归 `testTaskToolFailureStatusIsError` 与失败传播用例。
+- **DAG 把 bash/未知工具当全写哨兵**：`bash` 的命令字符串不是路径键，旧实现让它与 `write_file` 永不冲突而并发；未知工具同样无边并发。现在两者都用 `"**"` 写哨兵，与所有 writer 及同批其它 bash 串行。回归 `testDagBashSerializesWithWritesAndUnknownTools`。
+- **task scope 不再被 shell/技能/MCP/插件工具绕过**：`writeScope` 原先只检查带 `path` 参数的文件工具，子代理用 `bash`（`sed -i`/`git checkout`）、声明式技能工具、MCP 工具或插件脚本即可改任意文件。现在 scope 非空时，`bash` / `bash_start` / `DeclarativeTool` / `McpTool` / `PluginTool` 一律拒绝并给出改法（用带 `path` 的写工具，或交父代理执行 shell）；MCP/插件自报 `readOnly` 也不放行——服务端/脚本可以谎报，参数 schema 不构成写路径证明。capability 默认宽松语义不变，scope 只收窄。回归 `WriteScopeSurfaceTest` 的 bash/声明式/MCP/插件拒绝用例，以及无 scope 时 MCP 仍转发到客户端的对照用例。
+- **声明式工具占位符从未替换**：`DeclarativeTool` 用 `"${" + k + "}"` 构造占位符，Cangjie 把 `"${"` 当成插值起始，实际 `ph` 是字面量 `" + k + "`，所有技能工具的 `${arg}` 都替换不到，命令空跑输出。改为 `"$" + "{" + k + "}"`；回归 `testDeclarativeToolQuotesArguments` 同时验证 `safe; touch …` 保持字面量、带引号模板不多一层引号。
+- **声明式工具占位符二次替换**：旧实现按 `argSpecs` 顺序逐个 `replace`，先插入的参数值里若含 `${另一个参数}`，后一次 `replace` 会把它再次展开；展开后的 `shellArgQuote` 单引号被撑破，参数里的 `$(…)` 变成可执行命令。改为 `expandDeclarativeCommand` 单趟扫描原模板：每处占位符只处理一次，插入值不再参与扫描；`"${x}"` / `'${x}'` 吃掉引号的语义保留。回归 `DeclarativeExpandTest`（互含占位符、引号形式、未知/缺失参数）与 `testDeclarativeToolQuotesArguments` 的双 marker 命令执行用例。
+- **中断后不再启动后续拓扑组**：原实现只在收集并发结果时检查中断，已中断仍会 spawn 下一组工具，并把结果留空；空 `ToolResult("", false)` 会被模型当成成功空输出。现在组边界直接跳过整组并回填「未执行」错误；DAG 有环未覆盖的调用也报错而非静默成功。回归 `InterruptGuardTest.testInterruptSkipsRemainingGroups`。
+- **目录结果不缓存**：`glob` / `list_dir` / `grep <dir>` 以目录路径为键缓存，而目录 mtime 只在直接子项增删时变化，孙文件修改完全不触发失效，长任务会一直看旧列表。`storeToolCache` 现在只缓存常规文件结果。回归 `ToolResultCacheTest.testDirectoryResultsAreNotCached`。
+- **重名注册先到先得**：插件/技能/MCP 后加载时不能静默覆盖内置工具（否则审批面可被替换），`ToolRegistry.register` 保留首个注册并告警；回归 `testDuplicateRegistrationKeepsFirst`。
+- **explore 轮次可配**：settings 新增 `explore_max_iterations`（默认 8，worker 仍 5），只读调查常在 6–8 轮才收敛；`task` 结果头追加实际模型名，便于确认 explore 快模型路由是否生效。回归 `ExploreConfigTest` 解析/默认值与 `testSubagentConfigInheritsCapabilityAndIsolatesSpill`。
+- **门禁**：根包 **871/871**、6 库 **281/281**、TUI PTY **115/115**、`--mock` 端到端 `FINAL-DONE`、`cjpm build` 仅 5 条既有 `--static` 驱动提示。
+
 ### 优化(长任务第三轮：只读工具缓存 / DAG 写域重叠 / 工具进度)
 - **回合内只读工具结果缓存**：`Agent` 对 `read_file` / `grep` / `glob` / `list_dir` 以「工具名 + 完整参数」为键缓存成功结果，同一回合内重复调用直接回填，省掉重复磁盘读取与正则扫描；错误结果不缓存。缓存条目同时记录解析后路径的 `lastModificationTime`，命中前 stat 一次——用户/外部进程在两轮之间改了文件会按未命中重读；Agent 自己的写工具（`write_file`/`edit`/`bash` 等非只读工具）执行后仍整表失效。缓存严格按回合隔离，`run()` 开头清空，不跨回合复用。
 - **DAG 写域按 glob 语义判重叠**：`resourceConflict` 不再只比字符串。字面路径相等即冲突；一方 glob 用 `Capability.globMatch` 判另一方是否落在域内；双方 glob 取静态前缀，存在包含关系即视为可能重叠（保守串行）；`**` 写哨兵与所有资源冲突，只读资源之间不冲突。修复 `src/a/*.cj` 与 `src/**` 字符串不等却被并发写同一批文件。
