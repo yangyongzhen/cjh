@@ -8,7 +8,7 @@
 - **修复**：`OutputView.ensureBlankLine()` 幂等保证内容以 `\n\n` 结尾（空输出不凭空造行、已有空行不叠加、未收尾行补两个换行）；TUI 在**工具调用块、流式回复首个增量、非流式回复落笔前**调用 `TuiBridge.sectionGap()`。工具块内部（`▶`/`●` 调用行与其结果）仍紧邻成组，只在块与块之间留白。
 - **一致性**：工具结果摘要复用调用行的显示名（`BashPoll` 而非 `bash_poll`），同一块内不再大小写混排。
 - **测试**：根包 **828/828**（新增 `testEnsureBlankLineIdempotentAndUnterminated`、`testBlankLineSeparatesToolBlocks`）；6 库 **271/271**（cjterm 146）；TUI PTY **114/114**；`--mock` 端到端 exit 0（命中 `FINAL-DONE`）；`cjpm build` 仅 5 条 `--static` 驱动提示。
-- **重打包**：Linux 与 Windows 产物均从同一修复提交重打：`cjh-linux-x64` / `cjh-v1.6.23-linux-x64.tar.gz`、`cjh-windows-x64.exe` / `cjh-v1.6.23-windows-x64.zip` / `cjh-v1.6.23-windows-x64-selfcontained.zip` 及校验文件全部替换；tag `v1.6.23` 与 release `target_commitish` 同步到本提交。
+- **重打包**：Linux 与 Windows 产物均包含同一修复（消息块留白）：`cjh-linux-x64` / `cjh-v1.6.23-linux-x64.tar.gz`、`cjh-windows-x64.exe` / `cjh-v1.6.23-windows-x64.zip` / `cjh-v1.6.23-windows-x64-selfcontained.zip` 及校验文件全部替换；tag `v1.6.23` 与 release `target_commitish` 同步到本提交。
 
 ### 优化(长任务：范围纪律 / 验证一次 / 管道口径)
 - **最小范围写入系统提示**：小工具任务实测模型额外创建 `pyproject.toml`、`LICENSE`、`.gitignore` 并折腾 venv/`pip install -e .`，白烧 3 轮、6.8 秒工具时间。`## Work loop` 第 2 条新增：用户未要求且仓库未使用时，不添加打包、CI、许可证文件或虚拟环境。同题单次对照：**13 轮 / 20 工具 / 67.7s → 10 轮 / 15 工具 / 45.0s**，产物只含请求的包、测试与 README（单次运行，模型探索量仍有波动，不宣称普遍提速）。
