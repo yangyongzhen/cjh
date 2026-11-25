@@ -65,7 +65,7 @@ Windows：下载 [`cjh-v1.6.23-windows-x64-selfcontained.zip`](https://atomgit.c
 | **是什么** | 仓颉语言从零实现的终端 coding agent harness：Agent 主循环（消息状态机 + 工具调用协议）+ 工具系统 + TUI 差分渲染 + Web 远程驱动 + 插件信任链 |
 | **给谁用** | ① 想在终端里让 AI 直接改代码、又不想先装 Node/Python 工具链的人；② 学仓颉、想找一份能跑能读的 AI 应用参考实现的开发者；③ 信创 / 政企场景要求「无涉外运行时依赖」的团队 |
 | **凭什么** | 一个静态二进制跑起来（Linux 19.3 MB / Windows exe 14.4 MB），无运行时依赖；「省 token + 高执行效率」是两条可实测的硬性指标；插件 SHA256 校验 + SM2 国密签名 |
-| **现在** | v1.6.23，测试 826+271 全绿，Linux / Windows 预编译包已发布；长任务效率升级：同文件多段 `edit` 一次原子写入、管道中段失败可见、`--mode json` 每工具耗时/错误/体积、失败工具自动展开；提示词收紧范围纪律与「绿测只跑一次」 |
+| **现在** | v1.6.23，测试 857+281 全绿，Linux / Windows 预编译包已发布；长任务效率升级：回合内只读工具缓存（mtime+size 校验、写后失效）、DAG 写域 glob 重叠串行、状态栏工具/审批进度、同文件多段 `edit` 原子写入、`--mode json` 每工具耗时/错误/体积；提示词收紧范围纪律与「绿测只跑一次」 |
 
 ---
 
@@ -243,6 +243,8 @@ coding agent 的执行效率直接决定用户等待时间。cjh 从三个维度
 
 ### 工具系统（15 个内置 + 可扩展）
 
+> 文件工具的相对路径一律按**工作区根**解析并回显绝对路径，不受 bash 会话 `cd` 影响。
+
 | 工具 | 说明 |
 |---|---|
 | `bash` | 执行 shell 命令，捕获 stdout/stderr |
@@ -272,6 +274,7 @@ coding agent 的执行效率直接决定用户等待时间。cjh 从三个维度
 - **task 派发子代理**：explore（只读，不建依赖边）/ worker（可写），同回合多路并发，写冲突自动串行
 - **可观测三件套**：右下 **Agents 面板**（并发节点轮次/token/当前工具实时刷新，`Ctrl+G` 焦点切换看单代理工具行）+ 全树归账总结条（`N agents (x✓ y✗) · ⚠N 低效派生`）+ 完整过程转录落盘（`~/.cjh/spill/`）
 - **边界管控四键**：`max_subagents` / `max_tasks_per_turn` / `subagent_token_budget` / `subagent_timeout_ms`（settings 可配），超限结构化拒绝（`budget_exceeded` / `timeout`）
+- **explore 快模型路由**：`explore_model` / `explore_base_url` / `explore_api_key`（settings 可配）只作用于只读 `explore`，全空复用主 provider；`worker` 始终用主模型，避免把不支持 `tool_call` 的摘要模型误用于调查
 - **审批队列化**：多路并发审批不再互相覆盖，标题 `审批(n/m)`、`y` 只批队首、Ctrl+C 整体拒绝；审批带 `[task:label]` 身份
 - **无人值守测试审批**：`unattended_approval` 默认 `deny`（headless 改测试断言直接拒绝）；显式 `tests` 后所有入口自动批准该写入，并在工具结果写审计前缀。capability 的 Deny 规则仍逐层生效，子代理继承父回合策略
 - **稳定并发（实测驱动）**：错峰派发（并发起跑按 1s 间隔错开，摊平请求洪峰）+ 限流退避重试（400-Throttling/429/5xx 同 key 退避 3 次，可 Ctrl+C 中断）+ 流式 usage 接线（面板 token 实时）+ 父回合失败显式提示（`⚠ 本回合执行失败（错误码）`，不再静默无下文）

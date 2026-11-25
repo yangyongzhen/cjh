@@ -246,7 +246,7 @@ public class ReadTool <: CjhTool {
 
     public func spec(): ToolSpec {
         var props = HashMap<String, JsonValue>()
-        props.add("path", JsonSchema.str("File path to read"))
+        props.add("path", JsonSchema.str("Absolute file path to read (relative paths resolve against the workspace root)"))
         props.add("offset", JsonSchema.str("Start line (1-based, default 1)"))
         props.add("limit", JsonSchema.str("Number of lines to return (default: 200 for large files, full for small)"))
         let schema = JsonSchema.object(props, ArrayList<String>(["path"]))
@@ -262,7 +262,9 @@ public class ReadTool <: CjhTool {
         if (!args.containsKey("path")) {
             return ToolResult("缺少参数: path", true)
         }
-        let path = args.get("path").getOrThrow().asString().getValue()
+        let rawPath = args.get("path").getOrThrow().asString().getValue()
+        let path = resolveFilePath(rawPath)
+        let pathNotice = pathResolutionNotice(rawPath, path)
         // 解析 offset/limit（可选）
         var offset: Int64 = 0
         var limit: Int64 = 0
@@ -286,7 +288,7 @@ public class ReadTool <: CjhTool {
         let defaultLimit: Int64 = 500
         // SQLite 数据库：P1-7 统一读取接口——.db/.sqlite/.sqlite3 走 sqlite3 CLI
         if (path.endsWith(".db") || path.endsWith(".sqlite") || path.endsWith(".sqlite3")) {
-            return this.readSqlite(path, repeatHint)
+            return withPathNotice(this.readSqlite(path, repeatHint), pathNotice)
         }
         try {
             // 大文件优化：用 FileInfo.size 判断，避免 File.readFrom 全文加载
@@ -297,7 +299,7 @@ public class ReadTool <: CjhTool {
             if (fileSize > largeThreshold) {
                 // 大文件：流式逐行读取，不加载全文到 Array<String>
                 let result = readLargeFile(path, offset, limit)
-                return appendHints(result, repeatHint, offset, limit, 0, 0, 0)
+                return withPathNotice(appendHints(result, repeatHint, offset, limit, 0, 0, 0), pathNotice)
             }
             // 小文件：一次读完
             let bytes = File.readFrom(path)
@@ -308,12 +310,12 @@ public class ReadTool <: CjhTool {
             if (offset > 0 || limit > 0) {
                 let result = readRange(lines, offset, limit)
                 let readEnd = if (limit > 0) { offset + limit - 1 } else { totalLines }
-                return appendHints(result, repeatHint, offset, limit, totalLines, offset, readEnd)
+                return withPathNotice(appendHints(result, repeatHint, offset, limit, totalLines, offset, readEnd), pathNotice)
             }
             // 无 offset/limit：大文件默认读前 defaultLimit 行，小文件返回全文
             if (totalLines > defaultLimit) {
                 let result = readRange(lines, 1, defaultLimit)
-                return appendHints(result, repeatHint, 0, 0, totalLines, 1, defaultLimit)
+                return withPathNotice(appendHints(result, repeatHint, 0, 0, totalLines, 1, defaultLimit), pathNotice)
             }
             // 小文件全文（带行号前缀，与 readRange 格式统一）
             var numbered = StringBuilder()
@@ -322,9 +324,9 @@ public class ReadTool <: CjhTool {
                 numbered.append("${i + 1}\t${lines[i]}\n")
                 i += 1
             }
-            return appendHints(ToolResult(numbered.toString(), false), repeatHint, 0, 0, totalLines, 1, totalLines)
+            return withPathNotice(appendHints(ToolResult(numbered.toString(), false), repeatHint, 0, 0, totalLines, 1, totalLines), pathNotice)
         } catch (e: Exception) {
-            return ToolResult("读取失败: ${e}", true)
+            return ToolResult(pathNotice + "读取失败: ${path}: ${e}", true)
         }
     }
 
@@ -595,7 +597,7 @@ public class WriteTool <: CjhTool {
 
     public func spec(): ToolSpec {
         var props = HashMap<String, JsonValue>()
-        props.add("path", JsonSchema.str("File path to write"))
+        props.add("path", JsonSchema.str("Absolute file path to write (relative paths resolve against the workspace root)"))
         props.add("content", JsonSchema.str("File content (overwrites existing)"))
         let schema = JsonSchema.object(props, ArrayList<String>(["path", "content"]))
         return ToolSpec("write_file",
@@ -612,7 +614,7 @@ public class WriteTool <: CjhTool {
                 "Call write_file again with path (file path) and content (full file content) together.",
                 true)
         }
-        let path = args.get("path").getOrThrow().asString().getValue()
+        let path = resolveFilePath(args.get("path").getOrThrow().asString().getValue())
         let content = args.get("content").getOrThrow().asString().getValue()
         // 防 LLM 幻觉：拒绝写入纯 ASCII 数字串（如 "6033687967848980..."）
         // 这是 LLM 把字符转 ASCII 码值拼接的幻觉行为，不是合法文件内容
@@ -640,14 +642,14 @@ public class WriteTool <: CjhTool {
                 File.writeTo(path, content.toArray())
                 return ToolResult("Written ${path} (${content.size} chars).\nWARNING: content exceeds the recommended limit (${lines} lines / ${content.size} chars); risk of max_tokens truncation. If the file turns out incomplete, continue with append_file to finish it.", false, diff)
             } catch (e: Exception) {
-                return ToolResult("Write failed: ${e}", true)
+                return ToolResult("Write failed: ${path}: ${e}", true)
             }
         }
         try {
             File.writeTo(path, content.toArray())
             return ToolResult("Written ${path} (${content.size} chars)", false, diff)
         } catch (e: Exception) {
-            return ToolResult("Write failed: ${e}", true)
+            return ToolResult("Write failed: ${path}: ${e}", true)
         }
     }
 }
@@ -769,7 +771,7 @@ public class AppendFileTool <: CjhTool {
 
     public func spec(): ToolSpec {
         var props = HashMap<String, JsonValue>()
-        props.add("path", JsonSchema.str("File path to append to (must already exist)"))
+        props.add("path", JsonSchema.str("Absolute file path to append to (must already exist; relative paths resolve against the workspace root)"))
         props.add("content", JsonSchema.str("Content to append at end of file"))
         let schema = JsonSchema.object(props, ArrayList<String>(["path", "content"]))
         return ToolSpec("append_file",
@@ -782,7 +784,7 @@ public class AppendFileTool <: CjhTool {
         if (!args.containsKey("path") || !args.containsKey("content")) {
             return ToolResult("Error: append_file requires both path and content.", true)
         }
-        let path = args.get("path").getOrThrow().asString().getValue()
+        let path = resolveFilePath(args.get("path").getOrThrow().asString().getValue())
         let content = args.get("content").getOrThrow().asString().getValue()
         // 防 LLM 幻觉：拒绝追加纯 ASCII 数字串
         if (isAsciiDigitGarbage(content)) {
@@ -840,7 +842,7 @@ public class GrepTool <: CjhTool {
     public func spec(): ToolSpec {
         var props = HashMap<String, JsonValue>()
         props.add("pattern", JsonSchema.str("Regex pattern (std.regex syntax)"))
-        props.add("path", JsonSchema.str("File or directory path to search"))
+        props.add("path", JsonSchema.str("Absolute file or directory path to search (relative paths resolve against the workspace root)"))
         props.add("context", JsonSchema.str("Context lines around each match (default 0 = no context)"))
         let schema = JsonSchema.object(props, ArrayList<String>(["pattern", "path"]))
         return ToolSpec("grep",
@@ -855,7 +857,7 @@ public class GrepTool <: CjhTool {
             return ToolResult("缺少参数: pattern/path", true)
         }
         let pattern = args.get("pattern").getOrThrow().asString().getValue()
-        let path = args.get("path").getOrThrow().asString().getValue()
+        let path = resolveFilePath(args.get("path").getOrThrow().asString().getValue())
         var contextLines: Int64 = 0
         if (let Some(c) <- args.get("context")) {
             match (c.kind()) {
@@ -1099,7 +1101,7 @@ public class ListDirTool <: CjhTool {
 
     public func spec(): ToolSpec {
         var props = HashMap<String, JsonValue>()
-        props.add("path", JsonSchema.str("Directory path to list"))
+        props.add("path", JsonSchema.str("Absolute directory path to list (relative paths resolve against the workspace root)"))
         let schema = JsonSchema.object(props, ArrayList<String>(["path"]))
         return ToolSpec("list_dir", "List files and subdirectories under a directory. Use to understand project structure. Independent directories can be listed in one response.", schema)
     }
@@ -1108,7 +1110,7 @@ public class ListDirTool <: CjhTool {
         if (!args.containsKey("path")) {
             return ToolResult("缺少参数: path", true)
         }
-        let path = args.get("path").getOrThrow().asString().getValue()
+        let path = resolveFilePath(args.get("path").getOrThrow().asString().getValue())
         try {
             // 每调用独立状态：静态字段在多线程并发（V2d 并行工具 + 子代理）下会互相踩踏
             let st = ListDirCallState()

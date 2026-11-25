@@ -1,5 +1,23 @@
 # CHANGELOG
 ## [Unreleased] - 2026-11-25
+
+### 优化(长任务第三轮：只读工具缓存 / DAG 写域重叠 / 工具进度)
+- **回合内只读工具结果缓存**：`Agent` 对 `read_file` / `grep` / `glob` / `list_dir` 以「工具名 + 完整参数」为键缓存成功结果，同一回合内重复调用直接回填，省掉重复磁盘读取与正则扫描；错误结果不缓存。缓存条目同时记录解析后路径的 `lastModificationTime`，命中前 stat 一次——用户/外部进程在两轮之间改了文件会按未命中重读；Agent 自己的写工具（`write_file`/`edit`/`bash` 等非只读工具）执行后仍整表失效。缓存严格按回合隔离，`run()` 开头清空，不跨回合复用。
+- **DAG 写域按 glob 语义判重叠**：`resourceConflict` 不再只比字符串。字面路径相等即冲突；一方 glob 用 `Capability.globMatch` 判另一方是否落在域内；双方 glob 取静态前缀，存在包含关系即视为可能重叠（保守串行）；`**` 写哨兵与所有资源冲突，只读资源之间不冲突。修复 `src/a/*.cj` 与 `src/**` 字符串不等却被并发写同一批文件。
+- **状态栏工具/审批进度**：状态行新增本 run 累计工具数、执行中工具名（并发时显示并行数）与排队审批数；长任务轮次不变时也能看出仍在推进，无需展开日志。
+- **缓存新鲜度补强**：条目同时比 `size` 与纳秒级 mtime；命中前的 stat 移出全局缓存锁，避免同批并发只读在锁上串行。DAG 依赖只比较 `j < i` 半程，去掉反向重复计算。
+- **`--mode json` 缓存指标**：`usage.tool_cache_hits` 输出本回合缓存命中数，脚本/CI 可直接核对去重是否生效。
+- **回归**：`ToolResultCacheTest` 覆盖重复命中、写后失效、不同参数不共享、外部改文件按 mtime 失效、错误不缓存；DAG 重叠/不相交/哨兵用例与状态栏纯函数用例同批更新。真实模型 A/B：同一「四文件各读两遍」任务，新二进制命中 4 次（`usage.tool_cache_hits=4`），旧二进制无该指标。
+- **真实长任务**：审查 `registry.cj` + `loop.cj` 的工具执行/缓存/并发，**7:52.72 / 50 轮 / 81 工具 / prompt 2,022,609 / 最大 RSS 150 MB**，产出 81 行报告；工具执行合计仅 11.96s（2.53% 墙钟），瓶颈在模型与上下文。该任务 0 次工具缓存命中（37 次 grep、36 次 read 参数各不相同），说明去重只对同参数重复读有效。
+- **门禁**：根包 **857/857**、6 库 **281/281**（cjcfg 39 / cjconfig 7 / cjllm 57 / cjlog 1 / cjterm 152 / cjutil 25）、TUI PTY **115/115**、`--mock` 端到端 `FINAL-DONE`、`cjpm build` 仅 5 条既有 `--static` 驱动提示。
+
+### 优化(路径契约 P0 + explore 快模型路由 P1-5)
+- **文件工具锚定工作区根**：新增 `resolveFilePath()`（相对路径拼根 + 词法 `..` 归一化，不解析 symlink），read/write/edit/append/hashline/grep/glob/list_dir 全部走它并在结果回显绝对路径；bash 会话的 `cd` 不再改变文件工具解释基准。修长任务里 `bash cd src` 后 `read_file main.cj` 读到根目录、模型反复换路径重试。
+- **Windows 路径匹配**：`capability.normalizePath/globMatch` 统一 `/` 分隔符，`C:\proj\src\*.cj` 可命中模型给的 `src/main.cj`。
+- **写域 scope 解析**：task 的相对 `scope`（如 `src/agent/*.cj`）先按工作区根解析再与绝对路径比较；DAG 资源键同样归一，`./src/a/*.cj` 与 `src/a/*.cj` 不再被当成两个写域；显式 `scope="**"` 保留全仓库哨兵语义（与所有 writer 串行）。此前相对 scope 与绝对路径永不相等，会把合法写全部判成越界。回归 `testWriteScopeGlobResolvesAgainstRoot`、`testDagScopePathFormsNormalizeToSameResource`、`testExtractTaskScopeResources`、`testResolveFilePathIsLexicalAndRooted` 及绝对路径回显用例。
+- **explore 快模型路由**：settings 新增 `explore_model` / `explore_base_url` / `explore_api_key`，只对 `subagent_type=explore` 生效；全空复用主 provider，`worker` 仍用主模型。独立于 `summary_model`（摘要模型可能不支持 `tool_call`），provider 统一走 `makeProviderFor`，OpenAI 兼容 / Anthropic / Ollama 均生效。
+- **门禁**：根包 **848/848**、6 库 **281/281**（cjcfg 39 / cjconfig 7 / cjllm 57 / cjlog 1 / cjterm 152 / cjutil 25）、`--mock` 端到端 `FINAL-DONE`、`cjpm build` 仅 5 条既有 `--static` 驱动提示。
+
 ### 修复(收尾命令必须有界，避免坏 shell 拖死超时)
 - **问题**：`BashSession` 超时后调用 `killProcessTree` / `cleanupPgFile`，这两处用 `executeWithOutput` 启动外部 shell（Git Bash / `taskkill`）且 `wait()` 无超时。shell 本身卡住时，收尾永远不返回，**超时提示也回不到模型**。Wine 实测：Cygwin 版 Git Bash 启动即挂，bash 工具设 10s 超时，整条命令却挂到外层 120s 被杀。
 - **修复**：新增 `runBounded(exe, args, timeout)`，`launch` 后 `wait(timeout)`，超时 `terminate(force)` 并短回收；Windows 组杀/`taskkill`、POSIX 组杀、pid 文件清理全部改走它（各 2s 上限）。回归 `BashSessionBoundedTest`：`/bin/sleep 30` 在 1s 上限内返回、缺失可执行文件直接吞掉。

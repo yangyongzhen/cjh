@@ -79,7 +79,8 @@
 **问题**：compaction 摘要/子代理调用 10-100s 是隐藏时间黑洞（实测）；无 429 fallback。
 
 **方案**：
-- settings 加 `summary_model`/`summary_base_url`/`summary_api_key`：compaction 摘要 + explore 子代理走快模型
+- settings 加 `summary_model`/`summary_base_url`/`summary_api_key`：compaction 摘要走快模型；
+- explore 子代理另设 `explore_model`/`explore_base_url`/`explore_api_key`（2026-11-25 落地）：全空复用主 provider，避免把不支持 `tool_call` 的摘要模型误用于调查
 - 429/限流自动 fallback：备用 key/provider 轮换（复用 KeyRotator 思路）
 
 ### P1-6 跨会话项目记忆（Hindsight 式）

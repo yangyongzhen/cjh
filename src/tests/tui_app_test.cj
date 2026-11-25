@@ -785,6 +785,34 @@ public class TuiAppKeyTest {
         @Assert(app.testAgentCachePercent(), 0)
         app.setAgentRunning(false)
     }
+
+    @TestCase
+    public func testToolStatusTextShowsProgressAndApprovalWait(): Unit {
+        // 纯文本片段：无工具无审批 = 不占位；数字/运行中/审批等待必须一眼可辨
+        @Assert(toolStatusText(0, 0, "", 0), "")
+        @Assert(toolStatusText(3, 0, "", 0), "工具 3")
+        @Assert(toolStatusText(3, 1, "bash", 0), "工具 3 (bash 运行中)")
+        @Assert(toolStatusText(2, 2, "", 1), "工具 2 (2 并行) · 审批等待 1")
+        @Assert(toolStatusText(0, 0, "", 2), "审批等待 2")
+    }
+
+    @TestCase
+    public func testAgentToolCallsCountsAndResetsPerRun(): Unit {
+        let (app, _) = this.buildApp()
+        app.setAgentRunning(true)
+        app.toolStarted("bash")
+        app.toolStarted("grep")
+        @Assert(app.testAgentToolCalls(), 2)
+        @Assert(app.toolsInFlightCount(), 2)
+        app.toolFinished()
+        app.toolFinished()
+        @Assert(app.toolsInFlightCount(), 0)
+        // 新 run 计数归零，避免上一任务工具数残留
+        app.setAgentRunning(false)
+        app.setAgentRunning(true)
+        @Assert(app.testAgentToolCalls(), 0)
+        app.setAgentRunning(false)
+    }
 }
 
 /**

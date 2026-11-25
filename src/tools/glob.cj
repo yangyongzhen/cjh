@@ -33,7 +33,7 @@ public class GlobTool <: CjhTool {
     public func spec(): ToolSpec {
         var props = HashMap<String, JsonValue>()
         props.add("pattern", JsonSchema.str("Glob pattern (e.g. **/*.ts, src/*.cj). ** matches any directory depth."))
-        props.add("path", JsonSchema.str("Base directory to search in (default: cwd)"))
+        props.add("path", JsonSchema.str("Base directory to search in (default: workspace root; relative paths resolve against it)"))
         let schema = JsonSchema.object(props, ArrayList<String>(["pattern"]))
         return ToolSpec("glob",
             "Find files matching a glob pattern. Returns matching file paths. " +
@@ -58,6 +58,7 @@ public class GlobTool <: CjhTool {
                 case _ => ()
             }
         }
+        basePath = resolveFilePath(basePath)
         if (!exists(basePath)) {
             return ToolResult("基础路径不存在: ${basePath}", true)
         }

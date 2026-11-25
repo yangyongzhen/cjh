@@ -23,9 +23,9 @@ import cjcfg.*
 class BriefScriptProvider <: LlmProvider {
     public var callCount: Int64 = 0
 
-    public func chatStream(messages: ArrayList<ChatMessage>, tools: ArrayList<ToolSpec>,
-        onDelta: (String) -> Unit, onReasoning: (String) -> Unit,
-        onTokenEstimate: (Int64) -> Unit, isCancelled: () -> Bool): ModelResponse {
+    public func chatStream(_: ArrayList<ChatMessage>, _: ArrayList<ToolSpec>,
+        _: (String) -> Unit, _: (String) -> Unit,
+        _: (Int64) -> Unit, _: () -> Bool): ModelResponse {
         callCount += 1
         if (callCount == 1) {
             var calls = ArrayList<ToolCall>()
@@ -344,13 +344,17 @@ public class SubagentSupportTest {
         // 有 scope：每项一条写边
         let withScope = agent.extractResourceAccesses(this.taskCall("src/a/*.cj, src/b/*.cj"))
         @Assert(withScope.size, 2)
-        @Assert(withScope[0][0], "src/a/*.cj")
+        @Assert(withScope[0][0], resolveFilePath("src/a/*.cj"))
         @Assert(withScope[0][1], true)
         // 无 scope：哨兵 "**"（与所有 writer 串行，保守防静默覆盖）
         let noScope = agent.extractResourceAccesses(this.taskCall(""))
         @Assert(noScope.size, 1)
         @Assert(noScope[0][0], "**")
         @Assert(noScope[0][1], true)
+        // 显式 scope="**" 仍是哨兵：解析成 /cwd/** 会丢掉"与所有 writer 串行"的语义
+        let explicitAll = agent.extractResourceAccesses(this.taskCall("**"))
+        @Assert(explicitAll.size, 1)
+        @Assert(explicitAll[0][0], "**")
     }
 
     @TestCase
@@ -366,6 +370,49 @@ public class SubagentSupportTest {
         @Assert(deps[2].size, 1)                 // a 重叠 → 依赖 #0
         @Assert(deps[2][0], 0)
         @Assert(deps[3].size, 3)                 // 哨兵与全部 writer 串行
+    }
+
+    @TestCase
+    public func testDagOverlappingGlobScopesSerialize(): Unit {
+        // src/** 与 src/a/*.cj 字符串不相等，但写域重叠；必须串行，否则两个
+        // worker 可能并发写同一批文件。静态前缀判定是保守的：宁可多串行。
+        let agent = this.buildAgent(SubNoopProvider())
+        var calls = ArrayList<ToolCall>()
+        calls.add(this.taskCall("src/**"))
+        calls.add(this.taskCall("src/a/*.cj"))
+        calls.add(this.taskCall("src/b/*.cj"))  // 与 src/** 也重叠（被覆盖）
+        let deps = agent.buildDependencyGraph(calls)
+        @Assert(deps[1].size, 1)
+        @Assert(deps[1][0], 0)
+        @Assert(deps[2].size, 1)
+        @Assert(deps[2][0], 0)
+    }
+
+    @TestCase
+    public func testDagGlobScopeConflictsWithLiteralRead(): Unit {
+        // worker 写域覆盖 read_file 的路径：读必须等写完成，不能并发读到旧内容。
+        let agent = this.buildAgent(SubNoopProvider())
+        var calls = ArrayList<ToolCall>()
+        calls.add(this.taskCall("src/agent/*.cj"))
+        var r = JsonObject()
+        r.put("path", JsonString("src/agent/loop.cj"))
+        calls.add(ToolCall("r", "read_file", r))
+        let deps = agent.buildDependencyGraph(calls)
+        @Assert(deps[1].size, 1)
+        @Assert(deps[1][0], 0)
+    }
+
+    @TestCase
+    public func testDagScopePathFormsNormalizeToSameResource(): Unit {
+        // 同一个写域的不同写法（相对/带 ./）必须落成同一个绝对资源键，否则 DAG
+        // 会误判为互不重叠并并发写同一批文件。
+        let agent = this.buildAgent(SubNoopProvider())
+        var calls = ArrayList<ToolCall>()
+        calls.add(this.taskCall("src/a/*.cj"))
+        calls.add(this.taskCall("./src/a/*.cj"))
+        let deps = agent.buildDependencyGraph(calls)
+        @Assert(deps[1].size, 1)
+        @Assert(deps[1][0], 0)
     }
 
     // ── todo_write 进程内状态：同批 add 必须串行（否则 nextTodoId 竞态） ──

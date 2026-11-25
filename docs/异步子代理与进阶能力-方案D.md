@@ -169,13 +169,19 @@
 
 ## 7. 方案C 遗留决策项收口
 
-### 7.1 D1：explore 快模型路由（本期做，小）
+### 7.1 D1：explore 快模型路由（已落地，2026-11-25）
 
-- 复用既有 `summaryProvider`（compaction 已在用）：`explore` 类子代理的 provider =
-  `summaryProvider ?? 父 provider`（loop.cj:1205 同款取法）；
-- `settings` 增 `subagent_fast_model: Bool`（默认 **false**——行为不变，用户显式开）；
-- `AgentNode` 增 `model: "fast"|"main"` 字段，面板 kind 列显示 `explore·fast`；
-- 验收：开了开关后 explore 子代理请求打到 summaryProvider 的 base_url（转录可查）。
+落地时改了原设计，理由是不让"摘要模型"绑架"调查模型"：
+
+- **不**复用 `summaryProvider`：摘要模型可能不支持 `tool_call`，一旦拿来跑 explore，
+  第一次读文件就废；`settings` 用独立的 `explore_model`/`explore_base_url`/`explore_api_key`。
+- 三者全空 = 复用主 provider（行为不变）；配了任意一项即路由。**不另设布尔开关**——
+  配置存在就是开关，少一个"开了却没配模型"的半状态。
+- 只对 `subagent_type=explore` 生效；`worker` 可写、要扛复杂改动，继续用主模型。
+- provider 仍走统一工厂 `makeProviderFor`，OpenAI 兼容 / Anthropic / Ollama 三种接入协议都生效；
+  warmup=false（实例用完即弃）。
+- 验收：`exploreProviderConfig` 断言 kind→model/base/key 选择；配置解析测试在 `cjcfg`。
+  实机效果取决于所选小模型在仓颉代码库上的召回率，未做自动质量评测。
 
 ### 7.2 D10：Web 前端多列渲染（本期做，前端侧）
 

@@ -10,6 +10,7 @@ import cjllm.*
 import cjcfg.*
 import cjutil.*
 import std.sync.*
+import std.fs.*
 
 /**
  * 后台摘要 pending 超时判据（纯函数，便于单测）
@@ -438,6 +439,26 @@ public class SteerPolicy {
 }
 
 /**
+ * 回合内只读工具缓存条目。
+ *
+ * 除结果本身外记录被读路径的 mtime：Agent 自己的写工具会整表失效，但用户/外部
+ * 进程在本回合中途改文件不会经过 Agent——命中前 stat 一次，mtime 变了就重读。
+ */
+class ToolCacheEntry {
+    public let result: ToolResult
+    public let path: String
+    public let mtime: Option<DateTime>
+    public let size: Option<Int64>
+
+    public init(result: ToolResult, path: String, mtime: Option<DateTime>, size: Option<Int64>) {
+        this.result = result
+        this.path = path
+        this.mtime = mtime
+        this.size = size
+    }
+}
+
+/**
  * 单次 Agent.run 的统计摘要（回合总结条数据源）
  */
 public class RunSummary {
@@ -458,6 +479,8 @@ public class RunSummary {
     public var parallelBatches: Int64 = 0  // 并发执行的批次数
     public var parallelSavedMs: Int64 = 0  // 并发相比串行节省的毫秒数
     public var maxParallelism: Int64 = 0   // 最大并发度（单组最多工具数）
+    // 回合内只读工具缓存命中次数（重复 read_file/grep/glob/list_dir 被直接回填的次数）
+    public var toolCacheHits: Int64 = 0
 
     public init() {}
 
@@ -559,6 +582,12 @@ public class Agent {
     // spawnSubagent fork 时登记、finally 注销；childLock 保护（并发 task 线程读写）
     private var childAgents: ArrayList<Agent> = ArrayList<Agent>()
     private var childLock: Mutex = Mutex()
+    // 回合内只读工具结果缓存（工具名+参数键）：同一读在长任务里被反复调用时
+    // 直接回填上次结果，省一次磁盘遍历/正则扫描。只缓存 read_file/grep/glob/list_dir，
+    // 且仅当工具仍声明 isReadOnly；任何写工具执行后整表失效（见 invalidateToolCache）。
+    private var toolCache: HashMap<String, ToolCacheEntry> = HashMap<String, ToolCacheEntry>()
+    private let toolCacheLock: Mutex = Mutex()
+    private var toolCacheHits: Int64 = 0
 
     // 事件回调（供 TUI/CLI 展示）
     public var onDelta: (String) -> Unit = { _ => }
@@ -707,6 +736,8 @@ public class Agent {
         // 工具中断门同批清零：上一回合若在工具执行中被中断，门可能仍置位——
         // 留着会让下回合第一条 bash 命令立刻自杀（见 BashSession 的轮询）
         InterruptGate.clear()
+        // 回合严格隔离：上一回合的读结果不能跨回合复用（文件可能已被用户/外部进程改动）
+        this.resetToolCache()
         // S4：回合级 token 归账清零（预算闸门按回合计）
         match (this.subagentScheduler) {
             case Some(s) => s.resetTurn()
@@ -1072,7 +1103,18 @@ public class Agent {
             this.onCompact(false)
             this.endRound()
         }
+        summary.toolCacheHits = this.toolCacheHitCount()
         return summary
+    }
+
+    /** 本回合只读工具缓存命中数（回合结束统计用） */
+    public func toolCacheHitCount(): Int64 {
+        this.toolCacheLock.lock()
+        try {
+            return this.toolCacheHits
+        } finally {
+            this.toolCacheLock.unlock()
+        }
     }
 
     /**
@@ -1533,7 +1575,7 @@ public class Agent {
             this.fireHooks(AgentHook.Stop, stopP)
             // 正常退出也记日志，方便排查"意外停止"——区分 LLM 主动结束 vs 异常
             // 用 warn 级别确保写入 error.log（info 级别默认 NoopLogger）
-            Log.warn("Agent.run 正常结束: ${iterations} rounds, ${summary.toolCalls} tools, ${durationMs}ms")
+            Log.warn("Agent.run 正常结束: ${iterations} rounds, ${summary.toolCalls} tools, ${summary.toolCacheHits} cache hits, ${durationMs}ms")
             return summary
         }
         // 超过收尾窗口仍未收尾：强制结束（保留已完成工作）
@@ -2059,7 +2101,12 @@ public class Agent {
                     for (raw in scopeStr.split(",", -1)) {
                         let g = raw.trimAscii()
                         if (g.size > 0) {
-                            out.add((g, true))
+                            // 与工具路径同一基准：DAG 资源键必须是绝对路径，
+                            // 否则 `./src/a/*.cj` 与 `src/a/*.cj` 会被当成两个资源。
+                            // 但显式 `**` 保留哨兵语义（全仓库写域，与所有 writer 串行），
+                            // 不能被解析成 `/cwd/**` 后只和字面相同的键冲突。
+                            let key = if (g == "**") { "**" } else { resolveFilePath(g) }
+                            out.add((key, true))
                             hasScope = true
                         }
                     }
@@ -2073,12 +2120,12 @@ public class Agent {
         match (tc.name) {
             case "read_file" | "grep" | "list_dir" | "glob" =>
                 match (tc.arguments.get("path")) {
-                    case Some(p) => out.add((p.asString().getValue(), false))
+                    case Some(p) => out.add((resolveFilePath(p.asString().getValue()), false))
                     case None => out.add(("", false))
                 }
             case "write_file" | "append_file" | "edit" | "hashline_edit" =>
                 match (tc.arguments.get("path")) {
-                    case Some(p) => out.add((p.asString().getValue(), true))
+                    case Some(p) => out.add((resolveFilePath(p.asString().getValue()), true))
                     case None => out.add(("", true))
                 }
             case "bash" =>
@@ -2096,6 +2143,88 @@ public class Agent {
                 out.add(("", true))
         }
         return out
+    }
+
+    /**
+     * DAG 资源冲突：写域是 glob 时必须按语义判重叠，不能只比字符串。
+     *
+     * 此前 `src/a/[star].cj` 与 `src/[star][star]` 键不相等 → 判无冲突 → 两个
+     * worker 并发写同一批文件。规则（保守优先，宁可多串行不可漏串行）：
+     * - 任一 `**` 写哨兵 → 与所有资源冲突
+     * - 至少一方是写；两边都只读 → 无冲突
+     * - 字面路径相等 → 冲突
+     * - 一方 glob、一方字面路径 → 用 globMatch 判字面路径是否落在 glob 内
+     * - 双方 glob → 静态前缀有包含关系即视为可能重叠（同目录不同扩展名会
+     *   多串行一次，换取不漏并发写）
+     *
+     * 只对「路径形态」的资源启用 glob 语义；bash 命令里可能有 `*`，但它是
+     * 普通字符串资源，仍只按完全相等判冲突。
+     */
+    private func resourceConflict(a: String, writeA: Bool, b: String, writeB: Bool): Bool {
+        if ((a == "**" && writeA) || (b == "**" && writeB)) {
+            return true
+        }
+        if (!(writeA || writeB)) {
+            return false
+        }
+        if (a == b) {
+            return true
+        }
+        if (!isPathResource(a) || !isPathResource(b)) {
+            return false
+        }
+        let aGlob = hasGlobMeta(a)
+        let bGlob = hasGlobMeta(b)
+        if (aGlob && !bGlob) {
+            return Capability.globMatch(a, b)
+        }
+        if (!aGlob && bGlob) {
+            return Capability.globMatch(b, a)
+        }
+        if (aGlob && bGlob) {
+            let pa = globStaticPrefix(a)
+            let pb = globStaticPrefix(b)
+            if (pa.size == 0 || pb.size == 0) {
+                return true
+            }
+            return pa.startsWith(pb) || pb.startsWith(pa)
+        }
+        return false
+    }
+
+    private func isPathResource(p: String): Bool {
+        if (p.startsWith("/")) {
+            return true
+        }
+        // Windows 盘符；UNC 以 // 开头，已被 "/" 分支覆盖
+        return p.size >= 2 && p[1] == UInt8(58)
+    }
+
+    private func hasGlobMeta(p: String): Bool {
+        for (i in 0..p.size) {
+            let c = p[i]
+            if (c == 42u8 || c == 63u8) {  // * ?
+                return true
+            }
+        }
+        return false
+    }
+
+    /**
+     * glob 第一个通配符之前的静态前缀（分隔符统一成 /，与 globMatch 一致）。
+     * 例：`/w/src/a/[star].cj` → `/w/src/a/`；`/w/src/[star][star]` → `/w/src/`。
+     */
+    private func globStaticPrefix(p: String): String {
+        let norm = if (p.contains("\\")) { p.replace("\\", "/") } else { p }
+        var cut = norm.size
+        for (i in 0..norm.size) {
+            let c = norm[i]
+            if (c == 42u8 || c == 63u8) {
+                cut = i
+                break
+            }
+        }
+        return norm[0..cut]
     }
 
     /**
@@ -2131,10 +2260,8 @@ public class Agent {
             if (accesses[i].size == 0) {
                 continue
             }
-            for (j in 0..n) {
-                if (i == j) {
-                    continue
-                }
+            // 只需与更早的调用比：依赖边只保留 j < i，反向半程不影响结果。
+            for (j in 0..i) {
                 if (accesses[j].size == 0) {
                     continue
                 }
@@ -2147,12 +2274,7 @@ public class Agent {
                         if (pathJ.size == 0) {
                             continue
                         }
-                        // 哨兵 "**"：无 scope 的写任务与任何带资源的调用串行（保守防静默覆盖）
-                        if ((pathI == "**" && writeI) || (pathJ == "**" && writeJ)) {
-                            conflict = true
-                            break
-                        }
-                        if (pathI == pathJ && (writeI || writeJ)) {
+                        if (this.resourceConflict(pathI, writeI, pathJ, writeJ)) {
                             conflict = true
                             break
                         }
@@ -2225,7 +2347,146 @@ public class Agent {
     }
 
     /**
-     * 带安全护栏的工具执行：
+     * 只缓存“纯文件读取”工具：web_search/web_fetch 结果随时间变化，缓存会给出陈旧外部事实；
+     * bash 声明为有副作用（isReadOnly=false），本来就不在候选内。
+     */
+    private func isCacheableReadTool(name: String): Bool {
+        return name == "read_file" || name == "grep" || name == "glob" || name == "list_dir"
+    }
+
+    /**
+     * 缓存键 = 工具名 + 参数原文 + 解析后的绝对路径。
+     * 参数原文保留 offset/limit/pattern 等全部语义；绝对路径让同一文件的不同写法
+     * （相对/绝对）落到同一键。参数 JSON 由同一模型按同一顺序生成，原文键足够稳定。
+     */
+    private func resolvedCachePath(args: JsonObject): String {
+        if (let Some(pv) <- args.get("path")) {
+            match (pv.kind()) {
+                case JsonKind.JsString => return resolveFilePath(pv.asString().getValue())
+                case _ => ()
+            }
+        }
+        return ""
+    }
+
+    private func toolCacheKey(name: String, args: JsonObject): String {
+        var key = StringBuilder()
+        key.append(name)
+        key.append("\u{0}")
+        key.append(args.toString())
+        if (let Some(pv) <- args.get("path")) {
+            match (pv.kind()) {
+                case JsonKind.JsString =>
+                    key.append("\u{0}")
+                    key.append(resolveFilePath(pv.asString().getValue()))
+                case _ => ()
+            }
+        }
+        return key.toString()
+    }
+
+    /** 缓存放取必须有锁：同一批只读工具可并发执行（V2d 并发引擎）。 */
+    private func lookupToolCache(key: String): ?ToolResult {
+        var entry: Option<ToolCacheEntry> = None
+        this.toolCacheLock.lock()
+        try {
+            if (this.toolCache.contains(key)) {
+                entry = Some(this.toolCache.get(key).getOrThrow())
+            }
+        } finally {
+            this.toolCacheLock.unlock()
+        }
+        match (entry) {
+            case None => return None
+            case Some(e) =>
+                // stat 放到锁外：同批只读工具并发命中时，不让磁盘元数据查询串行化。
+                if (e.path.size > 0) {
+                    var fresh = false
+                    try {
+                        let fi = FileInfo(e.path)
+                        let mtimeSame = match (e.mtime) {
+                            case Some(cached) => (fi.lastModificationTime - cached).toNanoseconds() == 0
+                            case None => true
+                        }
+                        let sizeSame = match (e.size) {
+                            case Some(cached) => fi.size == cached
+                            case None => true
+                        }
+                        fresh = mtimeSame && sizeSame
+                    } catch (err: Exception) {
+                        fresh = false
+                    }
+                    if (!fresh) {
+                        this.toolCacheLock.lock()
+                        try {
+                            this.toolCache.remove(key)
+                        } finally {
+                            this.toolCacheLock.unlock()
+                        }
+                        return None
+                    }
+                }
+                return e.result
+        }
+    }
+
+    private func recordToolCacheHit(): Unit {
+        this.toolCacheLock.lock()
+        try {
+            this.toolCacheHits += 1
+        } finally {
+            this.toolCacheLock.unlock()
+        }
+    }
+
+    private func storeToolCache(key: String, result: ToolResult, path: String): Unit {
+        // 超大结果不缓存：read_file 全文可达数 MB，重复缓存只会吃内存，
+        // 而“重复读超长文件”本身不是长任务的主要浪费点。
+        if (result.content.size > 200_000) {
+            return
+        }
+        var mtime: Option<DateTime> = None
+        var size: Option<Int64> = None
+        if (path.size > 0) {
+            try {
+                let fi = FileInfo(path)
+                mtime = Some(fi.lastModificationTime)
+                size = Some(fi.size)
+            } catch (e: Exception) {
+                // 路径读不到就不缓存（下一次让工具自己给出准确错误）
+                return
+            }
+        }
+        this.toolCacheLock.lock()
+        try {
+            this.toolCache.add(key, ToolCacheEntry(result, path, mtime, size))
+        } finally {
+            this.toolCacheLock.unlock()
+        }
+    }
+
+    /** 写工具执行后整表失效：任何文件都可能被写，逐路径失效既复杂又容易漏。 */
+    private func invalidateToolCache(): Unit {
+        this.toolCacheLock.lock()
+        try {
+            this.toolCache.clear()
+        } finally {
+            this.toolCacheLock.unlock()
+        }
+    }
+
+    /** 回合开始重置缓存与命中计数（命中数是回合统计，不因中途失效而归零）。 */
+    private func resetToolCache(): Unit {
+        this.toolCacheLock.lock()
+        try {
+            this.toolCache.clear()
+            this.toolCacheHits = 0
+        } finally {
+            this.toolCacheLock.unlock()
+        }
+    }
+
+    /** 带安全护栏的工具执行：
      * 1. 工具域检查（白名单/拒绝/审批）
      * 2. bash 命令域检查（命令白名单 + 危险命令黑名单）
      * 3. 文件资源域检查（fs glob 白名单/排除，write 区分读写）
@@ -2278,7 +2539,7 @@ public class Agent {
         if (path.isSome() && (name == "read_file" || name == "write_file" || name == "grep" ||
             name == "list_dir" || name == "glob" || name == "append_file" ||
             name == "edit" || name == "hashline_edit")) {
-            let p = path.getOrThrow().asString().getValue()
+            let p = resolveFilePath(path.getOrThrow().asString().getValue())
             let isWrite = (name == "write_file" || name == "append_file" ||
                 name == "edit" || name == "hashline_edit")
             match (cap.checkPath(p, isWrite)) {
@@ -2298,7 +2559,9 @@ public class Agent {
                 if (ws.size > 0) {
                     var inScope = false
                     for (g in ws) {
-                        if (Capability.globMatch(g, p)) {
+                        // 工具路径已解析成工作区根的绝对路径；scope 仍是模型给的相对 glob，
+                        // 两边不统一就会把合法写全部误判越界。绝对 scope 原样保留。
+                        if (Capability.globMatch(resolveFilePath(g), p)) {
                             inScope = true
                             break
                         }
@@ -2332,9 +2595,32 @@ public class Agent {
                     "优先修实现；若确需变更测试契约，先向用户说明冲突并取得同意。", true)
             }
         }
+        // 全部通过：只读结果命中则直接回填（审批/能力门禁已在上面逐次执行过，
+        // 缓存不会绕过任何安全检查）。缓存只在同一回合内有效，写工具执行后整表失效。
+        let cacheable = this.isCacheableReadTool(name) && this.tools.isReadOnly(name)
+        let cacheKey = if (cacheable) {
+            this.toolCacheKey(name, args)
+        } else {
+            ""
+        }
+        if (cacheable) {
+            match (this.lookupToolCache(cacheKey)) {
+                case Some(hit) =>
+                    this.recordToolCacheHit()
+                    Log.info("工具结果缓存命中: ${name}")
+                    return hit
+                case None => ()
+            }
+        }
         // 全部通过：正常执行（兜底异常，避免单工具崩溃带垮整个 Agent 循环）
         try {
             let result = this.tools.execute(name, args)
+            if (!this.tools.isReadOnly(name)) {
+                // 写/外部副作用工具（bash、write_file、edit_file…）执行后，任何旧读结果都可能过期
+                this.invalidateToolCache()
+            } else if (cacheable && !result.isError) {
+                this.storeToolCache(cacheKey, result, this.resolvedCachePath(args))
+            }
             if (autoApprovedTest) {
                 var target = name
                 if (let Some(pv) <- args.get("path")) {

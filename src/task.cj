@@ -19,7 +19,7 @@ import cjh.tools.*
  * 参数:
  * - description: 3-5 词任务标签
  * - prompt: 完整任务指令
- * - subagent_type: "explore" (只读, fast model) 或 "worker" (可写, capable model)
+ * - subagent_type: "explore" (只读; 配了 explore_model 时走该模型) 或 "worker" (可写, 主模型)
  *
  * 子代理有独立的 messages 历史, 不影响主对话.
  * 子代理 max_iterations 限制为 5 (避免失控).
@@ -74,7 +74,7 @@ public class TaskTool <: CjhTool {
         var props = HashMap<String, JsonValue>()
         props.add("description", JsonSchema.str("3-5 word task label"))
         props.add("prompt", JsonSchema.str("Full task instruction for the subagent"))
-        props.add("subagent_type", JsonSchema.str("Agent type: explore (read-only, fast) or worker (can write, capable)"))
+        props.add("subagent_type", JsonSchema.str("Agent type: explore (read-only; uses explore_model when configured) or worker (can write, main model)"))
         props.add("scope", JsonSchema.str("Optional comma-separated glob list limiting where this worker may write, e.g. 'src/agent/*.cj, src/web/*.cj'. Workers without scope are serialized with all writers — give scope to enable parallel writes."))
         let schema = JsonSchema.object(props, ArrayList<String>(["description", "prompt", "subagent_type"]))
         return ToolSpec("task",

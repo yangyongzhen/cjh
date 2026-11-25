@@ -23,15 +23,27 @@ func makeProvider(cfg: CjhConfig): LlmProvider {
 }
 
 func makeProvider(cfg: CjhConfig, warmup: Bool): LlmProvider {
+    return makeProviderFor(cfg, cfg.model, cfg.baseUrl, cfg.apiKey, warmup, true)
+}
+
+/**
+ * 指定模型/端点构造 provider（模型路由共用）。
+ *
+ * 主对话、compaction 摘要、explore 子代理都走这里，区别只在 model/base/key：
+ * 三者都支持 OpenAI 兼容、Anthropic、Ollama，避免辅助模型悄悄绕过接入协议。
+ * `warnMissingKey=true` 只给主 provider：辅助模型复用主 key 时不必重复告警。
+ */
+func makeProviderFor(cfg: CjhConfig, model: String, baseUrl: String, apiKey: String,
+    warmup: Bool, warnMissingKey: Bool): LlmProvider {
     // provider 选择：显式 CJH_PROVIDER=anthropic 才用 Anthropic
     // （auth.json 的 key 优先；env 变量可覆盖。绝不自动劫持到 Anthropic）
     let providerName = readEnv("CJH_PROVIDER") ?? ""
     // Ollama 本地模型：CJH_PROVIDER=ollama 或 base_url 指向 localhost/127.0.0.1
     let isOllama = (providerName == "ollama") ||
-        cfg.baseUrl.contains("localhost") || cfg.baseUrl.contains("127.0.0.1")
+        baseUrl.contains("localhost") || baseUrl.contains("127.0.0.1")
     // Ollama 本地服务无需认证，apiKey 可空；其他 provider 无 key 时
     // 不阻断启动（TUI/Web 可进入，发消息时请求自然失败提示），仅告警
-    if (!isOllama && cfg.apiKey.size == 0) {
+    if (warnMissingKey && !isOllama && apiKey.size == 0) {
         eprintln("[cjh] 警告：未配置 API Key（${cfg.authPath} 的 api_key 或 OPENAI_API_KEY / DEEPSEEK_API_KEY / DASHSCOPE_API_KEY / CJH_API_KEY 环境变量）。")
         eprintln("[cjh] 界面可正常进入，但发送消息会失败。离线演示请用 --mock 或 CJH_MOCK=1。")
     }
@@ -39,25 +51,36 @@ func makeProvider(cfg: CjhConfig, warmup: Bool): LlmProvider {
     // provider_protocol 支持聚合/自定义端点（custom provider）指定接入协议：
     //   "anthropic"=Anthropic Messages；"openai"/"" = OpenAI 兼容；"gemini" 预留（未实现）
     let protocol = if (providerName.size > 0) { providerName } else { cfg.providerProtocol }
+    // 辅助模型复用主端点/主 key 时，Anthropic 允许环境变量覆盖（与主 provider 行为一致）；
+    // 显式配了 explore/summary 端点或 key 时以配置为准，环境变量不再抢。
+    let mainEndpoint = baseUrl == cfg.baseUrl && apiKey == cfg.apiKey
     var p: LlmProvider
     if (isOllama) {
         // Ollama 端点：base_url 已指向 localhost/127.0.0.1 时优先用配置；
         // 否则（CJH_PROVIDER=ollama 但 base_url 是云端默认）强制 localhost
-        let ollamaBase = if (cfg.baseUrl.contains("localhost") ||
-            cfg.baseUrl.contains("127.0.0.1")) {
-            cfg.baseUrl
+        let ollamaBase = if (baseUrl.contains("localhost") ||
+            baseUrl.contains("127.0.0.1")) {
+            baseUrl
         } else {
             "http://localhost:11434/v1"
         }
-        p = OllamaProvider(ollamaBase, cfg.apiKey, cfg.model)
+        p = OllamaProvider(ollamaBase, apiKey, model)
     } else if (protocol == "anthropic") {
-        let anthropicKey = readEnv("ANTHROPIC_API_KEY") ?? readEnv("ANTHROPIC_AUTH_TOKEN") ?? cfg.apiKey
-        let anthropicBase = readEnv("ANTHROPIC_BASE_URL") ?? "https://api.anthropic.com/v1/messages"
-        p = AnthropicProvider(anthropicBase, anthropicKey, cfg.model)
+        let anthropicKey = if (mainEndpoint) {
+            readEnv("ANTHROPIC_API_KEY") ?? readEnv("ANTHROPIC_AUTH_TOKEN") ?? apiKey
+        } else {
+            apiKey
+        }
+        let anthropicBase = if (mainEndpoint) {
+            readEnv("ANTHROPIC_BASE_URL") ?? "https://api.anthropic.com/v1/messages"
+        } else {
+            baseUrl
+        }
+        p = AnthropicProvider(anthropicBase, anthropicKey, model)
     } else if (protocol == "gemini") {
         throw LlmException("Gemini 原生协议暂未支持。请改用 OpenAI 兼容端点（Google 提供 generativelanguage.googleapis.com/v1beta/openai），或选择 openai/anthropic 协议")
     } else {
-        let oa = OpenAiProvider(cfg.baseUrl, cfg.apiKey, cfg.model)
+        let oa = OpenAiProvider(baseUrl, apiKey, model)
         applyFallbackKeys(oa, cfg)
         p = oa
     }
@@ -279,9 +302,7 @@ func makeSummaryProvider(cfg: CjhConfig): Option<LlmProvider> {
     }
     let base = if (cfg.summaryBaseUrl.size > 0) { cfg.summaryBaseUrl } else { cfg.baseUrl }
     let key = if (cfg.summaryApiKey.size > 0) { cfg.summaryApiKey } else { cfg.apiKey }
-    let oa = OpenAiProvider(base, key, cfg.summaryModel)
-    applyFallbackKeys(oa, cfg)
-    return Some(oa)
+    return Some(makeProviderFor(cfg, cfg.summaryModel, base, key, false, false))
 }
 
 /**

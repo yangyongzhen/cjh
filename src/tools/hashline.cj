@@ -43,7 +43,7 @@ public class HashlineEditTool <: CjhTool {
 
     public func spec(): ToolSpec {
         var props = HashMap<String, JsonValue>()
-        props.add("path", JsonSchema.str("File path to edit"))
+        props.add("path", JsonSchema.str("Absolute file path to edit (relative paths resolve against the workspace root)"))
         props.add("patch", JsonSchema.str("Line-anchored patch: @@N targets line N (1-based, recommended); or @@{hash} hash anchor. Followed by +/- change lines"))
         let schema = JsonSchema.object(props, ArrayList<String>(["path", "patch"]))
         return ToolSpec("hashline_edit",
@@ -59,7 +59,7 @@ public class HashlineEditTool <: CjhTool {
         if (!args.containsKey("path") || !args.containsKey("patch")) {
             return ToolResult("Missing parameter: path/patch", true)
         }
-        let path = args.get("path").getOrThrow().asString().getValue()
+        let path = resolveFilePath(args.get("path").getOrThrow().asString().getValue())
         let patch = args.get("patch").getOrThrow().asString().getValue()
 
         try {
@@ -95,7 +95,7 @@ public class HashlineEditTool <: CjhTool {
                     return ToolResult("Hashline 编辑被拒绝：${reason}", true)
             }
         } catch (e: Exception) {
-            return ToolResult("Hashline 编辑异常: ${e}", true)
+            return ToolResult("Hashline 编辑异常: ${path}: ${e}", true)
         }
     }
 }

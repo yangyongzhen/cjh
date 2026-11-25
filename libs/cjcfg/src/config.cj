@@ -106,6 +106,12 @@ public class CjhConfig {
     public var summaryModel: String = ""
     public var summaryBaseUrl: String = ""
     public var summaryApiKey: String = ""
+    // explore 子代理专用模型（只读调查通常轮次多、任务简单）：与 summary 分开配置，
+    // 避免把不支持 tool_call 的摘要模型误用于 explore。三项全空 = 复用主 provider。
+    // explore 模型必须支持 tool_call（read_file/grep/list_dir/glob）。
+    public var exploreModel: String = ""
+    public var exploreBaseUrl: String = ""
+    public var exploreApiKey: String = ""
     // 备用 API key（P1-5 429 fallback）：401/429/5xx 时轮换重试。
     // settings.json "fallback_api_keys": [...] 或 env CJH_FALLBACK_KEYS="k2,k3" 逗号分隔。
     public var fallbackApiKeys: ArrayList<String> = ArrayList<String>()
@@ -288,6 +294,9 @@ public class CjhConfig {
   "summary_model": "",
   "summary_base_url": "",
   "summary_api_key": "",
+  "explore_model": "",
+  "explore_base_url": "",
+  "explore_api_key": "",
   "max_iterations": 10,
   "max_subagents": 4,
   "max_tasks_per_turn": 6,
@@ -669,6 +678,24 @@ public class CjhConfig {
                     if (let Some(v) <- obj.get("summary_api_key")) {
                         match (v.kind()) {
                             case JsonKind.JsString => this.summaryApiKey = v.asString().getValue()
+                            case _ => ()
+                        }
+                    }
+                    if (let Some(v) <- obj.get("explore_model")) {
+                        match (v.kind()) {
+                            case JsonKind.JsString => this.exploreModel = v.asString().getValue()
+                            case _ => ()
+                        }
+                    }
+                    if (let Some(v) <- obj.get("explore_base_url")) {
+                        match (v.kind()) {
+                            case JsonKind.JsString => this.exploreBaseUrl = v.asString().getValue()
+                            case _ => ()
+                        }
+                    }
+                    if (let Some(v) <- obj.get("explore_api_key")) {
+                        match (v.kind()) {
+                            case JsonKind.JsString => this.exploreApiKey = v.asString().getValue()
                             case _ => ()
                         }
                     }

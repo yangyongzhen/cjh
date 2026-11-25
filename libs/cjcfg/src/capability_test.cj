@@ -1,6 +1,7 @@
 package cjcfg
 
 import std.collection.*
+import std.env.*
 import stdx.encoding.json.*
 
 /**
@@ -168,6 +169,55 @@ public class CapabilityTest {
         }
     }
 
+    @TestCase
+    public func testRelativePathResolvesAgainstWorkspaceRoot(): Unit {
+        // 文件工具统一把相对路径解析成绝对路径；capability 也必须按同一根匹配，
+        // 否则 `src/**` 这类规则在工具改造后会全部失效（安全边界误拒）。
+        var obj = JsonObject()
+        obj.put("enabled", JsonBool(true))
+        var fs = ArrayList<JsonValue>()
+        fs.add(JsonString("src/**"))
+        var res = JsonObject()
+        res.put("fs", JsonArray(fs))
+        obj.put("resources", res)
+        let cap = Capability.fromJson(Some(obj))
+        let root = getWorkingDirectory().toString()
+        match (cap.checkPath("src/main.cj", false)) {
+            case CapDecision.Allow => ()
+            case _ => @Assert("relative src", "not allow")
+        }
+        match (cap.checkPath(root + "/src/main.cj", false)) {
+            case CapDecision.Allow => ()
+            case _ => @Assert("absolute src", "not allow")
+        }
+        match (cap.checkPath(root + "/other/main.cj", false)) {
+            case CapDecision.Deny(_) => ()
+            case _ => @Assert("outside src", "not denied")
+        }
+    }
+
+    @TestCase
+    public func testWindowsSeparatorsMatchGlobRules(): Unit {
+        // Windows 工具侧给出反斜杠路径，glob 规则只认 `/`；两边必须先统一分隔符，
+        // 否则白名单在 Windows 上匹配不到，全部误拒。
+        var obj = JsonObject()
+        obj.put("enabled", JsonBool(true))
+        var fs = ArrayList<JsonValue>()
+        fs.add(JsonString("C:\\proj\\src\\**"))
+        var res = JsonObject()
+        res.put("fs", JsonArray(fs))
+        obj.put("resources", res)
+        let cap = Capability.fromJson(Some(obj))
+        match (cap.checkPath("C:\\proj\\src\\main.cj", false)) {
+            case CapDecision.Allow => ()
+            case _ => @Assert("windows inside", "not allow")
+        }
+        match (cap.checkPath("C:\\proj\\other\\main.cj", false)) {
+            case CapDecision.Deny(_) => ()
+            case _ => @Assert("windows outside", "not denied")
+        }
+    }
+
     /**
      * 静默宽松提示：配置了 capability 段但没开 enabled 时，要让"配了却不生效"可见
      * （语义仍是宽松，仅为消音；见 §3.45）。
@@ -226,6 +276,9 @@ public class CapabilityTest {
         @Assert(Capability.globMatch("/a/*.cj", "/a/main.cj"), true)
         @Assert(Capability.globMatch("/a/?", "/a/b"), true)
         @Assert(Capability.globMatch("/a/**", "/a"), true)
+        // Windows 反斜杠：工具路径与配置 glob 风格可能不同，匹配前统一按 /
+        @Assert(Capability.globMatch("C:\\proj\\src\\*.cj", "C:/proj/src/main.cj"), true)
+        @Assert(Capability.globMatch("C:/proj/src/**", "C:\\proj\\src\\a\\b.cj"), true)
     }
 
     /**

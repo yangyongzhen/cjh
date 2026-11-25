@@ -44,7 +44,7 @@ public class EditTool <: CjhTool {
 
     public func spec(): ToolSpec {
         var props = HashMap<String, JsonValue>()
-        props.add("path", JsonSchema.str("File path to edit"))
+        props.add("path", JsonSchema.str("Absolute file path to edit (relative paths resolve against the workspace root)"))
         props.add("old_string", JsonSchema.str("Text to replace (must match exactly, including whitespace). Omit when using edits[]."))
         props.add("new_string", JsonSchema.str("Replacement text. Omit when using edits[]."))
         props.add("replace_all", JsonSchema.bool("Replace all occurrences (default: false, requires unique match)"))
@@ -85,7 +85,7 @@ public class EditTool <: CjhTool {
         if (!args.containsKey("path")) {
             return ToolResult("缺少参数: path", true)
         }
-        let path = args.get("path").getOrThrow().asString().getValue()
+        let path = resolveFilePath(args.get("path").getOrThrow().asString().getValue())
 
         let hasTopOld = args.containsKey("old_string")
         let hasTopNew = args.containsKey("new_string")
@@ -204,7 +204,7 @@ public class EditTool <: CjhTool {
             }
             return ToolResult(summary, false, buildDiffInfo(path, original, newContent))
         } catch (e: Exception) {
-            return ToolResult("edit 失败: ${e}", true)
+            return ToolResult("edit 失败: ${path}: ${e}", true)
         }
     }
 }

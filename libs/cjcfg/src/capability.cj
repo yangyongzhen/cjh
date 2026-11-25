@@ -1,6 +1,7 @@
 package cjcfg
 
 import std.collection.*
+import std.env.*
 import stdx.encoding.json.*
 import cjutil.*
 
@@ -253,16 +254,16 @@ public class Capability {
         if (!this.enabled) {
             return CapDecision.Allow
         }
-        let norm = normalizePath(path)
-        // 排除规则优先
+        let norm = globNormalize(path)
+        // 排除规则优先（规则也按同一工作区根解析，相对 glob 才能匹配绝对工具路径）
         for (d in this.fsDeny) {
-            if (globMatch(d, norm) || globMatch(d, path)) {
+            if (globMatch(globNormalize(d), norm) || globMatch(d, path)) {
                 return CapDecision.Deny("路径被排除（capability.resources.fs: ${d}）: ${path}")
             }
         }
         // 白名单
         for (a in this.fsAllow) {
-            if (globMatch(a, norm) || globMatch(a, path)) {
+            if (globMatch(globNormalize(a), norm) || globMatch(a, path)) {
                 if (write && this.approvalHit("fs:write", path)) {
                     return CapDecision.NeedApproval("写文件需人工确认: ${path}")
                 }
@@ -342,18 +343,41 @@ public class Capability {
     }
 
     /**
-     * 路径规范化：展开 $HOME / ~ 前缀
+     * 路径规范化：展开 $HOME / ~ 前缀，相对路径按**进程 cwd**（工作区根）解析。
+     *
+     * 文件工具入口已统一解析到绝对路径；这里再兜一层，保证旧的相对路径配置
+     * 和直接调用 checkPath 的地方不会把 "src/foo.cj" 当成任意路径。
      */
     private static func normalizePath(path: String): String {
-        if (path.startsWith("$HOME")) {
-            let home = EnvFfi.homeDir()
-            return home + path[5..path.size]
+        var p = path
+        if (p.startsWith("$HOME")) {
+            p = EnvFfi.homeDir() + p[5..p.size]
+        } else if (p.startsWith("~/")) {
+            p = EnvFfi.homeDir() + p[1..p.size]
         }
-        if (path.startsWith("~/")) {
-            let home = EnvFfi.homeDir()
-            return home + path[1..path.size]
+        if (p.size == 0 || isAbsolutePath(p)) {
+            return p
         }
-        return path
+        return getWorkingDirectory().toString() + "/" + p
+    }
+
+    /**
+     * 交给 globMatch 前统一分隔符：Windows 工具侧返回 `C:\proj\x`，
+     * 而 glob 语法只认 `/`；不转会让白名单在 Windows 上整段失效。
+     */
+    private static func globNormalize(p: String): String {
+        return normalizePath(p).replace("\\", "/")
+    }
+
+    private static func isAbsolutePath(p: String): Bool {
+        if (p.startsWith("/")) {
+            return true
+        }
+        // Windows 盘符/UNC：能力包跨平台，不能只在 Windows 上认绝对路径
+        if (p.size >= 2 && p[1] == UInt8(58)) {
+            return true
+        }
+        return p.size >= 2 && p[0] == UInt8(92) && p[1] == UInt8(92)
     }
 
     /**
@@ -361,7 +385,11 @@ public class Capability {
      * 递归实现，pattern/text 均按字节索引（String 索引得 Byte，与项目既有约定一致）。
      */
     public static func globMatch(pattern: String, text: String): Bool {
-        return globAt(pattern, 0, text, 0)
+        // Windows 路径两种分隔符都可能出现（工具侧 `C:\\proj`、配置侧 `C:/proj`）。
+        // glob 语法只认 `/`；入口统一，调用方不必各自 replace。
+        let pat = if (pattern.contains("\\")) { pattern.replace("\\", "/") } else { pattern }
+        let txt = if (text.contains("\\")) { text.replace("\\", "/") } else { text }
+        return globAt(pat, 0, txt, 0)
     }
 
     private static func globAt(pat: String, pi: Int64, text: String, ti: Int64): Bool {

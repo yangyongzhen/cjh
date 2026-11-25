@@ -65,7 +65,7 @@ Windows: grab [`cjh-v1.6.23-windows-x64-selfcontained.zip`](https://atomgit.com/
 | **What** | A terminal coding agent harness written from scratch in Cangjie: agent loop (message state machine + tool-call protocol) + tool system + diff-rendered TUI + remote web UI + plugin trust chain |
 | **Who** | ① people who want AI to edit code in the terminal without installing a Node/Python toolchain; ② Cangjie learners looking for a runnable, readable AI-application reference; ③ regulated / domestic-stack teams that require "no foreign runtime dependencies" |
 | **Why** | One static binary (Linux 19.3 MB / Windows exe 14.4 MB) with zero runtime dependencies; token efficiency and execution speed are measured, not claimed; plugins carry SHA256 checksums + SM2 signatures |
-| **Status** | v1.6.23, 826 unit tests green (plus 271 across the 6 publishable libraries), Linux / Windows builds published; long-task efficiency now covers batch multi-edit, pipeline-stage failure visibility, per-tool `--mode json` metrics and auto-expanded failing tool output, with tighter scope/verification discipline in the prompt |
+| **Status** | v1.6.23, 857 unit tests green (plus 281 across the 6 publishable libraries), Linux / Windows builds published; long-task efficiency now covers per-turn read-only tool caching (mtime+size revalidation, write invalidation), glob-aware DAG write-scope serialization, tool/approval progress in the status bar, batch multi-edit, per-tool `--mode json` metrics and auto-expanded failing tool output, with tighter scope/verification discipline in the prompt |
 
 ---
 
@@ -241,6 +241,8 @@ The screenshot above is the cjh GUI client built with **cj-tauri** (a Tauri-like
 
 ### Tool System (15 built-in + extensible)
 
+> File tools resolve relative paths against the **workspace root** and echo the absolute path; a bash session `cd` does not change that base.
+
 | Tool | Description |
 |---|---|
 | `bash` | Execute shell commands, capture stdout/stderr |
@@ -270,6 +272,7 @@ The screenshot above is the cjh GUI client built with **cj-tauri** (a Tauri-like
 - **task tool dispatches subagents**: `explore` (read-only, no dependency edges) / `worker` (writable), multiple concurrent dispatches per turn; write conflicts auto-serialize
 - **Observability trio**: bottom-right **Agents panel** (live per-agent rounds/tokens/current tool, `Ctrl+G` focus switch to watch one agent's tool lines) + tree-wide accounting summary (`N agents (x✓ y✗) · ⚠N wasteful spawns`) + full process transcript on disk (`~/.cjh/spill/`)
 - **Boundary controls (4 keys)**: `max_subagents` / `max_tasks_per_turn` / `subagent_token_budget` / `subagent_timeout_ms` (configurable in settings); over-limit rejections are structured (`budget_exceeded` / `timeout`)
+- **Explore model routing**: `explore_model` / `explore_base_url` / `explore_api_key` (settings) apply only to read-only `explore`; leaving all three empty reuses the main provider. `worker` always uses the main model, so a summary model without `tool_call` cannot break investigation
 - **Queued approvals**: concurrent approvals no longer overwrite each other — title shows `审批(n/m)`, `y` approves only the queue head, Ctrl+C rejects all; approval items carry `[task:label]` identity
 - **Unattended test approval**: `unattended_approval` defaults to `deny` (headless test-assertion edits are rejected); only `tests` auto-approves the write on every entry point and prefixes results with an audit note. Capability Deny rules still apply layer by layer; subagents inherit the parent turn's policy
 - **Stable concurrency (field-tested)**: staggered dispatch (concurrent starts spread 1s apart to flatten request bursts) + throttle backoff retry (400-Throttling/429/5xx retried on same key up to 3 times, Ctrl+C-interruptible) + streaming usage wiring (panel tokens go live) + explicit parent-turn failure lines (`⚠ 本回合执行失败（错误码）` — no more silent hangs)

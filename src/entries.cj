@@ -217,7 +217,7 @@ func runWeb(args: Array<String>): Int64 {
         agent.subagentScheduler = Some(scheduler)
         sessionRegistry.register(makeTodoWriteTool(agent))
         sessionRegistry.register(TaskTool({ description, prompt, subagentType, scope =>
-            spawnSubagent(makeSubagentProvider(cjhCfg), sessionRegistry, agent, agentConfig,
+            spawnSubagent(makeSubagentProvider(cjhCfg, subagentType), sessionRegistry, agent, agentConfig,
                 description, prompt, subagentType, scope)
         }))
     })
@@ -547,6 +547,8 @@ func jsonResultOf(summary: RunSummary, sessionId: String,
     usage.put("cached_tokens", JsonInt(summary.cachedTokens))
     usage.put("rounds", JsonInt(summary.rounds))
     usage.put("tools", JsonInt(summary.toolCalls))
+    // 回合内只读工具缓存命中数（重复 read_file/grep/glob/list_dir 被直接回填的次数）
+    usage.put("tool_cache_hits", JsonInt(summary.toolCacheHits))
     usage.put("duration_ms", JsonInt(summary.durationMs))
     out.put("usage", usage)
     var tcArr = ArrayList<JsonValue>()
@@ -644,7 +646,7 @@ func runJson(prompt: String, sessionId: String): Int64 {
         // TaskTool：派发子代理执行独立任务（spawnFn 回调注入；父 agent 用于简报上下文块）
         // S2：子代理 provider 每次派生新建实例，避免共享单槽 transport 的 abort 串台（P0-2）
         registry.register(TaskTool({ description, prompt, subagentType, scope =>
-            spawnSubagent(makeSubagentProvider(cjhCfg), registry, agent, config, description, prompt, subagentType, scope)
+            spawnSubagent(makeSubagentProvider(cjhCfg, subagentType), registry, agent, config, description, prompt, subagentType, scope)
         }))
 
         // 恢复会话（--resume <id>）
@@ -865,7 +867,7 @@ func runTui(sessionId: String): Int64 {
         // TaskTool：派发子代理执行独立任务（spawnFn 回调注入；父 agent 用于简报上下文块）
         // S2：子代理 provider 每次派生新建实例，避免共享单槽 transport 的 abort 串台（P0-2）
         registry.register(TaskTool({ description, prompt, subagentType, scope =>
-            spawnSubagent(makeSubagentProvider(cjhCfg), registry, agent, config, description, prompt, subagentType, scope)
+            spawnSubagent(makeSubagentProvider(cjhCfg, subagentType), registry, agent, config, description, prompt, subagentType, scope)
         }))
 
         // 线程安全的输出队列（agent 在调用线程运行，输出经队列到 TUI）
@@ -1575,12 +1577,38 @@ func buildSubagentConfig(parent: AgentConfig, subagentType: String): AgentConfig
  * 任一 agent 的 abort() 会关到"最后注册"的那条连接（评审 P0-2）。
  * mock 模式沿用同一构造路径（MockProvider 无连接，无串台问题）。
  */
-func makeSubagentProvider(cjhCfg: CjhConfig): LlmProvider {
+func makeSubagentProvider(cjhCfg: CjhConfig, subagentType: String): LlmProvider {
     if ((readEnv("CJH_MOCK") ?? "") == "1") {
         return MockProvider(tmpPath("cjh_verify.txt"))
     }
+    // explore 只读调查通常轮次多、任务简单：配了 explore_* 就走快模型。
+    // worker 可写、要扛复杂改动，继续用主模型，避免省小钱把活做废。
+    if (subagentType == "explore") {
+        match (exploreProviderConfig(cjhCfg)) {
+            case Some((model, base, key)) =>
+                return makeProviderFor(cjhCfg, model, base, key, false, false)
+            case None => ()
+        }
+    }
     // 复核 E：warmup=false——实例用完即弃（finally abort()），预热连接纯开销
     return makeProvider(cjhCfg, false)
+}
+
+/**
+ * explore 子代理的模型/端点/密钥选择（未配置返回 None，复用主 provider）。
+ *
+ * 字段分开配置是为了避免"摘要模型不支持 tool_call"被误用于 explore：
+ * explore 必须能读文件/搜索，光会总结的模型一调工具就废。
+ */
+func exploreProviderConfig(cjhCfg: CjhConfig): Option<(String, String, String)> {
+    if (cjhCfg.exploreModel.size == 0 && cjhCfg.exploreBaseUrl.size == 0 &&
+        cjhCfg.exploreApiKey.size == 0) {
+        return None
+    }
+    let model = if (cjhCfg.exploreModel.size > 0) { cjhCfg.exploreModel } else { cjhCfg.model }
+    let base = if (cjhCfg.exploreBaseUrl.size > 0) { cjhCfg.exploreBaseUrl } else { cjhCfg.baseUrl }
+    let key = if (cjhCfg.exploreApiKey.size > 0) { cjhCfg.exploreApiKey } else { cjhCfg.apiKey }
+    return Some((model, base, key))
 }
 
 /**

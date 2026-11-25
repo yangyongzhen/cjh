@@ -28,7 +28,7 @@
 | C3 | §7「结构化结果 + transcript 落盘」 | `TaskSpawnResult` 只有 `text/iterations/promptTokens/completionTokens/status`；**无 `filesTouched`、无 `transcriptPath`** | P1 事后不可回看 |
 | C4 | §7「子代理 tokens 计入父 RunSummary」 | `RunSummary` 无相应字段；只在 task 结果文本里带 `↑↓`，总结条不含全树 | P1 成本不可见（而"成本不可见"正是无效派生的根因） |
 | C5 | §7「token 预算 / 时间上限」 | 均无；**子代理无墙钟超时** → 卡住会把父回合的组 barrier 永久阻塞 | **P0** 违反不变量 4「有界资源」 |
-| D1 | §9「C：explore→快模型路由（复用 summaryProvider）」 | 未做；子代理一律用父 provider | 待 C 期 |
+| D1 | §9「C：explore→快模型路由」 | **已落地（2026-11-25）**：`explore_model/base_url/api_key` 独立配置，只对 `subagent_type=explore` 生效；三者全空复用主 provider，`worker` 不变 | ✅ 已落地（与 `summary_model` 分开：摘要模型可能不支持 tool_call） |
 | W1 | §8「Web 协议 v5 加 agent_id/agent_label」 | **已落地**：协议 v5 起 tool_start / tool_result 带可选 agent_id / agent_label（缺省不序列化 = 父回合，不虚报身份）；协议现已到 v7（新增 bg_task / bg_slots 帧） | ✅ 已落地（原记「已延后」为旧评估） |
 | W2 | §10 风险 2「WS 靠 request_id 多路复用」 | **网关侧实现是正确的**：`pendingApprovals: HashMap<String, ApprovalSlot>`（`src/gateway/channel.cj:346-347`），未知/超时/重复答复都结构化报错 | ✅ 真落地（对比 TUI 侧的错误做法，见 §3.1） |
 | T1 | 门禁「per 项配测试」 | 子代理测试全是**顺序**脚本化 provider（`SubagentScriptProvider`），没有一条并发用例 | P1：并发是本期的本质，必须补并发测试 |
@@ -243,7 +243,7 @@ public class SubagentScheduler {   // 每个父 Agent 一个实例
 | **S1** | 审批队列化 + 前端单 modal 排队 | `src/tui/app.cj`、`libs/cjterm/src/confirm.cj`、`src/web/static_assets.cj` | `tui_app_test` 并发审批 2 例；pty 1 场景 |
 | **S2a** | provider per-instance（abort 隔离） | `src/entries.cj` | 子代理 provider 不共享断言；`llm_test` |
 | **S2b** | provider 生命周期收尾（`abort()` 关闭池化连接）+ 派生不触发 warmup | `src/entries.cj`、`src/main.cj`（`makeProvider(cfg, warmup)`） | 泄漏用例（伪造 provider 断言 abort 被调）；warmup 计数断言 |
-| **S2c** | explore→快模型路由（`makeSummaryProvider`）+ 可选 provider 池 | `src/entries.cj`、`src/main.cj` | 子代理 kind→model 断言 |
+| **S2c** | explore→快模型路由（`explore_*`，未复用 `summaryProvider`）+ 可选 provider 池（不做） | `src/entries.cj`、`src/main.cj` | 配置解析 + kind→model 选择断言 |
 | **S3** | 子代理事件转发 + `AgentNode`/`scheduler` + AgentsPanel + `Ctrl+T` 焦点 | `src/agent/scheduler.cj`(新)、`libs/cjterm/src/agentspanel.cj`(新)、`src/tui/app.cj`、`src/entries.cj` | scheduler 单测（信号量/预算/超时）；面板渲染单测；pty 4 场景 + `Tab` 回归 |
 | **S4** | 边界：并发/每回合上限/token 预算/墙钟超时 + `status=timeout/budget_exceeded` | `src/agent/scheduler.cj`、`src/task.cj`、`libs/cjcfg`(settings 项) | 并发基准（`dag_bench` 扩展）；超时用例（假 provider 挂 5s） |
 | **S5** | 路由策略：system prompt 判定表 + task 描述改写 + 事后纠偏 + `/parallel` 开关 | `libs/cjcfg/src/config.cj`、`src/task.cj`、`src/skills.cj`、`src/slash_command.cj` | 纯函数策略判定；mock 端到端「简单任务不派生」 |

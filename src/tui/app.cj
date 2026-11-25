@@ -107,6 +107,8 @@ public class TuiApp {
     private var agentStartTime: DateTime = DateTime.now()
     // Agent 当前 LLM 轮次计数（状态行"第 N 轮"：让用户看到 run 在推进）
     private var agentRounds: Int64 = 0
+    // 本 run 已发起的工具调用总数（状态行"工具 N"：长任务里轮次不动时仍能看出在干活）
+    private var agentToolCalls: Int64 = 0
     // Agent 执行期间累计输入 token（实时状态行显示用）
     private var agentPromptTokens: Int64 = 0
     // 本 run 累计 prompt / cached token（状态行显示缓存命中率；每 run 归零）
@@ -1114,6 +1116,8 @@ public class TuiApp {
         this.agentTokenLock.unlock()
         return t
     }
+    // 本 run 已发起工具数观测（单测用）
+    public func testAgentToolCalls(): Int64 { return this.agentToolCalls }
     // 本 run 缓存命中率观测（单测用）
     public func testAgentCachePercent(): Int64 {
         this.agentTokenLock.lock()
@@ -1141,6 +1145,7 @@ public class TuiApp {
         if (running) {
             this.agentStartTime = DateTime.now()
             this.agentRounds = 0
+            this.agentToolCalls = 0
             this.agentTokenLock.lock()
             this.agentPromptTokens = 0
             this.agentPromptTotal = 0
@@ -1223,6 +1228,7 @@ public class TuiApp {
      * "等待工具"与"等待模型"分开，同时刷新活动锚点。
      */
     public func toolStarted(name: String): Unit {
+        this.agentToolCalls += 1
         this.toolsInFlightLock.lock()
         this.toolsInFlight += 1
         this.toolInFlightName = name
@@ -1322,6 +1328,7 @@ public class TuiApp {
             this.agentTokenLock.unlock()
         }
         this.agentRounds = 0
+        this.agentToolCalls = 0
         this.agentStartTime = DateTime.now()
         this.statusBar.setStatus("")
         this.tasksPanel.updateSnapshots(ArrayList<TaskSnapshot>())
@@ -2539,6 +2546,14 @@ public class TuiApp {
             line += Ansi.fg(Ansi.THEME_MUTED) + " · 缓存 " + Ansi.reset() +
                 Ansi.fg(Ansi.THEME_OK) + cachePct.toString() + "%" + Ansi.reset()
         }
+        // 工具进度：累计调用数 + 当前执行中的工具（长任务轮次不变时仍能看出在推进），
+        // 审批队列非空时明确显示等待数（并发子代理审批会排队）
+        let toolSeg = toolStatusText(this.agentToolCalls, this.toolsInFlightCount(),
+            this.toolsInFlightLabel(), this.testApprovalQueueSize())
+        if (toolSeg.size > 0) {
+            line += Ansi.fg(Ansi.THEME_MUTED) + " · " + Ansi.reset() +
+                Ansi.fg(Ansi.THEME_WARN) + toolSeg + Ansi.reset()
+        }
         // 多轮任务：显示当前轮次（用户可判断 run 在推进）
         if (this.agentRounds > 1) {
             line += Ansi.fg(Ansi.THEME_MUTED) + " · 第 " + Ansi.reset() +
@@ -2730,6 +2745,40 @@ public func queueCommandNoticeText(seq: Int64): String {
 /** 立即发送提示（修饰 Enter 忙时提交） */
 public func queueImmediateNoticeText(seq: Int64): String {
     "已排到队首 第 ${seq} 条  ·  正在中断当前回合，随后立即发送"
+}
+
+/**
+ * 状态行里的工具/审批片段（纯文本；无内容返回空串 = 不显示）。
+ * @param total 本 run 已发起工具数
+ * @param inFlight 正在执行的工具数（并发子代理可能 >1）
+ * @param runningName 最近启动的工具名（inFlight>0 时展示）
+ * @param approvals 排队审批数（含当前弹窗队首）
+ */
+public func toolStatusText(total: Int64, inFlight: Int64, runningName: String,
+    approvals: Int64): String {
+    var parts = ArrayList<String>()
+    if (total > 0) {
+        var seg = "工具 ${total}"
+        if (inFlight > 0) {
+            if (runningName.size > 0) {
+                seg += " (${runningName} 运行中)"
+            } else {
+                seg += " (${inFlight} 并行)"
+            }
+        }
+        parts.add(seg)
+    }
+    if (approvals > 0) {
+        parts.add("审批等待 ${approvals}")
+    }
+    var out = StringBuilder()
+    for (i in 0..parts.size) {
+        if (i > 0) {
+            out.append(" · ")
+        }
+        out.append(parts[i])
+    }
+    return out.toString()
 }
 
 /** 状态行里的排队片段（纯文本；0 条返回空串 = 不显示） */

@@ -1664,3 +1664,69 @@ public class CapabilityNoticeOnceTest {
         }
     }
 }
+
+/**
+ * explore 子代理模型路由：只读调查可配独立模型/端点/密钥；
+ * 未配置任何 explore_* 时返回 None（复用主 provider，不偷偷换模型）。
+ */
+@Test
+public class ExploreProviderRouteTest {
+    @TestCase
+    public func testUnconfiguredFallsBackToMain(): Unit {
+        let dir = coreTestTempDir("explore_route_none")
+        try {
+            File.writeTo("${dir}/settings.json",
+                "{\"model\": \"main\", \"base_url\": \"https://main/v1\", \"api_key\": \"k1\"}".toArray())
+            let cfg = CjhConfig(dir)
+            match (exploreProviderConfig(cfg)) {
+                case None => ()
+                case Some(_) => @Assert("unconfigured", "routed")
+            }
+        } finally {
+            removeTreeForTest(dir)
+        }
+    }
+
+    @TestCase
+    public func testExploreModelReusesMainEndpointAndKey(): Unit {
+        let dir = coreTestTempDir("explore_route_model")
+        try {
+            File.writeTo("${dir}/settings.json",
+                ("{\"model\": \"main\", \"base_url\": \"https://main/v1\", \"api_key\": \"k1\", " +
+                "\"explore_model\": \"fast\"}").toArray())
+            let cfg = CjhConfig(dir)
+            // settings.json 的 api_key 不入配置（凭据只在 auth.json），显式给主 key 验证复用。
+            cfg.apiKey = "k1"
+            match (exploreProviderConfig(cfg)) {
+                case Some((model, base, key)) =>
+                    @Assert(model, "fast")
+                    @Assert(base, "https://main/v1")
+                    @Assert(key, "k1")
+                case None => @Assert("Some", "None")
+            }
+        } finally {
+            removeTreeForTest(dir)
+        }
+    }
+
+    @TestCase
+    public func testExploreEndpointAndKeyOverride(): Unit {
+        let dir = coreTestTempDir("explore_route_all")
+        try {
+            File.writeTo("${dir}/settings.json",
+                ("{\"model\": \"main\", \"base_url\": \"https://main/v1\", \"api_key\": \"k1\", " +
+                "\"explore_model\": \"fast\", \"explore_base_url\": \"https://fast/v1\", " +
+                "\"explore_api_key\": \"k2\"}").toArray())
+            let cfg = CjhConfig(dir)
+            match (exploreProviderConfig(cfg)) {
+                case Some((model, base, key)) =>
+                    @Assert(model, "fast")
+                    @Assert(base, "https://fast/v1")
+                    @Assert(key, "k2")
+                case None => @Assert("Some", "None")
+            }
+        } finally {
+            removeTreeForTest(dir)
+        }
+    }
+}
