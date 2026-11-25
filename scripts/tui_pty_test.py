@@ -305,10 +305,12 @@ def test_fullwidth_slash_dispatch() -> None:
         # 行首空格 + /help：候选与分发都必须按归一化文本识别
         s.send(" /help\r")
         s.expect_count("/theme [name]", 1, timeout=15)
+        s.expect_count("/parallel [on|off|auto]", 1, timeout=15)
         check("行首空格 /help 被识别为命令", True)
         # 仅输入全角斜杠：候选菜单应弹出，Enter 选中 /help 并执行（第二份帮助）
         s.send("／\r")
         s.expect_count("/theme [name]", 2, timeout=15)
+        s.expect_count("/parallel [on|off|auto]", 2, timeout=15)
         check("仅 ／ 触发候选并执行 /help", True)
         s.read_available(0.3)
         buf = strip_ansi(s.buf)
@@ -384,6 +386,7 @@ def test_help_view() -> None:
         # 帮助视图独有文本（renderHelp）：「可用命令」
         check("Tab 切到帮助视图（出现可用命令）", "可用命令" in buf, f"(buf尾部: {buf[-200:]})")
         check("帮助含新增命令（/theme）", "/theme" in buf, f"(buf尾部: {buf[-200:]})")
+        check("帮助含 /parallel 说明", "/parallel" in buf, f"(buf尾部: {buf[-200:]})")
         # 帮助内容超一屏（24 行终端）：PageDown 滚动到快捷键区
         s.send_esc_seq("\x1b[6~")  # PageDown
         s.read_available(0.5)

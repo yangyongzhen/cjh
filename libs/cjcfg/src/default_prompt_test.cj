@@ -95,6 +95,10 @@ public class DefaultSystemPromptTest {
         @Assert(cfg.systemPrompt.contains("edit_file"), false)
         @Assert(cfg.systemPrompt.contains("read_file: primary file reader"), true)
         @Assert(cfg.systemPrompt.contains("first 500 lines"), true)
+        // 长任务实测：逐次 poll 会把 30s 任务拖成 6 轮工具调用；提示词必须
+        // 明确让模型用 wait_ms 一次等完，而不是只靠工具描述。
+        @Assert(cfg.systemPrompt.contains("bash_start/bash_poll"), true)
+        @Assert(cfg.systemPrompt.contains("wait_ms=60000"), true)
         @Assert(cfg.systemPrompt.contains("Reply in the user's language"), true)
         @Assert(cfg.systemPrompt.contains("answer in Chinese"), false)
         cleanDir(dir)

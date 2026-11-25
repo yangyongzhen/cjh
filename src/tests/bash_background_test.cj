@@ -187,6 +187,24 @@ public class BashBackgroundTest {
             testTempDir(name))
     }
 
+    /**
+     * 语法错误必须在启动前拒绝：bash 解析整个 -c 脚本时失败，包装末尾写 rc 的
+     * `echo $?` 也不会执行 → 任务永远停在 running，占着槽位到 timeout。
+     * Windows 上模型误写 cmd.exe 的 `for /L` 就是实测触发路径。
+     */
+    @TestCase
+    public func testSyntaxErrorRejectedBeforeSpawn(): Unit {
+        let reg = this.newRegistry("bg_syntax", 4)
+        let tool = BashStartTool(reg)
+        var a = JsonObject()
+        a.put("command", JsonString("for /L %i in (1,1,12) do @echo progress-%i"))
+        let r = tool.execute(a)
+        @Assert(r.isError, true)
+        @Assert(r.content.contains("语法预检"), true)
+        // 未登记任何任务：不占槽位、不会在 timeout 时假装失败
+        @Assert(reg.allTasks().size, 0)
+    }
+
     /** 轮询等到终态，返回 wire 值；超时返回 "wait-over" */
     private func waitTerminal(reg: BackgroundTaskRegistry, id: String, limitMs: Int64): String {
         var waited: Int64 = 0
@@ -435,6 +453,75 @@ public class BashBackgroundTest {
         @Assert(again.output.size, 0)
     }
 
+    /**
+     * wait_ms：等终态而不是等第一段输出。
+     *
+     * 旧用法 30 秒任务每 5 秒一条进度 → 模型要 poll 6 次；wait_ms 必须
+     * 一次拿到全部输出与终态，否则"优化"反而增加调用轮次。
+     */
+    @TestCase
+    public func testPollWaitReturnsTerminalWithAllOutput(): Unit {
+        InterruptGate.clear()
+        let reg = this.newRegistry("bg_wait_terminal", 4)
+        let r = reg.start("echo wait-first; sleep 0.5; echo wait-second", "",
+            "", "/bin/bash", true, 0, 0)
+        @Assert(r.ok, true)
+        let t0 = DateTime.now()
+        let p = reg.poll(r.taskId, 0, 5000)
+        let ms = (DateTime.now() - t0).toMilliseconds()
+        @Assert(p.ok, true)
+        @Assert(p.output.contains("wait-first"), true)
+        @Assert(p.output.contains("wait-second"), true)
+        @Assert(p.state.isTerminal(), true)
+        @Assert(ms >= 400, true)
+        @Assert(ms < 5000, true)
+        @Assert(p.text.contains("任务已结束"), true)
+    }
+
+    /** wait_ms 超时：任务仍在跑时按时返回 running，不无限挂住工具调用 */
+    @TestCase
+    public func testPollWaitTimesOutWhileRunning(): Unit {
+        InterruptGate.clear()
+        let reg = this.newRegistry("bg_wait_timeout", 4)
+        let r = reg.start("sleep 10", "", "", "/bin/bash", true, 0, 0)
+        @Assert(r.ok, true)
+        try {
+            let t0 = DateTime.now()
+            let p = reg.poll(r.taskId, 0, 300)
+            let ms = (DateTime.now() - t0).toMilliseconds()
+            @Assert(p.state.isTerminal(), false)
+            @Assert(ms >= 250, true)
+            @Assert(ms < 5000, true)
+            @Assert(p.text.contains("超时后任务仍在运行"), true)
+        } finally {
+            let _ = reg.kill(r.taskId)
+        }
+    }
+
+    /** 中断可达：Ctrl+C 不必等 60s 的 poll 自己超时 */
+    @TestCase
+    public func testPollWaitAbortsOnInterrupt(): Unit {
+        InterruptGate.clear()
+        let reg = this.newRegistry("bg_wait_interrupt", 4)
+        let r = reg.start("sleep 10", "", "", "/bin/bash", true, 0, 0)
+        @Assert(r.ok, true)
+        try {
+            spawn {
+                sleep(Duration.millisecond * 150)
+                InterruptGate.request()
+            }
+            let t0 = DateTime.now()
+            let p = reg.poll(r.taskId, 0, 10000)
+            let ms = (DateTime.now() - t0).toMilliseconds()
+            @Assert(ms < 5000, true)
+            @Assert(p.state.isTerminal(), false)
+            @Assert(p.text.contains("用户已请求中断"), true)
+        } finally {
+            InterruptGate.clear()
+            let _ = reg.kill(r.taskId)
+        }
+    }
+
     /** 中文与 UTF-8：后台任务输出不因分片解码而乱码 */
     @TestCase
     public func testChineseOutput(): Unit {
@@ -538,6 +625,31 @@ public class BashBackgroundTest {
         let started = startTool.execute(args)
         @Assert(started.isError, false)
         @Assert(started.content.contains("tool-path-ok"), true)
+    }
+
+    /** 工具层 wait_ms 参数必须真正传给 registry，而不是被静默忽略 */
+    @TestCase
+    public func testPollToolWaitWireup(): Unit {
+        InterruptGate.clear()
+        let reg = this.newRegistry("bg_tool_wait", 4)
+        var startArgs = JsonObject()
+        startArgs.put("command", JsonString("echo tool-wait-first; sleep 0.5; echo tool-wait-second"))
+        let started = BashStartTool(reg).execute(startArgs)
+        @Assert(started.isError, false)
+        @Assert(reg.allTasks().size, 1)
+        let taskId = reg.allTasks()[0].id
+        var pollArgs = JsonObject()
+        pollArgs.put("task_id", JsonString(taskId))
+        pollArgs.put("wait_ms", JsonInt(5000))
+        let t0 = DateTime.now()
+        let p = BashPollTool(reg).execute(pollArgs)
+        let ms = (DateTime.now() - t0).toMilliseconds()
+        @Assert(p.isError, false)
+        // 第二行在 sleep 0.5 之后才落盘：能一次拿到就说明 wait_ms 生效
+        // （start 的 200ms 抢跑窗口已先消耗一部分墙钟，故不在这里卡下限）
+        @Assert(p.content.contains("tool-wait-first"), true)
+        @Assert(p.content.contains("tool-wait-second"), true)
+        @Assert(ms < 5000, true)
     }
 
     /**

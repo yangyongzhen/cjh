@@ -1019,6 +1019,20 @@ public class BackgroundTaskRegistry {
      * 收割增量输出。终态任务可反复 poll，直到无新增为止。
      */
     public func poll(id: String, maxBytes: Int64): BgPoll {
+        return this.poll(id, maxBytes, 0)
+    }
+
+    /**
+     * 收割增量输出，可选阻塞等待任务结束。
+     *
+     * `waitMs <= 0` 保持"立即返回"的老语义；`waitMs > 0` 时等任务到终态、
+     * 等待超时或用户请求中断，**不因中途有新输出而提前返回**——短任务一次
+     * 调用收完，避免模型每 5 秒轮询一次、把 30 秒任务拖成 6 轮工具调用。
+     *
+     * 等待循环每 50ms 查 `InterruptGate`，Ctrl+C 最迟 50ms 生效；这里不持
+     * 任何任务锁。上限 60s：再长会让单轮工具调用过久，长任务仍可分多次等。
+     */
+    public func poll(id: String, maxBytes: Int64, waitMs: Int64): BgPoll {
         match (this.find(id)) {
             case None =>
                 return BgPoll(false, id, BgRunning, -1, "",
@@ -1027,9 +1041,59 @@ public class BackgroundTaskRegistry {
                 // 先收割一次：进程可能早已退出，没人 poll 时终态就靠这类轮询点发现
                 let _ = t.harvest()
                 let budget = if (maxBytes > 0) { maxBytes } else { this.cfg.pollMaxBytes }
+                let capMs: Int64 = 60000
+                let effectiveWait = if (waitMs <= 0) {
+                    0
+                } else if (waitMs > capMs) {
+                    capMs
+                } else {
+                    waitMs
+                }
+                let waitStart = DateTime.now()
+                var interrupted = false
+                if (effectiveWait > 0 && !t.state().isTerminal()) {
+                    while (true) {
+                        let _ = t.harvest()
+                        if (t.state().isTerminal()) {
+                            break
+                        }
+                        // 中断可达：与 BashSession 同一信号。等 60s 的 poll 不能
+                        // 让 Ctrl+C 失效，否则用户看到的还是"停止要等工具返回"。
+                        if (InterruptGate.requested()) {
+                            interrupted = true
+                            break
+                        }
+                        let elapsed = (DateTime.now() - waitStart).toMilliseconds()
+                        if (elapsed >= effectiveWait) {
+                            break
+                        }
+                        let remain = effectiveWait - elapsed
+                        let nap = if (remain < 50) { remain } else { 50 }
+                        if (nap > 0) {
+                            try {
+                                sleep(Duration.millisecond * nap)
+                            } catch (e: Exception) {
+                                break
+                            }
+                        }
+                    }
+                }
+                let waited = (DateTime.now() - waitStart).toMilliseconds()
                 let (txt, n) = t.takeOutput(budget)
-                return BgPoll(true, id, t.state(), t.exitCode(), txt, n,
-                    pollText(t, txt, n))
+                var text = pollText(t, txt, n)
+                if (effectiveWait > 0) {
+                    if (interrupted) {
+                        text += "\n用户已请求中断，等待提前结束；任务仍在后台运行，可稍后 bash_poll 或 bash_kill。"
+                    } else if (waited >= 100) {
+                        text += "\n（本次等待 ${formatElapsedMs(waited)}："
+                        if (t.state().isTerminal()) {
+                            text += "任务已结束）"
+                        } else {
+                            text += "超时后任务仍在运行）"
+                        }
+                    }
+                }
+                return BgPoll(true, id, t.state(), t.exitCode(), txt, n, text)
         }
     }
 
@@ -1300,6 +1364,27 @@ func bgStrArg(args: JsonObject, key: String): String {
 }
 
 /**
+ * bash 语法预检：`bash -n -c <command>` 只解析、不执行。
+ *
+ * 返回空串 = 通过（或预检本身起不来，让真正的 start 报错）；非空 = 可直接
+ * 交给模型的错误文本。必须放在启动前：bash 解析失败时连包装末尾写退出码的
+ * `echo $? > rc` 都不会执行，harvest() 永远等不到终态文件。
+ */
+func bgSyntaxPreflight(shellPath: String, command: String): String {
+    try {
+        let (code, _, errBytes) = executeWithOutput(shellPath, ["-n", "-c", command])
+        if (code == 0) {
+            return ""
+        }
+        let err = safeFromUtf8(errBytes).trimAscii()
+        return if (err.size > 0) { err } else { "exit ${code}" }
+    } catch (e: Exception) {
+        // 预检进程都起不来时不要吞掉真正的启动错误，交给 registry.start 报
+        return ""
+    }
+}
+
+/**
  * bash_start：把命令丢到后台，**立即返回**任务 ID。
  *
  * 与 `bash` 的取舍写进工具描述（模型看得见才会用对）：
@@ -1328,9 +1413,17 @@ public class BashStartTool <: CjhTool {
         props.add("timeout_secs", JsonSchema.str("墙钟上限秒数（可选）。0/缺省=用配置值；dev server 这类常驻命令请显式放宽或设很大"))
         props.add("intent", JsonSchema.str("一句话目的（可选，中文优先），作为会话流标题"))
         let schema = JsonSchema.object(props, ArrayList<String>(["command"]))
+        // 与 bash 工具同一条教训（v1.6.2）：把当前 shell 模式写进描述。
+        // 不写时模型会在 Windows 上猜 cmd.exe 的 `for /L`，起一个语法错误的后台任务。
+        let mode = if (provider.isBash) {
+            "bash (POSIX shell)"
+        } else {
+            "Windows PowerShell (Git Bash not detected)"
+        }
         return ToolSpec("bash_start",
             "Start a shell command in the background; returns a task id. Use for builds, full tests, dev servers, " +
             "migrations that may outlive one call.\n" +
+            "Current shell: ${mode}. Use its syntax; on bash, cmd.exe constructs such as `for /L` and `%VAR%` are invalid.\n" +
             "Runs in its OWN process: it does NOT inherit the bash session's cwd/env; pass cwd when location matters.\n" +
             "Output goes to a log: read incrementally with bash_poll(task_id), stop with bash_kill(task_id). " +
             "Commands finishing within ~200ms return output directly. stdin is /dev/null.\n" +
@@ -1356,6 +1449,16 @@ public class BashStartTool <: CjhTool {
                 "⚠ 当前系统未检测到 bash（shell 模式为 PowerShell），后台任务依赖 POSIX shell 语义，" +
                 "暂不可用。请改用同步 bash 工具执行。", true)
         }
+        // 启动前做 bash 语法预检：bash 的语法错误发生在**解析整个 -c 脚本**时，
+        // 解析失败连包装末尾的 `echo $? > rc` 都不会执行——任务会永远停在 running，
+        // 白占槽位直到 timeout。cmd.exe 的 `for /L` 正是这种输入。
+        let syntaxErr = bgSyntaxPreflight(provider.shellPath, command)
+        if (syntaxErr.size > 0) {
+            return ToolResult(
+                "命令未通过 bash 语法预检，后台任务未启动：\n${syntaxErr}\n" +
+                "当前 shell 是 bash（POSIX）：请用 `for i in ...; do ...; done` 等 bash 语法；" +
+                "cmd.exe 的 `for /L`、`%VAR%` 在 bash 下无效。", true)
+        }
         let r = this.registry.start(command, label, cwd, provider.shellPath,
             provider.isBash, timeoutMs, this.eagerMs)
         return ToolResult(r.text, !r.ok)
@@ -1380,13 +1483,18 @@ public class BashPollTool <: CjhTool {
         var props = HashMap<String, JsonValue>()
         props.add("task_id", JsonSchema.str("bash_start 返回的任务 ID，如 bg-1"))
         props.add("max_chars", JsonSchema.str("本次最多交付的字节数（可选，默认取配置 background.poll_max_chars）"))
+        props.add("wait_ms",
+            JsonSchema.str("可选：阻塞等待任务到终态/超时的毫秒数，最多 60000。0/缺省=立即返回；" +
+                "中途有新输出也不提前返回，适合用一次调用等完短任务"))
         props.add("intent", JsonSchema.str("一句话目的（可选，中文优先），作为会话流标题"))
         let schema = JsonSchema.object(props, ArrayList<String>(["task_id"]))
         return ToolSpec("bash_poll",
             "Read INCREMENTAL output from a bash_start task. Returns only bytes since the previous poll " +
             "(per-task cursor), plus state (running/succeeded/failed/killed/timeout) and exit code. " +
-            "Poll again while running; a terminal state with no new output means fully collected. " +
-            "The task's slot is released at terminal state.",
+            "Set wait_ms (max 60000) to block until the task reaches a terminal state or the wait expires; " +
+            "new output alone does NOT end the wait, so a short task completes in one call. " +
+            "Without wait_ms this returns immediately. A terminal state with no new output means fully " +
+            "collected. The task's slot is released at terminal state.",
             schema)
     }
 
@@ -1399,7 +1507,8 @@ public class BashPollTool <: CjhTool {
             return ToolResult("task_id 不能为空", true)
         }
         let maxBytes = bgIntArg(args, "max_chars")
-        let r = this.registry.poll(taskId, maxBytes)
+        let waitMs = bgIntArg(args, "wait_ms")
+        let r = this.registry.poll(taskId, maxBytes, waitMs)
         return ToolResult(r.text, !r.ok)
     }
 }

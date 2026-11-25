@@ -2593,6 +2593,7 @@ public class TuiApp {
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  /tree          会话树" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  /fork          从当前分支分叉" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  /task          查看/管理任务列表" + Ansi.reset())
+        lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  /parallel [on|off|auto]  子代理派发开关（off=禁用 task 子代理）" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  /theme         切换主题" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  /settings      查看采样参数（temp/max_tokens）" + Ansi.reset())
         lines.add(Ansi.fg(Ansi.THEME_MUTED) + "  /quit          退出" + Ansi.reset())

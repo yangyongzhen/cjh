@@ -39,6 +39,7 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
             tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /fork          从当前会话分支新会话" + Ansi.reset())
             tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /settings      查看采样参数（temp/max_tokens）" + Ansi.reset())
             tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /task          任务管理（add/done/doing/clear/list）" + Ansi.reset())
+            tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /parallel [on|off|auto]  子代理派发开关（off=模型直接处理；运行时生效，不回写 settings）" + Ansi.reset())
             tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /theme [name] TUI 主题切换（omp-dark|starfrost|classic|...）" + Ansi.reset())
             tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /quit          退出" + Ansi.reset())
         case "/provider" =>
