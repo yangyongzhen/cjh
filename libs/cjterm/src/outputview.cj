@@ -585,6 +585,44 @@ public class OutputView <: Component {
     }
 
     /**
+     * 确保输出以「空行」结尾（消息块之间留一行空白）。
+     *
+     * 语义：让 lineCache 末尾两行为空（即内容以 `\n\n` 结尾）。
+     * - 空输出：no-op（不在会话开头凭空造空行）
+     * - 已有空行：no-op（幂等，连续调用不叠加）
+     * - 末行未收尾：补两个换行，避免只补一个 `\n` 仍与下块贴在一起
+     *
+     * 供 TUI 在工具调用/助手回复等消息块边界调用。只改行缓存，不碰折叠范围。
+     */
+    public func ensureBlankLine(): Unit {
+        if (!this.cacheValid) {
+            this.rebuildCache()
+        }
+        let n = this.lineCache.size
+        if (n == 0) {
+            return
+        }
+        if (n == 1) {
+            // [""] = 空输出；非空单行（无尾换行）需补两个换行
+            if (this.lineCache[0].size == 0) {
+                return
+            }
+            this.append("\n\n")
+            return
+        }
+        if (this.lineCache[n - 1].size == 0 && this.lineCache[n - 2].size == 0) {
+            return
+        }
+        if (this.lineCache[n - 1].size != 0) {
+            // 末行未收尾：一次补两个换行（append 已按 \n 结尾做增量同步）
+            this.append("\n\n")
+        } else {
+            // 只有尾随 \n：再补一个换行形成空行
+            this.append("")
+        }
+    }
+
+    /**
      * 流式追加：追加到当前输出行末尾（不换行），用于 LLM 增量渲染
      */
     public func appendDelta(text: String): Unit {

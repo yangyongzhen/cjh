@@ -349,6 +349,38 @@ public class TuiAppKeyTest {
     }
 
     @TestCase
+    public func testBlankLineSeparatesToolBlocks(): Unit {
+        // 用户实测：连续工具块之间没有空行，整段输出像一块密集文本。
+        // 这里走 TuiApp 的公开输出 API，断言结果明细与下一条调用之间确实有空行。
+        let (app, _) = this.buildApp()
+        app.testSetCols(80)
+        app.appendToolLine("▶ read_file a.txt")
+        app.appendToolResult("read_file", "alpha\nsecond line", false)
+        app.ensureBlankLine()
+        app.appendToolLine("▶ read_file b.txt")
+        let lines = app.testOutputText().split("\n", -1)
+        var aIdx: Int64 = -1
+        var bIdx: Int64 = -1
+        for (i in 0..Int64(lines.size)) {
+            if (lines[i].contains("▶ read_file a.txt")) { aIdx = i }
+            if (lines[i].contains("▶ read_file b.txt")) { bIdx = i }
+        }
+        @Assert(aIdx >= 0, true)
+        @Assert(bIdx > aIdx, true)
+        // a 块最后一行明细（second line）与 b 调用之间必须恰有一行空行
+        var gap: Int64 = 0
+        for (i in aIdx + 1..bIdx) {
+            if (lines[i].size == 0) { gap += 1 }
+        }
+        @Assert(gap, 1)
+        // 幂等：补齐后再调用一次，输出不再变化（不堆第二行空行）
+        app.ensureBlankLine()
+        let stable = app.testOutputText()
+        app.ensureBlankLine()
+        @Assert(app.testOutputText(), stable)
+    }
+
+    @TestCase
     public func testViewSwitchToHelp(): Unit {
         let (app, _) = this.buildApp()
         // Tab 切换视图（对话→帮助）；TabBar activeIndex 从 0 到 1（ch=9 即 Tab）

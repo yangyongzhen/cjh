@@ -973,6 +973,9 @@ func runTui(sessionId: String): Int64 {
                 tui.clearReasoning()
                 try {
                     if (!StreamState.active) {
+                        // 正式回复是新消息块：与上一条工具结果/回复之间留一空行。
+                        // 必须在本段首个增量落笔前插入，否则流式文本会先贴上结果行。
+                        TuiBridge.sectionGap()
                         TuiBridge.delta("")
                         StreamState.active = true
                     }
@@ -1039,6 +1042,9 @@ func runTui(sessionId: String): Int64 {
                 StreamState.active = false
             }
             TuiBridge.ensureNewline()
+            // 每个工具调用块之间留一空行：工具链连续跑时结果明细与下一条调用
+            // 原本首尾相接（实测 120 行输出里看不出块的边界）。
+            TuiBridge.sectionGap()
             // 工具调用行：无整行背景（对齐 omp 内置工具行；全宽色块与内容不贴合）。
             // 强调色只给标记，工具名用加粗正文，参数用次要灰。
             if (isBgTool(name)) {
@@ -1063,7 +1069,8 @@ func runTui(sessionId: String): Int64 {
                 preview = truncateUtf8(preview, maxPreview) + "…"
             }
             TuiBridge.ensureNewline()
-            TuiBridge.toolResult(name, preview, result.isError)
+            // 与调用行同名显示（BashPoll 而非 bash_poll），否则同一块里大小写不一
+            TuiBridge.toolResult(displayToolName(name), preview, result.isError)
         }
         // 审批链：危险操作需人工确认时，在 TUI 内嵌审批（y/n）
         agent.onApproval = { name, args, reason =>
@@ -1103,7 +1110,9 @@ func runTui(sessionId: String): Int64 {
                 TuiBridge.endStream(wrapRenderedText(indentReply(md.process(text) + md.finish()), outW))
                 StreamState.active = false
             } else {
-                // 非流式（旧协议全量返回）：整体渲染 markdown
+                // 非流式（旧协议全量返回）：整体渲染 markdown。
+                // 全量回复同样是一个消息块，先补块间空行（流式路径已在首个 delta 前补）。
+                TuiBridge.sectionGap()
                 let md = MarkdownRender()
                 md.setUtf8(tui.isUtf8())  // 表格边框按终端能力降级
                 let outW = if (tui.cols() > 4) { tui.cols() - 2 } else { tui.cols() }

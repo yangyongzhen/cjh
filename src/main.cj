@@ -345,6 +345,16 @@ class TuiBridge {
         }
     }
 
+    /**
+     * 消息块之间的空行（工具调用 / 助手回复边界）。
+     * 幂等：已有空行或输出为空时不重复追加。
+     */
+    public static func sectionGap(): Unit {
+        if (let Some(a) <- TuiBridge.app) {
+            a.ensureBlankLine()
+        }
+    }
+
     public static func delta(text: String): Unit {
         if (let Some(a) <- TuiBridge.app) {
             a.appendDelta(text)

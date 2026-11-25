@@ -1736,6 +1736,20 @@ public class TuiApp {
     }
 
     /**
+     * 确保消息块之间有一个空行（工具调用/助手回复等块边界，线程安全）。
+     * 幂等：已有空行时不重复追加；输出为空时不追加。
+     */
+    public func ensureBlankLine(): Unit {
+        this.outputLock.lock()
+        try {
+            this.outputView.ensureBlankLine()
+        } finally {
+            this.outputLock.unlock()
+        }
+        this.markDirty()
+    }
+
+    /**
      * 流式追加：追加到当前输出行末尾（不换行），用于 LLM 增量渲染
      */
     public func appendDelta(text: String): Unit {

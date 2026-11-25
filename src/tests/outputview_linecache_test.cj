@@ -174,6 +174,35 @@ public class OutputViewLineCacheTest {
     }
 
     @TestCase
+    public func testEnsureBlankLineIdempotentAndUnterminated(): Unit {
+        // 空输出：不凭空造空行
+        let ov = OutputView()
+        ov.ensureBlankLine()
+        @Assert(ov.content(), "")
+        @Assert(ov.cachedLines().size, 0)
+        // 普通已收尾行：补一个空行（内容以 \n\n 结尾），重复调用不叠加
+        ov.append("a")
+        ov.ensureBlankLine()
+        @Assert(ov.content(), "a\n\n")
+        @Assert(sameLines(ov.cachedLines(), referenceLines(ov.content())), true)
+        @Assert(ov.cachedLines().size, 3)
+        ov.ensureBlankLine()
+        @Assert(ov.content(), "a\n\n")
+        // 下一块 + 再次补空行：空行位于块之间而不是堆在末尾
+        ov.append("b")
+        ov.ensureBlankLine()
+        @Assert(ov.content(), "a\n\nb\n\n")
+        @Assert(sameLines(ov.cachedLines(), referenceLines(ov.content())), true)
+        // 流式段未收尾（无尾 \n）：补两个换行才形成真正的空行
+        let ov2 = OutputView()
+        ov2.appendDelta("partial")
+        ov2.ensureBlankLine()
+        @Assert(ov2.content(), "partial\n\n")
+        @Assert(sameLines(ov2.cachedLines(), referenceLines(ov2.content())), true)
+        @Assert(ov2.cachedLines().size, 3)
+    }
+
+    @TestCase
     public func testEndStreamWithoutActiveStream(): Unit {
         // 无活动流式段时 endStream = 直接 append（不触发重建）
         let ov = OutputView()
