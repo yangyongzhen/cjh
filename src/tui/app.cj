@@ -2460,6 +2460,10 @@ public class TuiApp {
         let scrollLines = this.outputView.scrollOffsetLines()
         this.outputLock.unlock()
         this.statusBar.setRightHint(if (scrolled) { " ↕ ↑${scrollLines}行" } else { "" })
+        // 常驻后台角标：任务跑在后台、用户停在输入框等待时，动态状态行不渲染，
+        // 只有这里能提示"还有任务没结束"。上限 <=0 只显示用量。
+        let slotsNow = this.currentBgSlots()
+        this.statusBar.setBadge(fmtBgBadge(slotsNow.bgUsed, slotsNow.bgMax))
         this.statusBar.render(this.canvas, statusRow, cols, 1)
 
         // 审批弹窗：模态覆盖，弹窗 4 行，紧贴输入区上方渲染

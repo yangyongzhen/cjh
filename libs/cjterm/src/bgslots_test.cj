@@ -22,6 +22,15 @@ public class BgSlotsTest {
     }
 
     @TestCase
+    public func testFmtBgBadge(): Unit {
+        @Assert(fmtBgBadge(0, 8), "")
+        @Assert(fmtBgBadge(-1, 8), "")
+        @Assert(fmtBgBadge(2, 8), "后台 2/8")
+        // 上限 <= 0 = 不限：只写用量
+        @Assert(fmtBgBadge(2, 0), "后台 2")
+    }
+
+    @TestCase
     public func testFmtAgentLedger(): Unit {
         // 回合总结条用："N/4 agents (x✓ y✗)"——上限可见才知道 4 是天花板
         @Assert(fmtAgentLedger(3, 4), "3/4 agents")

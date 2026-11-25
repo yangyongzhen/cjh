@@ -1,4 +1,12 @@
 # CHANGELOG
+## [Unreleased] - 2026-11-25
+### 优化(长任务第二轮:轮询升级 / TUI 角标 / 基准 / 提示去噪)
+- **连续立即 poll 第 3 次自动提示 `wait_ms`**:`wait_ms` 已存在但模型可能不照做。`BackgroundTask` 只统计"明确没传 `wait_ms` 且任务未终态"的连续 poll,同一任务第 3 次在工具结果尾部追加一次 `wait_ms=60000`;改用等待或任务收尾即清零,不重复提示。回归 `testRepeatedImmediatePollsHintWaitMs`。
+- **状态栏常驻后台角标**:`StatusBar.setBadge` + `fmtBgBadge` 新增独立分段 `后台 2/8`(上限 0 只显示用量),TUI 每帧按槽位账刷新。任务在后台跑、agent 不忙时也能看到;空角标不占位。cjterm 回归 `testFmtBgBadge`、`testStatusBarBadgeVisibleWithReadyStatus`。
+- **capability 宽松提示去噪**:只有 commands/tools/fs/net/proc/approval 至少一段真非空才提示;空对象、仅 `identifier`、仅 `enabled:false` 不再误报。**不改变默认宽松语义**。cjcfg 回归补 3 种无规则形态。
+- **可复现长任务基准** `scripts/bench_long_tasks.py`:wait(30s 日志,要求一次 `bash_poll(wait_ms)`)/ sqlite(测试红转绿且测试文件哈希不变)/ tui(完整 PTY);`--check` 不调模型,重跑先清夹具。真实模型实测:wait **5 轮 / 6 工具 / 39.6s**(`polls=1 wait_ms=yes`),sqlite **5 轮 / 6 工具 / 10.5s**(unittest 通过、测试文件未改)。
+- **门禁**：根包 **834/834**、6 库 **273/273**（cjcfg 35 / cjterm 148）、TUI PTY **115/115**、`--mock` 端到端通过；`cjpm build` 仅 5 条既有 `--static` 驱动提示。
+
 ## [v1.6.23] - 2026-11-24
 
 ### 重新打包（2026-11-25，版本号不变）

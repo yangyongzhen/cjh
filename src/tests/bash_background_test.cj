@@ -478,6 +478,34 @@ public class BashBackgroundTest {
         @Assert(p.text.contains("任务已结束"), true)
     }
 
+    /**
+     * 连续立即轮询第 3 次时在结果里教模型用 wait_ms，且只提示一次；
+     * 改用等待或任务终态后计数清零。
+     */
+    @TestCase
+    public func testRepeatedImmediatePollsHintWaitMs(): Unit {
+        InterruptGate.clear()
+        let reg = this.newRegistry("bg_poll_hint", 4)
+        let r = reg.start("sleep 10", "", "", "/bin/bash", true, 0, 0)
+        @Assert(r.ok, true)
+        try {
+            let p1 = reg.poll(r.taskId, 0)
+            @Assert(p1.text.contains("wait_ms=60000"), false)
+            let p2 = reg.poll(r.taskId, 0)
+            @Assert(p2.text.contains("wait_ms=60000"), false)
+            let p3 = reg.poll(r.taskId, 0)
+            @Assert(p3.text.contains("wait_ms=60000"), true)
+            @Assert(p3.text.contains("连续 3 次"), true)
+            let p4 = reg.poll(r.taskId, 0)
+            @Assert(p4.text.contains("wait_ms=60000"), false)
+            // 模型改用 wait_ms：即使这次等待超时、任务仍在跑，也不该再催
+            let waited = reg.poll(r.taskId, 0, 200)
+            @Assert(waited.text.contains("wait_ms=60000"), false)
+        } finally {
+            let _ = reg.kill(r.taskId)
+        }
+    }
+
     /** wait_ms 超时：任务仍在跑时按时返回 running，不无限挂住工具调用 */
     @TestCase
     public func testPollWaitTimesOutWhileRunning(): Unit {

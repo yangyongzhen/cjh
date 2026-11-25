@@ -53,6 +53,19 @@ public func fmtSlotLedger(bgUsed: Int64, bgMax: Int64, agentsUsed: Int64, agents
 }
 
 /**
+ * 状态栏常驻后台角标：有任务时 `后台 2/8`，无任务返回空串。
+ *
+ * 与会话流里的任务条、动态状态行的槽位账互补：动态行只在 agent 执行中出现，
+ * 任务在后台跑、用户在等输入时，只有这里能一直看到"还有任务没结束"。
+ */
+public func fmtBgBadge(bgUsed: Int64, bgMax: Int64): String {
+    if (bgUsed <= 0) {
+        return ""
+    }
+    return "后台 " + slotPair(bgUsed, bgMax)
+}
+
+/**
  * 子代理归账文本：`3/4 agents`；上限 <= 0（不限）只写用量
  *
  * 与 fmtSlotLedger 的 agents 段同一口径，差别是这里带单位——回合总结条以

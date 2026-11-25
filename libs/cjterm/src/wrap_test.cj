@@ -102,4 +102,25 @@ public class WrapAnsiTest {
         let raw = canvas.flush()
         @Assert(raw.contains("48-71/6628"), true)
     }
+
+    /** 后台任务角标必须在状态为空（显示 ready）时也常驻，不被状态段顶掉 */
+    @TestCase
+    public func testStatusBarBadgeVisibleWithReadyStatus(): Unit {
+        let bar = StatusBar()
+        bar.setUtf8(true)
+        bar.setModel("deepseek-flash")
+        bar.setBadge("后台 2/8")
+        let canvas = TuiCanvas()
+        canvas.begin(4, 80, true)
+        let _ = bar.render(canvas, 0, 80, 1)
+        let raw = canvas.flush()
+        @Assert(raw.contains("后台 2/8"), true)
+        @Assert(raw.contains("ready"), true)
+        // 空角标不留下分隔符尾巴
+        bar.setBadge("")
+        let canvas2 = TuiCanvas()
+        canvas2.begin(4, 80, true)
+        let _ = bar.render(canvas2, 0, 80, 1)
+        @Assert(canvas2.flush().contains("后台"), false)
+    }
 }

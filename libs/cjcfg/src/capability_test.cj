@@ -194,6 +194,28 @@ public class CapabilityTest {
             case Some(_) => @Assert("no capability", "unexpected hint")
             case None => ()
         }
+        // 空段 / 只有 identifier / 显式 enabled:false：没有规则，不提示
+        var empty = JsonObject()
+        match (Capability.fromJson(Some(empty)).silentPermissiveHint()) {
+            case Some(_) => @Assert("empty capability", "unexpected hint")
+            case None => ()
+        }
+        var idOnly = JsonObject()
+        idOnly.put("identifier", JsonString("work"))
+        idOnly.put("enabled", JsonBool(false))
+        match (Capability.fromJson(Some(idOnly)).silentPermissiveHint()) {
+            case Some(_) => @Assert("identifier only", "unexpected hint")
+            case None => ()
+        }
+        // 只配了 approval 也是真规则（会被宽松模式忽略），必须提示
+        var approvalOnly = JsonObject()
+        var approvals = ArrayList<JsonValue>()
+        approvals.add(JsonString("bash:write"))
+        approvalOnly.put("approval", JsonArray(approvals))
+        match (Capability.fromJson(Some(approvalOnly)).silentPermissiveHint()) {
+            case Some(msg) => @Assert(msg.contains("enabled"), true)
+            case None => @Assert("approval only", "no hint")
+        }
     }
 
     @TestCase

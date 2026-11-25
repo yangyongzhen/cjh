@@ -311,9 +311,13 @@ public class BackgroundTask {
     private var endedAtValue: Option<DateTime> = None
     private var deliveredValue: Int64 = 0
     private var killReasonValue: BgKillReason = BgKillNone
-    // 下达 kill/超时信号的时刻：旁路退出码文件等不到时，靠它做兜底收场的宽限判断
+    // 下达 kill/超时信号的时刻:旁路退出码文件等不到时,靠它做兜底收场的宽限判断
     private var killAtValue: Option<DateTime> = None
     private var procValue: Option<SubProcess> = None
+    // 连续「立即轮询」次数与已提示标记:任务持续运行时,第 3 次仍未终态
+    // 就在工具结果里直接教模型改用 wait_ms（只提示一次,避免每条结果都唠叨）
+    private var immediatePollsValue: Int64 = 0
+    private var pollHintShownValue: Bool = false
     // 终态回调：由注册表注入（向 UI 层推送事件）；无人监听时为 None
     public var onFinish: ?(BgTaskState, Int64) -> Unit = None
 
@@ -374,6 +378,33 @@ public class BackgroundTask {
         this.lock.lock()
         try {
             return this.deliveredValue
+        } finally {
+            this.lock.unlock()
+        }
+    }
+
+    /**
+     * 记账一次 poll，返回该追加给模型的升级提示（通常为空）。
+     *
+     * 只在「明确没传 wait_ms」且任务仍未终态时累计；一旦模型改用等待或任务
+     * 收尾就清零。第 3 次连续立即轮询时提示一次 wait_ms，之后不再重复。
+     * 这样不依赖模型记住系统提示词，也不会把每一条 poll 结果都变成唠叨。
+     */
+    public func noteImmediatePoll(usedWait: Bool, terminal: Bool): String {
+        this.lock.lock()
+        try {
+            if (usedWait || terminal) {
+                this.immediatePollsValue = 0
+                this.pollHintShownValue = false
+                return ""
+            }
+            this.immediatePollsValue += 1
+            if (this.immediatePollsValue >= 3 && !this.pollHintShownValue) {
+                this.pollHintShownValue = true
+                return "提示：同一任务已连续 ${this.immediatePollsValue} 次立即 poll 且仍在运行。" +
+                    "下次请给 bash_poll 传 wait_ms=60000 等终态（上限 60s，超时会返回 running），不要每几秒轮询。"
+            }
+            return ""
         } finally {
             this.lock.unlock()
         }
@@ -1092,6 +1123,10 @@ public class BackgroundTaskRegistry {
                             text += "超时后任务仍在运行）"
                         }
                     }
+                }
+                let hint = t.noteImmediatePoll(waitMs > 0, t.state().isTerminal())
+                if (hint.size > 0) {
+                    text += "\n" + hint
                 }
                 return BgPoll(true, id, t.state(), t.exitCode(), txt, n, text)
         }

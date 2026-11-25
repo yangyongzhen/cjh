@@ -5,9 +5,10 @@ import std.env.*
 /**
  * StatusBar：底部状态行组件（参考 omp 分段式状态栏）
  *
- * 分段布局：⬢ 模型  ›  📁 cwd  ›  ● 状态
+ * 分段布局：⬢ 模型  ›  📁 cwd  ›  后台 2/8  ›  ● 状态
  * - 模型名 accent 色（setModel 设置）
  * - 当前工作目录 muted 色（📁 前缀，HOME 缩写为 ~）
+ * - 常驻角标 accent 色（setBadge 设置；后台任务在跑时显示，无任务不占位）
  * - 状态文本（setStatus）；为空时回退显示 "ready" 徽章
  * - 分段用 muted 的 › 分隔（对齐 omp 的 > 分隔风格）
  * - 不消费按键（滚动等由其他组件处理）
@@ -15,6 +16,8 @@ import std.env.*
 public class StatusBar <: Component {
     private var text: String = ""
     private var model: String = ""
+    // 常驻角标（如“后台 2/8”）：与状态文本分开，状态为空显示 ready 时也不丢
+    private var badge: String = ""
     // 右侧提示（如滚动位置指示）：render 时附加在横线前，每帧由上层刷新
     private var rightHint: String = ""
     // 终端 UTF-8 能力（false 时上边框/横线降级 "+--"/"-"）：
@@ -45,6 +48,13 @@ public class StatusBar <: Component {
     }
 
     /**
+     * 设置常驻角标（后台任务用量等；空串不显示）
+     */
+    public func setBadge(b: String): Unit {
+        this.badge = b
+    }
+
+    /**
      * 设置右侧提示（滚动指示等；空串不显示）
      */
     public func setRightHint(hint: String): Unit {
@@ -71,6 +81,12 @@ public class StatusBar <: Component {
         }
         // 分段 2：当前工作目录（[cwd] muted，HOME 缩写为 ~）
         let dirPart = muted + "[ " + StatusBar.homeAbbrev(StatusBar.getCwd()) + " ]"
+        // 分段 2.5：常驻角标（后台任务用量；空串不占位）
+        let badgePart = if (this.badge.size > 0) {
+            sep + Ansi.fg(Ansi.THEME_ACCENT) + this.badge
+        } else {
+            ""
+        }
         // 分段 3：状态（ready 徽章或自定义文本；badge 内联无 reset 以保背景）
         let statusPart = if (this.text.size == 0) {
             Ansi.fg(Ansi.THEME_OK) + "* " + muted + "ready"
@@ -83,7 +99,7 @@ public class StatusBar <: Component {
         } else {
             ""
         }
-        var content = modelPart + dirPart + sep + statusPart
+        var content = modelPart + dirPart + badgePart + sep + statusPart
         // 右侧提示（滚动位置 48-71/6628）必须始终可见：先给它留宽度，再截左侧内容。
         // 旧实现先按 budget 截断整行、再拼 hint，hint 永远落在截断点之后被丢弃。
         let budget = width - 5

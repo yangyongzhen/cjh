@@ -165,14 +165,29 @@ public class Capability {
     // ─── 检查接口 ─────────────────────────────────────────────
 
     /**
-     * 静默宽松提示：配置了 capability 段、但未开启严格模式时返回一行提醒（否则 None）。
+     * 是否配置了任何会被严格模式使用的规则。
+     *
+     * 只看规则本身：identifier 只是标签、enabled 是开关，空对象或仅写
+     * `{ "enabled": false }` 没有"规则不生效"的问题，不该提示。
+     */
+    private func hasRules(): Bool {
+        return this.commands.size > 0 || this.tools.size > 0 ||
+            this.fsAllow.size > 0 || this.fsDeny.size > 0 ||
+            this.netAllow.size > 0 || this.procDeny.size > 0 ||
+            this.approval.size > 0
+    }
+
+    /**
+     * 静默宽松提示：配置了 capability 规则、但未开启严格模式时返回一行提醒（否则 None）。
      *
      * 只让"配了却不生效"从静默变可见，**不改语义**：默认宽松是刻意的
      * （见 commit 4c56f55：曾默认严格，用户配了 capability 段后 bash 被拒而投诉）。
+     * 空段/只有 identifier/enabled:false 不算"配了规则"，避免把只是想显式
+     * 声明宽松的用户也当成配置错误。启动时仍按配置目录只提示一次（见 entries）。
      */
     public func silentPermissiveHint(): Option<String> {
-        if (this.configured && !this.enabled) {
-            return Some("[cjh] capability 段已配置但未启用：当前按宽松模式放行，白名单/审批规则不会生效；如需启用严格模式，请在 capability 段显式设置 enabled 为 true")
+        if (this.configured && !this.enabled && this.hasRules()) {
+            return Some("[cjh] capability 段已配置规则但未启用：当前按宽松模式放行，白名单/审批规则不会生效；如需启用严格模式，请在 capability 段显式设置 enabled 为 true")
         }
         return None
     }
