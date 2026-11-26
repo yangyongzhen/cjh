@@ -40,6 +40,10 @@ func sampleEventObj(name: String): JsonObject {
         case "bg_slots" =>
             // v7 出站帧：槽位账必须是真能构造的，不能只写在清单里
             return JsonValue.fromStr(bgSlotsFrameJson(1, 8, 0, 0)).asObject()
+        case "round_metrics" =>
+            // v8 出站帧：逐轮性能必须是真能构造的
+            return JsonValue.fromStr(RoundMetricsEvent(1, 1200, 30, 4000, 120, 3600, 90)
+                .toJson()).asObject()
         case "history_messages" =>
             return JsonValue.fromStr(historyMessagesJson("s", JsonArray())).asObject()
         case _ => return JsonObject()

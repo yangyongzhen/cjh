@@ -555,6 +555,36 @@ public class RoundMetrics {
 }
 
 /**
+ * 子代理工具事件（结构化）。
+ *
+ * 旧 `onSubagentEvent(id, kind, text)` 只带一行展示文本，渠道拿不到工具参数 /
+ * 结果 / diff，也就无法按 agent_id 做多列富渲染（Web 端曾把所有子代理工具
+ * 混进主对话流）。本类型把字段原样交给渠道，TUI 仍可继续用旧回调。
+ */
+public class SubagentToolEvent {
+    public let agentId: Int64
+    public let label: String
+    public let kind: String       // "tool_start" | "tool_result"
+    public let name: String
+    public let args: JsonObject
+    public let result: String
+    public let isError: Bool
+    public let diff: ?DiffInfo
+
+    public init(agentId: Int64, label: String, kind: String, name: String,
+        args: JsonObject, result: String, isError: Bool, diff: ?DiffInfo) {
+        this.agentId = agentId
+        this.label = label
+        this.kind = kind
+        this.name = name
+        this.args = args
+        this.result = result
+        this.isError = isError
+        this.diff = diff
+    }
+}
+
+/**
  * Agent 主循环：消息历史 → LLM → 工具调用 → 结果回填 → 循环
  *
  * 流程：
@@ -669,6 +699,9 @@ public class Agent {
     // 子代理行事件回调（S3d 焦点转发用）：(agentId, kind: tool_start|tool_result, text)
     // 硬规则：子代理 onDelta 绝不转发（OutputView 单流会撕行），只转发整行事件
     public var onSubagentEvent: (Int64, String, String) -> Unit = { _, _, _ => }
+    // 结构化子代理工具事件（Web 多列渲染用）：参数/结果/diff 与主回合工具同形，
+    // 由装配层 spawnSubagent 在子代理 onToolStart/onToolResult 时转发。
+    public var onSubagentTool: (SubagentToolEvent) -> Unit = { _ => }
     // 每轮一次的轮次/用量回调（S3 修实测卡死）：(rounds, promptTokens, completionTokens, cachedTokens)。
     // 面板刷新必须挂这里（每轮一次、provider 无关），不能挂 onTokenEstimate（每 SSE chunk 一次）
     public var onRoundTick: (Int64, Int64, Int64, Int64) -> Unit = { _, _, _, _ => }

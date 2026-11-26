@@ -56,6 +56,10 @@ public class CaptureChannel <: Channel {
     public var toolResultErrors: ArrayList<Bool> = ArrayList<Bool>()
     // 工具结果携带的结构化 diff（与上面三个列表一一对应；非文件工具为 None）
     public var toolResultDiffs: ArrayList<?DiffInfo> = ArrayList<?DiffInfo>()
+    // 单轮性能帧（按到达顺序）
+    public var roundMetrics: ArrayList<RoundMetrics> = ArrayList<RoundMetrics>()
+    // 子代理结构化工具事件（按到达顺序）
+    public var subagentTools: ArrayList<SubagentToolEvent> = ArrayList<SubagentToolEvent>()
 
     public func channelId(): String {
         return "test"
@@ -77,6 +81,14 @@ public class CaptureChannel <: Channel {
         this.toolResultTexts.add(result)
         this.toolResultErrors.add(isError)
         this.toolResultDiffs.add(diff)
+    }
+
+    public func sendSubagentTool(_: String, _: FrameMeta, event: SubagentToolEvent): Unit {
+        this.subagentTools.add(event)
+    }
+
+    public func sendRoundMetrics(_: String, _: FrameMeta, metrics: RoundMetrics): Unit {
+        this.roundMetrics.add(metrics)
     }
 
     public func sendDone(_: String, meta: FrameMeta, summary: JsonObject): Unit {
@@ -243,8 +255,8 @@ public class WebProtocolFrameTest {
         let resultObj = parseObj(result.toJson())
         @Assert(getInt(resultObj, "agent_id"), 42)
         @Assert(getStr(resultObj, "agent_label"), "并发审批一号")
-        // 协议版本随帧形状变化递增到 v7（v7 = 新增出站帧 bg_slots）
-        @Assert(capabilityProtocolVersion(), 7)
+        // 协议版本随帧形状变化递增到 v8（v8 = 新增出站帧 round_metrics）
+        @Assert(capabilityProtocolVersion(), 8)
     }
 
     /**
@@ -309,6 +321,30 @@ public class WebProtocolFrameTest {
         let agentObj = parseObj(bgSlotsFrameJson(1, 8, 2, 4))
         @Assert(getInt(agentObj, "agents_used"), 2)
         @Assert(getInt(agentObj, "agents_max"), 4)
+    }
+
+    /**
+     * v8：round_metrics 帧字段完整 + 缓存命中率由服务端算好
+     *
+     * 锁住两件事：
+     * 1) 每轮性能是独立帧，客户端不靠工具事件猜耗时；
+     * 2) prompt_tokens=0 时命中率为 0（除零边界不在客户端重算）。
+     */
+    @TestCase
+    public func testRoundMetricsFrameFields(): Unit {
+        let event = RoundMetricsEvent(3, 1200, 30, 4000, 120, 3600, 90)
+        event.meta.turnId = "s1.2.3"
+        let obj = parseObj(event.toJson())
+        @Assert(getStr(obj, "type"), "round_metrics")
+        @Assert(getInt(obj, "round"), 3)
+        @Assert(getInt(obj, "model_ms"), 1200)
+        @Assert(getInt(obj, "tool_ms"), 30)
+        @Assert(getInt(obj, "prompt_tokens"), 4000)
+        @Assert(getInt(obj, "completion_tokens"), 120)
+        @Assert(getInt(obj, "cached_tokens"), 3600)
+        @Assert(getInt(obj, "cache_hit_pct"), 90)
+        @Assert(getStr(obj, "turn_id"), "s1.2.3")
+        @Assert(frameTypeOf(event.toJson()), "round_metrics")
     }
 
     /** 取帧的 type 字段（解析器认不认这个帧，用 parseMsgType 之外的方式独立验证） */
@@ -699,6 +735,52 @@ public class GatewayControlFrameTest {
     }
 
     @TestCase
+    public func testChatPushesRoundMetrics(): Unit {
+        // 每轮一次 round_metrics：客户端据此展示逐轮模型/工具耗时与缓存命中，
+        // 不能靠工具事件猜。Mock 固定 3 轮工具 + 1 轮收尾 = 4 帧。
+        let dir = testTempDir("gw_ctrl_chat_metrics")
+        writeTextFile(dir + "/mock.txt", "line1\nline2\n")
+        let gateway = buildGateway(dir, Some(StubProviderFactory("")))
+        let ch = CaptureChannel()
+        gateway.registerChannel("test", ch)
+        gateway.handleUserMessage("test", "chat1", "你好", None)
+        waitForEvents(ch, 10000)
+        @Assert(ch.dones, 1)
+        @Assert(ch.roundMetrics.size, 4)
+        var expected: Int64 = 1
+        for (m in ch.roundMetrics) {
+            @Assert(m.round, expected)
+            expected += 1
+            // prompt=0 时命中率必须是 0（服务端口径，不留给客户端除零）
+            @Assert(m.promptTokens, 0)
+            @Assert(m.cacheHitRate(), 0)
+        }
+    }
+
+    @TestCase
+    public func testSubagentToolEventRoutesToChannel(): Unit {
+        // 装配层把子代理 onToolStart/onToolResult 转成结构化事件；网关必须原样
+        // 转给渠道（带 agent_id/label），否则 Web 只能把子代理工具混进主对话。
+        let dir = testTempDir("gw_ctrl_subagent_route")
+        writeTextFile(dir + "/mock.txt", "line1\nline2\n")
+        let gateway = buildGateway(dir, Some(StubProviderFactory("")))
+        let ch = CaptureChannel()
+        gateway.registerChannel("test", ch)
+        gateway.handleUserMessage("test", "chat1", "你好", None)
+        waitForEvents(ch, 10000)
+        match (gateway.getAgent("test", "chat1")) {
+            case Some(agent) =>
+                agent.onSubagentTool(SubagentToolEvent(7, "并发一号", "tool_start",
+                    "grep", JsonObject(), "", false, None))
+                @Assert(ch.subagentTools.size, 1)
+                @Assert(ch.subagentTools[0].agentId, 7)
+                @Assert(ch.subagentTools[0].label, "并发一号")
+                @Assert(ch.subagentTools[0].name, "grep")
+            case None => @Assert(false, true)
+        }
+    }
+
+    @TestCase
     public func testTodoChangesPushTasksFrame(): Unit {
         // 每个 Web 会话装上 todo 工具后，改动必须推到 tasks 帧——
         // 否则 Web 侧永远看不到任务清单（TUI 有 onTodosChanged 直连面板，Web 没有）。
@@ -834,12 +916,15 @@ public class TurnIdentityTest {
         @Assert(getStr(p1, "message_id"), "s1.2.3#m7")
 
         let done = DoneEvent(1, 2, 3, 4, 5)
+        done.promptTokens = 300
         done.meta = meta
         done.finishReason = "cancelled"
         let p2 = JsonValue.fromStr(done.toJson()).asObject()
         @Assert(getStr(p2, "type"), "done")
         @Assert(getStr(p2, "finish_reason"), "cancelled")
         @Assert(getStr(p2, "turn_id"), "s1.2.3#t7")
+        let p2s = p2.get("summary").getOrThrow().asObject()
+        @Assert(getInt(p2s, "prompt_tokens"), 300)
 
         let plain = ErrorEvent("裸错误")
         let p3 = JsonValue.fromStr(plain.toJson()).asObject()

@@ -367,6 +367,55 @@ public class ToolResultEvent {
 }
 
 /**
+ * 单轮性能帧（协议 v8 新增，服务端 → 浏览器）
+ *
+ * { "type": "round_metrics", "round": 3, "model_ms": 1200, "tool_ms": 30,
+ *   "prompt_tokens": 4000, "completion_tokens": 120, "cached_tokens": 3600,
+ *   "cache_hit_pct": 90, "session_id": "...", "turn_id": "...", "message_id": "..." }
+ *
+ * 每轮一次（工具批次回填后 / 纯文本收尾时）。客户端据此展示逐轮模型与工具
+ * 墙钟以及该轮 token/缓存命中；`cache_hit_pct` 由服务端算好，避免各客户端
+ * 重复处理 prompt_tokens=0 的除零边界。
+ */
+public class RoundMetricsEvent {
+    public var round: Int64 = 0
+    public var modelMs: Int64 = 0
+    public var toolMs: Int64 = 0
+    public var promptTokens: Int64 = 0
+    public var completionTokens: Int64 = 0
+    public var cachedTokens: Int64 = 0
+    public var cacheHitPct: Int64 = 0
+    public var meta: FrameMeta = FrameMeta()
+
+    public init() {}
+
+    public init(round: Int64, modelMs: Int64, toolMs: Int64, promptTokens: Int64,
+        completionTokens: Int64, cachedTokens: Int64, cacheHitPct: Int64) {
+        this.round = round
+        this.modelMs = modelMs
+        this.toolMs = toolMs
+        this.promptTokens = promptTokens
+        this.completionTokens = completionTokens
+        this.cachedTokens = cachedTokens
+        this.cacheHitPct = cacheHitPct
+    }
+
+    public func toJson(): String {
+        var obj = JsonObject()
+        obj.put("type", JsonString("round_metrics"))
+        obj.put("round", JsonInt(this.round))
+        obj.put("model_ms", JsonInt(this.modelMs))
+        obj.put("tool_ms", JsonInt(this.toolMs))
+        obj.put("prompt_tokens", JsonInt(this.promptTokens))
+        obj.put("completion_tokens", JsonInt(this.completionTokens))
+        obj.put("cached_tokens", JsonInt(this.cachedTokens))
+        obj.put("cache_hit_pct", JsonInt(this.cacheHitPct))
+        putFrameMeta(obj, this.meta)
+        return obj.toJsonString()
+    }
+}
+
+/**
  * 回合结束总结事件
  *
  * { "type": "done", "summary": {"rounds": 2, "tools": 1, "duration_ms": 4062,
@@ -383,6 +432,8 @@ public class DoneEvent {
     public var durationMs: Int64 = 0
     public var tokens: Int64 = 0
     public var cached: Int64 = 0
+    // 缓存命中率分母（v8）：tokens 是 prompt+completion，直接做分母会稀释命中率
+    public var promptTokens: Int64 = 0
     public var meta: FrameMeta = FrameMeta()
     public var finishReason: String = "stop"
     // 最终回复被上游 max_tokens 截断（可选键：仅 true 时序列化）
@@ -405,6 +456,7 @@ public class DoneEvent {
         summary.put("tools", JsonInt(this.tools))
         summary.put("duration_ms", JsonInt(this.durationMs))
         summary.put("tokens", JsonInt(this.tokens))
+        summary.put("prompt_tokens", JsonInt(this.promptTokens))
         summary.put("cached", JsonInt(this.cached))
 
         var obj = JsonObject()

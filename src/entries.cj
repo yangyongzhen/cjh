@@ -1737,12 +1737,16 @@ func spawnSubagent(provider: LlmProvider, parentRegistry: ToolRegistry, parent: 
             let node = AgentNode(subAgent.agentId, parent.agentId, description, subagentType)
             node.state = AgentNodeState.Running
             sched.register(node)
-            subAgent.onToolStart = { name, _ =>
+            subAgent.onToolStart = { name, args =>
                 sched.markTool(subAgent.agentId, name)
                 parent.onSubagentEvent(subAgent.agentId, "tool_start", "▶ ${name}")
+                parent.onSubagentTool(SubagentToolEvent(subAgent.agentId, description,
+                    "tool_start", name, args, "", false, None))
             }
-            subAgent.onToolResult = { name, _ =>
+            subAgent.onToolResult = { name, result =>
                 parent.onSubagentEvent(subAgent.agentId, "tool_result", "↳ ${name}")
+                parent.onSubagentTool(SubagentToolEvent(subAgent.agentId, description,
+                    "tool_result", name, JsonObject(), result.content, result.isError, result.diff))
             }
             // 轮次/用量刷新（修实测卡死）：挂 onRoundTick——每轮一次、provider 无关。
             // 不能挂 onTokenEstimate：anthropic 每 SSE chunk 回调一次，长流式下每秒成百次

@@ -149,6 +149,25 @@ public class StaticAssets {
                     <div id="bg-list" class="task-list"></div>
                 </div>
 
+                <!-- 子代理面板（按 agent_id 多列；子代理工具不混进主对话流） -->
+                <div id="subagent-panel" class="task-panel collapsed">
+                    <div class="task-panel-header" onclick="toggleSubagentPanel()">
+                        <span>子代理</span>
+                        <span id="subagent-count" class="bg-slots">0</span>
+                    </div>
+                    <div id="subagent-columns" class="subagent-columns"></div>
+                </div>
+
+                <!-- 轮次性能面板（协议 v8 round_metrics；/stats 展开） -->
+                <div id="round-panel" class="task-panel collapsed">
+                    <div class="task-panel-header" onclick="toggleRoundPanel()">
+                        <span>轮次性能</span>
+                        <span id="round-totals" class="bg-slots"></span>
+                        <span id="round-count" class="bg-slots">0</span>
+                    </div>
+                    <div id="round-list" class="round-list"></div>
+                </div>
+
                 <!-- 输入区 -->
                 <div class="input-area">
                     <textarea id="message-input"
@@ -270,6 +289,11 @@ let isExecuting = false;
 // 当前生效模型（以服务端 ack 为准）+ 切换中待确认的模型（失败用于回滚选项）
 let currentModelId = null;
 let pendingModelSwitch = null;
+// 本轮逐轮性能（协议 v8 round_metrics）：新回合首条消息时清空
+let runRoundMetrics = [];
+// 子代理工具流：按 agent_id 分列（不混进主对话流）
+let subagentOrder = [];
+let subagentColumns = {};
 
 // ====== 鉴权 token ======
 // 服务端配了 --token 时页面本身匿名可取（浏览器顶层导航带不了 Authorization 头），
@@ -409,6 +433,25 @@ function sendMessage(text) {
         showError('WebSocket 未连接');
         return;
     }
+    // 本地命令：/stats 显示逐轮性能（不发给服务端，不开启回合）
+    let cmd = String(text).trim();
+    if (cmd === '/stats' || cmd === '/stats on' || cmd === '/stats off') {
+        appendUserMessage(text);
+        if (cmd === '/stats off') {
+            document.getElementById('round-panel').classList.add('collapsed');
+            showNotice('已收起轮次性能面板', 'info');
+            return;
+        }
+        document.getElementById('round-panel').classList.remove('collapsed');
+        if (runRoundMetrics.length === 0) {
+            showNotice('本轮暂无轮次数据（先发一条消息）', 'info');
+        } else {
+            showNotice('逐轮性能：' + runRoundMetrics.length + ' 轮', 'info');
+        }
+        return;
+    }
+    // 新回合：清空上一轮的轮次/子代理面板（面板本身保留折叠状态）
+    resetRunPanels();
     // 首次发送：移除欢迎页
     let welcome = document.querySelector('.welcome');
     if (welcome) { welcome.remove(); }
@@ -417,6 +460,27 @@ function sendMessage(text) {
     const msg = { type: 'chat', message: text };
     ws.send(JSON.stringify(msg));
     setExecuting(true);
+}
+
+/**
+ * 清空本轮运行面板（轮次性能 + 子代理列）
+ */
+function resetRunPanels() {
+    runRoundMetrics = [];
+    subagentOrder = [];
+    subagentColumns = {};
+    let list = document.getElementById('round-list');
+    if (list) { list.innerHTML = ''; }
+    let totals = document.getElementById('round-totals');
+    if (totals) { totals.textContent = ''; }
+    let count = document.getElementById('round-count');
+    if (count) { count.textContent = '0'; }
+    let cols = document.getElementById('subagent-columns');
+    if (cols) { cols.innerHTML = ''; }
+    let subCount = document.getElementById('subagent-count');
+    if (subCount) { subCount.textContent = '0'; }
+    let panel = document.getElementById('subagent-panel');
+    if (panel) { panel.classList.add('collapsed'); }
 }
 
 /**
@@ -1343,12 +1407,24 @@ function handleServerMessage(msg) {
             appendDelta(msg.text);
             break;
         case 'tool_start':
+            // 子代理工具带 agent_id：进独立分列，不混进主对话流
+            if (msg.agent_id !== undefined && msg.agent_id !== null) {
+                handleSubagentTool(msg);
+                break;
+            }
             // assistant 消息定型，再渲染 tool
             finalizeAssistantMessage();
             appendToolStart(msg.name, msg.args);
             break;
         case 'tool_result':
+            if (msg.agent_id !== undefined && msg.agent_id !== null) {
+                handleSubagentTool(msg);
+                break;
+            }
             appendToolResult(msg.name, msg.content, msg.is_error, msg.diff);
+            break;
+        case 'round_metrics':
+            handleRoundMetrics(msg);
             break;
         case 'done':
             finalizeAssistantMessage();
@@ -1414,6 +1490,9 @@ function handleServerMessage(msg) {
 function renderHistoryMessages(messages, sessionId) {
     currentSessionId = sessionId;
     finalizeAssistantMessage();
+    // 切会话：上一轮的轮次/子代理数据不属于这个会话
+    resetRunPanels();
+    document.getElementById('round-summary').classList.add('hidden');
 
     let messagesEl = document.getElementById('messages');
     messagesEl.innerHTML = '';
@@ -1547,6 +1626,168 @@ function renderMarkdownInline(text) {
     return rendered === null ? escapeHtml(text) : rendered;
 }
 
+// ====== 轮次性能面板（协议 v8 round_metrics） ======
+// 服务端每轮推一次：模型/工具墙钟 + 该轮 token 与缓存命中。
+// 数据按新回合清空；面板折叠时数据照收，/stats 展开即可回看。
+function formatMs(ms) {
+    if (!ms || ms <= 0) { return '0ms'; }
+    if (ms < 1000) { return Math.round(ms) + 'ms'; }
+    return (ms / 1000).toFixed(1) + 's';
+}
+
+function formatTokens(n) {
+    n = n || 0;
+    if (n >= 1000) { return (n / 1000).toFixed(1) + 'k'; }
+    return String(n);
+}
+
+function handleRoundMetrics(msg) {
+    runRoundMetrics.push({
+        round: msg.round || 0,
+        model_ms: msg.model_ms || 0,
+        tool_ms: msg.tool_ms || 0,
+        prompt_tokens: msg.prompt_tokens || 0,
+        completion_tokens: msg.completion_tokens || 0,
+        cached_tokens: msg.cached_tokens || 0,
+        cache_hit_pct: msg.cache_hit_pct || 0
+    });
+    renderRoundMetrics();
+}
+
+function roundTotals() {
+    let model = 0, tool = 0, prompt = 0, completion = 0, cached = 0;
+    runRoundMetrics.forEach(function(m) {
+        model += m.model_ms; tool += m.tool_ms;
+        prompt += m.prompt_tokens; completion += m.completion_tokens; cached += m.cached_tokens;
+    });
+    return { model: model, tool: tool, prompt: prompt, completion: completion, cached: cached };
+}
+
+function renderRoundMetrics() {
+    let list = document.getElementById('round-list');
+    if (!list) { return; }
+    list.innerHTML = '';
+    let count = document.getElementById('round-count');
+    if (count) { count.textContent = String(runRoundMetrics.length); }
+    let totals = roundTotals();
+    let totalsEl = document.getElementById('round-totals');
+    if (totalsEl) {
+        let pct = totals.prompt > 0 ? Math.round(totals.cached * 100 / totals.prompt) : 0;
+        totalsEl.textContent = '模型 ' + formatMs(totals.model) + ' · 工具 ' + formatMs(totals.tool) +
+            ' · 缓存 ' + pct + '%';
+    }
+    runRoundMetrics.forEach(function(m) {
+        let row = document.createElement('div');
+        row.className = 'round-item';
+        let head = document.createElement('span');
+        head.className = 'round-no';
+        head.textContent = 'R' + m.round;
+        let body = document.createElement('span');
+        body.textContent = '模型 ' + formatMs(m.model_ms) + ' · 工具 ' + formatMs(m.tool_ms) +
+            ' · ' + formatTokens(m.prompt_tokens) + '→' + formatTokens(m.completion_tokens) +
+            ' tok · 缓存 ' + m.cache_hit_pct + '%';
+        row.appendChild(head);
+        row.appendChild(body);
+        list.appendChild(row);
+    });
+}
+
+function toggleRoundPanel() {
+    document.getElementById('round-panel').classList.toggle('collapsed');
+}
+
+// ====== 子代理面板（tool_start/tool_result 带 agent_id） ======
+// 每个 agent_id 一列；子代理工具永远不进主对话流（服务端结构化事件 + 这里分流）。
+const SUBAGENT_MAX_TOOLS = 50;
+
+function subagentColumn(agentId, label) {
+    if (!subagentColumns[agentId]) {
+        subagentColumns[agentId] = { id: agentId, label: label || ('agent ' + agentId), items: [] };
+        subagentOrder.push(agentId);
+    } else if (label) {
+        subagentColumns[agentId].label = label;
+    }
+    return subagentColumns[agentId];
+}
+
+function handleSubagentTool(msg) {
+    let agentId = String(msg.agent_id);
+    let col = subagentColumn(agentId, msg.agent_label);
+    let isStart = msg.type === 'tool_start';
+    if (isStart) {
+        col.items.push({ name: msg.name || '', args: msg.args || null,
+            result: '', isError: false, diff: null, done: false });
+        if (col.items.length > SUBAGENT_MAX_TOOLS) { col.items.shift(); }
+    } else {
+        // 同名工具并发时按"最近一个未完成"配对；找不到就补一行（不丢事件）
+        let item = null;
+        for (let i = col.items.length - 1; i >= 0; i--) {
+            if (!col.items[i].done && col.items[i].name === (msg.name || '')) {
+                item = col.items[i];
+                break;
+            }
+        }
+        if (!item) {
+            item = { name: msg.name || '', args: null, result: '', isError: false, diff: null, done: false };
+            col.items.push(item);
+        }
+        item.result = msg.content || '';
+        item.isError = !!msg.is_error;
+        item.diff = msg.diff || null;
+        item.done = true;
+    }
+    // 首个子代理事件自动展开一次，让用户看见并行进度；之后尊重手动折叠
+    let panel = document.getElementById('subagent-panel');
+    if (panel) { panel.classList.remove('collapsed'); }
+    renderSubagentColumns();
+}
+
+function renderSubagentColumns() {
+    let wrap = document.getElementById('subagent-columns');
+    if (!wrap) { return; }
+    wrap.innerHTML = '';
+    let count = document.getElementById('subagent-count');
+    if (count) { count.textContent = String(subagentOrder.length); }
+    subagentOrder.forEach(function(agentId) {
+        let col = subagentColumns[agentId];
+        let colEl = document.createElement('div');
+        colEl.className = 'subagent-col';
+        let head = document.createElement('div');
+        head.className = 'subagent-head';
+        head.textContent = col.label + ' #' + col.id;
+        colEl.appendChild(head);
+        col.items.forEach(function(item) {
+            let row = document.createElement('div');
+            row.className = 'subagent-item' + (item.isError ? ' subagent-error' : '');
+            let icon = document.createElement('span');
+            icon.className = 'subagent-icon';
+            icon.textContent = item.done ? (item.isError ? '✗' : '↳') : '▶';
+            let text = document.createElement('span');
+            text.className = 'subagent-text';
+            let detail = '';
+            if (!item.done && item.args) {
+                detail = JSON.stringify(item.args);
+                if (detail.length > 80) { detail = detail.slice(0, 80) + '…'; }
+            } else if (item.done) {
+                detail = String(item.result || '');
+                if (detail.length > 140) { detail = detail.slice(0, 140) + '…'; }
+            }
+            text.textContent = item.name + (detail ? ' ' + detail : '');
+            row.appendChild(icon);
+            row.appendChild(text);
+            colEl.appendChild(row);
+            if (item.diff && item.diff.unified_diff) {
+                colEl.appendChild(buildDiffBlock(item.diff));
+            }
+        });
+        wrap.appendChild(colEl);
+    });
+}
+
+function toggleSubagentPanel() {
+    document.getElementById('subagent-panel').classList.toggle('collapsed');
+}
+
 function appendToolStart(name, args) {
     let messages = document.getElementById('messages');
     let toolDiv = document.createElement('div');
@@ -1618,11 +1859,18 @@ function handleDone(summary) {
     }
     if (summary) {
         let summaryDiv = document.getElementById('round-summary');
-        let cachedPct = summary.cached > 0 ? Math.round(summary.cached * 100 / summary.tokens) : 0;
+        let promptTokens = summary.prompt_tokens || 0;
+        let cachedPct = promptTokens > 0 && summary.cached > 0
+            ? Math.round(summary.cached * 100 / promptTokens) : 0;
+        let perf = '';
+        if (runRoundMetrics.length > 0) {
+            let t = roundTotals();
+            perf = ' · 模型 ' + formatMs(t.model) + ' / 工具 ' + formatMs(t.tool);
+        }
         summaryDiv.textContent = '✓ ' + summary.rounds + ' rounds · ' +
                                   summary.tools + ' tools · ' +
                                   (summary.duration_ms / 1000).toFixed(1) + 's · ' +
-                                  summary.tokens + ' tokens · ' + cachedPct + '% cached';
+                                  summary.tokens + ' tokens · ' + cachedPct + '% cached' + perf;
         summaryDiv.classList.remove('hidden');
     }
 }
@@ -1939,6 +2187,8 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         document.getElementById('messages').innerHTML =
             '<div class=\"welcome\"><h2>👋 新会话</h2><p>开始新的对话</p></div>';
+        resetRunPanels();
+        document.getElementById('round-summary').classList.add('hidden');
     });
 
     // 主题切换
@@ -2849,7 +3099,61 @@ body {
     opacity: 0.7;
 }
 
-/* ====== 轻提示条（控制帧回执 ack / 切换中 / 取消回执） ====== */
+/* ====== 轮次性能面板（协议 v8） ====== */
+.round-list {
+    padding: 4px 16px 10px;
+}
+.round-item {
+    display: flex;
+    gap: 8px;
+    padding: 3px 0;
+    font-family: monospace;
+    font-size: 12px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+.round-no {
+    color: var(--accent);
+    min-width: 32px;
+}
+/* ====== 子代理面板（按 agent_id 分列） ====== */
+.subagent-columns {
+    display: flex;
+    gap: 10px;
+    padding: 6px 16px 12px;
+    overflow-x: auto;
+}
+.subagent-col {
+    flex: 0 0 auto;
+    min-width: 240px;
+    max-width: 360px;
+    border-left: 2px solid var(--border);
+    padding-left: 8px;
+    font-family: monospace;
+    font-size: 12px;
+}
+.subagent-head {
+    color: var(--accent);
+    font-weight: bold;
+    margin-bottom: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.subagent-item {
+    display: flex;
+    gap: 6px;
+    padding: 2px 0;
+    color: var(--text-secondary);
+}
+.subagent-text {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+.subagent-error .subagent-text {
+    color: var(--error);
+}
+/* ====== 轻提示条(控制帧回执 ack / 切换中 / 取消回执) ====== */
 .notice-bar {
     position: fixed;
     top: 14px;

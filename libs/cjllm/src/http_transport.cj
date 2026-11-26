@@ -162,6 +162,19 @@ public class HttpStreamClient {
     }
 
     /**
+     * 运行期调整单次读超时（供 SseParser 在 finish_reason 后收尾）：
+     * 生成已完成，但 OpenAI include_usage 的 usage 常在后一个 TCP 块——
+     * 用短超时再读一次把 usage/[DONE] 收全；无数据则快速结束，不挂到默认 5s。
+     */
+    public func setReadTimeout(d: Duration): Unit {
+        this.readTimeout = d
+        match (this.socket) {
+            case Some(s) => s.readTimeout = d
+            case None => ()
+        }
+    }
+
+    /**
      * 发送 HTTP/1.1 请求
      * @param method GET/POST 等
      * @param path 路径（如 /v1/chat/completions）
@@ -581,6 +594,11 @@ public class HttpStreamInput <: InputStream {
 
     public override func read(buf: Array<Byte>): Int64 {
         return this.client.readBody(buf)
+    }
+
+    /** 供 SseParser 在 finish_reason 后收尾：短超时再读一次 usage/[DONE] */
+    public func setReadTimeout(d: Duration): Unit {
+        this.client.setReadTimeout(d)
     }
 }
 

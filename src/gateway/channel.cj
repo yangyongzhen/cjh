@@ -96,6 +96,22 @@ public interface Channel {
         isError: Bool, diff: ?DiffInfo): Unit
 
     /**
+     * 子代理工具事件（结构化）
+     *
+     * 与主回合 sendToolStart/sendToolResult 同形，但带 agentId / label：渠道按
+     * agent 分组渲染，不能把子代理工具混进主对话流（Web 端历史问题）。
+     */
+    func sendSubagentTool(chatId: String, meta: FrameMeta, event: SubagentToolEvent): Unit
+
+    /**
+     * 单轮性能快照（模型墙钟 / 工具墙钟 / 该轮 token 与缓存命中）
+     *
+     * 每轮一次、在工具批次回填后（或纯文本收尾）触发；渠道用它展示轮次明细
+     * （Web 面板 /stats），而不是让客户端自己按工具事件猜耗时。
+     */
+    func sendRoundMetrics(chatId: String, meta: FrameMeta, metrics: RoundMetrics): Unit
+
+    /**
      * 回合结束（summary 包含轮数/工具数/耗时/token 用量/finish_reason）
      */
     func sendDone(chatId: String, meta: FrameMeta, summary: JsonObject): Unit
@@ -938,6 +954,14 @@ public class ChannelGateway {
         agent.onToolResult = { name: String, result: ToolResult =>
             channel.sendToolResult(chatId, meta, name, result.content, result.isError, result.diff)
         }
+        // 子代理工具流：带 agent_id/label，客户端按列分组（不能混进主对话）
+        agent.onSubagentTool = { ev: SubagentToolEvent =>
+            channel.sendSubagentTool(chatId, meta, ev)
+        }
+        // 轮次性能明细：每轮一次（模型/工具墙钟 + token/缓存命中）
+        agent.onRoundMetrics = { m: RoundMetrics =>
+            channel.sendRoundMetrics(chatId, meta, m)
+        }
         // 任务清单：todo_write 改动 → tasks 帧（Web 面板）。TUI 走 onTodosChanged
         // 直连面板；Web 没有 TUI 对象，必须把同一事件接到渠道。
         agent.onTodosChanged = { =>
@@ -1098,6 +1122,9 @@ public class ChannelGateway {
         obj.put("tools", JsonInt(summary.toolCalls))
         obj.put("duration_ms", JsonInt(summary.durationMs))
         obj.put("tokens", JsonInt(summary.totalTokens()))
+        // 缓存命中率的分母必须是 prompt tokens；tokens 是 prompt+completion，
+        // 用它算会把命中率稀释到接近 0（Web 总结条旧口径）。
+        obj.put("prompt_tokens", JsonInt(summary.promptTokens))
         obj.put("cached", JsonInt(summary.cachedTokens))
         obj.put("finish_reason", JsonString(finishReason))
         // 截断信号（可选键）：只在确实被 max_tokens 截断时出现——老客户端忽略未知键即可。

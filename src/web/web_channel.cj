@@ -18,6 +18,7 @@ import std.sync.*
 import stdx.encoding.json.*
 import stdx.net.http.*
 import cjlog.*
+import cjh.agent.*
 import cjh.gateway.*
 
 public class WebChannel <: Channel {
@@ -53,14 +54,46 @@ public class WebChannel <: Channel {
         this.sendWs(event.toJson())
     }
 
+    /**
+     * 子代理工具事件 → 带 agent_id / agent_label 的 tool_start / tool_result 帧。
+     * 复用主回合帧类型，客户端按 agent_id 分列，不需要第二套协议。
+     */
+    public func sendSubagentTool(_: String, meta: FrameMeta, event: SubagentToolEvent): Unit {
+        if (event.kind == "tool_start") {
+            let ev = ToolStartEvent(event.name, event.args)
+            ev.meta = meta
+            ev.agentId = event.agentId
+            ev.agentLabel = event.label
+            this.sendWs(ev.toJson())
+            return
+        }
+        let ev = ToolResultEvent(event.name, event.result, event.isError)
+        ev.meta = meta
+        ev.agentId = event.agentId
+        ev.agentLabel = event.label
+        ev.diff = event.diff
+        this.sendWs(ev.toJson())
+    }
+
+    /** 单轮性能帧（v8）：逐轮模型/工具墙钟 + token/缓存命中 */
+    public func sendRoundMetrics(_: String, meta: FrameMeta, metrics: RoundMetrics): Unit {
+        let ev = RoundMetricsEvent(metrics.round, metrics.modelMs, metrics.toolMs,
+            metrics.promptTokens, metrics.completionTokens, metrics.cachedTokens,
+            metrics.cacheHitRate())
+        ev.meta = meta
+        this.sendWs(ev.toJson())
+    }
+
     public func sendDone(_: String, meta: FrameMeta, summary: JsonObject): Unit {
         // 从 summary JsonObject 提取字段构造 DoneEvent
         let rounds = this.getInt(summary, "rounds")
         let tools = this.getInt(summary, "tools")
         let durationMs = this.getInt(summary, "duration_ms")
         let tokens = this.getInt(summary, "tokens")
+        let prompted = this.getInt(summary, "prompt_tokens")
         let cached = this.getInt(summary, "cached")
         let event = DoneEvent(rounds, tools, durationMs, tokens, cached)
+        event.promptTokens = prompted
         event.meta = meta
         let reason = this.getStr(summary, "finish_reason")
         event.finishReason = if (reason.size > 0) { reason } else { "stop" }

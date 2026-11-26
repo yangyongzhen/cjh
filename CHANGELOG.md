@@ -1,4 +1,15 @@
 # CHANGELOG
+## [未发布] - 2026-11-26
+
+### 优化(Web 对等：逐轮性能面板 / 子代理分列 / 缓存口径)
+
+- **协议 v8 `round_metrics`**：每轮一次推送 `round / model_ms / tool_ms / prompt_tokens / completion_tokens / cached_tokens / cache_hit_pct`，与 TUI `/stats`、`--mode json` 同源；缓存命中率由服务端计算，`prompt_tokens=0` 返回 0，客户端不重复除零。
+- **Web 逐轮性能面板**：页内 `/stats` 展开，显示每轮「模型/工具墙钟 · 输入→输出 token · 缓存命中%」与本回合合计；新回合/切会话清空，折叠时照收数据。
+- **子代理工具不再混入主对话**：`Agent.onSubagentTool` 结构化事件（agentId/label/args/result/diff）经 `Channel.sendSubagentTool` 复用 `tool_start`/`tool_result` 帧（带 `agent_id`/`agent_label`），Web 按 agent 多列渲染并自动展开首个子代理；TUI 既有回调不变。
+- **总结条缓存率修正**：`done.summary.prompt_tokens` 新增（v8），Web 以 prompt 为分母；旧口径 `cached / (prompt+completion)` 会把命中率稀释到接近 0。
+- **SSE finish_reason 后的 usage 不再丢**：`SseParser` 见到 `finish_reason` 后先解析完当前 TCP 块；若 usage 在后续块到达，进入 800ms 收尾窗口（把传输层单次读超时压到该值）继续读，拿到 usage/`[DONE]` 立即结束，没数据也快速收尾。OpenAI `stream_options.include_usage` 的 usage 与 `[DONE]` 无论同块还是分包都不会被丢弃 → token 不再退回字符估算、缓存命中率不再恒 0。新增同块与分包两例（`testSseFinishReasonKeepsUsageInSameChunk`、`testSseFinishReasonThenUsageInNextChunk`），无 `[DONE]` 聚合网关仍在毫秒级结束。
+- **验证**：真实 Web 假端点回合（父 task → explore 子代理 grep → 收尾）确认 2 轮指标、子代理单列与工具结果渲染；空 `prompt` 不伪造缓存。
+
 ## [v1.6.24] - 2026-11-26
 
 ### 修复与可观测性(配置目录空串、每轮模型/工具耗时)

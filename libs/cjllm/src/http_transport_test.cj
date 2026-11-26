@@ -192,7 +192,7 @@ public class HttpTransportTest {
 
     // ==================== 场景 8：finish_reason 提前结束（无 [DONE]） ====================
     // 聚合网关透传 OpenAI 帧但省略 [DONE]、keep-alive 不关连接——
-    // SseParser 必须在 finish_reason="stop" 帧后立即返回，不等 EOF/空闲超时
+    // SseParser 必须在 finish_reason 后短宽限内收尾，不能等 EOF/空闲超时
     // （"任务完成但 Streaming 不停 → 新消息排队"的根治用例）
 
     @TestCase
@@ -218,7 +218,62 @@ public class HttpTransportTest {
         client.close()
     }
 
-    // ==================== 场景 9：短读轮询——中断不依赖 abort/EOF ====================
+    // ==================== 场景 8b：finish_reason 同块的 usage 不能丢 ====================
+    // OpenAI stream_options.include_usage：finish_reason 帧之后还有 usage 与 [DONE]。
+    // 旧实现见到 finish_reason 立即 return true，同块剩余事件被丢弃 →
+    // Web 轮次面板缓存命中率恒 0、token 退回字符估算。必须继续解析完本块。
+
+    @TestCase
+    public func testSseFinishReasonKeepsUsageInSameChunk(): Unit {
+        let port: UInt16 = 18118
+        let _ = startMockServer(port, MockResp.SseFinishThenUsageNoClose)
+        let client = HttpStreamClient("127.0.0.1", port, false)
+        client.readTimeout = Duration.second * 2
+        client.connect()
+        client.request("POST", "/v1/chat/completions", ArrayList<(String, String)>(), "{}")
+        let (status, _) = client.readResponseHead()
+        @Assert(status, 200)
+        let parser = SseParser(HttpStreamInput(client))
+        let events = ArrayList<String>()
+        parser.onEvent = { d => events.add(d) }
+        parser.run()
+        @Assert(events.size, 4)                       // 正文 / finish / usage / [DONE]
+        @Assert(events[2].contains("\"prompt_tokens\":100"), true)
+        @Assert(events[2].contains("\"cached_tokens\":50"), true)
+        @Assert(events[3], "[DONE]")
+        client.close()
+    }
+
+    // ==================== 场景 8c：finish_reason 与 usage 分包 ====================
+    // 真实网络/代理会把 finish_reason、usage、[DONE] 拆进不同 TCP 块。
+    // 旧实现见到 finish_reason 立即结束，后续 read 的 usage 被丢弃（Web 缓存恒 0）。
+    // 新实现用短收尾窗口继续读，直到 [DONE]/EOF/宽限耗尽。
+
+    @TestCase
+    public func testSseFinishReasonThenUsageInNextChunk(): Unit {
+        let port: UInt16 = 18119
+        let _ = startMockServer(port, MockResp.SseFinishThenUsageSplitNoClose)
+        let client = HttpStreamClient("127.0.0.1", port, false)
+        client.readTimeout = Duration.second * 2
+        client.connect()
+        client.request("POST", "/v1/chat/completions", ArrayList<(String, String)>(), "{}")
+        let (status, _) = client.readResponseHead()
+        @Assert(status, 200)
+        let parser = SseParser(HttpStreamInput(client))
+        let events = ArrayList<String>()
+        parser.onEvent = { d => events.add(d) }
+        let t0 = DateTime.now()
+        parser.run()
+        let elapsed = (DateTime.now() - t0).toMilliseconds()
+        @Assert(events.size, 4)                       // 正文 / finish / usage / [DONE]
+        @Assert(events[2].contains("\"prompt_tokens\":100"), true)
+        @Assert(events[2].contains("\"cached_tokens\":50"), true)
+        @Assert(events[3], "[DONE]")
+        @Assert(elapsed < 1900, true)                 // 不等默认 2s 读超时
+        client.close()
+    }
+
+
     // 服务端发一帧后挂起（无 [DONE]/finish_reason/EOF/关连接）：此时 abort() 若
     // 无法打断阻塞 read（TLS 语义未验证），唯一出路是 read 自身短超时 + 轮询
     // cancelChecker。本用例证明：中断标志翻转后 ≤POLL_INTERVAL+余量 内解析结束。
@@ -478,6 +533,8 @@ public enum MockResp {
     | CloseEarly(String, Int64)     // body, 发前 N 字节后关连接
     | SseDoneNoClose                 // 发 SSE 帧含 [DONE] 后挂起不关连接（模拟代理 keep-alive）
     | SseFinishReasonNoClose         // 只发 finish_reason（无 [DONE]）后挂起不关连接（聚合网关）
+    | SseFinishThenUsageNoClose      // finish_reason 同块后跟 usage + [DONE]（OpenAI include_usage）
+    | SseFinishThenUsageSplitNoClose // finish_reason 与 usage/[DONE] 分不同 TCP 块到达
     | SseStallNoClose                // 发一帧后挂起（无 [DONE]/finish_reason/EOF）——只有短读轮询能结束
     | StallBeforeHead                // accept 后不发任何字节（响应头阶段停滞）
     | KeepAliveServer(Int64)         // accept 一次，循环处理 n 个请求（HTTP/1.1 keep-alive 复用验证）
@@ -609,6 +666,32 @@ public func handleMockResp(conn: StreamingSocket, resp: MockResp): Unit {
             // 不发 0 长度 chunk、不关连接：挂起（模拟聚合网关 keep-alive）
             // SseParser 必须在 finish_reason 帧后提前结束（不能等 [DONE]/EOF/超时）
             sleep(Duration.second * 30)
+        case SseFinishThenUsageNoClose =>
+            conn.write("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n".toArray())
+            // OpenAI stream_options.include_usage：finish_reason 之后紧跟 usage 帧，
+            // 再 [DONE]；三帧常在同一个 TCP 块内到达
+            let frame = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\n" +
+                "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
+                "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":8," +
+                "\"prompt_tokens_details\":{\"cached_tokens\":50}}}\n\n" +
+                "data: [DONE]\n\n"
+            let fbytes = frame.toArray()
+            conn.write((toHex(Int64(fbytes.size)) + "\r\n").toArray())
+            conn.write(fbytes)
+            conn.write("\r\n".toArray())
+            sleep(Duration.second * 30)
+        case SseFinishThenUsageSplitNoClose =>
+            conn.write("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n".toArray())
+            // 真实网络/代理：finish_reason 与 usage、[DONE] 落在不同 TCP 块。
+            // 旧实现见到 finish_reason 就结束，后续 read 的 usage 被丢弃。
+            writeSseChunk(conn, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\n")
+            sleep(Duration.millisecond * 50)
+            writeSseChunk(conn, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+            sleep(Duration.millisecond * 120)
+            writeSseChunk(conn, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":8,\"prompt_tokens_details\":{\"cached_tokens\":50}}}\n\n")
+            sleep(Duration.millisecond * 120)
+            writeSseChunk(conn, "data: [DONE]\n\n")
+            sleep(Duration.second * 30)
         case SseStallNoClose =>
             conn.write("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n".toArray())
             // 发一帧（finish_reason=null，不触发协议结束）后挂起：无 [DONE]、
@@ -649,6 +732,13 @@ public func handleMockResp(conn: StreamingSocket, resp: MockResp): Unit {
             }
             sleep(Duration.second * 30)  // 等待客户端关闭
     }
+}
+
+func writeSseChunk(conn: StreamingSocket, text: String): Unit {
+    let bytes = text.toArray()
+    conn.write((toHex(Int64(bytes.size)) + "\r\n").toArray())
+    conn.write(bytes)
+    conn.write("\r\n".toArray())
 }
 
 public func writeInChunks(conn: StreamingSocket, body: String, chunkSize: Int64, gap: Duration): Unit {

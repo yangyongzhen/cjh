@@ -35,6 +35,18 @@ public class SseParser {
      */
     public static let POLL_INTERVAL: Duration = Duration.second * 5
 
+    /**
+     * finish_reason 后等待 usage 的宽限：OpenAI include_usage 的 usage（choices=[]）
+     * 常落在 finish_reason 之后的下一个 TCP 块。收到 finish_reason 不立刻结束，
+     * 把单次读超时压到该宽限再读；拿到 usage/[DONE] 立即收，没数据就快速结束。
+     * 不这样做时「同块」修复只覆盖同包场景，真实端点分包仍会丢掉 usage。
+     */
+    public static let POST_FINISH_GRACE: Duration = Duration.millisecond * 800
+
+    // 已见到 finish_reason（生成完成），等待 usage/[DONE] 的收尾窗口
+    private var finishSeen: Bool = false
+    private var finishAt: DateTime = DateTime.now()
+
     // 中断轮询（调用方注入 isCancelled）：短读超时后检查，用户中断立即生效
     public var cancelChecker: () -> Bool = { => false }
     // 空闲预算：超过该时长无"新事件" → timedOut（默认 60s，CJH_IDLE_TIMEOUT_SECS）。
@@ -79,6 +91,13 @@ public class SseParser {
                     this.flushRemaining()
                     break
                 }
+                // finish_reason 已到、宽限内也没等到 usage/[DONE]：收尾。
+                // 应对 keep-alive 空帧不断（短读不会超时）却又不发结束标记的网关。
+                if (this.finishSeen &&
+                    (DateTime.now() - this.finishAt).toMilliseconds() > POST_FINISH_GRACE.toMilliseconds()) {
+                    this.flushRemaining()
+                    break
+                }
                 // 事件预算：内容不再增长（无新事件）+ 时间流逝 = 停滞——
                 // 代理 keep-alive 空帧维持 read 活动时，read 预算被绕过，
                 // 事件预算兜底结束回合（用户实测：Streaming 计数一直涨但内容不变）
@@ -94,6 +113,12 @@ public class SseParser {
                 } catch (e: SocketTimeoutException) {
                     // 短读超时（POLL_INTERVAL 无数据）：轮询中断标志 + 空闲预算
                     if (this.cancelled || this.cancelChecker()) {
+                        this.flushRemaining()
+                        break
+                    }
+                    // finish_reason 后已压短读超时：宽限内没等到 usage/[DONE]，
+                    // 生成早已完成，直接收尾（不按"模型停滞"记 timedOut）
+                    if (this.finishSeen) {
                         this.flushRemaining()
                         break
                     }
@@ -128,12 +153,16 @@ public class SseParser {
                 for (i in 0..n) {
                     chunk[i] = this.buffer[i]
                 }
-                // 协议结束标记（data: [DONE] / event: message_stop / finish_reason）
-                // → 提前结束，不等 EOF：服务端/代理输出完可能不关连接（keep-alive），
-                // 继续 read 会挂起直到空闲超时误报"流被切断"
-                let ended = this.feed(chunk)
-                if (ended) {
+                // 协议硬结束（[DONE]/message_stop）→ 提前结束，不等 EOF：
+                // 服务端/代理输出完可能不关连接（keep-alive），继续 read 会挂起
+                // 直到空闲超时误报"流被切断"。finish_reason 只是生成完成，
+                // 还要给 usage 留一个短收尾窗口（见 POST_FINISH_GRACE）。
+                let kind = this.feed(chunk)
+                if (kind == 2) {
                     break
+                }
+                if (kind == 1) {
+                    this.noteFinishReason()
                 }
             }
             this.onDone()
@@ -145,7 +174,28 @@ public class SseParser {
         }
     }
 
-    private func feed(chunk: Array<Byte>): Bool {
+    /**
+     * 收到 finish_reason：进入短收尾窗口。首次命中时把传输层单次读超时压到
+     * POST_FINISH_GRACE，让随后分包到达的 usage 能被读到；不支持的流立即回退
+     * 到默认超时（超时后仍由 finishSeen 分支结束）。
+     */
+    private func noteFinishReason(): Unit {
+        if (this.finishSeen) {
+            return
+        }
+        this.finishSeen = true
+        this.finishAt = DateTime.now()
+        match (this.input) {
+            case h: HttpStreamInput => h.setReadTimeout(POST_FINISH_GRACE)
+            case _ => ()
+        }
+    }
+
+    /**
+     * @return 0=继续；1=本块见到 finish_reason（生成完成，等 usage/[DONE]）；
+     *         2=[DONE]/message_stop（硬结束）
+     */
+    private func feed(chunk: Array<Byte>): Int64 {
         // 合并 pending + 新块
         var merged = Array<Byte>(this.pending.size + chunk.size, repeat: 0)
         for (i in 0..this.pending.size) {
@@ -198,20 +248,32 @@ public class SseParser {
         // 在 [0, safeEnd) 范围内按 \n\n 或 \r\n\r\n 切分事件
         var start = 0
         var i = 0
+        var sawFinishReason = false
         while (i < safeEnd) {
             if (merged[i] == 10u8) {  // \n
                 if (i + 1 < safeEnd && merged[i + 1] == 10u8) {
                     // 事件结束（\n\n）
-                    if (this.dispatchEvent(merged, start, i)) {
-                        return true
+                    let kind = this.dispatchEvent(merged, start, i)
+                    if (kind == 2) {
+                        return 2   // [DONE]/message_stop：硬结束
+                    }
+                    if (kind == 1) {
+                        // finish_reason 只是"生成完成"，同一 TCP 块里可能还跟着
+                        // usage（OpenAI include_usage）/ [DONE]。必须继续解析完本块，
+                        // 否则缓存命中率与精确 token 永远丢失（实测恒 0）。
+                        sawFinishReason = true
                     }
                     start = i + 2
                     i = start
                     continue
                 } else if (i > 0 && merged[i - 1] == 13u8 && i + 1 < safeEnd && merged[i + 1] == 10u8) {
                     // 事件结束（\r\n\r\n）
-                    if (this.dispatchEvent(merged, start, i - 1)) {
-                        return true
+                    let kind = this.dispatchEvent(merged, start, i - 1)
+                    if (kind == 2) {
+                        return 2
+                    }
+                    if (kind == 1) {
+                        sawFinishReason = true
                     }
                     start = i + 2
                     i = start
@@ -226,10 +288,16 @@ public class SseParser {
             rest[j - start] = merged[j]
         }
         this.pending = rest
-        return false
+        // 见过 finish_reason 且本块无 [DONE]：返回 1，由 run() 进入短收尾窗口，
+        // 继续读分包到达的 usage/[DONE]，而不是立刻丢弃后续帧。
+        return if (sawFinishReason) { 1 } else { 0 }
     }
 
-    private func dispatchEvent(merged: Array<Byte>, start: Int64, endExcl: Int64): Bool {
+    /**
+     * 解析单个 SSE 事件。
+     * @return 0=继续；1=finish_reason（生成完成）；2=[DONE]/message_stop（硬结束）
+     */
+    private func dispatchEvent(merged: Array<Byte>, start: Int64, endExcl: Int64): Int64 {
         // 解析 data / event 行
         var data = ""
         var event = ""
@@ -271,7 +339,13 @@ public class SseParser {
         // OpenAI 兼容系 choices[0].finish_reason 非 null（stop/length/tool_calls）
         // → 通知 run() 提前结束，不等 EOF（服务端/代理可能 keep-alive 不关连接，
         // 甚至不发 [DONE]——只透传 finish_reason 的聚合网关实测会挂死 read）
-        return data == "[DONE]" || event == "message_stop" || this.hasFinishReason(data)
+        if (data == "[DONE]" || event == "message_stop") {
+            return 2
+        }
+        if (this.hasFinishReason(data)) {
+            return 1
+        }
+        return 0
     }
 
     /**
@@ -323,7 +397,7 @@ public class SseParser {
     private func flushRemaining(): Unit {
         // 流结束，处理剩余 pending 中的最后一个事件（可能无结尾空行）
         if (this.pending.size > 0) {
-            this.dispatchEvent(this.pending, 0, this.pending.size)
+            let _ = this.dispatchEvent(this.pending, 0, this.pending.size)
             this.pending = Array<Byte>()
         }
     }

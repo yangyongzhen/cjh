@@ -35,12 +35,16 @@ import cjterm.*
  *     bash_kill 生效时推送）。旧客户端不认该 type 即忽略，其余帧形状不变。
  * v7：新增出站帧 bg_slots（两本槽位账全局快照：bg_used / bg_max /
  *     agents_used / agents_max；任务起停时推、新连接握手后补推一次）。
- *     agents_max = 0 表示该入口不启用子代理（Web 模式不建 SubagentScheduler），
- *     客户端据此省略 agents 段，而不是画一个永远不变的假账。
+ *     agents_max = 0 表示该入口不启用子代理；客户端据此省略 agents 段，
+ *     而不是画一个永远不变的假账。
+ * v8：新增出站帧 round_metrics（每轮一次：round / model_ms / tool_ms /
+ *     prompt_tokens / completion_tokens / cached_tokens / cache_hit_pct）。
+ *     子代理工具流复用 tool_start / tool_result 的 agent_id / agent_label，
+ *     不再单独加帧。
  *     （每次帧形状或帧集合变化都递增，客户端按版本决定要不要读新字段）
  */
 public func capabilityProtocolVersion(): Int64 {
-    return 7
+    return 8
 }
 
 /**
@@ -78,6 +82,8 @@ public func outboundEventNames(): ArrayList<String> {
     // 漏列会与 v7 注释和 web_channel 实际推送不一致：/api/capabilities 是客户端
     // 唯一的探测入口，清单里没有，按白名单过滤的客户端就永远收不到槽位账。
     names.add("bg_slots")
+    // 单轮性能帧（v8）：每轮一次，客户端做逐轮耗时/token 面板
+    names.add("round_metrics")
     names.add("history_messages")
     return names
 }
