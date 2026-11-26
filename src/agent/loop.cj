@@ -482,6 +482,9 @@ public class RunSummary {
     public var rounds: Int64 = 0           // LLM 调用轮数
     public var toolCalls: Int64 = 0        // 工具调用总数
     public var durationMs: Int64 = 0       // 总耗时（毫秒）
+    // 耗时拆分：模型请求（含流式等待）与工具批次（并发按实际墙钟累加）
+    public var modelMs: Int64 = 0
+    public var toolMs: Int64 = 0
     public var promptTokens: Int64 = 0     // 输入 token 累计
     public var completionTokens: Int64 = 0 // 输出 token 累计
     public var cachedTokens: Int64 = 0     // 缓存命中 token 累计
@@ -516,6 +519,38 @@ public class RunSummary {
      */
     public func totalTokens(): Int64 {
         return this.promptTokens + this.completionTokens
+    }
+}
+
+/**
+ * 单轮性能快照（状态行与 /stats 的可观测数据源）。
+ *
+ * modelMs = 该轮 LLM 请求墙钟；toolMs = 该轮工具批次墙钟（并发组按实际耗时，
+ * 不是各工具耗时之和，避免把并行算成串行）。token 为该轮 prompt/completion/cached。
+ */
+public class RoundMetrics {
+    public let round: Int64
+    public let modelMs: Int64
+    public let toolMs: Int64
+    public let promptTokens: Int64
+    public let completionTokens: Int64
+    public let cachedTokens: Int64
+
+    public init(round: Int64, modelMs: Int64, toolMs: Int64,
+        promptTokens: Int64, completionTokens: Int64, cachedTokens: Int64) {
+        this.round = round
+        this.modelMs = modelMs
+        this.toolMs = toolMs
+        this.promptTokens = promptTokens
+        this.completionTokens = completionTokens
+        this.cachedTokens = cachedTokens
+    }
+
+    public func cacheHitRate(): Int64 {
+        if (this.promptTokens == 0) {
+            return 0
+        }
+        return this.cachedTokens * 100 / this.promptTokens
     }
 }
 
@@ -637,6 +672,9 @@ public class Agent {
     // 每轮一次的轮次/用量回调（S3 修实测卡死）：(rounds, promptTokens, completionTokens, cachedTokens)。
     // 面板刷新必须挂这里（每轮一次、provider 无关），不能挂 onTokenEstimate（每 SSE chunk 一次）
     public var onRoundTick: (Int64, Int64, Int64, Int64) -> Unit = { _, _, _, _ => }
+    // 每轮性能回调（模型/工具墙钟 + 该轮 token/缓存）：TUI 状态行与 /stats 用；
+    // 在工具批次回填后（或纯文本收尾时）触发一次，round 单调递增。
+    public var onRoundMetrics: (RoundMetrics) -> Unit = { _ => }
     // 回合结束回调（渲染回合总结条：轮数/工具数/耗时/token用量/缓存命中率）
     public var onRunComplete: (RunSummary) -> Unit = { _ => }
     /**
@@ -1310,6 +1348,7 @@ public class Agent {
                 return summary
             }
             let roundMs = (DateTime.now() - roundStart).toMilliseconds()
+            summary.modelMs += roundMs
             // 累计 token 用量
             summary.promptTokens += response.usage.promptTokens
             summary.completionTokens += response.usage.completionTokens
@@ -1368,6 +1407,8 @@ public class Agent {
                 var results = ArrayList<ToolResult>()
                 var durations = ArrayList<Int64>()
                 var executed = ArrayList<Bool>()
+                // 本轮工具批次墙钟（并发组按实际 batch 耗时累加，不是单工具之和）
+                var roundToolMs: Int64 = 0
                 for (_ in 0..n) {
                     results.add(ToolResult("", false))
                     durations.add(0)
@@ -1398,6 +1439,7 @@ public class Agent {
                         let toolT0 = DateTime.now()
                         var result = this.executeGuarded(tc.name, tc.arguments)
                         let toolMs = (DateTime.now() - toolT0).toMilliseconds()
+                        roundToolMs += toolMs
                         Log.info("  工具 ${tc.name} | 耗时 ${toolMs}ms | 结果 ${result.content.size} chars | isError ${result.isError}")
                         if (response.truncated && (tc.name == "write_file" || tc.name == "edit")) {
                             result = ToolResult(result.content + "\n\n⚠ 截断警告：本轮 LLM 输出被 max_tokens 强制截断，上面写入的文件内容【不完整】。\n请【立即】按以下步骤修复（不要再用 write_file 重写整个文件，那会再次截断）：\n1. 调用 read_file 读取刚写入的文件，确认截断位置\n2. 调用 edit，old_string 填文件末尾最后几个有效字符，new_string 续写剩余部分\n3. 重复 1-2 直到文件完整闭合（HTML 需 </script></body></html>）\n务必分多次小段续写，每段 new_string 控制在 ~1500 字符以内。", true)
@@ -1453,6 +1495,7 @@ public class Agent {
                         }
                         // 并发实际耗时
                         let parallelMs = (DateTime.now() - batchStart).toMilliseconds()
+                        roundToolMs += parallelMs
                         // 节省 = 假设串行 - 并发实际
                         if (serialMs > parallelMs) {
                             summary.parallelSavedMs += (serialMs - parallelMs)
@@ -1492,6 +1535,10 @@ public class Agent {
                     let hookedContent = this.fireToolResultHook(tc.name, result.content)
                     this.messages.add(ChatMessage("tool", truncateToolResult(hookedContent, tc.name, tc.id), tc.id, tc.name))
                 }
+                summary.toolMs += roundToolMs
+                this.onRoundMetrics(RoundMetrics(iterations, roundMs, roundToolMs,
+                    response.usage.promptTokens, response.usage.completionTokens,
+                    response.usage.cachedTokens))
 
                 // 截断打断：检测到被截断的 write_file/edit 路径，注入 [System Notice] 绝对指令
                 if (response.truncatedPaths.size > 0) {
@@ -1545,6 +1592,9 @@ public class Agent {
             if (response.text.size > 0) {
                 this.messages.add(ChatMessage("assistant", response.text))
                 this.onAssistantText(response.text)
+                this.onRoundMetrics(RoundMetrics(iterations, roundMs, 0,
+                    response.usage.promptTokens, response.usage.completionTokens,
+                    response.usage.cachedTokens))
             } else if (roundReasoning.load() > 0) {
                 // 只吐思考、正文为空：**不是空响应**，是"没把结论落成正文"。
                 // 旧实现把它当空响应整轮重跑，同一段长思考被重做一遍（实测两次空转约 158s／590s），
@@ -1559,6 +1609,9 @@ public class Agent {
                     continue
                 }
                 Log.error("LLM 连续只输出思考、无正文，放弃补写（预算用尽）")
+                this.onRoundMetrics(RoundMetrics(iterations, roundMs, 0,
+                    response.usage.promptTokens, response.usage.completionTokens,
+                    response.usage.cachedTokens))
                 this.onAssistantText("\n[提醒] 模型只输出了思考内容、未给出正文，回合结束；可再发一条消息重试。\n")
             } else {
                 // LLM 返回空响应（无 text 且无 tool_calls）：重试，超过 maxEmptyRetries 才退出。
@@ -1578,6 +1631,9 @@ public class Agent {
                     continue
                 }
                 Log.error("LLM 连续 ${maxEmptyRetries} 次返回空响应，放弃重试 | 末次 第 ${iterations} 轮 耗时 ${roundMs}ms prompt ${response.usage.promptTokens} completion ${response.usage.completionTokens} cached ${response.usage.cachedTokens} | 推理增量 ${roundReasoning.load()} 字符 | truncated ${response.truncated} timedOut ${response.timedOut}")
+                this.onRoundMetrics(RoundMetrics(iterations, roundMs, 0,
+                    response.usage.promptTokens, response.usage.completionTokens,
+                    response.usage.cachedTokens))
                 this.onAssistantText("\n[空响应] LLM 连续 ${maxEmptyRetries} 次未返回内容，回合结束。")
             }
             // 续跑闸门（「任务没做完就收场」）：纯文本收束但活儿没干完 → 注入指令继续跑。

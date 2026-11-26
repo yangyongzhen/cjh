@@ -64,6 +64,21 @@ public func cacheHitPercent(promptTotal: Int64, cached: Int64): Int64 {
 }
 
 /**
+ * 单轮性能行（纯函数，供 /stats 与单测）：模型/工具墙钟 + 该轮 token 与缓存命中。
+ *
+ * 输出例：`#2 模型 1.2s · 工具 0.4s · 输入 40.2k · 输出 312 · 缓存 95%`
+ * prompt=0（provider 未回传 usage）时不显示缓存段，避免伪造 0% 命中。
+ */
+public func roundMetricsLine(m: RoundMetrics): String {
+    var line = "#${m.round} 模型 ${fmtElapsedShort(m.modelMs)} · 工具 ${fmtElapsedShort(m.toolMs)}" +
+        " · 输入 ${fmtTokenCount(m.promptTokens)} · 输出 ${fmtTokenCount(m.completionTokens)}"
+    if (m.promptTokens > 0) {
+        line += " · 缓存 ${cacheHitPercent(m.promptTokens, m.cachedTokens)}%"
+    }
+    return line
+}
+
+/**
  * TUI 应用：对话界面（组件化编排）
  *
  * 布局（0-based 行，TuiCanvas 差分渲染）：
@@ -114,6 +129,11 @@ public class TuiApp {
     // 本 run 累计 prompt / cached token（状态行显示缓存命中率；每 run 归零）
     private var agentPromptTotal: Int64 = 0
     private var agentCachedTokens: Int64 = 0
+    // 上一轮性能（模型/工具墙钟）：状态行显示；每 run 归零
+    private var agentLastModelMs: Int64 = 0
+    private var agentLastToolMs: Int64 = 0
+    // 本 run 每轮性能明细（/stats 读取）；元素在 agent 线程生成，锁内追加
+    private var agentRoundStats: ArrayList<String> = ArrayList<String>()
     private var agentTokenLock: Mutex = Mutex()
     // Agent 当前执行状态（实时状态行显示用：Thinking/Running bash/Streaming 等）
     private var agentState: String = ""
@@ -1150,6 +1170,9 @@ public class TuiApp {
             this.agentPromptTokens = 0
             this.agentPromptTotal = 0
             this.agentCachedTokens = 0
+            this.agentLastModelMs = 0
+            this.agentLastToolMs = 0
+            this.agentRoundStats = ArrayList<String>()
             this.agentTokenLock.unlock()
             // 重置空闲看门狗锚点：agentLastActivity 只被 onDelta/onReasoning 更新、
             // 跨 run 不重置——上一 run 结束后锚点停在旧帧，新 run 启动后"建连+前
@@ -1324,6 +1347,11 @@ public class TuiApp {
         this.agentTokenLock.lock()
         try {
             this.agentPromptTokens = 0
+            this.agentPromptTotal = 0
+            this.agentCachedTokens = 0
+            this.agentLastModelMs = 0
+            this.agentLastToolMs = 0
+            this.agentRoundStats = ArrayList<String>()
         } finally {
             this.agentTokenLock.unlock()
         }
@@ -1387,6 +1415,40 @@ public class TuiApp {
         this.agentCachedTokens = cached
         this.agentTokenLock.unlock()
         this.markDirty()
+    }
+
+    /**
+     * 每轮性能（onRoundMetrics 每轮一次）：状态行显示上一轮，/stats 留全量明细。
+     * 必须与 setAgentCacheUsage 用同一把锁——agent 线程写、主循环/命令线程读。
+     */
+    public func setAgentRoundMetrics(m: RoundMetrics): Unit {
+        this.agentTokenLock.lock()
+        try {
+            this.agentLastModelMs = m.modelMs
+            this.agentLastToolMs = m.toolMs
+            this.agentRoundStats.add(roundMetricsLine(m))
+        } finally {
+            this.agentTokenLock.unlock()
+        }
+        this.markDirty()
+    }
+
+    /** 本 run 每轮性能明细（/stats 命令输出）；无数据时给明确说明而不是空屏。 */
+    public func agentStatsText(): String {
+        this.agentTokenLock.lock()
+        try {
+            if (this.agentRoundStats.size == 0) {
+                return "本回合尚无性能数据（至少完成一轮 LLM 调用后才有）。"
+            }
+            var sb = StringBuilder()
+            sb.append("本回合每轮性能（模型/工具墙钟 · token · 缓存）：\n")
+            for (line in this.agentRoundStats) {
+                sb.append("  " + line + "\n")
+            }
+            return sb.toString()
+        } finally {
+            this.agentTokenLock.unlock()
+        }
     }
 
     /**
@@ -2529,6 +2591,8 @@ public class TuiApp {
         let tokens = this.agentPromptTokens
         let promptTotal = this.agentPromptTotal
         let cachedTotal = this.agentCachedTokens
+        let lastModelMs = this.agentLastModelMs
+        let lastToolMs = this.agentLastToolMs
         this.agentTokenLock.unlock()
         let stateLabel = if (this.agentState.size > 0) { this.agentState } else { "Working…" }
         // 排队消息数（执行期间提交、待自动发送）；0 时不显示
@@ -2559,6 +2623,14 @@ public class TuiApp {
             line += Ansi.fg(Ansi.THEME_MUTED) + " · 第 " + Ansi.reset() +
                 Ansi.fg(Ansi.THEME_WARN) + this.agentRounds.toString() + Ansi.reset() +
                 Ansi.fg(Ansi.THEME_MUTED) + " 轮" + Ansi.reset()
+        }
+        // 上一轮耗时拆分（模型 vs 工具）：长任务里"等模型"和"跑工具"体感完全不同，
+        // 只给总耗时会让人误判是工具慢。标签写"上轮"避免被当成当前轮实时值。
+        if (lastModelMs > 0 || lastToolMs > 0) {
+            line += Ansi.fg(Ansi.THEME_MUTED) + " · 上轮 模型 " + Ansi.reset() +
+                Ansi.fg(Ansi.THEME_WARN) + fmtElapsedShort(lastModelMs) + Ansi.reset() +
+                Ansi.fg(Ansi.THEME_MUTED) + " · 工具 " + Ansi.reset() +
+                Ansi.fg(Ansi.THEME_WARN) + fmtElapsedShort(lastToolMs) + Ansi.reset()
         }
         line += Ansi.fg(Ansi.THEME_MUTED) + ")" + Ansi.reset()
         if (qLen > 0) {

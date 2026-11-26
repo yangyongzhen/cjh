@@ -45,6 +45,25 @@ public class McpServerConfig {
 }
 
 /**
+ * 解析配置目录：CJH_CONFIG_DIR 非空才覆盖，空白串按未设置处理。
+ *
+ * 空串直接参与拼接会得到 `settingsPath="/settings.json"`、`configDir=""`，
+ * 后续 `ensureDirs()` 对空路径 `Directory.create` 直接抛异常（用户实测
+ * `CJH_CONFIG_DIR= cjh ...` 启动即崩）。抽成纯函数，边界可单测。
+ */
+public func resolveConfigDir(overrideValue: Option<String>, home: String, sep: String): String {
+    match (overrideValue) {
+        case Some(raw) =>
+            let trimmed = raw.trimAscii()
+            if (trimmed.size > 0) {
+                return trimmed
+            }
+        case None => ()
+    }
+    return home + sep + ".cjh"
+}
+
+/**
  * 配置系统（对标成熟 agent 的配置目录设计）
  *
  * 目录结构（~/.cjh/，可用 CJH_CONFIG_DIR 覆盖）：
@@ -206,7 +225,7 @@ public class CjhConfig {
     public init() {
         let home = EnvFfi.homeDir()
         let s = CjhConfig.sep()
-        this.configDir = readEnv("CJH_CONFIG_DIR") ?? (home + s + ".cjh")
+        this.configDir = resolveConfigDir(readEnv("CJH_CONFIG_DIR"), home, s)
         this.settingsPath = this.configDir + s + "settings.json"
         this.authPath = this.configDir + s + "auth.json"
         this.sessionsDir = this.configDir + s + "sessions"

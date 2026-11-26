@@ -38,6 +38,7 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
             tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /tree          树形列示会话分支" + Ansi.reset())
             tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /fork          从当前会话分支新会话" + Ansi.reset())
             tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /settings      查看采样参数（temp/max_tokens）" + Ansi.reset())
+            tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /stats         本回合每轮模型/工具耗时、token 与缓存命中" + Ansi.reset())
             tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /task          任务管理（add/done/doing/clear/list）" + Ansi.reset())
             tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /parallel [on|off|auto]  子代理派发开关（off=模型直接处理；运行时生效，不回写 settings）" + Ansi.reset())
             tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  /theme [name] TUI 主题切换（omp-dark|starfrost|classic|...）" + Ansi.reset())
@@ -181,6 +182,14 @@ func handleSlashCommand(input: String, agent: Agent, store: SessionStore, tui: T
                 tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  temperature ${cfg.temperature}" + Ansi.reset())
                 tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  max_tokens  ${cfg.maxTokens}" + Ansi.reset())
                 tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + "  base_url    ${cfg.baseUrl}" + Ansi.reset())
+            }
+        case "/stats" =>
+            // 本回合每轮性能明细：模型/工具墙钟 + 该轮 token/缓存命中。
+            // 数据在 agent 线程逐轮追加，切会话/新回合时清零（见 resetSessionUiState）。
+            for (line in tui.agentStatsText().split("\n", -1)) {
+                if (line.size > 0) {
+                    tui.appendOutput(Ansi.fg(Ansi.THEME_MUTED) + line + Ansi.reset())
+                }
             }
         case "/new" =>
             // 清空会话：历史（保留 system）+ 压缩/任务/状态栏全量复位。

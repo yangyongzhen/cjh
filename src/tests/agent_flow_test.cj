@@ -4,6 +4,7 @@ import cjutil.*
 
 import std.collection.*
 import std.fs.*
+import std.time.*
 import stdx.encoding.json.*
 import cjllm.*
 import cjh.tools.*
@@ -532,5 +533,89 @@ public class SingleToolEfficiencyReminderTest {
         @Assert(msg.contains("2"), true)
         @Assert(msg.contains("并行"), true)
         @Assert(msg.contains("依赖"), true)
+    }
+}
+
+/**
+ * 每轮性能回调（onRoundMetrics）端到端测试。
+ *
+ * 契约：每轮（含纯文本收尾轮）恰好回调一次；round 从 1 递增；单轮耗时可测；
+ * 单轮 token/缓存原样带出；summary.modelMs 等于各轮模型耗时之和（工具耗时单列）。
+ *
+ * 慢 provider 与慢工具各 sleep 25ms 制造可测量延迟——0ms 在快速 mock 下无法
+ * 区分“真计时”与“字段恒 0”，也分不清模型耗时与工具耗时是否串账。
+ */
+class MetricsSlowTool <: CjhTool {
+    public func spec(): ToolSpec {
+        return ToolSpec("slow_probe", "定时探针", JsonObject())
+    }
+
+    public func execute(_: JsonObject): ToolResult {
+        sleep(Duration.millisecond * 25)
+        return ToolResult("slow-probe-done", false)
+    }
+
+    public func isReadOnly(): Bool {
+        return true
+    }
+}
+
+class TimedMetricsProvider <: LlmProvider {
+    public var calls: Int64 = 0
+
+    public func chatStream(_: ArrayList<ChatMessage>, _: ArrayList<ToolSpec>,
+        onDelta: (String) -> Unit, _: (String) -> Unit,
+        _: (Int64) -> Unit, _: () -> Bool): ModelResponse {
+        sleep(Duration.millisecond * 25)
+        this.calls += 1
+        if (this.calls == 1) {
+            let calls = ArrayList<ToolCall>()
+            calls.add(ToolCall("call_metrics_1", "slow_probe", JsonObject()))
+            let r = ModelResponse("", calls)
+            r.usage.promptTokens = 100
+            r.usage.completionTokens = 10
+            r.usage.cachedTokens = 50
+            return r
+        }
+        let r = ModelResponse("DONE-METRICS", ArrayList<ToolCall>())
+        r.usage.promptTokens = 200
+        r.usage.completionTokens = 20
+        r.usage.cachedTokens = 150
+        onDelta("DONE-METRICS")
+        return r
+    }
+}
+
+@Test
+public class RoundMetricsCallbackTest {
+    @TestCase
+    public func testOneMetricsEventPerRoundWithTimingAndUsage(): Unit {
+        let registry = ToolRegistry()
+        registry.register(MetricsSlowTool())
+        let config = AgentConfig("metrics test", 10, Capability(),
+            0, 0, 6, 2000, tmpPath("cjh_metrics_spill"), "sess-metrics")
+        let agent = Agent(TimedMetricsProvider(), registry, config)
+        let seen = ArrayList<RoundMetrics>()
+        agent.onRoundMetrics = { m => seen.add(m) }
+        let s = agent.run("量一下每轮耗时")
+        @Assert(s.reply.contains("DONE-METRICS"), true)
+        @Assert(s.rounds, 2)
+        @Assert(seen.size, 2)  // 工具轮 + 纯文本收尾轮，各一次
+        @Assert(seen[0].round, 1)
+        @Assert(seen[1].round, 2)
+        // 25ms sleep 每轮可测；两轮累计不丢
+        @Assert(seen[0].modelMs >= 20, true)
+        @Assert(seen[1].modelMs >= 20, true)
+        @Assert(s.modelMs >= 40, true)
+        @Assert(s.modelMs, seen[0].modelMs + seen[1].modelMs)
+        @Assert(seen[0].toolMs >= 20, true)  // 慢工具 25ms 必须计入工具侧
+        @Assert(seen[1].toolMs, 0)
+        @Assert(s.toolMs >= 20, true)
+        @Assert(s.toolMs, seen[0].toolMs + seen[1].toolMs)
+        // token/缓存按轮带出（不串轮、不丢字段）
+        @Assert(seen[0].promptTokens, 100)
+        @Assert(seen[0].cachedTokens, 50)
+        @Assert(seen[1].promptTokens, 200)
+        @Assert(seen[1].cachedTokens, 150)
     }
 }

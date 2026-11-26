@@ -1554,6 +1554,8 @@ public class JsonResultContractTest {
         s.rounds = 3
         s.toolCalls = 2
         s.durationMs = 1234
+        s.modelMs = 900
+        s.toolMs = 200
         s.promptTokens = 1000
         s.completionTokens = 50
         s.cachedTokens = 800
@@ -1580,6 +1582,8 @@ public class JsonResultContractTest {
         @Assert(usage.get("prompt_tokens").getOrThrow().asInt().getValue(), 1000)
         @Assert(usage.get("cached_tokens").getOrThrow().asInt().getValue(), 800)
         @Assert(usage.get("rounds").getOrThrow().asInt().getValue(), 3)
+        @Assert(usage.get("model_ms").getOrThrow().asInt().getValue(), 900)
+        @Assert(usage.get("tool_ms").getOrThrow().asInt().getValue(), 200)
         @Assert(jsonExitCodeOf(s), 0)
     }
 

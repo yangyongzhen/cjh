@@ -105,6 +105,18 @@ public func fmtTokenCount(n: Int64): String {
 }
 
 /**
+ * 毫秒耗时短格式：<1s 用 ms，否则保留一位小数的秒（1.2s）。
+ *
+ * 状态行 / 回合总结条 / /stats 共用；整数运算避免浮点尾差。
+ */
+public func fmtElapsedShort(ms: Int64): String {
+    if (ms < 1000) {
+        return "${ms}ms"
+    }
+    return "${ms / 1000}.${(ms % 1000) / 100}s"
+}
+
+/**
  * 统一边框字符集（所有组件 ASCII 降级的唯一来源）
  *
  * 背景（v1.3.16 修复 Windows 框线混排）：此前各组件各自 if (utf8) {...} 硬编码，

@@ -1,5 +1,13 @@
 # CHANGELOG
-## [Unreleased] - 2026-11-26
+## [v1.6.24] - 2026-11-26
+
+### 修复与可观测性(配置目录空串、每轮模型/工具耗时)
+
+- **`CJH_CONFIG_DIR=` 空串启动崩溃**：旧实现把空串当有效覆盖，`configDir=""`、`settingsPath="/settings.json"`，`ensureDirs()` 对空目录 `Directory.create` 抛异常；空白串（空格/制表符）同样中招。新增纯函数 `resolveConfigDir()`：trim 后非空才采用，否则回落 `$HOME/.cjh`，Windows 分隔符与显式路径单测覆盖。回归 `ConfigDirResolveTest`。
+- **每轮耗时拆分**：`RoundMetrics` 记录 `modelMs` / `toolMs`，`Agent` 每轮（含纯文本收尾轮）回调一次 `onRoundMetrics`；回合摘要 `modelMs`/`toolMs` 为各轮之和（原 `durationMs` 含压缩等开销，不能直接归因）。真实长任务里"等模型"和"等工具"体感完全不同，只看总耗时会误判瓶颈。
+- **TUI 状态行与 `/stats`**：状态行在轮次后追加「上轮 模型 x / 工具 y」，明确标注上轮避免当成实时值；`/stats` 列出本回合每轮「模型/工具墙钟 · 输入/输出 token · 缓存命中%」，切会话或新回合清零。`fmtElapsedShort` 提到 `cjterm`，状态行、回合总结条、`/stats` 共用同一格式。
+- **回合总结条与 `--mode json`**：总结条追加模型/工具耗时；`usage.model_ms` / `usage.tool_ms` 输出给脚本与 CI，便于自动核对性能回归。
+- **回归**：`TokenFmtTest.testElapsedShortFormat`（ms/秒形态）、`TuiAppKeyTest.testRoundMetricsLineAndStatsHistory`（每轮行、无 usage 不伪造缓存、新回合清空）、`RoundMetricsCallbackTest`（慢模型 + 慢工具各 25ms：每轮恰好一次、round 递增、模型/工具耗时分别可测且等于总和、token/缓存不串轮）、`testSuccessCarriesUsageAndExitZero` 锁 `model_ms`/`tool_ms`。
 
 ### 优化(长任务第四轮：Anthropic 提示词缓存与稳定工具前缀)
 

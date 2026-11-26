@@ -43,4 +43,15 @@ public class TokenFmtTest {
     public func testNegativeFallback(): Unit {
         @Assert(fmtTokenCount(-5), "-5")
     }
+
+    /** 耗时短格式：亚秒用 ms，秒级一位小数；供状态行与 /stats 共用 */
+    @TestCase
+    public func testElapsedShortFormat(): Unit {
+        @Assert(fmtElapsedShort(0), "0ms")
+        @Assert(fmtElapsedShort(7), "7ms")
+        @Assert(fmtElapsedShort(999), "999ms")
+        @Assert(fmtElapsedShort(1000), "1.0s")
+        @Assert(fmtElapsedShort(1234), "1.2s")
+        @Assert(fmtElapsedShort(59999), "59.9s")
+    }
 }

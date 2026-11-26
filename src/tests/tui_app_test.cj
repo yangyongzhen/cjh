@@ -787,8 +787,37 @@ public class TuiAppKeyTest {
     }
 
     @TestCase
+    public func testRoundMetricsLineAndStatsHistory(): Unit {
+        // 每轮性能行：模型/工具分开计时，token/缓存同轮可见
+        let m = RoundMetrics(2, 1234, 456, 40200, 312, 38000)
+        let line = roundMetricsLine(m)
+        @Assert(line.contains("#2"), true)
+        @Assert(line.contains("模型 1.2s"), true)
+        @Assert(line.contains("工具 456ms"), true)
+        @Assert(line.contains("输入 40.2k"), true)
+        @Assert(line.contains("输出 312"), true)
+        @Assert(line.contains("缓存 94%"), true)
+        // provider 未回传 usage：不伪造 0% 缓存
+        @Assert(roundMetricsLine(RoundMetrics(1, 10, 0, 0, 0, 0)).contains("缓存"), false)
+
+        let (app, _) = this.buildApp()
+        app.setAgentRunning(true)
+        @Assert(app.agentStatsText().contains("尚无"), true)
+        app.setAgentRoundMetrics(RoundMetrics(1, 1000, 0, 1000, 10, 500))
+        app.setAgentRoundMetrics(RoundMetrics(2, 2000, 300, 2000, 20, 1000))
+        let txt = app.agentStatsText()
+        @Assert(txt.contains("#1"), true)
+        @Assert(txt.contains("#2"), true)
+        @Assert(txt.contains("模型 2.0s"), true)
+        @Assert(txt.contains("工具 300ms"), true)
+        // 新回合必须清空上一任务的明细，避免 /stats 串台
+        app.setAgentRunning(true)
+        @Assert(app.agentStatsText().contains("尚无"), true)
+        app.setAgentRunning(false)
+    }
+
+    @TestCase
     public func testToolStatusTextShowsProgressAndApprovalWait(): Unit {
-        // 纯文本片段：无工具无审批 = 不占位；数字/运行中/审批等待必须一眼可辨
         @Assert(toolStatusText(0, 0, "", 0), "")
         @Assert(toolStatusText(3, 0, "", 0), "工具 3")
         @Assert(toolStatusText(3, 1, "bash", 0), "工具 3 (bash 运行中)")

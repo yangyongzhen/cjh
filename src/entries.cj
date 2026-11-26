@@ -497,14 +497,6 @@ func fmtBytesShort(n: Int64): String {
     return "${tenths / 10}.${tenths % 10}MB"
 }
 
-/** 工具耗时的短格式（纯函数）：<1s 用 ms，否则保留一位小数的秒。 */
-func fmtElapsedShort(ms: Int64): String {
-    if (ms < 1000) {
-        return "${ms}ms"
-    }
-    return "${ms / 1000}.${(ms % 1000) / 100}s"
-}
-
 /** --mode json 的工具完成心跳行（纯函数，便于单测）。 */
 func jsonToolDoneLine(name: String, elapsedMs: Int64, bytes: Int64, isError: Bool): String {
     let flag = if (isError) { " (error)" } else { "" }
@@ -553,6 +545,9 @@ func jsonResultOf(summary: RunSummary, sessionId: String,
     // 回合内只读工具缓存命中数（重复 read_file/grep/glob/list_dir 被直接回填的次数）
     usage.put("tool_cache_hits", JsonInt(summary.toolCacheHits))
     usage.put("duration_ms", JsonInt(summary.durationMs))
+    // 耗时拆分：调用方据此判断"慢在模型还是慢在工具"，无需翻日志
+    usage.put("model_ms", JsonInt(summary.modelMs))
+    usage.put("tool_ms", JsonInt(summary.toolMs))
     out.put("usage", usage)
     var tcArr = ArrayList<JsonValue>()
     for (tc in calls) {
@@ -1030,6 +1025,10 @@ func runTui(sessionId: String): Int64 {
         agent.onRoundTick = { _, promptTotal, _, cached =>
             tui.setAgentCacheUsage(promptTotal, cached)
         }
+        // 每轮性能：模型/工具墙钟 + 该轮 token/缓存。状态行显示上一轮，/stats 看全量
+        agent.onRoundMetrics = { m =>
+            tui.setAgentRoundMetrics(m)
+        }
         // 流式逐帧 token 估算：思考过程中实时更新动态状态栏 token 数。
         // 注意：不标记"活动"——代理 keep-alive 帧（无 content/reasoning）
         // 也会触发估算回调（feed 每帧 estimateAndNotify），若算活动会维持
@@ -1152,6 +1151,10 @@ func runTui(sessionId: String): Int64 {
             // 格式：─── ✓ 2 rounds · 3 tools · 42.6s · 1.5k tokens · 99% cached ───
             // S7：有子代理时追加全树归账 N agents (x✓ y✗)，低效派生 ⚠N（>0 才显示）
             var stat = "✓ ${s.rounds} ${roundWord} · ${s.toolCalls} ${toolWord} · ${secInt}.${secTenths}s · ${fmtTokenCount(tokTotal)} tokens · ${rate}% cached"
+            // 耗时拆分：用户最常问"到底慢在模型还是工具"，总结条直接给答案
+            if (s.modelMs + s.toolMs > 0) {
+                stat += " · 模型 ${fmtElapsedShort(s.modelMs)} · 工具 ${fmtElapsedShort(s.toolMs)}"
+            }
             var okCount: Int64 = 0
             var failCount: Int64 = 0
             for (node in scheduler.snapshot()) {

@@ -6,10 +6,10 @@
 
 [![Website](https://img.shields.io/badge/website-yangyongzhen.github.io%2Fcjh-00868B)](https://yangyongzhen.github.io/cjh/)
 [![CI](https://github.com/yangyongzhen/cjh/actions/workflows/ci.yml/badge.svg)](https://github.com/yangyongzhen/cjh/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/badge/release-v1.6.23-00868B)](https://atomgit.com/qq8864/cjh/releases)
+[![Release](https://img.shields.io/badge/release-v1.6.24-00868B)](https://atomgit.com/qq8864/cjh/releases)
 [![AtomGitStars](https://atomgit.com/qq8864/cjh/star/badge.svg)](https://atomgit.com/qq8864/cjh)
 [![Cangjie](https://img.shields.io/badge/language-Cangjie-00868B)](https://cangjie-lang.cn)
-[![Tests](https://img.shields.io/badge/tests-826%20passed-2ea44f)](./scripts/test.sh)
+[![Tests](https://img.shields.io/badge/tests-877%20passed-2ea44f)](./scripts/test.sh)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-lightgrey)](https://atomgit.com/qq8864/cjh/releases)
 [![License](https://img.shields.io/badge/license-MIT-2ea44f)](./LICENSE)
 
@@ -38,7 +38,7 @@ curl -fsSL https://yangyongzhen.github.io/cjh/install.sh | bash
 **先不花钱跑起来**（Mock 模式：不联网、不用 API Key）：
 
 ```bash
-curl -LO https://atomgit.com/qq8864/cjh/releases/download/v1.6.23/cjh-v1.6.23-linux-x64.tar.gz
+curl -LO https://atomgit.com/qq8864/cjh/releases/download/v1.6.24/cjh-v1.6.24-linux-x64.tar.gz
 tar xzf cjh-v1.6.23-linux-x64.tar.gz
 CJH_MOCK=1 ./cjh-linux-x64
 ```
@@ -50,7 +50,7 @@ export DEEPSEEK_API_KEY=sk-xxx     # 或 OPENAI_API_KEY / DASHSCOPE_API_KEY / CJ
 ./cjh-linux-x64                     # 默认 TUI；--cli 纯文本，--mode json 无头，web 子命令拉 Web 界面
 ```
 
-Windows：下载 [`cjh-v1.6.23-windows-x64-selfcontained.zip`](https://atomgit.com/qq8864/cjh/releases/download/v1.6.23/cjh-v1.6.23-windows-x64-selfcontained.zip) 解压即用（exe 与 4 个 DLL 必须同目录）。从源码构建见[快速开始](#-快速开始)。
+Windows：下载 [`cjh-v1.6.24-windows-x64-selfcontained.zip`](https://atomgit.com/qq8864/cjh/releases/download/v1.6.24/cjh-v1.6.24-windows-x64-selfcontained.zip) 解压即用（exe 与 4 个 DLL 必须同目录）。从源码构建见[快速开始](#-快速开始)。
 
 ![cjh 会话演示（Mock 模式实录）](docs/imgs/cjh-demo.gif)
 
@@ -64,8 +64,8 @@ Windows：下载 [`cjh-v1.6.23-windows-x64-selfcontained.zip`](https://atomgit.c
 |---|---|
 | **是什么** | 仓颉语言从零实现的终端 coding agent harness：Agent 主循环（消息状态机 + 工具调用协议）+ 工具系统 + TUI 差分渲染 + Web 远程驱动 + 插件信任链 |
 | **给谁用** | ① 想在终端里让 AI 直接改代码、又不想先装 Node/Python 工具链的人；② 学仓颉、想找一份能跑能读的 AI 应用参考实现的开发者；③ 信创 / 政企场景要求「无涉外运行时依赖」的团队 |
-| **凭什么** | 一个静态二进制跑起来（Linux 19.3 MB / Windows exe 14.4 MB），无运行时依赖；「省 token + 高执行效率」是两条可实测的硬性指标；插件 SHA256 校验 + SM2 国密签名 |
-| **现在** | v1.6.23，测试 871+281 全绿，Linux / Windows 预编译包已发布；长任务效率升级：回合内只读工具缓存（mtime+size 校验、写后失效）、DAG 写域 glob 重叠串行、状态栏工具/审批进度、同文件多段 `edit` 原子写入、`--mode json` 每工具耗时/错误/体积；提示词收紧范围纪律与「绿测只跑一次」 |
+| **凭什么** | 一个静态二进制跑起来（Linux 19.4 MB / Windows exe 14.5 MB），无运行时依赖；「省 token + 高执行效率」是两条可实测的硬性指标；插件 SHA256 校验 + SM2 国密签名 |
+| **现在** | v1.6.24，测试 877+290 全绿，Linux / Windows 预编译包已发布；长任务可观测升级：状态行与 `/stats` 展示每轮模型/工具墙钟、输入/输出 token 与缓存命中（`--mode json` 同步输出 `usage.model_ms` / `usage.tool_ms`）；Anthropic 提示词缓存断点 + 使用量归账，工具 schema 跨会话字节稳定以提升前缀缓存命中 |
 
 ---
 
@@ -88,7 +88,7 @@ Windows：下载 [`cjh-v1.6.23-windows-x64-selfcontained.zip`](https://atomgit.c
 
 | 仓颉特性 | 解决的痛点 | 差异化优势 |
 |---|---|---|
-| **静态编译单二进制**（cjnative） | 运行时包袱、分发成本 | 无 Node/Bun/npm 依赖树，`一个文件 = 一个 agent`，Linux 19.3 MB / Windows exe 14.4 MB |
+| **静态编译单二进制**（cjnative） | 运行时包袱、分发成本 | 无 Node/Bun/npm 依赖树，`一个文件 = 一个 agent`，Linux 19.4 MB / Windows exe 14.5 MB |
 | **强安全语言设计**（安全 DNA） | 安全模型 | 插件/技能编译期类型检查，内存安全，恶意代码风险结构性降低 |
 | **多后端编译 + 终端层平台抽象**（cjnative/cjvm + 鸿蒙位） | 平台覆盖 | Linux / macOS / Windows 原生运行，鸿蒙预留；终端层 VT 输出统一 + 平台后端条件编译，一份源码多平台二进制（[方案](docs/跨平台终端层设计方案.md)） |
 | **M:N 轻量线程 + 高性能** | 上下文管理、并发 | 原生并发处理流式/多 agent，低开销 |
@@ -123,7 +123,7 @@ cjh 的取向是**并行子代理 + 上下文隔离**（类 Linux fork）：子�
 
 **省 token 是分工并行的核心目标，而非副产品。** 一个任务全程交给单个 agent，等同于一个人从头到尾全知——每一步都背负全局上下文，token 随任务规模持续膨胀；而团队协作的常识是：每个人只需知道与自己职责相关的部分，信息的"按需分配"理应让总消耗更低。cjh 的并行子代理正是按任务隔离上下文——子代理只携带任务相关的局部记忆，目标是**同样的任务、更少的 token**。这与 swarm 的 handoff 串行（对话整体接力、历史持续累积）形成本质区别：后者提升的是吞吐，前者同时优化成本。
 
-> 📋 **完整功能清单**（持续更新至 v1.6.23）→ [docs/cjh功能清单.md](docs/cjh功能清单.md) —— Agent 主循环 / 15 内置工具 / 10 主题 / 插件系统与信任链 / MCP / 双平台 / 版本历史的完整盘点，随版本持续更新。
+> 📋 **完整功能清单**（持续更新至 v1.6.24）→ [docs/cjh功能清单.md](docs/cjh功能清单.md) —— Agent 主循环 / 15 内置工具 / 10 主题 / 插件系统与信任链 / MCP / 双平台 / 版本历史的完整盘点，随版本持续更新。
 
 ## 🌟 为什么是 cjh
 
@@ -612,12 +612,14 @@ cjh 内置 MCP 客户端，支持 stdio 传输 + JSON-RPC 2.0。配置 `mcp_serv
 | `/skills` | 列出技能及索引注入状态（已注入 / 超预算 / 禁用 / 正文为空）与当前索引预算 |
 | `/task` | 任务管理 |
 | `/settings` | 查看采样参数 |
+| `/stats` | 本回合每轮模型/工具耗时、token 与缓存命中 |
 | `/quit` | 退出 |
 
 ## 📊 版本历史
 
 | 版本 | 主要功能 |
 |---|---|
+| **v1.6.24** | **长任务缓存与归因**：Anthropic 请求体打 `cache_control` 断点并归账 `cache_read` / `cache_creation`；工具 schema 按名称稳定排序，跨会话前缀字节一致；状态行与 `/stats` 展示每轮模型/工具墙钟、输入/输出 token、缓存命中，`--mode json` 输出 `usage.model_ms` / `usage.tool_ms`；task 写域封堵 `bash` / MCP / 插件执行面；声明式 `${arg}` 单趟展开（插入值不再二次展开）；子代理失败按错误传播；目录结果不再缓存；文件工具相对路径锚定工作区根；`CJH_CONFIG_DIR=` 空串不再启动崩溃 |
 | **v1.6.23** | **长任务提效**：`edit` 支持同文件多段替换并原子写入（任一段匹配失败则整次不写盘）；bash 暴露管道中段失败，不再只看末段退出码；`--mode json` 每工具新增 `duration_ms` / `is_error` / `bytes`；TUI 失败工具明细强制展开；`## Work loop` 禁止未经要求的打包/CI/许可证/虚拟环境，且纯文档编辑后不重跑绿测；`write_file` 软警告阈值提升到 12000 字符/300 行，capability 宽松模式提示按配置目录只显示一次 |
 | **v1.6.22** | **技能渐进披露**：system prompt 只注入技能名称 + 描述索引，正文改由 `skill_load` 按需读取；索引按名称升序整条装载/跳过，预算只约束索引；`GET /api/skills` 区分 `bytes`（正文）与 `index_bytes`（索引）。技能正文再长也不再挤占常驻上下文；`/skills` 显示每个技能的索引注入状态与当前预算，超预算技能不再被误认为已启用 |
 | **v1.6.21** | **长任务效率与无人值守测试审批**：压缩 token 阈值默认 32000 → 64000（128K 模型不再在任务中段压缩；用户显式 `compact_token_threshold` 仍优先）；单工具提效提醒改为第 2 轮与第 5 轮各一次（仍只进模型上下文），措辞要求独立读/搜在同一响应批量发起；新增 `unattended_approval`（默认 `deny`，仅 `tests` 开启）——所有入口自动批准测试断言改写，工具结果带审计前缀，子代理继承父策略，capability Deny 仍先执行 |
